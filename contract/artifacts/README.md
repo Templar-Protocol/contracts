@@ -22,7 +22,7 @@ Templar Protocol smart contracts.
 |----------------------|-------------------------------------------------------------------|
 | *(default)*          | Artifact IDs and metadata only. No dependencies beyond `sha2`, `hex`, `thiserror`. No WASM bytes. |
 | `workspace-loader`   | Read WASM from `target/near/{name}/{name}.wasm` at runtime. Provides `cargo near build` helper. |
-| `fetch`              | Download *released* WASM from its GitHub Release into a shared local cache, verified against the catalog's SHA-256 pin. |
+| `fetch`              | Download *released* WASM from its GitHub Release into a shared local cache, verified against the catalog's byte length and SHA-256 pin. |
 | `clap`               | CLI-friendly `ValueEnum` parsing for artifact IDs and package-name aliases. |
 
 Default features do **not** embed WASM bytes or depend on heavy build
@@ -111,11 +111,11 @@ the current checkout did not ask for.
 
 ### Trust
 
-Downloaded bytes are verified against the SHA-256 pinned in the catalog and
-discarded on mismatch. That pin is a reviewed, in-repo value, so artifact
-integrity does **not** rest on GitHub serving the right file — the same standard
-git already gives the source, whose objects are content-addressed and mirrored
-by every clone.
+Downloaded bytes are verified against the byte length and SHA-256 pinned in the
+catalog and discarded on mismatch. That pin is a reviewed, in-repo value, so
+artifact integrity does **not** rest on GitHub serving the right file — the same
+standard git already gives the source, whose objects are content-addressed and
+mirrored by every clone.
 
 A version that has not been recorded as a release cannot be fetched at all:
 there is no reviewed hash to check it against.
@@ -171,9 +171,10 @@ Seconds, no contract builds:
 | `internal_crates_are_excluded_from_releases` | a crate whose manifest forbids publishing that release-plz would still tag |
 | `no_tier_can_reach_a_registry` | `release-plz.toml` losing the one setting that defers crates.io |
 
-Each file's own shape — column count, canonical artifact and version spelling,
-URL-safe tag and asset, digest, and agreement with its filename — is checked by
-`build.rs`, so a malformed record fails the build rather than a download.
+Each file's own shape — column count, canonical artifact, version and length
+spelling, URL-safe tag and asset, digest, and agreement with its filename — is
+checked by `build.rs`, so a malformed record fails the build rather than a
+download.
 
 What this does **not** check is whether the bytes match what the source actually
 compiles to. That needs a reproducible rebuild, which runs on release tags in
