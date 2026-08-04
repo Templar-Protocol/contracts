@@ -61,6 +61,34 @@ market names `sources` per asset and the deployment creates a governance
 contract, the oracle it owns, and the market — seven transactions, plus one
 storage registration per NEP-141 asset, rather than one.
 
+### Amounts
+
+Every amount states its unit, and the tool does the scaling:
+
+```toml
+[market]
+borrow_range            = { minimum = "1 atom" }
+supply_range            = { minimum = "0.04 tokens" }
+supply_withdrawal_range = { minimum = "0.04 tokens", maximum = "1000 tokens" }
+origination_fee         = { Flat = "0 atoms" }
+```
+
+`tokens` counts whole units of the borrow asset, scaled by its `decimals` when
+the plan is built — `"0.04 tokens"` is four cents of a stablecoin whether it
+carries 6 decimals or 7. `atoms` counts the indivisible base units the chain
+stores, so `"1 atom"` says "no real floor" in a way `"0.0000001 tokens"` does
+not. All three ranges and both fees are denominated in the *borrow* asset;
+nothing is stated in collateral.
+
+The unit is mandatory. A bare number is refused rather than guessed at, as is a
+`tokens` value with more decimal places than the asset can hold, or a fractional
+`atom`. Both spellings parse (`1 atom`, `1 atoms`); the tool writes the plural.
+
+This is what schema 5 changed. A schema 4 file wrote the same amounts as bare
+base-unit integers, which are still well-formed numbers — read as whole units
+they would be `10^decimals` too large — so such a file is refused by version and
+must be re-authored, not renumbered.
+
 ## Checking before and after
 
 ```sh
@@ -79,6 +107,36 @@ non-zero on failure, so it can run on a schedule. That matters because the
 governance call that configures a price feed is dispatched detached: it reports
 success even when the oracle rejected the proxy, so deployed state is the only
 witness that a market can price anything.
+
+### Reading the report
+
+Checks are printed to stderr as they run, grouped by what is being read, then
+summarized. The summary leads with the failures, in full, and lists what was
+skipped separately — a check that did not run proves nothing, and must never be
+counted as one that passed.
+
+```
+→ registry versions
+  ok   registry.version.market          v1.3.0
+  FAIL registry.version.oracle          `0.5.9` is not registered in v1.tmplr.near; the depl…
+
+5 check(s): 3 passed, 1 skipped, 1 FAILED
+
+FAILED
+  registry.version.oracle
+    `0.5.9` is not registered in v1.tmplr.near; the deploy would fail partway
+```
+
+Colour is used only on a terminal, and `NO_COLOR` turns it off. `-q` silences
+the report. stdout stays the machine-readable channel throughout, so
+`spec check … >/dev/null` leaves the report alone and `… 2>/dev/null | jq`
+leaves the JSON alone.
+
+`--skip-check <id>` suppresses one verdict — every other check still runs, and
+the report records what the skip suppressed, so an override stays reviewable
+rather than reading as a pass. An id that matches no check is an error, since a
+typo would otherwise silently suppress nothing. Available on `spec check`,
+`market plan` and `market apply`.
 
 ## Resuming
 

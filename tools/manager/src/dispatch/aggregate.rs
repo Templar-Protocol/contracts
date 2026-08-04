@@ -19,6 +19,7 @@ use templar_proxy_oracle_near_common::price_transformer::Action;
 
 use super::scaled;
 use crate::context::CliContext;
+use crate::report::Reporter;
 use crate::spec::{
     check::{Check, Status},
     oracle::{AssetSpec, SourceSpec, DEFAULT_MAX_CLOCK_DRIFT},
@@ -32,24 +33,22 @@ pub(super) async fn checks(
     ctx: &CliContext,
     spec: &MarketSpec,
     deployed_oracle: Option<&near_account_id::AccountId>,
-) -> (Vec<Check>, Option<Price>, Option<Price>) {
+    reporter: &mut Reporter,
+) -> (Option<Price>, Option<Price>) {
     // Nothing to dry-run for a direct market: this reproduces a *proxy's*
     // aggregation, and an oracle we did not configure has none of ours to
     // reproduce. Reported as not run rather than silently passing. Its prices
     // still reach the reference cross-check — `oracle.serves_pair` reads them.
     if spec.oracle.is_direct() {
-        return (
-            vec![Check::new(
-                "oracle.aggregate.all",
-                Status::Skipped {
-                    reason: "this market reads an existing oracle; there is no \
-                             proxy aggregation to reproduce"
-                        .to_owned(),
-                },
-            )],
-            None,
-            None,
-        );
+        reporter.record(Check::new(
+            "oracle.aggregate.all",
+            Status::Skipped {
+                reason: "this market reads an existing oracle; there is no \
+                         proxy aggregation to reproduce"
+                    .to_owned(),
+            },
+        ));
+        return (None, None);
     }
 
     let collateral = fetch_all(ctx, &spec.collateral).await;
@@ -93,7 +92,8 @@ pub(super) async fn checks(
     );
     checks.extend(borrow_checks);
     checks.push(pair(collateral_price, borrow_price));
-    (checks, collateral_price, borrow_price)
+    reporter.extend(checks);
+    (collateral_price, borrow_price)
 }
 
 /// The oracle's configured breakers for a feed. A failed read is returned

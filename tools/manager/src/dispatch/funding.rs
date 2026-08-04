@@ -11,6 +11,7 @@ use templar_gateway_methods_spec::{account, chain};
 
 use crate::commands::registry::STORAGE_AMOUNT_PER_BYTE;
 use crate::context::CliContext;
+use crate::report::Reporter;
 use crate::spec::{
     check::{Check, Status},
     plan::PlanStep,
@@ -108,27 +109,30 @@ fn available(account: &account::GetResult) -> NearToken {
 
 /// `funding.<account_id>` for every distinct signer. Cheap enough to re-run at
 /// apply, which matters because balances drift.
-pub(super) async fn checks(ctx: &CliContext, steps: &[PlanStep]) -> anyhow::Result<Vec<Check>> {
+pub(super) async fn checks(
+    ctx: &CliContext,
+    steps: &[PlanStep],
+    reporter: &mut Reporter,
+) -> anyhow::Result<()> {
+    reporter.phase("signer funding");
     // A failed read is a failed *check*, matching `targets_available`: aborting
     // the whole run on a transient RPC hiccup leaves no override, since the
     // sibling checks degrade gracefully and this one would not.
     let gas_price = match ctx.client.read(chain::GetBlock { block_hash: None }).await {
         Ok(block) => block.gas_price,
         Err(error) => {
-            return Ok(vec![Check::new(
+            reporter.record(Check::new(
                 "funding.gas_price",
                 Status::failed(format!(
                     "could not read the current gas price ({error}), so no \
                      signer's cost can be bounded"
                 )),
-            )])
+            ));
+            return Ok(());
         }
     };
 
-    let required = simulate(steps, gas_price)?;
-    let mut checks = Vec::with_capacity(required.len());
-
-    for (account_id, need) in required {
+    for (account_id, need) in simulate(steps, gas_price)? {
         let status = match ctx
             .client
             .read(account::Get {
@@ -140,9 +144,9 @@ pub(super) async fn checks(ctx: &CliContext, steps: &[PlanStep]) -> anyhow::Resu
             // A balance that cannot be read is not a balance that suffices.
             Err(error) => Status::failed(format!("could not read `{account_id}`: {error}")),
         };
-        checks.push(Check::new(format!("funding.{account_id}"), status));
+        reporter.record(Check::new(format!("funding.{account_id}"), status));
     }
-    Ok(checks)
+    Ok(())
 }
 
 /// Compare need against spendable. Gross, not net: gas refunds are uncredited,

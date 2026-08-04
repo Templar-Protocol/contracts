@@ -38,6 +38,9 @@ mcr_maintenance = "1.25"
 mcr_liquidation = "1.2"
 maximum_usage_ratio = "0.99"
 liquidation_maximum_spread = "0.1"
-borrow_range = { minimum = "1" }
-supply_range = { minimum = "40000" }
-supply_withdrawal_range = { minimum = "40000" }
+borrow_range = { minimum = "1 atom" }
+# Deployed at a tenth of the 0.04 every other market floors at: the raw
+# 40000 came from a 6-decimal profile and this borrow asset has 7. The
+# configuration is immutable after init, so this records what is on chain.
+supply_range = { minimum = "0.004 tokens" }
+supply_withdrawal_range = { minimum = "0.004 tokens" }

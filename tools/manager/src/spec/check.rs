@@ -395,10 +395,17 @@ fn validate_configuration(spec: &MarketSpec) -> Check {
     // Unresolved decimals are stood in for rather than skipping the check:
     // `MarketConfiguration::validate` reads none of them, and skipping took MCR
     // ordering, the ranges and the durations down with it.
-    let decimals = |declared: Option<u8>| i32::from(declared.unwrap_or(0));
+    //
+    // The borrow stand-in cannot be zero, which no `tokens` amount converts at.
+    // Every amount is borrow-denominated, so scaling them all by one factor
+    // leaves the orderings between them — all this check compares — intact.
+    let borrow_decimals = spec
+        .borrow
+        .decimals
+        .unwrap_or_else(|| spec.market.minimum_borrow_decimals());
     let configuration = spec.clone().into_market_configuration(
-        decimals(spec.collateral.decimals),
-        decimals(spec.borrow.decimals),
+        i32::from(spec.collateral.decimals.unwrap_or(0)),
+        i32::from(borrow_decimals),
     );
 
     match configuration {

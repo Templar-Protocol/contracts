@@ -28,6 +28,6 @@ mcr_liquidation = "1.2"
 maximum_usage_ratio = "0.99"
 liquidation_maximum_spread = "0.1"
 price_maximum_age = "60s"
-borrow_range = { minimum = "1" }
-supply_range = { minimum = "400000" }
-supply_withdrawal_range = { minimum = "400000" }
+borrow_range = { minimum = "1 atom" }
+supply_range = { minimum = "0.04 tokens" }
+supply_withdrawal_range = { minimum = "0.04 tokens" }

@@ -42,25 +42,33 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
     // The same checks `spec check` runs: one that checked less would pass
     // markets a preflight refuses. The proxy is named so the aggregation
     // resolves against the breakers the deployed oracle carries.
-    let mut checks = super::preflight::run_all(
+    let mut reporter = ctx.reporter(&[]);
+    super::preflight::run_all(
         &ctx,
         &mut spec,
         false,
         args.accept_decimals_mismatch,
         deployed_proxy.as_ref(),
+        &mut reporter,
     )
     .await?;
 
     // Only meaningful for a proxy market: a direct market reads an oracle it
     // does not own, and governing it is somebody else's business.
     if !spec.oracle.is_direct() {
-        checks.push(admin_holds_the_role(&ctx, &spec, &args.governance_admin).await?);
-        checks.extend(governance_controls_the_oracle(&ctx, &spec).await?);
+        reporter.phase("oracle governance");
+        let admin = admin_holds_the_role(&ctx, &spec, &args.governance_admin).await?;
+        reporter.record(admin);
+        reporter.extend(governance_controls_the_oracle(&ctx, &spec).await?);
     }
 
     if let (Some(intended), Some(path)) = (&intended, &args.against) {
-        checks.push(matches_intent(&spec, intended, path));
+        reporter.phase("the intended spec");
+        reporter.record(matches_intent(&spec, intended, path));
     }
+
+    reporter.digest();
+    let checks = reporter.into_checks();
 
     print_json(&crate::spec::check::Report {
         subject: VerifiedMarket {

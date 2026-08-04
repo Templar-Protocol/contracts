@@ -22,4 +22,4 @@ decimals = 6
 
 [market]
 origination_fee = { Proportional = "0.001" }
-borrow_range = { minimum = "5" }
+borrow_range = { minimum = "0.05 tokens" }

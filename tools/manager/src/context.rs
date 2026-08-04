@@ -37,12 +37,20 @@ pub(crate) struct CliContext {
     /// spec against testnet reports every account as missing.
     selected_network: Network,
     transaction_url_prefix: String,
+    /// Whether `-q` silenced the human report. Diagnostics-only: it never
+    /// affects the JSON on stdout.
+    quiet: bool,
 }
 
 impl CliContext {
     /// The chain the CLI was pointed at.
     pub(crate) const fn network(&self) -> Network {
         self.selected_network
+    }
+
+    /// A reporter for this run's human output, carrying the ids to suppress.
+    pub(crate) fn reporter(&self, skip: &[String]) -> crate::report::Reporter {
+        crate::report::Reporter::new(skip, self.quiet)
     }
 
     /// Build a single-signer client for `account_id` from a bare `secret_key`.
@@ -347,6 +355,7 @@ pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
         network,
         selected_network: cli.network,
         transaction_url_prefix: cli.transaction_url_prefix(),
+        quiet: cli.quiet > 0,
     })
 }
 
