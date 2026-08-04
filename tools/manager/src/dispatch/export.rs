@@ -8,8 +8,9 @@ use anyhow::Context as _;
 use near_account_id::AccountId;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_methods_spec::{
-    market, proxy_oracle, proxy_oracle_governance as governance, registry,
+    contract, market, owner, proxy_oracle, proxy_oracle_governance as governance, registry,
 };
+use templar_gateway_types::contract::ContractKind;
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{GovernancePolicy, GovernancePolicyWire};
@@ -68,40 +69,42 @@ pub(super) async fn reconstruct(
     let oracle = &configuration.price_oracle_configuration;
     let oracle_id = oracle.account_id.clone();
 
-    // Decided before anything proxy-shaped is read or derived, since neither
-    // exists for a direct market. An underivable proxy name proves direct mode.
-    let proxy_mode = crate::spec::oracle_account_id(&name, &registry_id)
-        .is_ok_and(|derived| derived == oracle_id)
-        && oracle.collateral_asset_price_id == COLLATERAL_PRICE_ID
-        && oracle.borrow_asset_price_id == BORROW_PRICE_ID;
-
-    let (versions, governance, proxies) = if proxy_mode {
-        let governance_id = governance_account_id(&name, &registry_id)?;
-        (
-            versions(ctx, &name, &registry_id, &oracle_id, market_id).await?,
-            Some(GovernanceSpec {
-                admin: governance_admin.clone(),
-                ttl_default: governance_policy(ctx, &governance_id)
-                    .await?
-                    .default_target
-                    .ttl,
-            }),
-            Some((
-                proxy(ctx, &oracle_id, COLLATERAL_PRICE_ID).await?,
-                proxy(ctx, &oracle_id, BORROW_PRICE_ID).await?,
-            )),
-        )
-    } else {
-        (
-            Versions {
-                market: version_key(ctx, &registry_id, market_id).await?,
-                proxy_oracle: None,
-                proxy_governance: None,
-            },
-            None,
-            None,
-        )
-    };
+    let (versions, governance, proxies) =
+        if let Some(governance_id) = governing_contract(ctx, &oracle_id).await? {
+            // A spec derives this name rather than storing it, so governance living
+            // anywhere else is a deployment the spec cannot express.
+            let derived = governance_account_id(&name, &registry_id)?;
+            anyhow::ensure!(
+                derived == governance_id,
+                "`{oracle_id}` is governed by `{governance_id}`, but a spec for \
+             `{market_id}` derives `{derived}`. This deployment cannot be \
+             expressed as a spec.",
+            );
+            (
+                versions(ctx, &name, &registry_id, &oracle_id, market_id).await?,
+                Some(GovernanceSpec {
+                    admin: governance_admin.clone(),
+                    ttl_default: governance_policy(ctx, &governance_id)
+                        .await?
+                        .default_target
+                        .ttl,
+                }),
+                Some((
+                    proxy(ctx, &oracle_id, COLLATERAL_PRICE_ID).await?,
+                    proxy(ctx, &oracle_id, BORROW_PRICE_ID).await?,
+                )),
+            )
+        } else {
+            (
+                Versions {
+                    market: version_key(ctx, &registry_id, market_id).await?,
+                    proxy_oracle: None,
+                    proxy_governance: None,
+                },
+                None,
+                None,
+            )
+        };
 
     let (collateral_proxy, borrow_proxy) = proxies.unzip();
     MarketSpec::from_deployed(Deployed {
@@ -164,6 +167,55 @@ async fn ensure_admin_holds_the_role(
                 .join(", ")
         },
     )
+}
+
+/// The governance contract that controls `oracle_id`, or `None` when the market
+/// reads an oracle it does not control.
+///
+/// Ownership, confirmed in both directions: the oracle names its owner and the
+/// owner names the oracle it governs. Inferring this from the account name and
+/// the placeholder price ids instead would misread a proxy deployed under any
+/// other name as a plain oracle.
+async fn governing_contract(
+    ctx: &CliContext,
+    oracle_id: &AccountId,
+) -> anyhow::Result<Option<AccountId>> {
+    let kind = ctx
+        .client
+        .read(contract::GetKind {
+            contract_id: oracle_id.clone(),
+        })
+        .await
+        .with_context(|| format!("classify `{oracle_id}`"))?
+        .kind;
+    if kind != ContractKind::ProxyOracle {
+        return Ok(None);
+    }
+
+    let Some(owner) = ctx
+        .client
+        .read(owner::GetOwner {
+            contract_id: oracle_id.clone(),
+        })
+        .await
+        .with_context(|| format!("read the owner of `{oracle_id}`"))?
+        .owner
+    else {
+        return Ok(None);
+    };
+
+    // An owner that governs a *different* oracle does not govern this one, so a
+    // failed or mismatched read is "not ours", never an abort: plenty of proxies
+    // are owned by an account that is not a governance contract at all.
+    let governs = ctx
+        .client
+        .read(governance::GetProxyOracleId {
+            governance_id: owner.clone(),
+        })
+        .await
+        .is_ok_and(|result| result.proxy_oracle_id == *oracle_id);
+
+    Ok(governs.then_some(owner))
 }
 
 async fn governance_policy(

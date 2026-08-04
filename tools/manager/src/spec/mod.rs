@@ -316,13 +316,8 @@ pub struct MarketParams {
     pub supply_withdrawal_range: AmountRange<BorrowAsset>,
 }
 
-/// The proxy account ids, as free functions because `market export` derives
-/// them *before* it has a spec to call methods on — it uses them to decide which
-/// mode the deployment is in.
-pub fn oracle_account_id(name: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
-    derived_id(&oracle_name(name), registry)
-}
-
+/// A free function because `market export` derives this before it has a spec to
+/// call methods on.
 pub fn governance_account_id(name: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
     derived_id(&governance_name(name), registry)
 }

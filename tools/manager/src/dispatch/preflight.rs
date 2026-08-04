@@ -436,9 +436,12 @@ async fn direct_oracle(
 
 /// Ask the configured oracle for the pair, through the gateway's own resolution.
 ///
-/// `oracle.getPrices` runs what the market will run: an LST wrapper's
-/// exchange-rate transform, a proxy's aggregation and circuit breakers, a plain
-/// oracle's read.
+/// `oracle.getPrices` resolves the *configuration* — an LST wrapper's
+/// exchange-rate transform, a proxy's sources and aggregator, a plain oracle's
+/// read — rather than calling the contract's price view. Deliberately: a proxy
+/// serves a cached price gated on breakers and freshness, and neither is a
+/// misconfiguration. Requiring them here would make writing a plan depend on
+/// someone having called `update_prices` first.
 ///
 /// The prices come back too: the reference cross-check is the only thing that
 /// judges what a feed *says* rather than that it answered.
