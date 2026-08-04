@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.2.0...templar-manager-v0.3.0) - 2026-08-04
+
+### Added
+
+- declarative market deployment — one spec, plan/apply, real preflight (ENG-537) ([#540](https://github.com/Templar-Protocol/contracts/pull/540))
+- *(gateway-core)* [**breaking**] serialize the write path per access key (ENG-530) ([#561](https://github.com/Templar-Protocol/contracts/pull/561))
+- *(gateway)* [**breaking**] opt into borsh governance proposals (ENG-558) ([#565](https://github.com/Templar-Protocol/contracts/pull/565))
+- *(artifacts)* record released artifact byte length in the catalog ([#573](https://github.com/Templar-Protocol/contracts/pull/573))
+
+### Fixed
+
+- *(manager)* raise GOVERNANCE_DEPOSIT to 4.5 NEAR (ENG-574) ([#571](https://github.com/Templar-Protocol/contracts/pull/571))
+
 ## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.1.1...templar-manager-v0.2.0) - 2026-08-03
 
 ### Added
