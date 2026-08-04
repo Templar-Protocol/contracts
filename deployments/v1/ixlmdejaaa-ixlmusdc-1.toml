@@ -21,7 +21,7 @@ mcr_maintenance = "1.07"
 mcr_liquidation = "1.05"
 maximum_usage_ratio = "0.99"
 liquidation_maximum_spread = "0.025"
-borrow_range = { minimum = "1" }
-supply_range = { minimum = "400000" }
-supply_withdrawal_range = { minimum = "400000" }
+borrow_range = { minimum = "1 atom" }
+supply_range = { minimum = "0.04 tokens" }
+supply_withdrawal_range = { minimum = "0.04 tokens" }
 yield_weights = { supply = 19, static = { "revenue.tmplr.near" = 1 } }
