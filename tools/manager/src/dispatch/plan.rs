@@ -144,10 +144,8 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         .iter()
         .filter_map(|index| file.steps.get(*index).cloned())
         .collect();
-    // A resume past the oracle deploy is verifying a live oracle, not planning
-    // one: its breakers decide whether the market can price at all, and an empty
-    // set trips on nothing. Probed rather than derived from the journal, which
-    // would mean mapping completed step indices back onto the oracle deploy.
+    // An existing oracle's breakers decide whether the market can price at all,
+    // so they must be read rather than assumed empty.
     let deployed_oracle = match file.spec.own_proxy_id()? {
         Some(oracle_id) if super::preflight::exists(&ctx, &oracle_id).await? => Some(oracle_id),
         _ => None,
@@ -231,17 +229,18 @@ async fn send(
     // run a journal exists for.
     let plan = file.clone().into_operation_plan()?;
 
-    let last = remaining.last().copied();
+    let market_id = file.spec.market_id()?;
     for index in remaining {
+        let step = &file.steps[index];
+
         // `execute_proposal` dispatches `admin_set_proxy` detached, so a proposal
-        // reports success even when the oracle rejected it — and the market
-        // deploy is the last step, after 8.5 NEAR is spent. Read the feeds back
-        // before it rather than discovering a dead oracle from `market verify`.
-        if Some(index) == last {
+        // reports success even when the oracle rejected it. Read the feeds back
+        // before the deploy that spends the market's own 5.8 NEAR — anchored to
+        // the step that creates it, which storage registrations follow.
+        if creates(step, &market_id)? {
             ensure_feeds_are_configured(ctx, &file.spec).await?;
         }
 
-        let step = &file.steps[index];
         eprintln!("\n[{index}] {}", step.label);
 
         // Recorded before submission. A step that was sent and never resolved
@@ -332,10 +331,9 @@ async fn review(
 
 /// Refuse to create the market unless its oracle serves what the spec says.
 async fn ensure_feeds_are_configured(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Result<()> {
-    if spec.oracle.is_direct() {
+    let Some(oracle_id) = spec.own_proxy_id()? else {
         return Ok(());
-    }
-    let oracle_id = spec.oracle_id()?;
+    };
     let age = spec.market.price_maximum_age;
 
     for (side, id, intended) in [
@@ -809,6 +807,16 @@ pub(crate) fn planned_targets(
         }
     }
     Ok(targets)
+}
+
+/// Whether this step is the registry deploy that creates `account_id`.
+fn creates(step: &crate::spec::plan::PlanStep, account_id: &AccountId) -> anyhow::Result<bool> {
+    for call in &step.function_calls {
+        if deploy_target(step, call)?.as_ref() == Some(account_id) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The account a single registry-deploy call would create, recognized by `name`

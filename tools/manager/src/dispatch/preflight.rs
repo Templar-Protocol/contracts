@@ -436,11 +436,9 @@ async fn direct_oracle(
 
 /// Ask the configured oracle for the pair, through the gateway's own resolution.
 ///
-/// `oracle.getPrices` runs what the market will run: an LST wrapper's exchange-rate
-/// transform, a proxy's aggregation and circuit breakers, a plain oracle's read.
-/// Resolving the underlying feed here instead and reading it directly would
-/// confirm a price the market never sees — the raw NEAR feed behind a stNEAR
-/// market, or one source of a proxy whose breaker is tripped.
+/// `oracle.getPrices` runs what the market will run: an LST wrapper's
+/// exchange-rate transform, a proxy's aggregation and circuit breakers, a plain
+/// oracle's read.
 ///
 /// The prices come back too: the reference cross-check is the only thing that
 /// judges what a feed *says* rather than that it answered.

@@ -7,7 +7,6 @@
 use anyhow::Context as _;
 use near_account_id::AccountId;
 use templar_common::oracle::pyth::PriceIdentifier;
-use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::{
     market, proxy_oracle, proxy_oracle_governance as governance, registry,
 };
@@ -27,11 +26,13 @@ pub(super) async fn market(ctx: CliContext, args: Export) -> anyhow::Result<()> 
     let spec = reconstruct(&ctx, &args.market_id, &args.governance_admin).await?;
 
     // Here rather than in `reconstruct`: `market verify` shares that function and
-    // reports the same fact as a `governance.admin` check, so failing hard inside
-    // it would turn a monitoring run into an abort. An export is a record, and a
-    // record naming the wrong admin is worse than none.
+    // reports the same facts as checks, so failing hard inside it would turn a
+    // monitoring run into an abort. An export is a record, and a record that
+    // redeploys into something else is worse than none.
     if !spec.oracle.is_direct() {
-        ensure_admin_holds_the_role(&ctx, &spec.governance_id()?, &args.governance_admin).await?;
+        let governance_id = spec.governance_id()?;
+        ensure_admin_holds_the_role(&ctx, &governance_id, &args.governance_admin).await?;
+        ensure_policy_is_expressible(&ctx, &governance_id).await?;
     }
 
     let rendered = toml::to_string_pretty(&spec).context("render spec as TOML")?;
@@ -80,7 +81,10 @@ pub(super) async fn reconstruct(
             versions(ctx, &name, &registry_id, &oracle_id, market_id).await?,
             Some(GovernanceSpec {
                 admin: governance_admin.clone(),
-                ttl_default: governance_ttl(ctx, &governance_id).await?,
+                ttl_default: governance_policy(ctx, &governance_id)
+                    .await?
+                    .default_target
+                    .ttl,
             }),
             Some((
                 proxy(ctx, &oracle_id, COLLATERAL_PRICE_ID).await?,
@@ -162,39 +166,42 @@ async fn ensure_admin_holds_the_role(
     )
 }
 
-/// The governance contract's single proposal TTL, or a refusal.
-///
-/// A spec carries one `ttl_default`, which deploys as
-/// [`GovernancePolicy::uniform`]: that TTL everywhere, `Admin` on every method,
-/// no overrides. Comparing against exactly what a deploy would build is the only
-/// way to be sure the export round-trips — checking the TTLs alone accepted the
-/// bootstrap policy, whose overrides delegate proxy configuration and circuit
-/// breakers to non-admin roles that the redeploy would then drop.
-async fn governance_ttl(
+async fn governance_policy(
     ctx: &CliContext,
     governance_id: &AccountId,
-) -> anyhow::Result<Nanoseconds> {
-    let wire = ctx
+) -> anyhow::Result<GovernancePolicyWire> {
+    Ok(ctx
         .client
         .read(governance::GetGovernancePolicy {
             governance_id: governance_id.clone(),
         })
         .await
         .with_context(|| format!("read the governance policy from {governance_id}"))?
-        .policy;
-
-    expressible_ttl(governance_id, &wire)
+        .policy)
 }
 
-/// The pure half of [`governance_ttl`], so the refusal is testable offline.
-pub(crate) fn expressible_ttl(
+/// Refuse to record a policy the spec would not redeploy.
+async fn ensure_policy_is_expressible(
+    ctx: &CliContext,
+    governance_id: &AccountId,
+) -> anyhow::Result<()> {
+    let wire = governance_policy(ctx, governance_id).await?;
+    ensure_expressible(governance_id, &wire)
+}
+
+/// The pure half of [`ensure_policy_is_expressible`], so the refusal is testable
+/// offline.
+///
+/// A spec carries one `ttl_default`, which deploys as
+/// [`GovernancePolicy::uniform`]: that TTL everywhere, `Admin` on every method,
+/// no overrides. Any other policy loses its difference on the next deploy.
+pub(crate) fn ensure_expressible(
     governance_id: &AccountId,
     wire: &GovernancePolicyWire,
-) -> anyhow::Result<Nanoseconds> {
-    let ttl = wire.default_target.ttl;
+) -> anyhow::Result<()> {
     let deployed = GovernancePolicy::try_from(wire.clone())
         .with_context(|| format!("parse the governance policy from `{governance_id}`"))?;
-    let expressible = GovernancePolicy::uniform(ttl)
+    let expressible = GovernancePolicy::uniform(wire.default_target.ttl)
         .with_context(|| format!("build the uniform policy for `{governance_id}`"))?;
 
     anyhow::ensure!(
@@ -206,7 +213,7 @@ pub(crate) fn expressible_ttl(
         serde_json::to_string_pretty(&wire).unwrap_or_else(|_| format!("{wire:?}")),
     );
 
-    Ok(ttl)
+    Ok(())
 }
 
 /// A configured proxy, or a legible error. An oracle serving neither constant is

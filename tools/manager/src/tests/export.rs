@@ -323,12 +323,8 @@ fn a_policy_that_delegates_roles_cannot_be_exported() {
         method_policies: std::collections::BTreeMap::new(),
     };
 
-    assert_eq!(
-        crate::dispatch::export::expressible_ttl(&governance_id, &wire)
-            .expect("a uniform policy is what a spec deploys"),
-        ttl,
-        "or the refusal below proves nothing"
-    );
+    crate::dispatch::export::ensure_expressible(&governance_id, &wire)
+        .expect("a uniform policy is what a spec deploys, or the refusal below proves nothing");
 
     wire.method_policies.insert(
         "admin_set_proxy".to_owned(),
@@ -337,7 +333,7 @@ fn a_policy_that_delegates_roles_cannot_be_exported() {
             role: Role::ProxyConfigurationManager,
         },
     );
-    let error = crate::dispatch::export::expressible_ttl(&governance_id, &wire)
+    let error = crate::dispatch::export::ensure_expressible(&governance_id, &wire)
         .expect_err("a role delegation a spec cannot express must be refused, not flattened");
     assert!(
         error.to_string().contains("no spec can express"),

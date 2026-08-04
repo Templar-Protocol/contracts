@@ -512,7 +512,7 @@ impl MarketSpec {
              snapshot schedule"
         );
         anyhow::ensure!(
-            time_chunk_ms <= wall_clock().as_ns() / 1_000_000,
+            time_chunk_ms <= wall_clock().as_ms(),
             "`time_chunk` is {time_chunk_ms}ms, longer than the time since the \
              Unix epoch, so the market's first snapshot would precede chunk zero \
              and initialization would panic"
