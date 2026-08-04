@@ -106,6 +106,9 @@ impl ContractClient<'_> {
 
     contract_views! {
         pub fn contract_source_metadata(()) -> ContractSourceMetadata;
+        pub fn get_stored_state_version(()) -> u32;
+        pub fn get_target_state_version(()) -> u32;
+        pub fn needs_migration(()) -> bool;
     }
 }
 

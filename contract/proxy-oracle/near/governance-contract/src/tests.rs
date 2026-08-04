@@ -9,8 +9,8 @@ use near_sdk::{
 use near_sdk_contract_tools::rbac::Rbac;
 use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Nanoseconds};
 use templar_proxy_oracle_near_governance_common::{
-    GovernancePolicy, GovernancePolicyWire, LegacyOperation, MethodPolicy, Operation,
-    ReflexiveKind, ReflexiveOperation, ReflexiveTtls, Role, GAS_FOR_ADMIN_UPGRADE,
+    CreateProposalArgs, GovernancePolicy, GovernancePolicyWire, LegacyOperation, MethodPolicy,
+    Operation, ReflexiveKind, ReflexiveOperation, ReflexiveTtls, Role, GAS_FOR_ADMIN_UPGRADE,
     MAX_PROPOSAL_TTL,
 };
 
@@ -313,6 +313,36 @@ fn role_mismatch_cannot_create_proposal() {
     assert!(panics(|| {
         contract.create_proposal(0, set_proxy(), Nanoseconds::zero());
     }));
+}
+
+/// Plain Rust calls, so this covers delegation and not the decoder.
+#[test]
+fn borsh_and_json_entrypoints_produce_the_same_proposal() {
+    let operation = admin_upgrade();
+
+    testing_env!(context_with_admin());
+    let mut json = contract();
+    json.create_proposal(0, operation.clone(), Nanoseconds::zero());
+    let json_proposal = json.get_proposal(0);
+    let json_logs = get_logs();
+
+    testing_env!(context_with_admin());
+    let mut borsh = contract();
+    borsh.create_proposal_borsh(CreateProposalArgs {
+        id: 0,
+        operation: operation.clone(),
+        requested_ttl: Nanoseconds::zero(),
+    });
+
+    // Two absent proposals, or two empty log sets, would also compare equal.
+    assert_eq!(
+        json_proposal.as_ref().map(|proposal| &proposal.operation),
+        Some(&operation)
+    );
+    assert_eq!(json_logs.len(), 1);
+
+    assert_eq!(borsh.get_proposal(0), json_proposal);
+    assert_eq!(get_logs(), json_logs);
 }
 
 #[test]

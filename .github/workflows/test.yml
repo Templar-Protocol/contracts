@@ -76,6 +76,8 @@ jobs:
         with:
           filters: |
             near_integration:
+              # Every other cargo-near consumer gates on contract paths or tags.
+              - '.github/actions/cargo-near/**'
               - '.github/workflows/test.yml'
               - '.config/nextest.toml'
               - 'justfile'
@@ -83,7 +85,7 @@ jobs:
               - 'contract/artifacts/Cargo.toml'
               - 'contract/artifacts/build.rs'
               # CI's own catalog PR touches only this file; without it, the
-              # one PR that records a release would run no tests.
+              # PR that records a release batch would run no tests.
               - 'contract/artifacts/releases/*.tsv'
               - 'contract/artifacts/src/**'
               - 'contract/market/src/**'
@@ -498,7 +500,7 @@ jobs:
           tool: nextest,just
 
       - name: Install cargo-near
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.19.2/cargo-near-installer.sh | sh
+        uses: ./.github/actions/cargo-near
 
       # Migration and upgrade tests deploy real historical bytes. Not an
       # `actions/cache` entry: a couple of MB from GitHub's own CDN, and the

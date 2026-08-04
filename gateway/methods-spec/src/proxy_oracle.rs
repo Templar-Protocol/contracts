@@ -86,6 +86,20 @@ pub struct UpdatePrices {
     pub price_ids: Vec<PriceIdentifier>,
 }
 
+/// Set (or clear, with a null `proxy`) a proxy price feed definition.
+///
+/// The oracle's own owner-gated write. In a `>= 0.2.0` deployment whose owner is
+/// a governance contract, the equivalent action is a
+/// [`proxyOracleGovernance.createProposal`](crate::proxy_oracle_governance::CreateProposal)
+/// carrying `Operation::SetProxy`.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "proxyOracle.adminSetProxy")]
+pub struct AdminSetProxy {
+    pub oracle_id: near_account_id::AccountId,
+    pub id: PriceIdentifier,
+    pub proxy: Option<Proxy<Source>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Migration {

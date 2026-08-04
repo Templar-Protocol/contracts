@@ -45,6 +45,7 @@ macro_rules! for_each_read_method {
         $callback!($crate::contract::ViewFunction);
         $callback!($crate::contract::GetKind);
         $callback!($crate::contract::GetVersion);
+        $callback!($crate::contract::GetStateVersion);
         $callback!($crate::ft::GetBalanceOf);
         $callback!($crate::lazer::GetFeedsData);
         $callback!($crate::lst_oracle::GetOracleId);
@@ -197,8 +198,10 @@ macro_rules! for_each_write_method {
         $callback!($crate::vault::RevokePendingTimelock);
         $callback!($crate::mt::Transfer);
         $callback!($crate::mt::TransferCall);
+        $callback!($crate::lst_oracle::CreateTransformer);
         $callback!($crate::proxy_oracle::Create);
         $callback!($crate::proxy_oracle::UpdatePrices);
+        $callback!($crate::proxy_oracle::AdminSetProxy);
         $callback!($crate::proxy_oracle::Upgrade);
         $callback!($crate::proxy_oracle_governance::CreateProposal);
         $callback!($crate::proxy_oracle_governance::CancelProposal);

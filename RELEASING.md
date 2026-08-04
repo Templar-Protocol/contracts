@@ -168,12 +168,27 @@ does not recognise.
    [`release-artifacts.yml`](.github/workflows/release-artifacts.yml), which
    builds the contract in the pinned NEP-330 Docker image **at that tag's
    commit**, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
-   GitHub Release, and opens a PR adding one file under
-   `contract/artifacts/releases/` — the version, the tag, the asset, and the
-   digest of the bytes it just built, each recorded as observed.
+   GitHub Release, and hands over one catalog row — the version, the tag, the
+   asset, and the digest of the bytes it just built, each recorded as observed.
 
-3. Merge that PR. Until you do, the artifacts crate will not serve the version —
-   an unrecorded release has no reviewed hash to check downloaded bytes against.
+3. Each of those builds finishing fires
+   [`catalog-pr.yml`](.github/workflows/catalog-pr.yml), which commits every row
+   the catalog is still missing to the standing `record/releases` branch and
+   opens or updates one PR. A release batch tags several contracts, so this is
+   what keeps a batch to one PR, and so to one commit on `dev`, rather than one
+   of each per contract. Builds finish minutes apart, so the branch itself
+   usually collects a commit per catalog run; the squash-merge is what makes
+   that invisible, and `test.yml` cancels the PR's superseded runs.
+
+4. Merge that PR. Until you do, the artifacts crate will not serve those
+   versions — an unrecorded release has no reviewed hash to check downloaded
+   bytes against.
+
+Only one catalog job runs at a time, and each one records *every* pending row,
+so a build that finishes while one is running is picked up by the next. If the
+job itself fails, fix it and re-run it from the Actions tab (`workflow_dispatch`
+is enabled for exactly this) — nothing needs recording by hand as long as the
+rows are still live, which they are for seven days.
 
 Note what is *not* in that list: nothing asks a developer to declare a release
 up front. A `Cargo.toml` bump cannot assert one, because bumps and releases
