@@ -3,16 +3,21 @@
 //! them; reads and writes pin the shared [`TEST_FINALITY_POLICY`] for deterministic finality.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
-use anyhow::Result;
-use near_api::types::transaction::result::ExecutionSuccess;
-use near_api::types::AccountId;
+use anyhow::{ensure, Context, Result};
+use near_api::types::transaction::result::{ExecutionSuccess, TransactionResult};
+use near_api::types::{AccountId, PublicKey};
 use near_api::{Account, Contract, NetworkConfig};
 use near_sdk::json_types::Base58CryptoHash;
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
-use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation};
+use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
+use templar_proxy_oracle_kernel::proxy::{
+    circuit_breaker::CircuitBreakerSet, FreshnessFilter, Proxy,
+};
+use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
+use templar_proxy_oracle_near_governance_common::{Operation, Proposal, ReflexiveOperation};
 
 pub use templar_gateway_testing::test_signer as signer;
-use templar_gateway_testing::TEST_FINALITY_POLICY;
+use templar_gateway_testing::{SandboxHarness, TEST_FINALITY_POLICY};
 
 /// Dispatch a view call and deserialize the result.
 pub async fn view<T: DeserializeOwned + Send + Sync>(
@@ -68,11 +73,13 @@ pub async fn deploy_with_init(
     Ok(())
 }
 
+/// What the gateway attaches (`proxy_oracle_governance_impl`), and so what these tests attach by
+/// default — well under the protocol's own prepaid-gas ceiling. It is this budget, not a protocol
+/// limit, that an `admin_upgrade` forwarding `GAS_FOR_ADMIN_UPGRADE` has to fit inside.
+pub const GATEWAY_GAS: near_sdk::Gas = near_sdk::Gas::from_tgas(300);
+
 /// Submit a mutating call to `contract_id` signed as `signer_id` (all harness accounts share the
-/// test key), attaching `deposit`.
-///
-/// 300 Tgas, not the protocol's 1000, because that is what the gateway attaches
-/// (`proxy_oracle_governance_impl`) and so what an `admin_upgrade` forwarding 280 Tgas has to fit in.
+/// test key), attaching `deposit` and [`GATEWAY_GAS`].
 pub async fn call(
     network: &NetworkConfig,
     contract_id: &AccountId,
@@ -82,7 +89,16 @@ pub async fn call(
     deposit: near_sdk::NearToken,
 ) -> Result<ExecutionSuccess> {
     let args = near_sdk::serde_json::to_vec(&args)?;
-    call_raw(network, contract_id, method, args, signer_id, deposit).await
+    call_raw(
+        network,
+        contract_id,
+        method,
+        args,
+        signer_id,
+        deposit,
+        GATEWAY_GAS,
+    )
+    .await
 }
 
 pub async fn call_borsh(
@@ -94,7 +110,37 @@ pub async fn call_borsh(
     deposit: near_sdk::NearToken,
 ) -> Result<ExecutionSuccess> {
     let args = near_sdk::borsh::to_vec(&args)?;
-    call_raw(network, contract_id, method, args, signer_id, deposit).await
+    call_raw(
+        network,
+        contract_id,
+        method,
+        args,
+        signer_id,
+        deposit,
+        GATEWAY_GAS,
+    )
+    .await
+}
+
+/// Submit the call without asserting anything about its outcome — for paths expected to revert.
+async fn send(
+    network: &NetworkConfig,
+    contract_id: &AccountId,
+    method: &str,
+    args: Vec<u8>,
+    signer_id: &AccountId,
+    deposit: near_sdk::NearToken,
+    gas: near_sdk::Gas,
+) -> Result<TransactionResult> {
+    Ok(Contract(contract_id.clone())
+        .call_function_raw(method, args)
+        .transaction()
+        .deposit(deposit)
+        .gas(gas)
+        .with_signer(signer_id.clone(), signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
+        .send_to(network)
+        .await?)
 }
 
 async fn call_raw(
@@ -104,15 +150,9 @@ async fn call_raw(
     args: Vec<u8>,
     signer_id: &AccountId,
     deposit: near_sdk::NearToken,
+    gas: near_sdk::Gas,
 ) -> Result<ExecutionSuccess> {
-    let outcome = Contract(contract_id.clone())
-        .call_function_raw(method, args)
-        .transaction()
-        .deposit(deposit)
-        .gas(near_sdk::Gas::from_tgas(300))
-        .with_signer(signer_id.clone(), signer())
-        .wait_until(TEST_FINALITY_POLICY.transaction_status())
-        .send_to(network)
+    let outcome = send(network, contract_id, method, args, signer_id, deposit, gas)
         .await?
         .assert_success();
 
@@ -158,4 +198,214 @@ pub async fn code_hash(network: &NetworkConfig, id: &AccountId) -> Result<String
             .data
             .contract_state
     ))
+}
+
+/// Delete every access key on `account_id`, signed by one of those keys — the last thing it can do.
+/// Nothing off-chain can deploy over the account afterwards; only its own code can.
+pub async fn revoke_all_access_keys(
+    harness: &SandboxHarness,
+    account_id: &AccountId,
+) -> Result<()> {
+    let keys = harness
+        .view_access_keys(account_id)
+        .await?
+        .into_iter()
+        .map(|(public_key, _)| public_key.parse::<PublicKey>())
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure!(!keys.is_empty(), "{account_id} already has no access keys");
+
+    Account(account_id.clone())
+        .delete_keys(keys)
+        .with_signer(signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
+        .send_to(&harness.network)
+        .await?
+        .assert_success();
+
+    ensure!(
+        harness.view_access_keys(account_id).await?.is_empty(),
+        "{account_id} should have no access keys left"
+    );
+    Ok(())
+}
+
+/// The feed the [`Governed`] fixture seeds a proxy under.
+pub const PRICE_ID: PriceIdentifier = PriceIdentifier([0xaa; 32]);
+
+#[derive(Serialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct PriceIdArgs {
+    pub id: PriceIdentifier,
+}
+
+#[derive(Clone, Copy)]
+pub enum Encoding {
+    Json,
+    Borsh,
+}
+
+/// An oracle owned by a governance contract, with a proxy already in place.
+pub struct Governed {
+    pub network: NetworkConfig,
+    pub oracle: AccountId,
+    pub governance: AccountId,
+    pub admin: AccountId,
+    next_id: u32,
+}
+
+impl Governed {
+    /// Create a proposal as the admin, returning its id alongside the creation outcome. Every TTL is
+    /// zero (`deploy_governance_contract` installs a uniform zero policy), so it matures immediately.
+    pub async fn propose(
+        &mut self,
+        operation: Operation,
+        encoding: Encoding,
+    ) -> Result<(u32, ExecutionSuccess)> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let args = CreateProposalArgs {
+            id,
+            operation,
+            requested_ttl: Nanoseconds::zero(),
+        };
+
+        let outcome = match encoding {
+            Encoding::Json => {
+                call(
+                    &self.network,
+                    &self.governance,
+                    "create_proposal",
+                    args,
+                    &self.admin,
+                    ONE_YOCTO,
+                )
+                .await?
+            }
+            Encoding::Borsh => {
+                call_borsh(
+                    &self.network,
+                    &self.governance,
+                    "create_proposal_borsh",
+                    args,
+                    &self.admin,
+                    ONE_YOCTO,
+                )
+                .await?
+            }
+        };
+        Ok((id, outcome))
+    }
+
+    pub async fn execute(&self, id: u32) -> Result<ExecutionSuccess> {
+        call(
+            &self.network,
+            &self.governance,
+            "execute_proposal",
+            ProposalIdArgs { id },
+            &self.admin,
+            ONE_YOCTO,
+        )
+        .await
+    }
+
+    /// [`execute`](Self::execute) attaching `gas` instead of [`GATEWAY_GAS`], and without the
+    /// success assertion — for budgets a proposal may or may not fit inside.
+    pub async fn try_execute_with_gas(
+        &self,
+        id: u32,
+        gas: near_sdk::Gas,
+    ) -> Result<TransactionResult> {
+        send(
+            &self.network,
+            &self.governance,
+            "execute_proposal",
+            near_sdk::serde_json::to_vec(&ProposalIdArgs { id })?,
+            &self.admin,
+            ONE_YOCTO,
+            gas,
+        )
+        .await
+    }
+
+    pub async fn proposal(&self, id: u32) -> Result<Option<Proposal<Operation>>> {
+        view(
+            &self.network,
+            &self.governance,
+            "get_proposal",
+            ProposalIdArgs { id },
+        )
+        .await
+    }
+
+    /// Run `operation` through the full create → execute path as the admin.
+    pub async fn govern(&mut self, operation: Operation) -> Result<ExecutionSuccess> {
+        self.govern_with(operation, Encoding::Json).await
+    }
+
+    pub async fn govern_borsh(&mut self, operation: Operation) -> Result<ExecutionSuccess> {
+        self.govern_with(operation, Encoding::Borsh).await
+    }
+
+    pub async fn govern_with(
+        &mut self,
+        operation: Operation,
+        encoding: Encoding,
+    ) -> Result<ExecutionSuccess> {
+        let (id, _) = self.propose(operation, encoding).await?;
+        self.execute(id).await
+    }
+
+    pub async fn proxy(&self) -> Result<Option<Proxy<Source>>> {
+        view(
+            &self.network,
+            &self.oracle,
+            "get_proxy",
+            PriceIdArgs { id: PRICE_ID },
+        )
+        .await
+    }
+
+    pub async fn breakers(&self) -> Result<CircuitBreakerSet> {
+        view::<Option<CircuitBreakerSet>>(
+            &self.network,
+            &self.oracle,
+            "get_proxy_circuit_breaker_set",
+            PriceIdArgs { id: PRICE_ID },
+        )
+        .await?
+        .context("the seeded proxy is gone")
+    }
+}
+
+pub fn proxy() -> Proxy<Source> {
+    Proxy::median_low(
+        [OracleRequest::pyth(
+            "pyth.near".parse().expect("literal account id is valid"),
+            PriceIdentifier([0xbb; 32]),
+        )
+        .into()],
+        FreshnessFilter::empty(),
+    )
+}
+
+/// Deploy the oracle with a proxy in place, then hand it to a governance contract. The proxy is
+/// seeded while the oracle still owns itself — one direct call instead of a governance round-trip.
+pub async fn governed(harness: &SandboxHarness) -> Result<Governed> {
+    let oracle = harness.deploy_proxy_oracle().await?;
+    let admin = harness.create_user("admin").await?.0;
+    harness
+        .admin_set_proxy(oracle.clone(), PRICE_ID, Some(proxy()))
+        .await?;
+    let governance = harness
+        .deploy_governance_contract(oracle.clone(), admin.clone())
+        .await?;
+
+    Ok(Governed {
+        network: harness.network.clone(),
+        oracle,
+        governance,
+        admin,
+        // `deploy_governance_contract` consumes id 0 for the ownership handover.
+        next_id: 1,
+    })
 }
