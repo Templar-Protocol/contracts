@@ -1,0 +1,5 @@
+# The curve every other alpha market uses. It appeared in three textual
+# variants that parse to equal `Decimal`s, so they were one curve written three
+# ways.
+[market]
+interest_rate_strategy = { Piecewise = { base = "0", optimal = "0.9", rate_1 = "0.08888888888888888888888888888888888889", rate_2 = "2.4" } }

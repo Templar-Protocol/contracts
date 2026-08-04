@@ -1,21 +1,20 @@
 use near_sdk::serde_json;
 use templar_common::market::MarketConfiguration;
 
-/// Every checked-in market config under `examples/config/` must still
+/// Every deployed market configuration in the regression corpus must still
 /// deserialize into the current [`MarketConfiguration`], so a field rename or a
-/// type change cannot silently invalidate the deployment configs.
+/// type change cannot silently invalidate what is running.
 ///
-/// The invariant this rests on: under `examples/config/`, a `*.near.json` file
-/// *is* a market configuration. Args for the other contracts of a deployment
-/// (proxy oracle, governance, the Pyth Lazer adapter) live in that deployment's
-/// subdirectory as `*-args.json` — name one `*.near.json` and this test will
-/// fail trying to parse it as a market.
+/// The corpus moved out of this crate with the declarative-deployment migration
+/// (ENG-537); the files are the same `market-args.json` each market was
+/// deployed with. Read by relative path rather than by depending on
+/// `templar-manager`, which is a tool and must not become a contract dependency.
 ///
 /// Lives in the lib rather than `tests/` because this crate's integration tests
 /// are node-backed and excluded from the fast gate wholesale, by package.
 #[test]
 fn parse_configurations() {
-    let mut read = std::fs::read_dir("./examples/config/")
+    let mut read = std::fs::read_dir("../../tools/manager/fixtures/deployed")
         .unwrap()
         .collect::<Vec<_>>();
     let mut total = 0;
@@ -28,15 +27,18 @@ fn parse_configurations() {
             let path = entry.path();
             let display = path.display();
             if display.to_string().ends_with(".near.json") {
-                eprint!("Parsing {display}: ");
-                let file = std::fs::File::open(&path).unwrap();
-                serde_json::from_reader::<_, MarketConfiguration>(file)
-                    .unwrap_or_else(|e| panic!("Failed: {e}"));
-                eprintln!("Success!");
+                let raw = std::fs::read_to_string(&path).unwrap();
+                let value: serde_json::Value = serde_json::from_str(&raw)
+                    .unwrap_or_else(|e| panic!("{display} is not JSON: {e}"));
+                // Proxy-mode deployments wrap the configuration in the
+                // `registry.deploy` init-args envelope; flat ones do not.
+                let configuration = value.get("configuration").cloned().unwrap_or(value);
+                serde_json::from_value::<MarketConfiguration>(configuration)
+                    .unwrap_or_else(|e| panic!("{display} is not a market configuration: {e}"));
                 total += 1;
             }
         }
     }
 
-    assert!(total > 0, "No configurations parsed");
+    assert_eq!(total, 45, "every deployed configuration must be covered");
 }

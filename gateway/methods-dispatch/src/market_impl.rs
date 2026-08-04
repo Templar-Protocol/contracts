@@ -303,7 +303,11 @@ impl<C: HasNearClient> PlanWrite<market::Create, C> for Dispatch {
                 registry_id: body.registry_id,
                 name: body.name,
                 version_key: body.version_key,
-                init_args: serde_json::to_vec(&MarketInitArgs {
+                // Canonical, so the bytes are a function of the configuration:
+                // `yield_weights.static` is a `HashMap`, whose plain encoding
+                // orders keys differently in each process, and a deployment plan
+                // is compared against a re-derivation made by another one.
+                init_args: serde_json_canonicalizer::to_vec(&MarketInitArgs {
                     configuration: configuration.clone(),
                 })?
                 .into(),
@@ -745,5 +749,30 @@ impl<C: HasNearClient> PlanWrite<market::WithdrawStaticYield, C> for Dispatch {
                 },
             )
             .map(OperationPlan::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use templar_common::market::YieldWeights;
+
+    /// `yield_weights.static` is a `HashMap`, so a plain encoding orders its keys
+    /// by a per-process hash seed. A deployment plan is written by one process
+    /// and compared against a re-derivation made by another, so the bytes must be
+    /// a function of the value — which is what canonicalizing buys.
+    #[test]
+    fn yield_weights_encode_with_their_keys_sorted() {
+        let weights = YieldWeights::new_with_supply_weight(4)
+            .with_static("zzz.near".parse().expect("valid account"), 1)
+            .with_static("aaa.near".parse().expect("valid account"), 2);
+
+        let canonical =
+            String::from_utf8(serde_json_canonicalizer::to_vec(&weights).expect("canonicalize"))
+                .expect("utf-8");
+
+        assert_eq!(
+            canonical, r#"{"static":{"aaa.near":2,"zzz.near":1},"supply":4}"#,
+            "keys must be sorted, not in iteration order"
+        );
     }
 }

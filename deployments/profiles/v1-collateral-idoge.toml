@@ -1,0 +1,12 @@
+# DOGE, held through NEAR Intents.
+[collateral]
+asset = "nep245:intents.near:nep141:doge.omft.near"
+symbol = "DOGE"
+reference = { coin_gecko = { id = "dogecoin" } }
+decimals = 8
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 13, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "DOGE", weight = 2 },
+]

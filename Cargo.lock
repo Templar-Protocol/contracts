@@ -2903,6 +2903,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 
 [[package]]
+name = "dbus"
+version = "0.9.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ab69f03cc8c4340c9c8e315114e1658e6775a9b16a04357973aa21cec22b32e"
+dependencies = [
+ "libc",
+ "libdbus-sys",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "dbus-secret-service"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "708b509edf7889e53d7efb0ffadd994cc6c2345ccb62f55cfd6b0682165e4fa6"
+dependencies = [
+ "dbus",
+ "openssl",
+ "zeroize",
+]
+
+[[package]]
 name = "deadpool"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5465,6 +5487,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyring"
+version = "3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
+dependencies = [
+ "byteorder",
+ "dbus-secret-service",
+ "log",
+ "openssl",
+ "security-framework 2.11.1",
+ "security-framework 3.7.0",
+ "windows-sys 0.60.2",
+ "zeroize",
+]
+
+[[package]]
 name = "lalrpop"
 version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5514,6 +5552,16 @@ name = "libc"
 version = "0.2.184"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48f5d2a454e16a5ea0f4ced81bd44e4cfc7bd3a507b61887c99fd3538b28e4af"
+
+[[package]]
+name = "libdbus-sys"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "328c4789d42200f1eeec05bd86c9c13c7f091d2ba9a6ea35acdf51f31bc0f043"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
 
 [[package]]
 name = "libflate"
@@ -5962,7 +6010,7 @@ dependencies = [
  "openssl-probe",
  "openssl-sys",
  "schannel",
- "security-framework",
+ "security-framework 3.7.0",
  "security-framework-sys",
  "tempfile",
 ]
@@ -5992,23 +6040,24 @@ dependencies = [
 
 [[package]]
 name = "near-api"
-version = "0.8.5"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42e581e637caa8ca9f3dc86936606f3a87ab55211fbf76dcf98725c4f4854211"
+checksum = "7d40379fdb1c7b3fec53512150c0dc97ee2fbcb1ecf2710158edb1e157bafb36"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bip39",
  "borsh 1.6.1",
  "futures",
+ "keyring",
  "near-api-types",
  "near-openapi-client",
+ "near-slip10",
  "openssl",
  "reqwest 0.12.28",
  "serde",
  "serde_dbgfmt",
  "serde_json",
- "slipped10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -6018,9 +6067,9 @@ dependencies = [
 
 [[package]]
 name = "near-api-types"
-version = "0.8.5"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "676c29c763f46fa05bdbc113e1f83ed22f328038f74a5730989aa163de6fb83c"
+checksum = "48aac696975885828c0abfa00d017a3da3681b79f214bd8c5c0092d1f97d55e4"
 dependencies = [
  "base64 0.22.1",
  "borsh 1.6.1",
@@ -6406,6 +6455,17 @@ dependencies = [
  "strum 0.26.3",
  "strum_macros 0.26.4",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "near-slip10"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "462a1564a47c9d1c629caffe31655260f65b6da25df7c8ef49991770105270c8"
+dependencies = [
+ "ed25519-dalek",
+ "hmac 0.9.0",
+ "sha2 0.9.9",
 ]
 
 [[package]]
@@ -8387,7 +8447,7 @@ dependencies = [
  "openssl-probe",
  "rustls-pki-types",
  "schannel",
- "security-framework",
+ "security-framework 3.7.0",
 ]
 
 [[package]]
@@ -8688,6 +8748,19 @@ dependencies = [
  "serde",
  "serde_json",
  "zeroize",
+]
+
+[[package]]
+name = "security-framework"
+version = "2.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
+dependencies = [
+ "bitflags 2.11.0",
+ "core-foundation 0.9.4",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
 ]
 
 [[package]]
@@ -9124,18 +9197,6 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
-
-[[package]]
-name = "slipped10"
-version = "0.4.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0467009f63d9ec6920100ddb026ccdb8b661ba37aaa86664c5e9ac3a4e3e316b"
-dependencies = [
- "ed25519-dalek",
- "hmac 0.9.0",
- "rand 0.10.1",
- "sha2 0.9.9",
-]
 
 [[package]]
 name = "smallvec"
@@ -13136,6 +13197,7 @@ dependencies = [
  "near-contract-standards",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "templar-common",
  "templar-gateway-core",
  "templar-gateway-methods-spec",
@@ -13416,13 +13478,17 @@ name = "templar-manager"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "base64 0.22.1",
  "clap",
  "dirs 6.0.0",
  "hex",
  "near-account-id",
  "near-api",
  "near-sdk",
+ "reqwest 0.12.28",
  "rstest",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sputnikdao2",
@@ -13442,6 +13508,7 @@ dependencies = [
  "templar-proxy-oracle-near-governance-common",
  "templar-tools-common",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

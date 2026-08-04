@@ -7,7 +7,7 @@ use near_api::{types::transaction::actions::Action, NetworkConfig, SecretKey};
 use near_sdk::json_types::Base64VecU8;
 use serde::Serialize;
 use std::io::Write as _;
-use templar_gateway_client::{Client, NetworkConfigBuilder};
+use templar_gateway_client::{Client, Network, NetworkConfigBuilder};
 use templar_gateway_core::{
     DispatchRead, GatewayContext, GatewayContextBuilder, OperationPlan, PlanWrite,
     PlannedTransaction,
@@ -32,14 +32,25 @@ pub(crate) struct CliContext {
     /// build a per-operation signing client from their command's credentials.
     pub(crate) client: Client,
     network: NetworkConfig,
+    /// The chain the CLI was pointed at. Kept alongside the built config so a
+    /// command can compare it against what a spec declares — reading a mainnet
+    /// spec against testnet reports every account as missing.
+    selected_network: Network,
     transaction_url_prefix: String,
 }
 
 impl CliContext {
-    /// Build a single-signer client for `account_id` from `secret_key`. Each
-    /// executed write signs with credentials carried by its own command, and
-    /// teardown flows (e.g. `registry clear-deployments`) sign many discovered
-    /// accounts with one authorized key.
+    /// The chain the CLI was pointed at.
+    pub(crate) const fn network(&self) -> Network {
+        self.selected_network
+    }
+
+    /// Build a single-signer client for `account_id` from a bare `secret_key`.
+    ///
+    /// For the teardown flows that sign many *discovered* accounts with one
+    /// authorized key (`registry clear-deployments`), where there is no single
+    /// `SignerArgs` to resolve. Writes that carry their own credentials use
+    /// [`Self::signing_client_for`] instead.
     pub(crate) fn signing_client(
         &self,
         account_id: impl Into<ManagedAccountId>,
@@ -49,6 +60,52 @@ impl CliContext {
             .secret_key(account_id, secret_key)?
             .build()
             .context("build signing client")
+    }
+
+    /// Resolve a write command's credentials through its selected backend and
+    /// build a single-signer client from them.
+    ///
+    /// The signer stays behind `Arc<Signer>` rather than being unwrapped to a
+    /// secret key, so a backend that never surrenders one still works here.
+    pub(crate) async fn signing_client_for(
+        &self,
+        signer: &SignerArgs,
+    ) -> anyhow::Result<(ManagedAccountId, Client)> {
+        let (account_id, client, _) = self.signing_client_and_key(signer).await?;
+        Ok((account_id, client))
+    }
+
+    /// A signing client and the key it will sign with, from one resolution:
+    /// resolving twice can prompt twice and yield two different keys.
+    pub(crate) async fn signing_client_and_key(
+        &self,
+        signer: &SignerArgs,
+    ) -> anyhow::Result<(ManagedAccountId, Client, near_api::PublicKey)> {
+        let (account_id, signing) = signer.resolve(&self.network).await?;
+        let public_key = signing
+            .get_public_key()
+            .await
+            .context("ask the signing backend which key it will sign with")?;
+
+        // A deploy embeds this key as the full access key on the account it
+        // creates, and an external backend cannot validate it before resolving.
+        if let Some(asserted) = signer.asserted_public_key() {
+            anyhow::ensure!(
+                asserted == public_key,
+                "--public-key is `{asserted}`, but `{}` will sign with \
+                 `{public_key}`. A deploy embeds `--public-key` as the full access \
+                 key on the account it creates, so this would hand control to a \
+                 key you do not hold. Drop --public-key to use the signing key, \
+                 or pass the one the backend holds.",
+                *signer.account_id(),
+            );
+        }
+
+        let client = Client::builder(self.network.clone())
+            .with_signer(account_id.clone(), signing)
+            .build()
+            .context("build signing client")?;
+        Ok((account_id, client, public_key))
     }
 
     /// Dispatch a read and print its JSON result.
@@ -80,8 +137,7 @@ impl CliContext {
             return print_plan(format, plan);
         }
 
-        let (account_id, secret_key) = signer.resolve()?;
-        let client = self.signing_client(account_id.clone(), secret_key)?;
+        let (account_id, client) = self.signing_client_for(&signer).await?;
         let output = client.execute_as(account_id, body).await?;
         self.finish_write(&output)
     }
@@ -113,9 +169,9 @@ impl CliContext {
             return print_plan(format, plan);
         }
 
-        let (account_id, secret_key) = signer.resolve()?;
+        let (account_id, signing) = signer.resolve(&self.network).await?;
         let (base_context, driver, signer_account_ids) = Client::builder(self.network.clone())
-            .secret_key(account_id.clone(), secret_key)?
+            .with_signer(account_id.clone(), signing)
             .build_parts()
             .context("build oracle-updates client")?;
         let client: Client<OracleUpdatesDispatch, Ctx> =
@@ -127,7 +183,7 @@ impl CliContext {
     /// Report the tx link, print the machine-readable result, then fail unless the
     /// operation succeeded on chain. Printing precedes the status check so a reverted
     /// operation still emits its JSON on stdout.
-    fn finish_write(&self, output: &WriteOperationResult) -> anyhow::Result<()> {
+    pub(crate) fn finish_write(&self, output: &WriteOperationResult) -> anyhow::Result<()> {
         self.report_tx(output);
         print_json(output)?;
         check_operation_status(output)
@@ -230,7 +286,7 @@ fn print_plan(format: PrintFormat, plan: OperationPlan) -> anyhow::Result<()> {
     }
 }
 
-fn single_transaction(plan: OperationPlan) -> anyhow::Result<PlannedTransaction> {
+pub(crate) fn single_transaction(plan: OperationPlan) -> anyhow::Result<PlannedTransaction> {
     let [transaction] = plan.steps.try_into().map_err(|steps: Vec<_>| {
         anyhow::anyhow!(
             "--print requires exactly one planned transaction; planned {}",
@@ -291,6 +347,7 @@ pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
     Ok(CliContext {
         client: Client::read_only(network.clone())?,
         network,
+        selected_network: cli.network,
         transaction_url_prefix: cli.transaction_url_prefix(),
     })
 }

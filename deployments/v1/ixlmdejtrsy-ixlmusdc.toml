@@ -1,0 +1,27 @@
+extends = ["../profiles/v1-mainnet.toml", "../profiles/irs-standard.toml"]
+
+name = "ixlmdejtrsy-ixlmusdc"
+
+# Reads an oracle it does not deploy, so this market creates only itself.
+[oracle.direct]
+account_id = "pyth-oracle.near"
+
+[collateral]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB5y5yhcUCbDKaCx4zNjEHQbwLAdvwucCecVzC5Ub7uNKEb"
+price_id = "0210be8d6073809a6b26cede532b7e60bacd4478a0f9f1c3f2e6d86a7f0bdce6"
+decimals = 18
+
+[borrow]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
+price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a"
+decimals = 7
+
+[market]
+mcr_maintenance = "1.2"
+mcr_liquidation = "1.11111111111111111111111111111111111111"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.1"
+price_maximum_age = "60s"
+borrow_range = { minimum = "1" }
+supply_range = { minimum = "400000" }
+supply_withdrawal_range = { minimum = "400000" }

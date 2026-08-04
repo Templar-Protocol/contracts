@@ -1,0 +1,25 @@
+# A market that replaces two values its profile already set.
+#
+# Both are tables, and both would be corrupted by merging key by key:
+# `origination_fee` is an externally-tagged enum, and a `borrow_range` stating
+# only a minimum must not inherit the profile's maximum.
+extends = ["base.toml"]
+
+name = "overrides-market"
+
+[oracle.direct]
+account_id = "pyth-oracle.near"
+
+[collateral]
+asset = "nep141:collateral.near"
+price_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+decimals = 8
+
+[borrow]
+asset = "nep141:borrow.near"
+price_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+decimals = 6
+
+[market]
+origination_fee = { Proportional = "0.001" }
+borrow_range = { minimum = "5" }

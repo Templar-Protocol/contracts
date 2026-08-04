@@ -2,7 +2,11 @@
 
 set positional-arguments
 
-network_filter := 'test(/^requires_network_/)'
+# `(^|::)` so the convention reaches tests nested in modules, not only those at
+# an integration binary's root. A bare `^` anchors against the full path
+# (`module::tests::requires_network_x`), so nested network tests silently ran in
+# the fast gate.
+network_filter := 'test(/(^|::)requires_network_/)'
 sandbox_full_packages := trim('''
 templar-market-contract
 templar-vault-contract

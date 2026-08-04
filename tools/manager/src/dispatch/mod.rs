@@ -4,9 +4,16 @@
 //! flows live in focused submodules ([`teardown`], [`proposals`], [`generic`]) so
 //! this file stays a readable index of the command surface.
 
+mod aggregate;
+pub(crate) mod export;
+mod funding;
 pub(crate) mod generic;
+pub(crate) mod plan;
+mod preflight;
 mod proposals;
+mod reference;
 mod teardown;
+mod verify;
 
 use crate::cli::Command;
 use crate::commands::{
@@ -20,9 +27,24 @@ use crate::commands::{
     pyth::PythNs,
     redstone::RedstoneNs,
     registry::RegistryNs,
+    spec::SpecNs,
     storage::StorageNs,
 };
 use crate::context::{all_sources, lazer_source, print_json, redstone_source, CliContext};
+
+/// A kernel price as a plain number.
+///
+/// Shared by the aggregation dry-run and the reference cross-check, which
+/// compare against each other — two copies of this could drift into comparing
+/// differently-scaled numbers.
+fn scaled(price: &templar_proxy_oracle_kernel::Price) -> f64 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "displayed, or compared within a tolerance band; never exact"
+    )]
+    let value = price.price as f64;
+    value * 10f64.powi(price.expo)
+}
 
 pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Result<()> {
     match command {
@@ -39,9 +61,17 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
         Command::Oracle { command } => oracle(ctx, command).await,
         Command::Pyth { command } => pyth(ctx, command).await,
         Command::Redstone { command } => redstone(ctx, command).await,
+        Command::Spec { command } => spec(ctx, command).await,
         Command::RecoverNep141(args) => teardown::recover_nep141(ctx, args).await,
         Command::Read(call) => generic::read(ctx, call).await,
         Command::Write(call) => generic::write(ctx, call).await,
+    }
+}
+
+async fn spec(ctx: CliContext, ns: SpecNs) -> anyhow::Result<()> {
+    match ns {
+        SpecNs::Check(a) => preflight::check(ctx, a).await,
+        SpecNs::PrintSchema => crate::commands::spec::print_schema(),
     }
 }
 
@@ -87,15 +117,24 @@ async fn ft(ctx: CliContext, ns: FtNs) -> anyhow::Result<()> {
 async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
     match ns {
         MarketNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        MarketNs::Export(a) => export::market(ctx, a).await,
+        MarketNs::Plan(a) => plan::plan(ctx, a).await,
+        MarketNs::Apply(a) => plan::apply(ctx, a).await,
+        MarketNs::Verify(a) => verify::market(ctx, a).await,
         MarketNs::Remove(a) => {
             // `market remove` is self-signed: the signer is the market account
             // being torn down.
-            let (market, secret_key) = a.signer.resolve()?;
-            let client = ctx.signing_client(market.clone(), secret_key)?;
+            let (market, client) = ctx.signing_client_for(&a.signer).await?;
             teardown::remove_market(&ctx, &client, market, a.beneficiary_id(), a.force()).await?;
-            print_json(&serde_json::json!({ "removed": true }))
+            print_json(&Removed { removed: true })
         }
     }
+}
+
+/// `market remove` has nothing to report but success.
+#[derive(serde::Serialize)]
+struct Removed {
+    removed: bool,
 }
 
 async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> {

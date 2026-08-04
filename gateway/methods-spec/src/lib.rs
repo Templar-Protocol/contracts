@@ -3,6 +3,7 @@ pub mod chain;
 pub mod contract;
 pub mod ft;
 pub mod intents;
+pub mod lazer;
 pub mod lst_oracle;
 pub mod market;
 pub mod mt;
@@ -46,6 +47,7 @@ macro_rules! for_each_read_method {
         $callback!($crate::contract::GetVersion);
         $callback!($crate::contract::GetStateVersion);
         $callback!($crate::ft::GetBalanceOf);
+        $callback!($crate::lazer::GetFeedsData);
         $callback!($crate::lst_oracle::GetOracleId);
         $callback!($crate::lst_oracle::ListTransformers);
         $callback!($crate::lst_oracle::GetTransformer);
