@@ -180,15 +180,7 @@ async fn governing_contract(
     ctx: &CliContext,
     oracle_id: &AccountId,
 ) -> anyhow::Result<Option<AccountId>> {
-    let kind = ctx
-        .client
-        .read(contract::GetKind {
-            contract_id: oracle_id.clone(),
-        })
-        .await
-        .with_context(|| format!("classify `{oracle_id}`"))?
-        .kind;
-    if kind != ContractKind::ProxyOracle {
+    if kind_of(ctx, oracle_id).await? != ContractKind::ProxyOracle {
         return Ok(None);
     }
 
@@ -204,18 +196,34 @@ async fn governing_contract(
         return Ok(None);
     };
 
-    // An owner that governs a *different* oracle does not govern this one, so a
-    // failed or mismatched read is "not ours", never an abort: plenty of proxies
-    // are owned by an account that is not a governance contract at all.
-    let governs = ctx
+    // Classified before it is questioned: plenty of proxies are owned by an
+    // account that governs nothing, and only that answer means "not ours". A
+    // read that merely failed must not demote a governed oracle to a direct one.
+    if kind_of(ctx, &owner).await? != ContractKind::ProxyGovernance {
+        return Ok(None);
+    }
+
+    let governed = ctx
         .client
         .read(governance::GetProxyOracleId {
             governance_id: owner.clone(),
         })
         .await
-        .is_ok_and(|result| result.proxy_oracle_id == *oracle_id);
+        .with_context(|| format!("ask `{owner}` which oracle it governs"))?
+        .proxy_oracle_id;
 
-    Ok(governs.then_some(owner))
+    Ok((governed == *oracle_id).then_some(owner))
+}
+
+async fn kind_of(ctx: &CliContext, contract_id: &AccountId) -> anyhow::Result<ContractKind> {
+    Ok(ctx
+        .client
+        .read(contract::GetKind {
+            contract_id: contract_id.clone(),
+        })
+        .await
+        .with_context(|| format!("classify `{contract_id}`"))?
+        .kind)
 }
 
 async fn governance_policy(

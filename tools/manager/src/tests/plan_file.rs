@@ -570,6 +570,26 @@ mod journal {
         assert_eq!(journal.remaining(&file).expect("reconciles"), vec![1, 2]);
     }
 
+    /// A conditional step that has already run drops out of the re-derivation,
+    /// and labels carry an `(n/total)` counter — so every step after it is
+    /// renumbered without any of them doing anything different. Comparing the
+    /// label would refuse the resume and strand a market mid-registration.
+    #[test]
+    fn a_renumbered_label_does_not_block_resume() {
+        let file = plan_file(sample_steps());
+
+        // Step 1 is the completed registration the gateway no longer plans; the
+        // step after it keeps its work and loses its place in the numbering.
+        let mut expected: Vec<_> = file.steps.clone();
+        expected.remove(1);
+        for (index, step) in expected.iter_mut().enumerate() {
+            step.label = format!("deploy market ({}/2)", index + 1);
+        }
+
+        crate::dispatch::plan::ensure_matches_spec(&file, &expected, &[2])
+            .expect("only the labels moved");
+    }
+
     /// A resume has already created the accounts its completed steps made, so
     /// checking the *whole* plan's targets for freeness aborts every resume that
     /// has anything to resume. Freeness is asked of the outstanding steps only,

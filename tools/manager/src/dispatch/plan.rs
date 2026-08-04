@@ -388,14 +388,17 @@ fn ensure_signed_by(file: &PlanFile, credential: &AccountId) -> anyhow::Result<(
 /// A step the spec no longer derives is accepted only where the journal says it
 /// already ran: the gateway stops planning a storage registration once the
 /// account is registered, which is what this plan's own completed steps did.
-fn ensure_matches_spec(
+pub(crate) fn ensure_matches_spec(
     file: &PlanFile,
     expected: &[crate::spec::plan::PlanStep],
     remaining: &[usize],
 ) -> anyhow::Result<()> {
     let mut derived = expected.iter().peekable();
     for (index, step) in file.steps.iter().enumerate() {
-        if derived.peek().is_some_and(|next| *next == step) {
+        if derived
+            .peek()
+            .is_some_and(|next| next.executes_the_same_as(step))
+        {
             derived.next();
             continue;
         }

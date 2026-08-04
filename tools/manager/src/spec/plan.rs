@@ -103,6 +103,22 @@ pub struct PlanStep {
 }
 
 impl PlanStep {
+    /// Equality over what the executor sends. [`Self::label`] carries a
+    /// `(n/total)` counter, so a conditional step dropping out of a re-derivation
+    /// renumbers the steps after it without changing what any of them do.
+    pub fn executes_the_same_as(&self, other: &Self) -> bool {
+        // Destructured so a new field has to be classified here.
+        let Self {
+            label: _,
+            signer_id,
+            receiver_id,
+            function_calls,
+        } = self;
+        *signer_id == other.signer_id
+            && *receiver_id == other.receiver_id
+            && *function_calls == other.function_calls
+    }
+
     fn from_planned(label: String, transaction: PlannedTransaction) -> anyhow::Result<Self> {
         let function_calls = transaction
             .actions
