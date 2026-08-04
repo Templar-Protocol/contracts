@@ -235,8 +235,8 @@ async fn proxy_oracle_get_proxy_normalizes_legacy_v0() -> Result<()> {
     Ok(())
 }
 
-/// Past `max_transaction_size` as base64 JSON, so reachable only by opting into borsh. Driven
-/// in-process: the JSON-RPC envelope base64s the transaction again, so HTTP would cap first.
+/// Past `max_transaction_size` as base64 JSON — the size governance-common's
+/// `borsh_fits_an_upgrade_payload_json_cannot` pins against the limit.
 const OVERSIZED_CODE_LEN: usize = 1_250_000;
 
 #[tokio::test]
@@ -265,11 +265,15 @@ async fn borsh_encoding_carries_a_proposal_json_cannot() -> Result<()> {
         },
     };
 
-    stack
+    let rejected = stack
         .controller
         .request::<proxy_oracle_governance::CreateProposal>(&create(ProposalEncoding::Json))
         .await
-        .expect_err("a json transaction this large should be rejected");
+        .expect_err("a json transaction this large should be rejected")
+        .to_string();
+    // 413, not `TransactionSizeExceeded`: base64ing the signed transaction into the node's
+    // JSON-RPC envelope trips the request body cap before transaction validation runs.
+    assert!(rejected.contains("status: 413"), "{rejected}");
 
     // The rejected transaction never reached the contract, so id 1 is still next.
     let _ = stack
@@ -280,24 +284,11 @@ async fn borsh_encoding_carries_a_proposal_json_cannot() -> Result<()> {
     let proposal = stack
         .controller
         .request::<proxy_oracle_governance::GetProposal>(&proxy_oracle_governance::GetProposal {
-            governance_id: governance_id.clone(),
+            governance_id,
             id: 1,
         })
         .await?;
     assert_eq!(proposal.proposal.map(|p| p.operation), Some(oversized));
-
-    // Release the ~12.5 NEAR of storage the blob staked on the shared node.
-    let _ = stack
-        .controller
-        .request::<proxy_oracle_governance::CancelProposal>(&WriteRequest {
-            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
-            idempotency_key: None,
-            body: proxy_oracle_governance::CancelProposal {
-                governance_id,
-                id: 1,
-            },
-        })
-        .await?;
 
     stack.shutdown().await;
     Ok(())
