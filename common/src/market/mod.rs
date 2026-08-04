@@ -6,7 +6,7 @@ use templar_primitives::number::Decimal;
 
 use crate::asset::{BorrowAssetAmount, CollateralAssetAmount};
 mod configuration;
-pub use configuration::{MarketConfiguration, ValidAmountRange, APY_LIMIT};
+pub use configuration::{AmountRange, MarketConfiguration, ValidAmountRange, APY_LIMIT};
 mod external;
 pub use external::*;
 mod r#impl;

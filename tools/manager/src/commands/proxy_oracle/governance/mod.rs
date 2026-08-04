@@ -7,7 +7,7 @@ mod has_role;
 mod list_proposals;
 mod list_role;
 
-pub use create::GovernanceCreate;
+pub use create::{GovernanceCreate, GovernanceInit};
 pub use create_proposal::CreateProposal;
 pub use execute_proposal::ExecuteProposalArgs;
 pub use get_governance_policy::GetGovernancePolicy;

@@ -1,42 +1,88 @@
-# Smart Contract Deployments
+# Deploying a market
 
-This page provides information about Templar Protocol smart contracts and how to interact with them.
+A market is described by one spec file and deployed in two commands. There is
+no shell script: the spec is the source of truth, and everything that used to
+live in `env.sh`, `market-args.json` and `proxy-*.json` is derived from it.
 
-## Deployments
+`deployments/alpha` targets a mainnet registry, so both commands need
+`--network mainnet` — the CLI defaults to testnet. `NETWORK` and `SIGNER_ID`
+work in place of the flags.
 
-- **Registry**: [`v1.tmplr.near`](https://nearblocks.io/address/v1.tmplr.near)
-- **LST Oracle Adapter**: [`lst.oracle.tmplr.near`](https://nearblocks.io/address/lst.oracle.tmplr.near)
-
-### Markets
-
-Market contracts are deployed dynamically through the registry. Each market represents a single asset pair (COLLATERAL &rarr; BORROW).
-
-A selection of available markets is shown below:
-
-| Account ID | Collateral Asset | Borrow Asset |
-|---|---|---|
-| [`ibtc-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/ibtc-iethusdc.v1.tmplr.near) | Native BTC (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
-| [`iethwbtc-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/iethwbtc-iethusdc.v1.tmplr.near) | wBTC on Ethererum (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
-| [`ibtc-usdc-1.v1.tmplr.near`](https://nearblocks.io/address/ibtc-usdc-1.v1.tmplr.near) | Native BTC (via NEAR Intents) | USDC on NEAR |
-| [`stnear-usdc-1.v1.tmplr.near`](https://nearblocks.io/address/stnear-usdc-1.v1.tmplr.near) | stNEAR on NEAR | USDC on NEAR |
-| [`ixlm-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/ixlm-ixlmusdc.v1.tmplr.near) | Native XLM (via NEAR Intents) | USDC on XLM (via NEAR Intents) |
-
-### Contract Verification
-
-All smart contracts use reproducible builds. To verify deployed code:
-
-```bash
-near contract verify deployed-at <contract-id> mainnet now
+```sh
+tmplrmgr market plan  deployments/alpha/<market>.toml --out plan.json \
+    --network mainnet --signer-id "$REGISTRY_OWNER" --public-key ed25519:…
+tmplrmgr market apply --plan plan.json \
+    --network mainnet --signer-id "$REGISTRY_OWNER" --sign-with keychain
 ```
 
-Example output:
+The signer is not a personal account: `registry.deploy` asserts the registry's
+owner, and a proxy spec additionally requires it to equal `governance.admin`,
+which the mainnet profiles set to the registry itself.
 
-```txt
-INFO The code obtained from the contract account ID and the code calculated from the repository are the same.
-|    Contract code hash: DaudmUa3nAym9dfQkn8mpNPZxkphSRGwEaTMgtymVhFE
-|    Contract version:	1.0.0
-|    Standards used by the contract:	[nep330:1.2.0]
-|    View the contract's source code on:	https://github.com/Templar-Protocol/contracts/tree/1d736e62a86424dd947284cbd8e83bef803fa9fb
-|    Build Environment:	sourcescan/cargo-near:0.13.4-rust-1.85.0@sha256:a9d8bee7b134856cc8baa142494a177f2ba9ecfededfcdd38f634e14cca8aae2
-|    Build Command:	cargo near build non-reproducible-wasm --locked
+`plan` reads the chain and writes a file; it sends nothing and takes no
+credential. `apply` sends what the file says.
+
+## Why two steps
+
+The plan is a reviewable artifact. It lists every transaction, decodes the
+market configuration for reading, names the keys each new account will grant,
+and carries the results of every preflight check. Reviewing a deployment no
+longer means reading a shell script and trusting it matches four JSON files.
+
+It is a record of a derivation, not an input: the file carries the spec it came
+from, and `apply` re-derives the steps and refuses anything that does not match.
+Editing the plan is therefore not a way to change a deployment — change the spec
+and re-plan. For something no spec can express, run the transaction yourself
+with the command that performs it (`registry deploy`, `proxy-oracle governance
+create-proposal`, `storage deposit`); each is typed and validated on its own.
+
+## Writing a spec
+
+Shared values live in `deployments/profiles/`. A market file names the profiles
+it extends and states only what differs. Abbreviated — a market also needs a
+`[borrow]` leg and the `[market]` parameters the profiles above do not set; see
+any file under `deployments/` for a complete one:
+
+```toml
+extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-standard.toml"]
+name = "my-market"
+
+[oracle.direct]                    # reads an oracle that already exists
+account_id = "pyth-oracle.near"
+
+[collateral]
+asset = "nep141:usdc.near"
+price_id = "eaa020c6…"             # the oracle's own identifier
+decimals = 6
 ```
+
+Omit `[oracle.direct]` to deploy a dedicated proxy oracle instead. A proxy
+market names `sources` per asset and the deployment creates a governance
+contract, the oracle it owns, and the market — seven transactions, plus one
+storage registration per NEP-141 asset, rather than one.
+
+## Checking before and after
+
+```sh
+tmplrmgr spec check   deployments/alpha/<market>.toml --network mainnet
+tmplrmgr market verify <account-id> --network mainnet \
+    --governance-admin <account-id> \
+    --against deployments/alpha/<market>.toml
+```
+
+Both modes verify. A direct market reconstructs without proxies or governance,
+so the two governance checks are skipped and everything else runs;
+`--governance-admin` is still required and means nothing there.
+
+`verify` re-runs the preflight against what is actually on chain and exits
+non-zero on failure, so it can run on a schedule. That matters because the
+governance call that configures a price feed is dispatched detached: it reports
+success even when the oracle rejected the proxy, so deployed state is the only
+witness that a market can price anything.
+
+## Resuming
+
+`apply` journals each step beside the plan as it lands. If a run is
+interrupted, re-running it skips what completed and continues from the first
+incomplete step. A plan truncated to its completed prefix is refused rather than
+reported complete: the re-derivation runs before the journal is consulted.

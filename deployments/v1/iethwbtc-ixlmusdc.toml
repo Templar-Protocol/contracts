@@ -1,0 +1,32 @@
+extends = ["../profiles/v1-mainnet.toml", "../profiles/irs-stable.toml"]
+
+name = "iethwbtc-ixlmusdc"
+
+[collateral]
+asset = "nep245:intents.near:nep141:eth-0x2260fac5e5542a773aa44fbcfedf7c193bc2c599.omft.near"
+decimals = 8
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 103, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "WBTC", weight = 2 },
+]
+
+[borrow]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
+decimals = 7
+aggregator = "median_high"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 7, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "USDC", weight = 2 },
+]
+
+[market]
+mcr_maintenance = "1.2"
+mcr_liquidation = "1.15"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.1"
+borrow_range = { minimum = "1" }
+supply_range = { minimum = "40000" }
+supply_withdrawal_range = { minimum = "40000" }
