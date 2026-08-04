@@ -356,7 +356,11 @@ impl StoredOperation {
                 signer_account_id: &transaction.signer_account_id,
                 public_key: signed_transaction.transaction.public_key(),
             }),
-            Some(_) => None,
+            Some(
+                CurrentStep::Submitted { .. }
+                | CurrentStep::Reverted { .. }
+                | CurrentStep::Rejected { .. },
+            ) => None,
             None => self
                 .remaining_steps
                 .front()

@@ -37,6 +37,26 @@ impl OperationLocks {
     }
 }
 
+/// A step's claim on the access key it signs and broadcasts with.
+enum StepLane {
+    /// No step is ready to sign or submit.
+    Idle,
+    /// Exclusive use of the key, held until the step reaches the network.
+    Held(SigningKeyLease),
+    /// The step is bound to a key this process does not hold. Nothing here can
+    /// allocate a nonce on that key, so its stored signature replays unguarded.
+    Unheld,
+}
+
+impl StepLane {
+    fn held(&self) -> Option<&SigningKeyLease> {
+        match self {
+            Self::Held(lease) => Some(lease),
+            Self::Idle | Self::Unheld => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct OperationDriver {
     store: SharedOperationStore,
@@ -380,17 +400,12 @@ impl OperationDriver {
             .await?
             .unwrap_or(operation);
 
-        let Some(lease) = self.lease_step_signing_key(&operation).await? else {
+        let lane = self.lease_step_lane(&operation).await?;
+        if matches!(lane, StepLane::Idle) {
             return Ok(operation);
-        };
-
-        if let Some(pending) = operation.begin_next_preparation(self.store.clone()) {
-            let prepared = self
-                .transaction_signer
-                .sign_transaction(&lease, pending.transaction().clone())
-                .await?;
-            pending.finish(prepared).await?;
         }
+
+        self.prepare_next_step(&mut operation, &lane).await?;
 
         if let Some(CurrentStepRef::Prepared(prepared_step)) = operation.current(self.store.clone())
         {
@@ -405,37 +420,64 @@ impl OperationDriver {
         Ok(operation)
     }
 
-    /// Lease the access key this step needs, or `None` when it needs none. NEAR
-    /// rejects any nonce not above the access key's current one, so a key's
-    /// transactions must reach the network in allocation order — the caller
-    /// holds the lease from signing until the step has been broadcast.
+    /// Lease the lane the next step needs. NEAR rejects any nonce not above the
+    /// access key's current one, so a key's transactions must reach the network
+    /// in allocation order — the caller holds the lane from signing until the
+    /// step has been broadcast.
     ///
     /// Callers in fact hold it until the step's on-chain outcome is recorded,
     /// which is wider than the invariant needs and caps a key at one write per
     /// finality round-trip. Narrowing that to the broadcast itself needs a
     /// submit path that returns before execution (see `FinalityPolicy`).
-    async fn lease_step_signing_key(
-        &self,
-        operation: &StoredOperation,
-    ) -> GatewayResult<Option<SigningKeyLease>> {
-        let lease = match operation.signing_target() {
+    async fn lease_step_lane(&self, operation: &StoredOperation) -> GatewayResult<StepLane> {
+        Ok(match operation.signing_target() {
             Some(SigningTarget::Bound {
                 signer_account_id,
                 public_key,
             }) => {
-                self.transaction_signer
+                if let Some(lease) = self
+                    .transaction_signer
                     .lease_signing_key(signer_account_id, &public_key)
-                    .await?
+                    .await
+                {
+                    StepLane::Held(lease)
+                } else {
+                    tracing::warn!(
+                        signer_account_id = %signer_account_id.0,
+                        %public_key,
+                        "replaying a prepared step signed with an access key this process no longer holds"
+                    );
+                    StepLane::Unheld
+                }
             }
-            Some(SigningTarget::Next { signer_account_id }) => {
+            Some(SigningTarget::Next { signer_account_id }) => StepLane::Held(
                 self.transaction_signer
                     .lease_next_signing_key(signer_account_id)
-                    .await?
-            }
-            None => return Ok(None),
-        };
+                    .await?,
+            ),
+            None => StepLane::Idle,
+        })
+    }
 
-        Ok(Some(lease))
+    /// Sign the next step, if there is one and the lane covers it. An `Unheld`
+    /// lane always accompanies an already-signed step, so nothing is skipped by
+    /// declining to sign without one.
+    async fn prepare_next_step(
+        &self,
+        operation: &mut StoredOperation,
+        lane: &StepLane,
+    ) -> GatewayResult<()> {
+        let Some(lease) = lane.held() else {
+            return Ok(());
+        };
+        let Some(pending) = operation.begin_next_preparation(self.store.clone()) else {
+            return Ok(());
+        };
+        let prepared = self
+            .transaction_signer
+            .sign_transaction(lease, pending.transaction().clone())
+            .await?;
+        pending.finish(prepared).await
     }
 
     async fn execute_next_step(
@@ -446,17 +488,12 @@ impl OperationDriver {
             return Ok(operation);
         }
 
-        let Some(lease) = self.lease_step_signing_key(&operation).await? else {
+        let lane = self.lease_step_lane(&operation).await?;
+        if matches!(lane, StepLane::Idle) {
             return Ok(operation);
-        };
-
-        if let Some(pending) = operation.begin_next_preparation(self.store.clone()) {
-            let prepared = self
-                .transaction_signer
-                .sign_transaction(&lease, pending.transaction().clone())
-                .await?;
-            pending.finish(prepared).await?;
         }
+
+        self.prepare_next_step(&mut operation, &lane).await?;
 
         let operation_id = operation.operation_id().clone();
         match operation.current(self.store.clone()) {

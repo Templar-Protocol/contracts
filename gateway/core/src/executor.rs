@@ -40,15 +40,17 @@ pub trait SignTransaction: Send + Sync {
         signer_account_id: &ManagedAccountId,
     ) -> GatewayResult<SigningKeyLease>;
 
-    /// Lease the specific key a transaction was already signed with.
+    /// Lease the specific key a transaction was already signed with, or `None`
+    /// when this process holds no such key.
     async fn lease_signing_key(
         &self,
         signer_account_id: &ManagedAccountId,
         public_key: &PublicKey,
-    ) -> GatewayResult<SigningKeyLease>;
+    ) -> Option<SigningKeyLease>;
 
-    /// Allocates the nonce, so the caller must hold `lease` at least until the
-    /// signed transaction has been broadcast.
+    /// Signs with `lease`'s key and allocates that key's nonce, so the caller
+    /// must hold `lease` at least until the signed transaction has been
+    /// broadcast.
     async fn sign_transaction(
         &self,
         lease: &SigningKeyLease,
@@ -168,8 +170,11 @@ impl SignTransaction for NearTransactionSigner {
         &self,
         signer_account_id: &ManagedAccountId,
         public_key: &PublicKey,
-    ) -> GatewayResult<SigningKeyLease> {
-        self.signer_for(signer_account_id)?.lease(public_key).await
+    ) -> Option<SigningKeyLease> {
+        self.signer_for(signer_account_id)
+            .ok()?
+            .lease(public_key)
+            .await
     }
 
     async fn sign_transaction(
@@ -177,15 +182,28 @@ impl SignTransaction for NearTransactionSigner {
         lease: &SigningKeyLease,
         transaction: PlannedTransaction,
     ) -> GatewayResult<PreparedTransactionResult> {
+        let signer = lease.signer();
+        // Naming the key keeps the signature on the leased lane; `presign_with`
+        // would instead take whichever key near-api's rotation hands back.
+        let public_key = lease.public_key();
+        let (nonce, block_hash, _) = signer
+            .fetch_tx_nonce(
+                transaction.signer_account_id.0.clone(),
+                public_key,
+                &self.network,
+            )
+            .await
+            .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
+
         let presigned = near_api::Transaction::use_transaction(
             PrepopulateTransaction {
                 signer_id: transaction.signer_account_id.0.clone(),
                 receiver_id: transaction.receiver_id.clone(),
                 actions: transaction.actions.clone(),
             },
-            lease.signer(),
+            signer,
         )
-        .presign_with(&self.network)
+        .presign_offline(public_key, block_hash, nonce)
         .await
         .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
 

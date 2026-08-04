@@ -168,7 +168,7 @@ impl SignTransaction for FakeSigner {
         &self,
         _signer_account_id: &ManagedAccountId,
         public_key: &PublicKey,
-    ) -> GatewayResult<SigningKeyLease> {
+    ) -> Option<SigningKeyLease> {
         self.pool.lease(public_key).await
     }
 
@@ -971,4 +971,32 @@ async fn prepared_step_resubmits_under_the_key_that_signed_it() {
         log.nonces_for(pool_public_key(0)).is_empty(),
         "must not resign the step on a different key"
     );
+}
+
+/// A key rotated out of the configuration since the step was signed leaves the
+/// stored signature valid on chain, and no lane here can allocate a nonce on
+/// that key — so recovery replays it rather than failing startup.
+#[tokio::test]
+async fn prepared_step_replays_under_a_key_the_pool_no_longer_holds() {
+    let store = Arc::new(MemoryStore::new());
+    let log = Arc::new(BroadcastLog::default());
+    let driver = broadcast_driver(store.clone(), log.clone(), 1, Duration::ZERO);
+
+    let retired_key = pool_public_key(7);
+    let op = stored(
+        true,
+        Some(CurrentStep::Prepared {
+            transaction: sample_transaction(),
+            signed_transaction: Box::new(dummy_signed_transaction(retired_key, 42)),
+            tx_hash: CryptoHash(NearCryptoHash::default()),
+        }),
+        vec![],
+        vec![],
+    );
+    store.save_operation(op.clone()).await.unwrap();
+
+    let result = driver.execute_remaining_steps(op).await.unwrap();
+
+    assert_eq!(result.status(), OperationStatus::Succeeded);
+    assert_eq!(log.nonces_for(retired_key), vec![42]);
 }

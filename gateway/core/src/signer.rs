@@ -65,11 +65,11 @@ impl PooledSigner {
         Ok(Self { slots })
     }
 
-    /// Wrap an existing signer holding exactly `public_key` as a single lane.
+    /// Wrap an existing signer's `public_key` as a single lane.
     ///
     /// For sharing one [`Signer`] — and so one nonce cache — between pooled and
-    /// direct near-api use. A signer holding any *other* key breaks the lane,
-    /// because near-api would rotate to a key this lane does not guard.
+    /// direct near-api use. The signer must hold `public_key`, since signing
+    /// binds to it; any other key it holds goes unused and unguarded here.
     ///
     /// Each call builds a *new* lane, so an account must be wrapped once and the
     /// result cloned; wrapping the same key twice would race it. A lane excludes
@@ -92,16 +92,14 @@ impl PooledSigner {
     }
 
     /// Lease one specific key — for resubmitting a transaction already signed
-    /// with it, whose nonce is bound to that key.
-    pub async fn lease(&self, public_key: &PublicKey) -> GatewayResult<SigningKeyLease> {
+    /// with it, whose nonce is bound to that key. `None` when the pool does not
+    /// hold the key, and so cannot allocate a nonce on it at all.
+    pub async fn lease(&self, public_key: &PublicKey) -> Option<SigningKeyLease> {
         let slot = self
             .slots
             .iter()
-            .find(|slot| slot.public_key == *public_key)
-            .ok_or_else(|| {
-                GatewayError::InvalidSignerKey(format!("unknown access key {public_key}"))
-            })?;
-        Ok(slot.lease().await)
+            .find(|slot| slot.public_key == *public_key)?;
+        Some(slot.lease().await)
     }
 }
 
@@ -182,8 +180,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_a_key_outside_the_pool() {
+    async fn declines_a_key_outside_the_pool() {
         let pool = PooledSigner::new([key(0)]).expect("one key");
-        assert!(pool.lease(&key(1).public_key()).await.is_err());
+        assert!(pool.lease(&key(1).public_key()).await.is_none());
     }
 }
