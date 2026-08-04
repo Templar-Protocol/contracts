@@ -19,7 +19,7 @@ use templar_gateway_methods_spec::{
     market, proxy_oracle, proxy_oracle_governance as gov, registry,
 };
 use templar_gateway_types::common::{WriteOperationResult, WriteRequest};
-use templar_gateway_types::{primitive::PublicKey, Base64Bytes, MethodSpec};
+use templar_gateway_types::{primitive::PublicKey, Base64Bytes, MethodSpec, ProposalEncoding};
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{GovernancePolicy, Operation};
@@ -662,6 +662,7 @@ async fn set_proxy(
                 .context("encode the `admin_set_proxy` call")?,
             ),
             requested_ttl: ttl_default,
+            encoding: ProposalEncoding::Json,
         },
     )
     .await?;

@@ -28,7 +28,7 @@ use templar_gateway_core::{NearClient, PooledSigner};
 use templar_gateway_methods_spec::{
     lst_oracle, owner, proxy_oracle, proxy_oracle_governance as gov,
 };
-use templar_gateway_types::ManagedAccountId;
+use templar_gateway_types::{ManagedAccountId, ProposalEncoding};
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
     input::Source, price_transformer::PriceTransformer, state::legacy::v0,
@@ -927,6 +927,7 @@ impl SandboxHarness {
                 id: proposal_id,
                 operation,
                 requested_ttl: Nanoseconds::zero(),
+                encoding: ProposalEncoding::Json,
             },
         )
         .await?;
