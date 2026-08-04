@@ -22,16 +22,19 @@ so a doc edit in it would recompile the crate and everything downstream.)
 
 ## Why a file per release, rather than one table
 
-One release PR can tag several contracts, and each tag's build records its row
-concurrently onto the same catalog branch — so a shared file means the second
-run to land rewrites what the first wrote. That is the common case here, not a
-corner: contracts share a build, so they ship in batches (`1d736e62` produced
-three releases, `e0f3a11f` another three).
+The rule that matters is that a released digest is never rewritten, and one file
+per release makes that a property of the filesystem: `record-release` creates
+the file with `create_new`, so a replay either matches what is there or fails.
+Nothing has to parse a table to find out.
 
-Ordering rows by artifact only narrows the window. `merge=union` would fix it,
-but GitHub ignores user-defined `.gitattributes` when merging a PR. Distinct
-filenames make the conflict unrepresentable instead — the same reason
-towncrier-style tools give each entry its own file.
+It also keeps rows independent, which is how they arrive. One release PR can tag
+several contracts — contracts share a build, so they ship in batches
+(`1d736e62` produced three releases, `e0f3a11f` another three) — the catalog PR
+stands open across batches, and a backfill can land on `dev` beside it. A shared
+file would conflict on merge. `merge=union` would fix that, but GitHub ignores
+user-defined `.gitattributes` when merging a PR; distinct filenames make the
+conflict unrepresentable instead — the same reason towncrier-style tools give
+each entry its own file.
 
 Absences are deliberate: no NEAR vault has shipped, mocks are test scaffolding,
 and universal-account 0.4.0 was built but never deployed — those bytes are test
