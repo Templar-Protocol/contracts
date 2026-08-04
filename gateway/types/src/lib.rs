@@ -22,6 +22,6 @@ pub use primitive::{
 };
 pub use spec::{MethodKind, MethodSpec, RpcMethodMeta};
 pub use version::{
-    Governance, GovernanceVersion, Market, MarketVersion, ParseError as VersionParseError,
-    ProxyOracle, ProxyOracleVersion, Registry, RegistryVersion, Version,
+    Market, MarketVersion, ParseError as VersionParseError, ProxyGovernance,
+    ProxyGovernanceVersion, ProxyOracle, ProxyOracleVersion, Registry, RegistryVersion, Version,
 };

@@ -1,8 +1,8 @@
 #[derive(Debug)]
-pub struct Governance;
-pub type GovernanceVersion = super::Version<Governance>;
+pub struct ProxyGovernance;
+pub type ProxyGovernanceVersion = super::Version<ProxyGovernance>;
 
-impl GovernanceVersion {
+impl ProxyGovernanceVersion {
     /// First version exposing `create_proposal_borsh`.
     pub const BORSH_CREATE_PROPOSAL: (u64, u64, u64) = (0, 3, 0);
 
@@ -15,7 +15,7 @@ impl GovernanceVersion {
 
 #[cfg(test)]
 mod tests {
-    use super::GovernanceVersion;
+    use super::ProxyGovernanceVersion;
 
     #[rstest::rstest]
     #[case((0, 1, 0), false)]
@@ -29,7 +29,7 @@ mod tests {
         #[case] expected: bool,
     ) {
         assert_eq!(
-            GovernanceVersion::from(version).supports_borsh_create_proposal(),
+            ProxyGovernanceVersion::from(version).supports_borsh_create_proposal(),
             expected,
         );
     }

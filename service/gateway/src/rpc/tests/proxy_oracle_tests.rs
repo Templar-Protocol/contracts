@@ -271,8 +271,7 @@ async fn borsh_encoding_carries_a_proposal_json_cannot() -> Result<()> {
         .await
         .expect_err("a json transaction this large should be rejected")
         .to_string();
-    // 413, not `TransactionSizeExceeded`: base64ing the signed transaction into the node's
-    // JSON-RPC envelope trips the request body cap before transaction validation runs.
+    // 413, not `TransactionSizeExceeded`: the JSON-RPC body cap trips before validation.
     assert!(rejected.contains("status: 413"), "{rejected}");
 
     // The rejected transaction never reached the contract, so id 1 is still next.

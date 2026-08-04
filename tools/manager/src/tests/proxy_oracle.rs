@@ -597,8 +597,6 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
     );
 }
 
-/// Borsh is opt-in. The wire shape of the field is `methods-spec`'s to guard; this owns only that
-/// the flag reaches the spec.
 #[rstest::rstest]
 #[case::defaults_to_json(&[], ProposalEncoding::Json)]
 #[case::opts_into_borsh(&["--encoding", "borsh"], ProposalEncoding::Borsh)]
@@ -606,18 +604,15 @@ fn create_proposal_carries_the_encoding(
     #[case] extra: &[&str],
     #[case] expected: ProposalEncoding,
 ) {
-    let argv = [
-        &["--governance-id", "gov.testnet", "--id", "0"][..],
-        extra,
-        &[
-            "oracle",
-            "set-manual-trip",
-            "--price-id",
-            PRICE_ID,
-            "--tripped",
-        ][..],
-    ]
-    .concat();
+    let mut argv = vec!["--governance-id", "gov.testnet", "--id", "0"];
+    argv.extend_from_slice(extra);
+    argv.extend_from_slice(&[
+        "oracle",
+        "set-manual-trip",
+        "--price-id",
+        PRICE_ID,
+        "--tripped",
+    ]);
 
     let spec = create_proposal(&argv).expect("into spec");
 

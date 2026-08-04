@@ -10,7 +10,7 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
-use templar_gateway_types::{Governance, ProposalEncoding};
+use templar_gateway_types::{ProposalEncoding, ProxyGovernance};
 
 use crate::Dispatch;
 
@@ -186,7 +186,7 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
                 let version = ctx
                     .near_client()
                     .contract(governance_id.clone())
-                    .version::<Governance>()
+                    .version::<ProxyGovernance>()
                     .await?;
                 ctx.near_client()
                     .proxy_governance(governance_id)

@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 
 use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
-use templar_gateway_types::{common::ContractArgs, GovernanceVersion};
+use templar_gateway_types::{common::ContractArgs, ProxyGovernanceVersion};
 use templar_proxy_oracle_near_governance_common::{
     CreateProposalArgs, GovernancePolicyWire, Operation, Proposal, Role,
 };
@@ -81,14 +81,14 @@ impl ProxyGovernanceClient<'_> {
     pub fn create_proposal_borsh(
         &self,
         options: ContractWriteOptions,
-        version: GovernanceVersion,
+        version: ProxyGovernanceVersion,
         args: impl Borrow<GovCreateArgs>,
     ) -> GatewayResult<PlannedTransaction> {
         if !version.supports_borsh_create_proposal() {
-            let (major, minor, patch) = GovernanceVersion::BORSH_CREATE_PROPOSAL;
+            let required =
+                ProxyGovernanceVersion::from(ProxyGovernanceVersion::BORSH_CREATE_PROPOSAL);
             return Err(GatewayError::UnsupportedFeature(format!(
-                "governance {} is version {version}; \
-                 borsh proposals require v{major}.{minor}.{patch}",
+                "governance {} is version {version}; borsh proposals require v{required}",
                 self.contract_id(),
             )));
         }
@@ -116,7 +116,7 @@ impl ProxyGovernanceClient<'_> {
 #[cfg(test)]
 mod tests {
     use near_api::{types::transaction::actions::Action, NetworkConfig};
-    use templar_gateway_types::{GovernanceVersion, ManagedAccountId};
+    use templar_gateway_types::{ManagedAccountId, ProxyGovernanceVersion};
     use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation, Role};
 
     use super::{GovCreateArgs, NearClient};
@@ -147,7 +147,7 @@ mod tests {
                 ContractWriteOptions::new(ManagedAccountId("admin.near".parse().unwrap()))
                     .one_yocto()
                     .tgas(300),
-                GovernanceVersion::from(version),
+                ProxyGovernanceVersion::from(version),
                 args(),
             )
     }
