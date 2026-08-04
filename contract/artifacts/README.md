@@ -142,7 +142,7 @@ artifacts are missing from `target/near` and exit non-zero without building.
 **There is nothing to do by hand.** Merging the release PR tags the version;
 `.github/workflows/release-artifacts.yml` builds the WASM reproducibly at that
 tag and uploads it, and `catalog-pr.yml` adds one file under `releases/` for
-every release in the batch, as one commit on one PR. Until that PR merges,
+every release in the batch, on one shared PR. Until that PR merges,
 `fetch` will not serve the version — an unrecorded release has no reviewed hash
 to check downloaded bytes against.
 

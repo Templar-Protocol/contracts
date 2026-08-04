@@ -175,8 +175,10 @@ does not recognise.
    [`catalog-pr.yml`](.github/workflows/catalog-pr.yml), which commits every row
    the catalog is still missing to the standing `record/releases` branch and
    opens or updates one PR. A release batch tags several contracts, so this is
-   what keeps a batch to one PR, one commit and one test run rather than one of
-   each per contract.
+   what keeps a batch to one PR, and so to one commit on `dev`, rather than one
+   of each per contract. Builds finish minutes apart, so the branch itself
+   usually collects a commit per catalog run; the squash-merge is what makes
+   that invisible, and `test.yml` cancels the PR's superseded runs.
 
 4. Merge that PR. Until you do, the artifacts crate will not serve those
    versions — an unrecorded release has no reviewed hash to check downloaded
