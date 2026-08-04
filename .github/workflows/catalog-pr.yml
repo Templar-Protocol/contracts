@@ -34,9 +34,10 @@ concurrency:
 jobs:
   record:
     name: Record released WASMs on the catalog PR
-    # A build that failed may still have uploaded its row, and the listing below
-    # takes rows only from successful runs — so there is nothing to record.
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # Deliberately not filtered on the build's conclusion. A failed build's
+    # completion still queues a run, and queuing is what displaces the pending
+    # one — so it has to be able to do that run's work. Which rows are
+    # trustworthy is decided by their source run below, not by this event.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
