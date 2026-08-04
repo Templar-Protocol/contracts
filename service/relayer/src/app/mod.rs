@@ -84,7 +84,7 @@ impl App {
         args: args::Configuration,
         kill: watch::Sender<()>,
         finality_policy: FinalityPolicy,
-        signers: impl IntoIterator<Item = (near_api::types::AccountId, PooledSigner)>,
+        signers: impl IntoIterator<Item = PooledSigner>,
     ) -> anyhow::Result<Self> {
         // Build through `NetworkConfigBuilder` so a FastNear-style `?apiKey=…`
         // embedded in `RPC_URL` is routed to the endpoint's auth header instead of
@@ -102,7 +102,10 @@ impl App {
         let mut builder = GatewayClient::builder(network)
             .finality_policy(finality_policy)
             .store(Arc::new(gateway_store));
-        let signers: HashMap<_, _> = signers.into_iter().collect();
+        let signers: HashMap<_, _> = signers
+            .into_iter()
+            .map(|signer| (signer.account_id().0.clone(), signer))
+            .collect();
         if !signers.contains_key(&args.relay.account_id) && !args.relay.secret_key.is_empty() {
             builder = builder
                 .secret_keys(args.relay.account_id.clone(), args.relay.secret_key.clone())?;

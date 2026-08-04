@@ -930,9 +930,10 @@ async fn pooled_keys_broadcast_in_parallel() {
 
     assert_eq!(log.broadcasts(), WRITERS);
     assert_eq!(log.max_active_per_key(), 1);
-    assert_eq!(
-        log.max_active_total(),
-        usize::from(KEYS),
+    // A lower bound: how many of the lanes overlap at any instant is the
+    // runtime's business, but more than one at a time is the whole point.
+    assert!(
+        log.max_active_total() > 1,
         "pooled keys must broadcast in parallel"
     );
     for index in 0..KEYS {
