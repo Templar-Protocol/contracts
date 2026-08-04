@@ -104,6 +104,10 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
 pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(&args.plan)
         .with_context(|| format!("read {}", args.plan.display()))?;
+    // Before the document is deserialized, not after: a plan written to another
+    // shape fails on the field that moved, and this is the refusal that says
+    // what to do about it.
+    ensure_schema(&text, &args.plan)?;
     let file: PlanFile =
         serde_json::from_str(&text).with_context(|| format!("parse {}", args.plan.display()))?;
 
@@ -749,16 +753,34 @@ fn gate(reporter: &mut Reporter, market_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The only two hard refusals: this build cannot read a foreign schema
-/// faithfully, and a network mismatch would send a mainnet deployment to testnet
-/// or the reverse. Everything else is reported and confirmed, never blocked.
-fn ensure_compatible(file: &PlanFile, network: Network) -> anyhow::Result<()> {
+/// The declared schema alone, read before the document it labels.
+///
+/// A plan whose shape moved fails to deserialize on whatever moved — the spec's
+/// amounts, say — and the operator reads that instead of the version that
+/// explains it. Checking the label first is what makes the version mean
+/// anything: it is the one field whose whole purpose is to be readable across
+/// shapes.
+fn ensure_schema(text: &str, path: &std::path::Path) -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    struct Labelled {
+        schema: u32,
+    }
+
+    let declared = serde_json::from_str::<Labelled>(text)
+        .with_context(|| format!("read the schema of {}", path.display()))?
+        .schema;
     anyhow::ensure!(
-        file.schema == PLAN_SCHEMA_VERSION,
-        "this plan declares schema {} but this build speaks {PLAN_SCHEMA_VERSION}. \
-         Regenerate it with `market plan`.",
-        file.schema,
+        declared == PLAN_SCHEMA_VERSION,
+        "this plan declares schema {declared} but this build speaks \
+         {PLAN_SCHEMA_VERSION}. Regenerate it with `market plan`.",
     );
+    Ok(())
+}
+
+/// The remaining hard refusal: a network mismatch would send a mainnet
+/// deployment to testnet or the reverse. Everything else is reported and
+/// confirmed, never blocked. The schema is refused earlier, by [`ensure_schema`].
+fn ensure_compatible(file: &PlanFile, network: Network) -> anyhow::Result<()> {
     // Asked of the spec, which derives it from the registry account. A network
     // stated beside the spec would be a second place to be wrong, and the one an
     // edit would reach.
@@ -1342,9 +1364,29 @@ mod tests {
 
     #[test]
     fn a_schema_mismatch_is_refused() {
-        let error = ensure_compatible(&bare_plan(PLAN_SCHEMA_VERSION + 1), Network::Mainnet)
+        let plan = serde_json::to_string(&bare_plan(PLAN_SCHEMA_VERSION + 1)).expect("serialize");
+        let error = super::ensure_schema(&plan, std::path::Path::new("plan.json"))
             .expect_err("wrong schema");
 
+        assert!(error.to_string().contains("Regenerate it"), "{error:#}");
+    }
+
+    /// The version is only worth declaring if it survives the shape it labels.
+    /// A plan from another build fails to deserialize on whatever moved — here an
+    /// amount written before units were mandatory — and an operator reading that
+    /// has no idea the answer is to regenerate the plan.
+    #[test]
+    fn an_unreadable_plan_is_refused_by_its_schema_not_by_what_moved() {
+        let plan = serde_json::to_string(&bare_plan(PLAN_SCHEMA_VERSION + 1)).expect("serialize");
+        let foreign = plan.replace("\"1 atoms\"", "\"1\"");
+        assert_ne!(foreign, plan, "the probe must actually downgrade an amount");
+        assert!(
+            serde_json::from_str::<PlanFile>(&foreign).is_err(),
+            "the probe must be unreadable, or it proves nothing"
+        );
+
+        let error = super::ensure_schema(&foreign, std::path::Path::new("plan.json"))
+            .expect_err("wrong schema");
         assert!(error.to_string().contains("Regenerate it"), "{error:#}");
     }
 }
