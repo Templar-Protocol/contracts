@@ -20,7 +20,9 @@ use templar_common::{
 };
 
 /// Both spellings of each unit parse; the plural is what this module writes.
-const PATTERN: &str = r"^[0-9]+(\.[0-9]+)? (atom|atoms|token|tokens)$";
+/// Only `tokens` takes a fraction — an atom is indivisible, and a schema laxer
+/// than the parser would pass a document the tool then refuses.
+const PATTERN: &str = r"^([0-9]+ (atom|atoms)|[0-9]+(\.[0-9]+)? (token|tokens))$";
 
 const UNIT_HELP: &str = "write `<amount> tokens` for whole units of the asset, or \
                          `<amount> atoms` for indivisible base units";
@@ -52,14 +54,6 @@ impl Amount {
     /// policy.
     pub const fn from_base_units(raw: u128, decimals: u8) -> Self {
         Self::tokens(raw, decimals)
-    }
-
-    /// How many decimal places this states. Zero for `atoms`, which need none.
-    pub const fn scale(self) -> u8 {
-        match self {
-            Self::Atoms(_) => 0,
-            Self::Tokens { scale, .. } => scale,
-        }
     }
 
     /// The on-chain value, once the asset's decimals are known.

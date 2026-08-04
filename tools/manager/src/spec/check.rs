@@ -396,13 +396,24 @@ fn validate_configuration(spec: &MarketSpec) -> Check {
     // `MarketConfiguration::validate` reads none of them, and skipping took MCR
     // ordering, the ranges and the durations down with it.
     //
-    // The borrow stand-in cannot be zero, which no `tokens` amount converts at.
-    // Every amount is borrow-denominated, so scaling them all by one factor
-    // leaves the orderings between them — all this check compares — intact.
-    let borrow_decimals = spec
+    // Only where a stand-in exists, though. Reporting a pass this check cannot
+    // support is worse than reporting that it could not run.
+    let Some(borrow_decimals) = spec
         .borrow
         .decimals
-        .unwrap_or_else(|| spec.market.minimum_borrow_decimals());
+        .or_else(|| spec.market.stand_in_borrow_decimals())
+    else {
+        return Check::new(
+            id,
+            Status::Skipped {
+                reason: "the borrow asset's decimals are unresolved and this spec \
+                         states amounts in both `atoms` and `tokens`, which order \
+                         differently at different decimals. State `borrow.decimals`, \
+                         or run this check online."
+                    .to_owned(),
+            },
+        );
+    };
     let configuration = spec.clone().into_market_configuration(
         i32::from(spec.collateral.decimals.unwrap_or(0)),
         i32::from(borrow_decimals),

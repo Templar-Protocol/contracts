@@ -329,16 +329,36 @@ impl MarketParams {
             .chain(self.supply_withdrawal_range.amounts())
     }
 
-    /// The fewest decimals at which every amount here converts exactly.
+    /// A decimals value that stands in for an unresolved one, or `None` when no
+    /// value can.
     ///
-    /// Stands in for the real value when it is unresolved. Scaling every
-    /// borrow-denominated amount by one factor leaves the orderings between
-    /// them — which is all [`MarketConfiguration::validate`] compares — intact.
-    pub fn minimum_borrow_decimals(&self) -> u8 {
-        self.amounts()
-            .map(amount::Amount::scale)
-            .max()
-            .unwrap_or_default()
+    /// Scaling every borrow-denominated amount by one factor preserves the
+    /// orderings between them, which is all [`MarketConfiguration::validate`]
+    /// compares — but only while they share a unit. An `atoms` amount is the
+    /// same number at every decimals and a `tokens` amount is not, so a spec
+    /// mixing the two orders differently under any stand-in than it will on
+    /// chain: `500000 atoms` sits above `0.6 tokens` at one decimal and below it
+    /// at six.
+    pub fn stand_in_borrow_decimals(&self) -> Option<u8> {
+        let (mut any_atoms, mut deepest) = (false, None);
+        for amount in self.amounts() {
+            match amount {
+                // Zero is zero at every decimals, so it orders identically under
+                // any stand-in whichever unit it is written in. Every spec keeps
+                // its fees at `0 atoms`, which would otherwise mix them all.
+                amount::Amount::Atoms(0) => {}
+                amount::Amount::Atoms(_) => any_atoms = true,
+                amount::Amount::Tokens { scale, .. } => {
+                    deepest = Some(deepest.unwrap_or(0).max(scale));
+                }
+            }
+        }
+        match (any_atoms, deepest) {
+            (true, Some(_)) => None,
+            // All `atoms` convert to themselves at every decimals, so anything
+            // orders them the way the chain will.
+            (_, deepest) => Some(deepest.unwrap_or_default()),
+        }
     }
 }
 

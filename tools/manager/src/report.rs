@@ -29,6 +29,9 @@ pub(crate) fn stderr_is_color_capable() -> bool {
 /// rewrite so a streamed verdict is never revised afterwards.
 pub(crate) struct Reporter {
     sink: Sink,
+    /// Whether each check is shown as it lands. `-q` drops the stream; it never
+    /// drops the digest or the plan, which are results rather than progress.
+    stream: bool,
     checks: Vec<Check>,
     skip: Vec<String>,
     matched: BTreeSet<String>,
@@ -41,7 +44,6 @@ pub(crate) struct Reporter {
 /// what [`Reporter::captured`] already gives.
 enum Sink {
     Stderr,
-    Quiet,
     #[cfg(test)]
     Captured(Vec<u8>),
 }
@@ -49,7 +51,8 @@ enum Sink {
 impl Reporter {
     pub(crate) fn new(skip: &[String], quiet: bool) -> Self {
         Self {
-            sink: if quiet { Sink::Quiet } else { Sink::Stderr },
+            sink: Sink::Stderr,
+            stream: !quiet,
             checks: Vec::new(),
             skip: skip.to_vec(),
             matched: BTreeSet::new(),
@@ -62,6 +65,7 @@ impl Reporter {
     pub(crate) fn capturing(skip: &[String]) -> Self {
         Self {
             sink: Sink::Captured(Vec::new()),
+            stream: true,
             checks: Vec::new(),
             skip: skip.to_vec(),
             matched: BTreeSet::new(),
@@ -71,16 +75,24 @@ impl Reporter {
     }
 
     #[cfg(test)]
+    pub(crate) const fn quieted(mut self) -> Self {
+        self.stream = false;
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn captured(&self) -> String {
         match &self.sink {
             Sink::Captured(buffer) => String::from_utf8_lossy(buffer).into_owned(),
-            Sink::Stderr | Sink::Quiet => String::new(),
+            Sink::Stderr => String::new(),
         }
     }
 
     /// A heading for the batch of work about to run.
     pub(crate) fn phase(&mut self, label: &str) {
-        self.line(&format!("\n{} {label}", self.paint("→", Ansi::Dim)));
+        if self.stream {
+            self.line(&format!("\n{} {label}", self.paint("→", Ansi::Dim)));
+        }
     }
 
     /// Record one verdict and show it.
@@ -90,17 +102,19 @@ impl Reporter {
             check.status = Status::Skipped { reason };
         }
 
-        let (mark, style) = match check.status {
-            Status::Passed { .. } => ("ok  ", Ansi::Green),
-            Status::Failed { .. } => ("FAIL", Ansi::Red),
-            Status::Skipped { .. } => ("skip", Ansi::Yellow),
-        };
-        let detail = truncate(detail_of(&check.status), DETAIL_WIDTH);
-        self.line(&format!(
-            "  {} {:<32} {detail}",
-            self.paint(mark, style),
-            check.id,
-        ));
+        if self.stream {
+            let (mark, style) = match check.status {
+                Status::Passed { .. } => ("ok  ", Ansi::Green),
+                Status::Failed { .. } => ("FAIL", Ansi::Red),
+                Status::Skipped { .. } => ("skip", Ansi::Yellow),
+            };
+            let detail = truncate(detail_of(&check.status), DETAIL_WIDTH);
+            self.line(&format!(
+                "  {} {:<32} {detail}",
+                self.paint(mark, style),
+                check.id,
+            ));
+        }
         self.checks.push(check);
     }
 
@@ -239,7 +253,6 @@ impl Reporter {
 
     fn line(&mut self, text: &str) {
         match &mut self.sink {
-            Sink::Quiet => {}
             #[cfg(test)]
             Sink::Captured(buffer) => {
                 let _ = writeln!(buffer, "{text}");
@@ -429,13 +442,21 @@ mod tests {
         );
     }
 
+    /// `-q` drops the per-check stream and nothing else. `apply` renders the
+    /// plan through this reporter and then asks the operator to authorize it, so
+    /// a quiet flag that swallowed the render would put granted full-access keys
+    /// and init args behind a bare yes/no prompt.
     #[test]
-    fn quiet_writes_nothing() {
-        let mut reporter = Reporter::new(&[], true);
+    fn quiet_drops_the_stream_but_keeps_the_summary() {
+        let mut reporter = Reporter::capturing(&[]).quieted();
         reporter.phase("assets");
         reporter.extend(checks());
-        reporter.digest();
+        assert_eq!(reporter.captured(), "", "the stream is what -q silences");
 
+        reporter.digest();
+        let output = reporter.captured();
+        assert!(output.contains("1 FAILED"), "{output}");
+        assert!(output.contains("off by 4%"), "{output}");
         assert_eq!(reporter.checks().len(), 3, "checks are still collected");
     }
 }
