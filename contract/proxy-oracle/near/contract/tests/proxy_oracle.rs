@@ -462,8 +462,8 @@ async fn update_and_list(
 fn assert_no_price(result: &OracleResponse, price_id: PriceIdentifier) {
     assert_eq!(
         result.get(&price_id),
-        Some(&None),
-        "{price_id:?} must read back with no price",
+        None,
+        "{price_id:?} is not served here, so it must be absent from the response",
     );
 }
 
@@ -577,10 +577,7 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
     let result = harness
         .oracle_ema_prices(&proxy_oracle, vec![btc_proxy_id, CRYPTO_BTC_USD], 60)
         .await?;
-    assert_eq!(
-        result,
-        HashMap::from_iter([(btc_proxy_id, None), (CRYPTO_BTC_USD, None)]),
-    );
+    assert_eq!(result, HashMap::from_iter([(btc_proxy_id, None)]));
 
     // Step 1: Only redstone has a price. Single source -> same for both methods.
     harness
@@ -597,7 +594,7 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         60,
     )
     .await?;
-    assert_eq!(result.len(), 2);
+    assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(100_000),
@@ -636,8 +633,9 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         60,
     )
     .await?;
-    // Four distinct ids requested: the repeats collapse in the response map.
-    assert_eq!(result.len(), 4);
+    // Four distinct ids requested: the repeats collapse in the response map, and the
+    // one that is not a proxy here is absent.
+    assert_eq!(result.len(), 3);
     assert_no_price(&result, CRYPTO_BTC_USD);
     let expected_btc_2source = match method {
         TestMethod::MedianLow => 90_000,
@@ -681,7 +679,7 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         60,
     )
     .await?;
-    assert_eq!(result.len(), 2);
+    assert_eq!(result.len(), 1);
     assert_no_price(&result, CRYPTO_BTC_USD);
     let expected_btc_3source = match method {
         TestMethod::MedianLow => 90_000,
@@ -706,7 +704,7 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         60,
     )
     .await?;
-    assert_eq!(result.len(), 2);
+    assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(80_000),
