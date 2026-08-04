@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-dispatch-v0.2.0...templar-gateway-methods-dispatch-v0.3.0) - 2026-08-04
+
+### Added
+
+- declarative market deployment — one spec, plan/apply, real preflight (ENG-537) ([#540](https://github.com/Templar-Protocol/contracts/pull/540))
+- *(gateway)* [**breaking**] opt into borsh governance proposals (ENG-558) ([#565](https://github.com/Templar-Protocol/contracts/pull/565))
+
 ## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-dispatch-v0.1.1...templar-gateway-methods-dispatch-v0.2.0) - 2026-08-03
 
 ### Added
