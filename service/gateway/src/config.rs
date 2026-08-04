@@ -7,9 +7,8 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
-use templar_gateway_core::{RedactedString, SharedOperationStore};
+use templar_gateway_core::{PooledSigner, RedactedString, SharedOperationStore};
 use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
-use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_store::{MemoryStore, PostgresStore};
 use templar_gateway_types::ManagedAccountId;
 use url::Url;
@@ -94,15 +93,16 @@ pub struct Config {
 }
 
 impl Config {
-    pub async fn build_signers(&self) -> Result<HashMap<ManagedAccountId, ManagedSigner>> {
+    pub fn build_signers(&self) -> Result<HashMap<ManagedAccountId, PooledSigner>> {
         let mut signers = HashMap::new();
 
         for config in &self.managed_signers {
-            let secret_keys = config.secret_keys.iter().cloned();
-            let entry = ManagedSigner::new(secret_keys).await.with_context(|| {
+            let account_id = ManagedAccountId(config.account_id.clone());
+            let entry = PooledSigner::new(account_id.clone(), config.secret_keys.iter().cloned())
+                .with_context(|| {
                 format!("failed to initialize signer for {}", config.account_id)
             })?;
-            signers.insert(ManagedAccountId(config.account_id.clone()), entry);
+            signers.insert(account_id, entry);
         }
 
         Ok(signers)

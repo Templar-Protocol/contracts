@@ -15,6 +15,7 @@ mod payload;
 mod planning;
 mod read;
 mod redacted_string;
+mod signer;
 
 use async_trait::async_trait;
 use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccountId};
@@ -41,6 +42,7 @@ pub use payload::OraclePayloadSource;
 pub use planning::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, PlanWrite};
 pub use read::ReadNear;
 pub use redacted_string::RedactedString;
+pub use signer::{PooledSigner, SigningKeyLease};
 
 pub enum CreateOperationResult {
     Created(StoredOperation),
