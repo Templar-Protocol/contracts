@@ -47,10 +47,15 @@ impl<C: HasNearClient> DispatchRead<lst_oracle::GetTransformer, C> for Dispatch 
         request: lst_oracle::GetTransformer,
         ctx: C,
     ) -> GatewayResult<lst_oracle::GetTransformerResult> {
+        // Uncached, for the same reason as `proxyOracle.getProxy`: no write path
+        // invalidates the transformer cache, and `load_cached` caches a `None`
+        // too — so a point read taken before `create_transformer` would keep
+        // reporting the transformer absent for `CONFIG_CACHE_TTL` after it
+        // exists. The oracle-resolution paths keep the cache.
         let transformer = ctx
             .near_client()
             .lst_oracle(request.oracle_id)
-            .cached_get_transformer(GetTransformerArgs {
+            .get_transformer(GetTransformerArgs {
                 price_identifier: request.price_identifier,
             })
             .await?;
