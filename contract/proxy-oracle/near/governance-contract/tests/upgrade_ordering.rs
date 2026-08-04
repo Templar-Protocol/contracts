@@ -149,7 +149,9 @@ async fn upgrade_oracle(
         harness.code_hash(oracle).await?,
         "oracle code should have been replaced"
     );
-    assert_eq!(harness.contract_state_version(oracle).await?.stored, 1);
+    let version = harness.contract_state_version(oracle).await?;
+    assert_eq!((version.stored, version.target), (1, 1));
+    assert!(!version.needs_migration);
     assert_eq!(
         harness
             .client()?
@@ -181,10 +183,9 @@ async fn upgrade_gov(harness: &SandboxHarness, governance_id: &AccountId) -> Res
         harness.code_hash(governance_id).await?,
         "gov code should have been replaced"
     );
-    assert_eq!(
-        harness.contract_state_version(governance_id).await?.stored,
-        1
-    );
+    let version = harness.contract_state_version(governance_id).await?;
+    assert_eq!((version.stored, version.target), (1, 1));
+    assert!(!version.needs_migration);
     // The seeded proposal survived the v0→v1 borsh reshape: it still deserializes as a v1
     // `Proposal<Operation>` from storage, with the legacy body restructured intact.
     let operation = harness

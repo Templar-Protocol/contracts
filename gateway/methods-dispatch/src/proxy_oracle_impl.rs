@@ -176,9 +176,15 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::GetProxy, C> for Dispatch {
         ctx: C,
     ) -> GatewayResult<proxy_oracle::GetProxyResult> {
         let params = request;
+        // Uncached on purpose. No write path invalidates the definition cache, so
+        // a `cached_get_proxy` here answers a point read about current
+        // configuration with state up to `CONFIG_CACHE_TTL` stale — including
+        // right after the caller's own `admin_set_proxy`. `oracle_resolution`
+        // keeps the cache, where the staleness is bounded by design and the read
+        // is hot.
         ctx.near_client()
             .proxy_oracle(params.oracle_id)
-            .cached_get_proxy(GetProxyArgs { id: params.id })
+            .get_proxy(GetProxyArgs { id: params.id })
             .await
             .map(|proxy| proxy_oracle::GetProxyResult { proxy })
     }
