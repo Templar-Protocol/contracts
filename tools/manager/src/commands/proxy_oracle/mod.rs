@@ -1,12 +1,13 @@
 mod create;
 mod get_proxy;
 mod get_proxy_circuit_breaker_set;
-mod governance;
+pub mod governance;
 mod list_proxies;
 mod price_feed_exists;
 mod update_prices;
 mod upgrade;
 
+pub(crate) use create::check_owner_id_is_honored;
 pub use create::Create;
 pub use get_proxy::GetProxy;
 pub use get_proxy_circuit_breaker_set::GetProxyCircuitBreakerSet;

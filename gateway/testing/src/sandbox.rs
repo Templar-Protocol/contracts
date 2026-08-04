@@ -25,6 +25,9 @@ use templar_common::{
     Nanoseconds,
 };
 use templar_gateway_core::NearClient;
+use templar_gateway_methods_spec::{
+    lst_oracle, owner, proxy_oracle, proxy_oracle_governance as gov,
+};
 use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_types::ManagedAccountId;
 use templar_proxy_oracle_kernel::proxy::Proxy;
@@ -735,18 +738,17 @@ impl SandboxHarness {
         price_identifier: PriceIdentifier,
         price: Option<templar_common::oracle::pyth::Price>,
     ) -> Result<()> {
-        self.call_contract(
+        self.call_function(
+            &ManagedAccountId(oracle_id.clone()),
             &oracle_id,
             "set_pyth_price",
-            serde_json::json!({
-                "price_identifier": price_identifier,
-                "price": price,
-            }),
-            &oracle_id,
-            100,
-            NearToken::from_yoctonear(0),
+            SetPythPriceArgs {
+                price_identifier,
+                price,
+            },
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     pub async fn set_mock_oracle_redstone_price(
@@ -755,18 +757,14 @@ impl SandboxHarness {
         feed_id: templar_common::oracle::redstone::FeedId,
         data: Option<templar_common::oracle::redstone::FeedData>,
     ) -> Result<()> {
-        self.call_contract(
+        self.call_function(
+            &ManagedAccountId(oracle_id.clone()),
             &oracle_id,
             "set_redstone_price",
-            serde_json::json!({
-                "feed_id": feed_id,
-                "data": data,
-            }),
-            &oracle_id,
-            100,
-            NearToken::from_yoctonear(0),
+            SetRedstonePriceArgs { feed_id, data },
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     pub async fn set_mock_oracle_lazer_price(
@@ -775,18 +773,14 @@ impl SandboxHarness {
         feed_id: u32,
         data: Option<templar_common::oracle::lazer::FeedData>,
     ) -> Result<()> {
-        self.call_contract(
+        self.call_function(
+            &ManagedAccountId(oracle_id.clone()),
             &oracle_id,
             "set_lazer_price",
-            serde_json::json!({
-                "feed_id": feed_id,
-                "data": data,
-            }),
-            &oracle_id,
-            100,
-            NearToken::from_yoctonear(0),
+            SetLazerPriceArgs { feed_id, data },
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     pub async fn deploy_lst_oracle(&self, label: &str, oracle_id: AccountId) -> Result<AccountId> {
@@ -805,24 +799,25 @@ impl SandboxHarness {
         Ok(id)
     }
 
+    /// Create an LST price transformer via the owner-gated `create_transformer`.
+    /// The oracle account owns itself after `deploy_lst_oracle`, so it signs as
+    /// itself.
     pub async fn create_lst_transformer(
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
         entry: PriceTransformer,
     ) -> Result<()> {
-        self.call_contract(
-            &oracle_id,
-            "create_transformer",
-            serde_json::json!({
-                "price_identifier": price_identifier,
-                "entry": entry,
-            }),
-            &oracle_id,
-            100,
-            NearToken::from_yoctonear(1),
+        self.execute(
+            &ManagedAccountId(oracle_id.clone()),
+            lst_oracle::CreateTransformer {
+                oracle_id,
+                price_identifier,
+                entry,
+            },
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// Set a proxy definition directly via the owner-gated `admin_set_proxy`
@@ -834,37 +829,37 @@ impl SandboxHarness {
         price_identifier: PriceIdentifier,
         proxy: Option<Proxy<Source>>,
     ) -> Result<()> {
-        self.call_contract(
-            &oracle_id,
-            "admin_set_proxy",
-            serde_json::json!({ "id": price_identifier, "proxy": proxy }),
-            &oracle_id,
-            100,
-            NearToken::from_yoctonear(0),
+        self.execute(
+            &ManagedAccountId(oracle_id.clone()),
+            proxy_oracle::AdminSetProxy {
+                oracle_id,
+                id: price_identifier,
+                proxy,
+            },
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// Refresh the proxy oracle's cached prices for `price_ids` by invoking
     /// `update_prices`, which fans out to each proxy's underlying sources and
     /// caches the aggregated result so a subsequent
     /// `list_ema_prices_no_older_than` read sees it. Signed as the oracle
-    /// account (permissionless, but the call still needs a signer). Generously
-    /// gassed since it triggers a cross-contract fan-out per proxy.
+    /// account (permissionless, but the call still needs a signer).
     pub async fn update_proxy_prices(
         &self,
         oracle_id: AccountId,
         price_ids: Vec<PriceIdentifier>,
     ) -> Result<()> {
-        self.call_contract(
-            &oracle_id,
-            "update_prices",
-            serde_json::json!({ "price_ids": price_ids }),
-            &oracle_id,
-            300,
-            NearToken::from_yoctonear(0),
+        self.execute(
+            &ManagedAccountId(oracle_id.clone()),
+            proxy_oracle::UpdatePrices {
+                oracle_id,
+                price_ids,
+            },
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// Deploy a governance contract for `oracle_id` (admin = `admin_id`, all TTLs
@@ -895,13 +890,12 @@ impl SandboxHarness {
         .await?;
 
         // Current owner (the oracle account) proposes the governance contract.
-        self.call_contract(
-            &oracle_id,
-            "own_propose_owner",
-            serde_json::json!({ "account_id": governance_id }),
-            &oracle_id,
-            50,
-            NearToken::from_yoctonear(1),
+        self.execute(
+            &ManagedAccountId(oracle_id.clone()),
+            owner::ProposeOwner {
+                contract_id: oracle_id.clone(),
+                account_id: Some(governance_id.clone()),
+            },
         )
         .await?;
 
@@ -929,28 +923,26 @@ impl SandboxHarness {
             gas: near_sdk::Gas::from_tgas(50),
         });
 
-        self.call_contract(
-            governance_id,
-            "create_proposal",
-            serde_json::json!({
-                "id": proposal_id,
-                "operation": operation,
-                "requested_ttl": Nanoseconds::zero(),
-            }),
-            admin_id,
-            100,
-            NearToken::from_yoctonear(1),
+        let admin = ManagedAccountId(admin_id.clone());
+        self.execute(
+            &admin,
+            gov::CreateProposal {
+                governance_id: governance_id.clone(),
+                id: proposal_id,
+                operation,
+                requested_ttl: Nanoseconds::zero(),
+            },
         )
         .await?;
-        self.call_contract(
-            governance_id,
-            "execute_proposal",
-            serde_json::json!({ "id": proposal_id }),
-            admin_id,
-            100,
-            NearToken::from_yoctonear(1),
+        self.execute(
+            &admin,
+            gov::ExecuteProposal {
+                governance_id: governance_id.clone(),
+                id: proposal_id,
+            },
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// Seed a proxy on a legacy (`< 0.2.0`) oracle, whose only path to set a
@@ -967,47 +959,55 @@ impl SandboxHarness {
             proxy: Some(proxy),
         };
 
-        self.call_contract(
+        let signer = ManagedAccountId(oracle_id.clone());
+        self.call_function_payable(
+            &signer,
             &oracle_id,
             "gov_create",
-            serde_json::json!({ "id": 0, "operation": operation }),
-            &oracle_id,
-            100,
+            LegacyGovCreateArgs { id: 0, operation },
             NearToken::from_yoctonear(1),
         )
         .await?;
-        self.call_contract(
+        self.call_function_payable(
+            &signer,
             &oracle_id,
             "gov_execute",
-            serde_json::json!({ "id": 0 }),
-            &oracle_id,
-            100,
+            LegacyGovExecuteArgs { id: 0 },
             NearToken::from_yoctonear(1),
         )
-        .await
-    }
-    /// Submit a successful sandbox contract call under the shared test policy.
-    pub(crate) async fn call_contract(
-        &self,
-        contract_id: &AccountId,
-        method_name: &str,
-        args: impl serde::Serialize,
-        signer_id: &AccountId,
-        gas_tgas: u64,
-        deposit: NearToken,
-    ) -> Result<()> {
-        Contract(contract_id.clone())
-            .call_function(method_name, args)
-            .transaction()
-            .deposit(deposit)
-            .gas(near_sdk::Gas::from_tgas(gas_tgas))
-            .with_signer(signer_id.clone(), test_signer())
-            .wait_until(TEST_FINALITY_POLICY.transaction_status())
-            .send_to(&self.network)
-            .await?
-            .assert_success();
+        .await?;
         Ok(())
     }
+}
+
+#[derive(serde::Serialize)]
+struct SetPythPriceArgs {
+    price_identifier: PriceIdentifier,
+    price: Option<templar_common::oracle::pyth::Price>,
+}
+
+#[derive(serde::Serialize)]
+struct SetRedstonePriceArgs {
+    feed_id: templar_common::oracle::redstone::FeedId,
+    data: Option<templar_common::oracle::redstone::FeedData>,
+}
+
+#[derive(serde::Serialize)]
+struct SetLazerPriceArgs {
+    feed_id: u32,
+    data: Option<templar_common::oracle::lazer::FeedData>,
+}
+
+/// `gov_create` args on a `< 0.2.0` oracle's built-in governance.
+#[derive(serde::Serialize)]
+struct LegacyGovCreateArgs {
+    id: u32,
+    operation: v0::Operation,
+}
+
+#[derive(serde::Serialize)]
+struct LegacyGovExecuteArgs {
+    id: u32,
 }
 
 fn zero_governance_policy() -> GovernancePolicy {

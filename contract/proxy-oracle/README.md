@@ -57,7 +57,7 @@ Proxy oracle contract upgrades are a `TargetFunctionCall` to the proxy's owner-g
 
 ### Bring-up and hardening
 
-A newly deployed oracle needs configuration immediately — proxy definitions, breaker history, breakers — so bring-up runs under a deliberately open policy and is hardened afterwards. `--ttl-default 0s` (what `script/deploy.sh` uses) is already that open policy: every lock is zero and every target method is Admin-only, so `create-proposal … --execute-when-ready` configures the oracle in a single pass. Use `--policy-file governance-policy.bootstrap.example.json` instead if delegates rather than the Admin should do the bring-up — same role assignments as the steady-state table, all timelocks zero.
+A newly deployed oracle needs configuration immediately — proxy definitions, breaker history, breakers — so bring-up runs under a deliberately open policy and is hardened afterwards. `--ttl-default 0s` (what a market deployment's `governance.ttl_default` sets) is already that open policy: every lock is zero and every target method is Admin-only, so `create-proposal … --execute-when-ready` configures the oracle in a single pass. Use `--policy-file governance-policy.bootstrap.example.json` instead if delegates rather than the Admin should do the bring-up — same role assignments as the steady-state table, all timelocks zero.
 
 Neither is a production policy: with every lock at zero the timelocks provide no protection at all. Harden to something like `governance-policy.example.json` once the oracle is configured.
 

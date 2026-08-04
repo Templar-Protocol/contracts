@@ -44,3 +44,13 @@ pub struct GetTransformer {
 pub struct GetTransformerResult {
     pub transformer: Option<PriceTransformer>,
 }
+
+/// Create a transformer for a price ID. Owner-gated, and charged a 1-yoctoNEAR
+/// confirmation deposit by the contract.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "lstOracle.createTransformer")]
+pub struct CreateTransformer {
+    pub oracle_id: AccountId,
+    pub price_identifier: PriceIdentifier,
+    pub entry: PriceTransformer,
+}

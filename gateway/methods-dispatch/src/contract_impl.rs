@@ -45,6 +45,25 @@ impl<C: HasNearClient> DispatchRead<contract::GetVersion, C> for Dispatch {
 }
 
 #[async_trait]
+impl<C: HasNearClient> DispatchRead<contract::GetStateVersion, C> for Dispatch {
+    async fn dispatch(
+        request: contract::GetStateVersion,
+        ctx: C,
+    ) -> GatewayResult<contract::GetStateVersionResult> {
+        let client = ctx.near_client().contract(request.contract_id);
+        let stored = client.get_stored_state_version(()).await?;
+        let target = client.get_target_state_version(()).await?;
+        let needs_migration = client.needs_migration(()).await?;
+
+        Ok(contract::GetStateVersionResult {
+            stored,
+            target,
+            needs_migration,
+        })
+    }
+}
+
+#[async_trait]
 impl<C: HasNearClient> DispatchRead<contract::GetKind, C> for Dispatch {
     async fn dispatch(
         request: contract::GetKind,

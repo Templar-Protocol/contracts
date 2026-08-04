@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use anyhow::Result;
-use near_api::{types::AccountId, NetworkConfig};
+use near_api::types::AccountId;
 use near_sdk::{
     json_types::{Base58CryptoHash, Base64VecU8, I64, U64},
     mock::MockAction,
@@ -18,7 +18,6 @@ use near_sdk::{
     testing_env, NearToken,
 };
 use near_sdk_contract_tools::owner::OwnerExternal as _;
-use serde_json::json;
 use templar_common::{
     oracle::{
         lazer,
@@ -26,6 +25,10 @@ use templar_common::{
     },
     upgrade::UpgradeSource,
     Decimal, Nanoseconds,
+};
+use templar_gateway_methods_spec::{
+    owner::GetOwner,
+    proxy_oracle::{GetProxy, ListProxies},
 };
 use templar_gateway_testing::SandboxHarness;
 use templar_proxy_oracle_kernel::{
@@ -439,28 +442,29 @@ enum TestMethod {
 
 /// Push fresh prices into the proxy oracle's cache, then read them back.
 async fn update_and_list(
-    network: &NetworkConfig,
+    harness: &SandboxHarness,
     proxy_id: &AccountId,
     price_ids: Vec<PriceIdentifier>,
     age: u64,
 ) -> Result<OracleResponse> {
-    common::call(
-        network,
-        proxy_id,
-        proxy_id,
-        "update_prices",
-        json!({ "price_ids": price_ids }),
-        300,
-        0,
-    )
-    .await?;
-    common::view(
-        network,
-        proxy_id,
-        "list_ema_prices_no_older_than",
-        json!({ "price_ids": price_ids, "age": age }),
-    )
-    .await
+    harness
+        .update_proxy_prices(proxy_id.clone(), price_ids.clone())
+        .await?;
+    harness.oracle_ema_prices(proxy_id, price_ids, age).await
+}
+
+/// Assert a requested price id read back with no price.
+///
+/// The gateway answers with one entry per *requested* id, filling `None` where the
+/// oracle holds nothing — where the raw contract view instead omits the id. So
+/// "the oracle has no price for this id" is an explicit `Some(&None)` here rather
+/// than an absent key.
+fn assert_no_price(result: &OracleResponse, price_id: PriceIdentifier) {
+    assert_eq!(
+        result.get(&price_id),
+        Some(&None),
+        "{price_id:?} must read back with no price",
+    );
 }
 
 #[rstest::rstest]
@@ -470,20 +474,21 @@ async fn update_and_list(
 #[allow(clippy::too_many_lines)]
 async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
     let harness = SandboxHarness::start().await?;
-    let network = harness.network.clone();
+    let client = harness.client()?;
 
     let pyth_oracle = harness.deploy_mock_oracle("pyth-oracle").await?;
     let pyth_oracle2 = harness.deploy_mock_oracle("pyth-oracle2").await?;
     let redstone_adapter = harness.deploy_mock_oracle("redstone-adapter").await?;
     let proxy_oracle = harness.deploy_proxy_oracle().await?;
 
-    let list_proxies: Vec<PriceIdentifier> = common::view(
-        &network,
-        &proxy_oracle,
-        "list_proxies",
-        json!({ "offset": null, "count": null }),
-    )
-    .await?;
+    let list_proxies = client
+        .read(ListProxies {
+            oracle_id: proxy_oracle.clone(),
+            offset: None,
+            count: None,
+        })
+        .await?
+        .proxies;
     assert_eq!(list_proxies, vec![]);
 
     let default_filter = FreshnessFilter::new(
@@ -545,34 +550,37 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         )
         .await?;
 
-    let list_proxies: Vec<PriceIdentifier> = common::view(
-        &network,
-        &proxy_oracle,
-        "list_proxies",
-        json!({ "offset": null, "count": null }),
-    )
-    .await?;
+    let list_proxies = client
+        .read(ListProxies {
+            oracle_id: proxy_oracle.clone(),
+            offset: None,
+            count: None,
+        })
+        .await?
+        .proxies;
     assert_eq!(
         list_proxies,
         vec![btc_proxy_id, just_pyth_btc_id, just_redstone_eth_id],
     );
-    let stored_btc: Option<Proxy<Source>> = common::view(
-        &network,
-        &proxy_oracle,
-        "get_proxy",
-        json!({ "id": btc_proxy_id }),
-    )
-    .await?;
+    let stored_btc = client
+        .read(GetProxy {
+            oracle_id: proxy_oracle.clone(),
+            id: btc_proxy_id,
+        })
+        .await?
+        .proxy;
     assert_eq!(stored_btc.unwrap(), btc_proxy_def);
 
-    let result: OracleResponse = common::view(
-        &network,
-        &proxy_oracle,
-        "list_ema_prices_no_older_than",
-        json!({ "price_ids": [btc_proxy_id, CRYPTO_BTC_USD], "age": 60 }),
-    )
-    .await?;
-    assert_eq!(result, HashMap::from_iter([(btc_proxy_id, None)]));
+    // `CRYPTO_BTC_USD` is requested alongside the proxy ids throughout as a negative
+    // control: it is a *source* price id on the underlying pyth mock, never a proxy
+    // configured on this oracle, so it must never acquire a price here.
+    let result = harness
+        .oracle_ema_prices(&proxy_oracle, vec![btc_proxy_id, CRYPTO_BTC_USD], 60)
+        .await?;
+    assert_eq!(
+        result,
+        HashMap::from_iter([(btc_proxy_id, None), (CRYPTO_BTC_USD, None)]),
+    );
 
     // Step 1: Only redstone has a price. Single source -> same for both methods.
     harness
@@ -583,17 +591,18 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         )
         .await?;
     let result = update_and_list(
-        &network,
+        &harness,
         &proxy_oracle,
         vec![btc_proxy_id, CRYPTO_BTC_USD],
         60,
     )
     .await?;
-    assert_eq!(result.len(), 1);
+    assert_eq!(result.len(), 2);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(100_000),
     );
+    assert_no_price(&result, CRYPTO_BTC_USD);
 
     // Step 2: redstone=100k, pyth1=90k.
     //   MedianLow: median of [90k, 100k] -> 90k
@@ -613,7 +622,7 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         )
         .await?;
     let result = update_and_list(
-        &network,
+        &harness,
         &proxy_oracle,
         vec![
             btc_proxy_id,
@@ -627,7 +636,9 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         60,
     )
     .await?;
-    assert_eq!(result.len(), 3);
+    // Four distinct ids requested: the repeats collapse in the response map.
+    assert_eq!(result.len(), 4);
+    assert_no_price(&result, CRYPTO_BTC_USD);
     let expected_btc_2source = match method {
         TestMethod::MedianLow => 90_000,
         TestMethod::Priority => 100_000,
@@ -664,13 +675,14 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         )
         .await?;
     let result = update_and_list(
-        &network,
+        &harness,
         &proxy_oracle,
         vec![btc_proxy_id, CRYPTO_BTC_USD],
         60,
     )
     .await?;
-    assert_eq!(result.len(), 1);
+    assert_eq!(result.len(), 2);
+    assert_no_price(&result, CRYPTO_BTC_USD);
     let expected_btc_3source = match method {
         TestMethod::MedianLow => 90_000,
         TestMethod::Priority => 80_000,
@@ -688,19 +700,28 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         .set_mock_oracle_redstone_price(redstone_adapter.clone(), "BTC".into(), None)
         .await?;
     let result = update_and_list(
-        &network,
+        &harness,
         &proxy_oracle,
         vec![btc_proxy_id, CRYPTO_BTC_USD],
         60,
     )
     .await?;
-    assert_eq!(result.len(), 1);
+    assert_eq!(result.len(), 2);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(80_000),
     );
+    assert_no_price(&result, CRYPTO_BTC_USD);
 
     Ok(())
+}
+
+/// `new` args. `owner_id: None` must serialize as an explicit `null` rather than
+/// be omitted, which is what proves the fallback runs on the contract side.
+#[derive(near_sdk::serde::Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct NewArgs {
+    owner_id: Option<AccountId>,
 }
 
 /// The `owner_id` init arg must survive JSON deserialization over the wire, since
@@ -713,50 +734,50 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
 #[tokio::test]
 async fn init_args_seat_the_owner_over_the_wire() -> Result<()> {
     let harness = SandboxHarness::start().await?;
-    let network = harness.network.clone();
+    let client = harness.client()?;
 
-    let registry = common::create_account(&harness, "registry").await?;
-    let governance = common::create_account(&harness, "governance").await?;
-    let explicit_oracle = common::create_account(&harness, "explicit-owner-oracle").await?;
-    let default_oracle = common::create_account(&harness, "default-owner-oracle").await?;
+    let registry = harness.create_user("registry").await?;
+    let governance = harness.create_user("governance").await?;
+    let explicit_oracle = harness.create_user("explicit-owner-oracle").await?;
+    let default_oracle = harness.create_user("default-owner-oracle").await?;
 
     // The two oracles are independent accounts, so each stage runs concurrently.
     let code = templar_gateway_testing::wasm::proxy_oracle().await.to_vec();
     tokio::try_join!(
-        common::deploy_code(&network, &explicit_oracle, code.clone()),
-        common::deploy_code(&network, &default_oracle, code),
+        harness.deploy_code(&explicit_oracle.0, code.clone()),
+        harness.deploy_code(&default_oracle.0, code),
     )?;
 
     tokio::try_join!(
         // Explicit owner: `new` names `governance`, distinct from the deployed account.
-        common::call(
-            &network,
+        harness.call_function(
             &explicit_oracle,
-            &explicit_oracle,
+            &explicit_oracle.0,
             "new",
-            json!({ "owner_id": governance }),
-            30,
-            0,
+            NewArgs {
+                owner_id: Some(governance.0.clone()),
+            },
         ),
         // Omitted owner: `new` falls back to its predecessor, so sign it as `registry`.
-        common::call(
-            &network,
-            &default_oracle,
+        harness.call_function(
             &registry,
+            &default_oracle.0,
             "new",
-            json!({ "owner_id": null }),
-            30,
-            0,
+            NewArgs { owner_id: None },
         ),
     )?;
 
-    let (explicit_owner, default_owner): (Option<AccountId>, Option<AccountId>) = tokio::try_join!(
-        common::view(&network, &explicit_oracle, "own_get_owner", json!({})),
-        common::view(&network, &default_oracle, "own_get_owner", json!({})),
+    let (explicit_owner, default_owner) = tokio::try_join!(
+        client.read(GetOwner {
+            contract_id: explicit_oracle.0.clone()
+        }),
+        client.read(GetOwner {
+            contract_id: default_oracle.0.clone()
+        }),
     )?;
 
-    assert_eq!(explicit_owner.as_ref(), Some(&governance));
-    assert_eq!(default_owner.as_ref(), Some(&registry));
+    assert_eq!(explicit_owner.owner.as_ref(), Some(&governance.0));
+    assert_eq!(default_owner.owner.as_ref(), Some(&registry.0));
 
     Ok(())
 }
@@ -770,7 +791,6 @@ async fn proxy_oracle_enforces_freshness_filter(
     #[case] expected_price: u64,
 ) -> Result<()> {
     let harness = SandboxHarness::start().await?;
-    let network = harness.network.clone();
 
     let pyth_oracle = harness.deploy_mock_oracle("pyth-oracle").await?;
     let pyth_oracle2 = harness.deploy_mock_oracle("pyth-oracle2").await?;
@@ -831,7 +851,7 @@ async fn proxy_oracle_enforces_freshness_filter(
         )
         .await?;
 
-    let result = update_and_list(&network, &proxy_oracle, vec![btc_proxy_id], 60).await?;
+    let result = update_and_list(&harness, &proxy_oracle, vec![btc_proxy_id], 60).await?;
     assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
@@ -848,7 +868,6 @@ async fn proxy_oracle_enforces_freshness_filter(
 #[tokio::test]
 async fn proxy_oracle_resolves_lazer_backed_feed() -> Result<()> {
     let harness = SandboxHarness::start().await?;
-    let network = harness.network.clone();
 
     let lazer_adapter = harness.deploy_mock_oracle("lazer-adapter").await?;
     let proxy_oracle = harness.deploy_proxy_oracle().await?;
@@ -864,7 +883,7 @@ async fn proxy_oracle_resolves_lazer_backed_feed() -> Result<()> {
         .await?;
 
     // No Lazer price yet: the proxy resolves to nothing.
-    let result = update_and_list(&network, &proxy_oracle, vec![proxy_id], 60).await?;
+    let result = update_and_list(&harness, &proxy_oracle, vec![proxy_id], 60).await?;
     assert_eq!(result, HashMap::from_iter([(proxy_id, None)]));
 
     // Publish a Lazer feed, addressed by its native `u32` feed id (no PriceIdentifier map). The
@@ -888,7 +907,7 @@ async fn proxy_oracle_resolves_lazer_backed_feed() -> Result<()> {
         .await?;
 
     // ...and the proxy's on-chain update reads it back through the feed-id view + callback.
-    let result = update_and_list(&network, &proxy_oracle, vec![proxy_id], 60).await?;
+    let result = update_and_list(&harness, &proxy_oracle, vec![proxy_id], 60).await?;
     assert_eq!(
         result.get(&proxy_id).unwrap().as_ref().map(norm_price),
         Some(100_000),

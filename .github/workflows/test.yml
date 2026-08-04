@@ -85,7 +85,7 @@ jobs:
               - 'contract/artifacts/Cargo.toml'
               - 'contract/artifacts/build.rs'
               # CI's own catalog PR touches only this file; without it, the
-              # one PR that records a release would run no tests.
+              # PR that records a release batch would run no tests.
               - 'contract/artifacts/releases/*.tsv'
               - 'contract/artifacts/src/**'
               - 'contract/market/src/**'
@@ -122,7 +122,9 @@ jobs:
               - 'service/relayer/tests/**'
               - 'test-utils/Cargo.toml'
               - 'test-utils/src/**'
+              - 'deployments/**'
               - 'tools/manager/Cargo.toml'
+              - 'tools/manager/fixtures/**'
               - 'tools/manager/src/**'
               - 'tools/tools-common/Cargo.toml'
               - 'tools/tools-common/**'

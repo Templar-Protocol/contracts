@@ -16,8 +16,7 @@ use crate::context::{check_operation_status, print_json, CliContext};
 pub(super) async fn recover_nep141(ctx: CliContext, args: RecoverNep141) -> anyhow::Result<()> {
     use templar_gateway_methods_spec::{storage, token};
 
-    let (signer, secret_key) = args.signer.resolve()?;
-    let client = ctx.signing_client(signer.clone(), secret_key)?;
+    let (signer, client) = ctx.signing_client_for(&args.signer).await?;
     let account_id = signer.0.clone();
     let token = token::TokenReference::Ft {
         contract_id: args.token_id.clone(),
@@ -66,8 +65,7 @@ pub(super) async fn remove_version(
         return ctx.write(args.signer.clone(), spec).await;
     }
 
-    let (signer, secret_key) = args.signer.resolve()?;
-    let client = ctx.signing_client(signer.clone(), secret_key)?;
+    let (signer, client) = ctx.signing_client_for(&args.signer).await?;
     let removed = remove_all_versions(&ctx, &client, &signer, args.registry_id()).await?;
     print_json(&json!({ "removed": removed }))
 }
@@ -111,8 +109,7 @@ async fn remove_all_versions(
 pub(super) async fn registry_remove(ctx: CliContext, args: registry::Remove) -> anyhow::Result<()> {
     use templar_gateway_methods_spec::account;
 
-    let (signer, secret_key) = args.signer.resolve()?;
-    let client = ctx.signing_client(signer.clone(), secret_key)?;
+    let (signer, client) = ctx.signing_client_for(&args.signer).await?;
     let registry_id = signer.0.clone();
     remove_all_versions(&ctx, &client, &signer, &registry_id).await?;
 

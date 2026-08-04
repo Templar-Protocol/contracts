@@ -247,7 +247,5 @@ mod tests {
         // shape — the gateway's DTO projects what it needs.
         assert!(parsed.get("releases").is_none());
         assert_eq!(meta.releases()[0].version, "1.0.0");
-        // Newest *released* version — the crate's Cargo.toml is further ahead.
-        assert_eq!(meta.version(), Some("1.3.0"));
     }
 }

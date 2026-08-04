@@ -3,6 +3,7 @@ mod chain_impl;
 mod contract_impl;
 mod ft_impl;
 mod intents_impl;
+mod lazer_impl;
 mod lst_oracle_impl;
 mod market_impl;
 mod mt_impl;

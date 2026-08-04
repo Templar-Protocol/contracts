@@ -1,0 +1,33 @@
+extends = ["../profiles/v1-mainnet.toml", "../profiles/irs-stable.toml"]
+
+name = "iada-ixlmusdc"
+
+[collateral]
+asset = "nep245:intents.near:nep141:cardano.omft.near"
+decimals = 6
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "pyth", oracle = "pyth-oracle.near", price_id = "2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d", weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "ADA", weight = 2 },
+]
+
+[borrow]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
+decimals = 7
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "pyth", oracle = "pyth-oracle.near", price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a", weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "USDC", weight = 2 },
+]
+
+[market]
+mcr_maintenance = "1.25"
+mcr_liquidation = "1.2"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.1"
+price_maximum_age = "60s"
+borrow_range = { minimum = "1" }
+supply_range = { minimum = "400000" }
+supply_withdrawal_range = { minimum = "400000" }

@@ -1,0 +1,12 @@
+# LTC, held through NEAR Intents.
+[collateral]
+asset = "nep245:intents.near:nep141:ltc.omft.near"
+symbol = "LTC"
+reference = { coin_gecko = { id = "litecoin" } }
+decimals = 8
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 26, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "LTC", weight = 2 },
+]

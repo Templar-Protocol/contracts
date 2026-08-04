@@ -51,8 +51,7 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
         return ctx.write(signer_args, create_spec).await;
     }
 
-    let (signer, secret_key) = signer_args.resolve()?;
-    let client = ctx.signing_client(signer.clone(), secret_key)?;
+    let (signer, client) = ctx.signing_client_for(&signer_args).await?;
     let create = client.execute_as(signer.clone(), create_spec).await?;
     // Fail fast if the create reverted, before waiting on / executing a proposal
     // that was never created.
@@ -155,7 +154,7 @@ async fn wait_for_maturity(
     governance_id: &AccountId,
     id: u32,
 ) -> anyhow::Result<()> {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     let proposal = ctx
         .client
@@ -171,10 +170,7 @@ async fn wait_for_maturity(
         .created_at
         .as_ns()
         .saturating_add(proposal.ttl.as_ns());
-    let now_ns = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0);
+    let now_ns = crate::spec::wall_clock().as_ns();
 
     if maturity_ns > now_ns {
         // Small buffer so block time (the chain's authoritative clock) has caught

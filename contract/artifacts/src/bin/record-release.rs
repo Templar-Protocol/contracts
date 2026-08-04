@@ -1,7 +1,8 @@
 //! Record a release under `contract/artifacts/releases/`.
 //!
-//! Run by `.github/workflows/release-artifacts.yml` after it has built and
-//! uploaded a release's WASM; the one-line diff goes up as a PR. Never edited by
+//! Run by `.github/workflows/release-artifacts.yml` once it has built and
+//! uploaded a release's WASM, and again by `catalog-pr.yml` to replay the row
+//! onto the branch that carries the whole batch up as one PR. Never edited by
 //! hand — the catalog records what was *released*, which a `Cargo.toml` bump
 //! cannot assert.
 //!
