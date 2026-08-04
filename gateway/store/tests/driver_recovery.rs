@@ -945,11 +945,22 @@ async fn pooled_keys_broadcast_in_parallel() {
 /// it, so resubmission takes *that* key. Leasing a fresh one would let a new
 /// allocation — reading an on-chain nonce this step has not yet advanced — pick
 /// the same nonce.
+/// Holding that key's lane first is what proves the point: the key and nonce in
+/// the assertions come from the stored signature, so they hold even for a driver
+/// that broadcasts without taking a lane at all.
 #[tokio::test]
 async fn prepared_step_resubmits_under_the_key_that_signed_it() {
     let store = Arc::new(MemoryStore::new());
     let log = Arc::new(BroadcastLog::default());
-    let driver = broadcast_driver(store.clone(), log.clone(), 2, Duration::ZERO);
+    let signer = Arc::new(FakeSigner::with_keys(2));
+    let driver = OperationDriver::new(
+        store.clone(),
+        signer.clone(),
+        Arc::new(BroadcastExecutor {
+            log: log.clone(),
+            broadcast_delay: Duration::ZERO,
+        }),
+    );
 
     let signing_key = pool_public_key(1);
     let op = stored(
@@ -964,7 +975,26 @@ async fn prepared_step_resubmits_under_the_key_that_signed_it() {
     );
     store.save_operation(op.clone()).await.unwrap();
 
-    let result = driver.execute_remaining_steps(op).await.unwrap();
+    let held = signer.pool.lease(&signing_key).await.expect("a pooled key");
+    let mut replay = tokio::spawn({
+        let driver = driver.clone();
+        async move { driver.execute_remaining_steps(op).await }
+    });
+
+    assert!(
+        timeout(Duration::from_millis(50), &mut replay)
+            .await
+            .is_err(),
+        "resubmission must wait for the lane of the key that signed the step"
+    );
+    assert_eq!(log.broadcasts(), 0);
+
+    drop(held);
+    let result = timeout(Duration::from_secs(5), replay)
+        .await
+        .expect("resubmission must proceed once the lane frees")
+        .unwrap()
+        .unwrap();
 
     assert_eq!(result.status(), OperationStatus::Succeeded);
     assert_eq!(log.nonces_for(signing_key), vec![42]);
