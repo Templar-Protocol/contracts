@@ -65,15 +65,15 @@ jobs:
           gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/release-artifacts.yml/runs?status=success&per_page=100" \
             --jq '.workflow_runs[].id' | sort > trusted-runs
 
-          # Rows expire with the artifact that carries them, so the live ones
-          # are the pending set plus recently merged ones, which record as
-          # no-ops. A single page covers that by a wide margin.
+          # Both listings are newest-first, and one page of either holds eleven
+          # full batches: nine artifacts are releasable, and a row matters only
+          # while the artifact carrying it lives.
           gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=catalog-row&per_page=100" \
             --jq '.artifacts[] | select(.expired | not) | [.id, .workflow_run.id] | @tsv' > candidates
 
           while IFS=$'\t' read -r id run; do
             if ! grep -qx "$run" trusted-runs; then
-              echo "::warning::Ignoring a catalog row from run ${run}, which is not a successful release build."
+              echo "::warning::Ignoring a catalog row from run ${run}: not one of the last 100 successful release builds."
               continue
             fi
             gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" > "row-${id}.zip"

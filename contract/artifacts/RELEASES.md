@@ -28,7 +28,7 @@ the file with `create_new`, so a replay either matches what is there or fails.
 Nothing has to parse a table to find out.
 
 It also keeps rows independent, which is how they arrive. One release PR can tag
-several contracts — contracts share a build, so they ship in batches
+several contracts — contracts share a workspace, so they ship in batches
 (`1d736e62` produced three releases, `e0f3a11f` another three) — the catalog PR
 stands open across batches, and a backfill can land on `dev` beside it. A shared
 file would conflict on merge. `merge=union` would fix that, but GitHub ignores
