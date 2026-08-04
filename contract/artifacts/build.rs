@@ -7,7 +7,7 @@
 use std::{collections::BTreeMap, fmt::Write as _, path::Path};
 
 const SOURCE: &str = "releases";
-const COLUMNS: usize = 5;
+const COLUMNS: usize = 6;
 
 fn main() {
     println!("cargo:rerun-if-changed={SOURCE}");
@@ -54,8 +54,13 @@ fn main() {
         for release in releases {
             write!(
                 generated,
-                "ArtifactRelease {{ version: {:?}, tag: {:?}, asset: {:?}, sha256: {:?} }},",
-                release.version, release.tag, release.asset, release.sha256,
+                "ArtifactRelease {{ version: {:?}, tag: {:?}, asset: {:?}, sha256: {:?}, \
+                 length: {} }},",
+                release.version,
+                release.tag,
+                release.asset,
+                release.sha256,
+                digit_groups(release.length),
             )
             .expect("writing to a String");
         }
@@ -77,6 +82,7 @@ struct Release {
     tag: String,
     asset: String,
     sha256: String,
+    length: usize,
 }
 
 fn parse(path: &Path) -> Release {
@@ -88,7 +94,7 @@ fn parse(path: &Path) -> Release {
     assert!(
         fields.len() == COLUMNS,
         "{name}: expected {COLUMNS} tab-separated fields, found {}. Columns are \
-         artifact, version, tag, asset, sha256.",
+         artifact, version, tag, asset, sha256, length.",
         fields.len()
     );
 
@@ -98,6 +104,8 @@ fn parse(path: &Path) -> Release {
         tag: fields[2].to_owned(),
         asset: fields[3].to_owned(),
         sha256: fields[4].to_ascii_lowercase(),
+        length: byte_length(fields[5])
+            .unwrap_or_else(|| panic!("{name}: length `{}` is not a plain byte count", fields[5])),
     };
 
     assert!(
@@ -139,6 +147,30 @@ fn parse(path: &Path) -> Release {
     );
 
     release
+}
+
+/// `221984` -> `221_984`, the spelling `clippy::unreadable_literal` asks for in
+/// the generated catalog.
+fn digit_groups(value: usize) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + (digits.len() - 1) / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push('_');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// A released asset's size in bytes.
+///
+/// `None` unless canonically spelled, and never zero: `0400000` and `+400000`
+/// parse, but neither is what `wc -c` reports, so both mean the row was written
+/// by something other than the release build.
+fn byte_length(length: &str) -> Option<usize> {
+    let value = length.parse::<usize>().ok()?;
+    (value.to_string() == length && value > 0).then_some(value)
 }
 
 /// Orders versions numerically, so `0.10.0` follows `0.9.0`.

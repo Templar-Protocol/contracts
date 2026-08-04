@@ -169,7 +169,8 @@ does not recognise.
    builds the contract in the pinned NEP-330 Docker image **at that tag's
    commit**, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
    GitHub Release, and hands over one catalog row — the version, the tag, the
-   asset, and the digest of the bytes it just built, each recorded as observed.
+   asset, and the digest and byte length of the bytes it just built, each
+   recorded as observed.
 
 3. Each of those builds finishing fires
    [`catalog-pr.yml`](.github/workflows/catalog-pr.yml), which commits every row

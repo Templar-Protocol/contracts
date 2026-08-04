@@ -9,7 +9,7 @@
 //! ```bash
 //! cargo run -p templar-contract-artifacts --features clap --bin record-release -- \
 //!   proxy-oracle 0.3.0 templar-proxy-oracle-near-contract-v0.3.0 \
-//!   templar_proxy_oracle_near_contract-0.3.0.wasm <sha256>
+//!   templar_proxy_oracle_near_contract-0.3.0.wasm <sha256> <length>
 //! ```
 
 use std::process::ExitCode;
@@ -33,6 +33,9 @@ struct Args {
 
     /// SHA-256 of the released bytes, as 64 hex characters.
     sha256: String,
+
+    /// Byte length of those same bytes.
+    length: usize,
 }
 
 /// Directory of per-release files, relative to this crate's manifest.
@@ -58,6 +61,7 @@ fn record(args: &Args) -> Result<String, String> {
         tag,
         asset,
         sha256: sha,
+        length,
     } = args;
     let sha = sha.to_ascii_lowercase();
 
@@ -69,7 +73,7 @@ fn record(args: &Args) -> Result<String, String> {
         ));
     }
 
-    let row = format!("{artifact}\t{version}\t{tag}\t{asset}\t{sha}\n");
+    let row = format!("{artifact}\t{version}\t{tag}\t{asset}\t{sha}\t{length}\n");
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(RELEASES)
         .join(format!("{artifact}@{version}.tsv"));
@@ -123,6 +127,7 @@ mod tests {
             tag,
             asset,
             &"a".repeat(64),
+            "1",
         ])
         .expect("clap takes these as opaque strings")
     }
@@ -144,6 +149,7 @@ mod tests {
             .expect("0.3.0 is catalogued");
         let mut replay = args("0.3.0", release.tag, release.asset);
         replay.sha256 = release.sha256.to_owned();
+        replay.length = release.length;
 
         let message = record(&replay).expect("a replay is not an error");
         assert!(message.contains("already recorded"), "{message}");
