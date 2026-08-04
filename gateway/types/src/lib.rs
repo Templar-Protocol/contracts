@@ -10,7 +10,8 @@ pub mod spec;
 pub mod version;
 
 pub use block::BlockSummary;
-pub use contract::{ContractKind, OracleContractKind, ProposalEncoding};
+pub use common::ProposalEncoding;
+pub use contract::{ContractKind, OracleContractKind};
 pub use error::{CoreError, CoreResult};
 pub use operation::{
     OperationId, OperationRecord, OperationStatus, StepStatus, TransactionStepRecord,

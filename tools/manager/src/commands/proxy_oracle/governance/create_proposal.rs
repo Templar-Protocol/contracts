@@ -42,7 +42,7 @@ pub struct CreateProposal {
     execute_when_ready: bool,
     /// Argument encoding for the contract call. `borsh` is cheaper and carries larger payloads, but
     /// leaves an operation explorers and indexers cannot read — use it for wasm upgrades.
-    #[arg(long, value_name = "ENCODING", default_value = "json")]
+    #[arg(long, value_enum, default_value = "json")]
     encoding: ProposalEncoding,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,

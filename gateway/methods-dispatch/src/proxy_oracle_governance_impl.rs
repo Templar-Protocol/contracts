@@ -7,10 +7,10 @@ use templar_gateway_core::{
         },
         ContractWriteOptions,
     },
-    DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
+    DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
-use templar_gateway_types::{Governance, GovernanceVersion, ProposalEncoding};
+use templar_gateway_types::{Governance, ProposalEncoding};
 
 use crate::Dispatch;
 
@@ -156,22 +156,6 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetRoles, C> for Di
     }
 }
 
-/// Refuse rather than silently downgrading to JSON: a caller opts into borsh because JSON cannot
-/// carry the payload, so a fallback would fail differently on chain instead of here.
-fn ensure_supports_borsh(
-    governance_id: &near_account_id::AccountId,
-    version: GovernanceVersion,
-) -> GatewayResult<()> {
-    if version.supports_borsh_create_proposal() {
-        return Ok(());
-    }
-    let (major, minor, patch) = GovernanceVersion::BORSH_CREATE_PROPOSAL;
-    Err(GatewayError::UnsupportedFeature(format!(
-        "governance {governance_id} is version {version}; \
-         borsh proposals require v{major}.{minor}.{patch}"
-    )))
-}
-
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for Dispatch {
     async fn plan(
@@ -191,28 +175,24 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
             requested_ttl: body.requested_ttl,
         };
 
-        match body.encoding {
-            // No version read: JSON works wherever the current `Operation` shape works at all.
-            ProposalEncoding::Json => ctx
-                .near_client()
-                .proxy_governance(governance_id)
-                .create_proposal(options, args)
-                .map(OperationPlan::from),
-            ProposalEncoding::Borsh => {
-                // Uncached: the metadata cache holds for an hour, which would refuse borsh for
-                // that long after a governance upgrade — exactly when it is wanted.
-                let version = ctx
-                    .near_client()
+        // Only the opt-in path pays for a version read, and uncached: the metadata cache holds for
+        // an hour, which would refuse borsh for that long after a governance upgrade.
+        let version = match body.encoding {
+            ProposalEncoding::Json => None,
+            ProposalEncoding::Borsh => Some(
+                ctx.near_client()
                     .contract(governance_id.clone())
                     .version::<Governance>()
-                    .await?;
-                ensure_supports_borsh(&governance_id, version)?;
-                ctx.near_client()
-                    .proxy_governance(governance_id)
-                    .create_proposal_borsh(options, &args)
-                    .map(OperationPlan::from)
-            }
+                    .await?,
+            ),
+        };
+
+        let governance = ctx.near_client().proxy_governance(governance_id);
+        match version {
+            None => governance.create_proposal(options, args),
+            Some(version) => governance.create_proposal_borsh(options, version, args),
         }
+        .map(OperationPlan::from)
     }
 }
 
@@ -260,15 +240,13 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::ExecuteProposal, C> fo
 
 #[cfg(test)]
 mod tests {
-    use near_api::{types::transaction::actions::Action, NetworkConfig};
+    use near_api::{types::transaction::actions::Action, NetworkConfig, RPCEndpoint};
     use templar_gateway_core::{HasNearClient, NearClient, PlanWrite};
     use templar_gateway_methods_spec::proxy_oracle_governance;
-    use templar_gateway_types::{
-        common::WriteRequest, GovernanceVersion, ManagedAccountId, ProposalEncoding,
-    };
-    use templar_proxy_oracle_near_governance_common::{target, CreateProposalArgs, Operation};
+    use templar_gateway_types::{common::WriteRequest, ManagedAccountId, ProposalEncoding};
+    use templar_proxy_oracle_near_governance_common::{target, Operation};
 
-    use super::{ensure_supports_borsh, Dispatch};
+    use super::Dispatch;
 
     #[derive(Clone)]
     struct TestCtx(NearClient);
@@ -281,10 +259,13 @@ mod tests {
 
     /// Points at a closed port, so any path that touches the network fails.
     fn offline_ctx() -> TestCtx {
-        TestCtx(NearClient::new(NetworkConfig::from_rpc_url(
-            "test",
-            "http://127.0.0.1:1".parse().unwrap(),
-        )))
+        // One retry, not the default five: the backoff would otherwise spend ~310ms per test
+        // waiting out connection-refused on a port nothing is listening to.
+        let mut network =
+            NetworkConfig::from_rpc_url("test", "http://127.0.0.1:1".parse().unwrap());
+        network.rpc_endpoints =
+            vec![RPCEndpoint::new("http://127.0.0.1:1".parse().unwrap()).with_retries(1)];
+        TestCtx(NearClient::new(network))
     }
 
     fn operation() -> Operation {
@@ -346,76 +327,5 @@ mod tests {
         plan(ProposalEncoding::Borsh)
             .await
             .expect_err("borsh planning must consult the governance version");
-    }
-
-    #[test]
-    fn borsh_planning_encodes_the_shared_args_type() {
-        let args = CreateProposalArgs {
-            id: 7,
-            operation: operation(),
-            requested_ttl: templar_common::Nanoseconds::zero(),
-        };
-        let planned = offline_ctx()
-            .near_client()
-            .proxy_governance("gov.near".parse().unwrap())
-            .create_proposal_borsh(
-                templar_gateway_core::client::ContractWriteOptions::new(ManagedAccountId(
-                    "admin.near".parse().unwrap(),
-                ))
-                .one_yocto()
-                .tgas(300),
-                &args,
-            )
-            .expect("plan borsh call");
-
-        let [Action::FunctionCall(action)] = &planned.actions[..] else {
-            panic!("expected one function call");
-        };
-        assert_eq!(action.method_name, "create_proposal_borsh");
-        assert_eq!(action.args, borsh::to_vec(&args).unwrap());
-    }
-
-    #[test]
-    fn borsh_is_refused_below_0_3_0() {
-        let governance_id = "gov.near".parse().unwrap();
-        let error = ensure_supports_borsh(&governance_id, GovernanceVersion::from((0, 2, 0)))
-            .expect_err("0.2.0 has no borsh entrypoint");
-        assert!(
-            error.to_string().contains("is version 0.2.0"),
-            "error should name the version: {error}"
-        );
-
-        ensure_supports_borsh(&governance_id, GovernanceVersion::from((0, 3, 0)))
-            .expect("0.3.0 supports borsh");
-    }
-
-    /// The persisted idempotency fingerprint hashes these params, so a default request must
-    /// serialize as it did before `encoding` existed or retries stop matching their stored operation.
-    #[test]
-    fn a_default_request_keeps_its_fingerprint() {
-        let body = request(ProposalEncoding::Json).body;
-        let json = serde_json::to_value(&body).unwrap();
-        assert!(json.get("encoding").is_none(), "{json}");
-
-        let opted_in = request(ProposalEncoding::Borsh).body;
-        assert_eq!(
-            serde_json::to_value(&opted_in).unwrap()["encoding"],
-            serde_json::json!("borsh")
-        );
-    }
-
-    /// Requests written before this field existed keep their behaviour.
-    #[test]
-    fn a_request_omitting_encoding_defaults_to_json() {
-        let body: proxy_oracle_governance::CreateProposal =
-            serde_json::from_value(serde_json::json!({
-                "governance_id": "gov.near",
-                "id": 7,
-                "operation": operation(),
-                "requested_ttl": "0",
-            }))
-            .expect("legacy request shape must still deserialize");
-
-        assert_eq!(body.encoding, ProposalEncoding::Json);
     }
 }

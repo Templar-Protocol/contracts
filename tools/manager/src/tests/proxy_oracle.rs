@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 use near_sdk::json_types::{Base58CryptoHash, Base64VecU8, U128};
 use near_sdk::Gas;
 
+use templar_gateway_types::ProposalEncoding;
+
 use super::{
     parse_create_proposal, parse_governance, try_parse_governance, with_cleared_credential_env,
     CREDS,
@@ -595,52 +597,31 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
     );
 }
 
-/// Borsh is opt-in: an invocation that predates `--encoding` keeps sending JSON.
-#[test]
-fn create_proposal_defaults_to_json_encoding() {
-    let spec = create_proposal(&[
-        "--governance-id",
-        "gov.testnet",
-        "--id",
-        "0",
-        "oracle",
-        "set-manual-trip",
-        "--price-id",
-        PRICE_ID,
-        "--tripped",
-    ])
-    .expect("into spec");
+/// Borsh is opt-in. The wire shape of the field is `methods-spec`'s to guard; this owns only that
+/// the flag reaches the spec.
+#[rstest::rstest]
+#[case::defaults_to_json(&[], ProposalEncoding::Json)]
+#[case::opts_into_borsh(&["--encoding", "borsh"], ProposalEncoding::Borsh)]
+fn create_proposal_carries_the_encoding(
+    #[case] extra: &[&str],
+    #[case] expected: ProposalEncoding,
+) {
+    let argv = [
+        &["--governance-id", "gov.testnet", "--id", "0"][..],
+        extra,
+        &[
+            "oracle",
+            "set-manual-trip",
+            "--price-id",
+            PRICE_ID,
+            "--tripped",
+        ][..],
+    ]
+    .concat();
 
-    assert_eq!(spec.encoding, templar_gateway_types::ProposalEncoding::Json);
-    // Absent, not `"json"`: the serialized request must stay byte-identical to one written before
-    // this field existed, so its idempotency fingerprint does not move.
-    assert!(serde_json::to_value(&spec)
-        .unwrap()
-        .get("encoding")
-        .is_none());
-}
+    let spec = create_proposal(&argv).expect("into spec");
 
-#[test]
-fn create_proposal_accepts_borsh_encoding() {
-    let spec = create_proposal(&[
-        "--governance-id",
-        "gov.testnet",
-        "--id",
-        "0",
-        "--encoding",
-        "borsh",
-        "oracle",
-        "set-manual-trip",
-        "--price-id",
-        PRICE_ID,
-        "--tripped",
-    ])
-    .expect("into spec");
-
-    assert_eq!(
-        spec.encoding,
-        templar_gateway_types::ProposalEncoding::Borsh
-    );
+    assert_eq!(spec.encoding, expected);
 }
 
 #[test]

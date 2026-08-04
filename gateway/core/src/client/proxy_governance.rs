@@ -1,5 +1,8 @@
+use std::borrow::Borrow;
+
 use near_account_id::AccountId;
-use templar_gateway_types::common::ContractArgs;
+use near_api::types::transaction::actions::{Action, FunctionCallAction};
+use templar_gateway_types::GovernanceVersion;
 use templar_proxy_oracle_near_governance_common::{
     CreateProposalArgs, GovernancePolicyWire, Operation, Proposal, Role,
 };
@@ -9,7 +12,7 @@ use crate::client::{
     ContractWriteOptions, NearClient,
 };
 use crate::operation::PlannedTransaction;
-use crate::GatewayResult;
+use crate::{GatewayError, GatewayResult};
 
 use super::BoundContractClient;
 
@@ -74,33 +77,105 @@ impl ProxyGovernanceClient<'_> {
     }
 
     /// Borsh-encoded twin of [`Self::create_proposal`], for payloads JSON makes too costly or too
-    /// large. `contract_writes!` always emits `ContractArgs::Json`, so this is hand-written.
+    /// large.
+    ///
+    /// Takes the callee's `version` rather than trusting the caller to have checked it: an older
+    /// contract has no such method, and the call would fail on chain after paying for it.
     pub fn create_proposal_borsh(
         &self,
         options: ContractWriteOptions,
-        args: &CreateProposalArgs<Operation>,
+        version: GovernanceVersion,
+        args: impl Borrow<GovCreateArgs>,
     ) -> GatewayResult<PlannedTransaction> {
-        let encoded = near_sdk::borsh::to_vec(args)?;
-        Ok(PlannedTransaction {
-            signer_account_id: options.signer_account_id,
-            receiver_id: self.contract_id().to_owned(),
-            actions: vec![
-                ::near_api::types::transaction::actions::Action::FunctionCall(Box::new(
-                    ::near_api::types::transaction::actions::FunctionCallAction {
-                        method_name: "create_proposal_borsh".to_owned(),
-                        args: ContractArgs::Raw(encoded.into()).try_into_bytes()?,
-                        gas: options.gas,
-                        deposit: options.deposit,
-                    },
-                )),
-            ],
-            continue_on_failure: false,
-        })
+        if !version.supports_borsh_create_proposal() {
+            let required = GovernanceVersion::from(GovernanceVersion::BORSH_CREATE_PROPOSAL);
+            return Err(GatewayError::UnsupportedFeature(format!(
+                "governance {} is version {version}; borsh proposals require v{required}",
+                self.contract_id(),
+            )));
+        }
+
+        Ok(PlannedTransaction::single_action(
+            options.signer_account_id,
+            self.contract_id().to_owned(),
+            Action::FunctionCall(Box::new(FunctionCallAction {
+                method_name: "create_proposal_borsh".to_owned(),
+                args: near_sdk::borsh::to_vec(args.borrow())?,
+                gas: options.gas,
+                deposit: options.deposit,
+            })),
+        ))
     }
 
     contract_writes! {
         pub fn create_proposal(GovCreateArgs);
         pub fn cancel_proposal(GovActionArgs);
         pub fn execute_proposal(GovActionArgs);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use near_api::{types::transaction::actions::Action, NetworkConfig};
+    use templar_gateway_types::{GovernanceVersion, ManagedAccountId};
+    use templar_proxy_oracle_near_governance_common::{target, Operation};
+
+    use super::{GovCreateArgs, NearClient};
+    use crate::client::ContractWriteOptions;
+
+    fn args() -> GovCreateArgs {
+        GovCreateArgs {
+            id: 7,
+            operation: Operation::TargetFunctionCall(
+                target::admin_rearm(
+                    templar_common::oracle::pyth::PriceIdentifier([0xaa; 32]),
+                    0,
+                    templar_common::Nanoseconds::zero(),
+                    templar_proxy_oracle_kernel::proxy::circuit_breaker::AcceptedHistorySource::Empty,
+                    None,
+                )
+                .expect("build rearm call"),
+            ),
+            requested_ttl: templar_common::Nanoseconds::zero(),
+        }
+    }
+
+    fn plan(
+        version: (u64, u64, u64),
+    ) -> crate::GatewayResult<crate::operation::PlannedTransaction> {
+        let client = NearClient::new(NetworkConfig::from_rpc_url(
+            "test",
+            "http://127.0.0.1:1".parse().unwrap(),
+        ));
+        client
+            .proxy_governance("gov.near".parse().unwrap())
+            .create_proposal_borsh(
+                ContractWriteOptions::new(ManagedAccountId("admin.near".parse().unwrap()))
+                    .one_yocto()
+                    .tgas(300),
+                GovernanceVersion::from(version),
+                args(),
+            )
+    }
+
+    #[test]
+    fn encodes_the_shared_args_type() {
+        let planned = plan((0, 3, 0)).expect("0.3.0 supports borsh");
+
+        let [Action::FunctionCall(action)] = &planned.actions[..] else {
+            panic!("expected one function call");
+        };
+        assert_eq!(action.method_name, "create_proposal_borsh");
+        assert_eq!(action.args, near_sdk::borsh::to_vec(&args()).unwrap());
+    }
+
+    /// The guard lives here rather than in the caller so no second caller can skip it.
+    #[test]
+    fn refuses_a_contract_without_the_entrypoint() {
+        let error = plan((0, 2, 0)).expect_err("0.2.0 has no borsh entrypoint");
+        assert!(
+            error.to_string().contains("is version 0.2.0"),
+            "error should name the version: {error}"
+        );
     }
 }
