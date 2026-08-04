@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
 use near_api::NetworkConfig;
-use templar_gateway_types::ManagedAccountId;
 
-use crate::{client::tx::TxClient, FinalityPolicy, GatewayResult, HasNearClient, NearClient};
+use crate::{FinalityPolicy, GatewayResult, HasNearClient, NearClient};
 
 #[derive(Debug, Clone)]
 pub struct GatewayContextBuilder<C> {
@@ -32,14 +29,6 @@ impl GatewayContext {
 
     pub fn network(&self) -> &NetworkConfig {
         self.near.network()
-    }
-
-    pub fn tx(
-        &self,
-        signer_account_id: ManagedAccountId,
-        signer: Arc<near_api::Signer>,
-    ) -> TxClient<'_> {
-        self.near.tx(signer_account_id, signer)
     }
 }
 

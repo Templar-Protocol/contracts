@@ -3,10 +3,10 @@ use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 use actix::Addr;
 use templar_gateway_core::{
     DispatchRead, GatewayContext, GatewayResult, HasNearClient, NearOperationExecutor,
-    NearTransactionSigner, OperationDriver, PlanWrite, SharedOperationStore,
+    NearTransactionSigner, OperationDriver, PlanWrite, PooledSigner, SharedOperationStore,
 };
 use templar_gateway_runtime::{
-    map_mailbox_error, spawn_runtime, GatewayRuntime, ManagedSigner, ReadActor, RpcMessage,
+    map_mailbox_error, spawn_runtime, GatewayRuntime, ReadActor, RpcMessage,
 };
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
@@ -33,14 +33,10 @@ where
 {
     pub async fn spawn(
         context: ContextType,
-        signers: HashMap<ManagedAccountId, ManagedSigner>,
+        signers: HashMap<ManagedAccountId, PooledSigner>,
         store: SharedOperationStore,
     ) -> GatewayResult<Self> {
         let signer_count = signers.len();
-        let signers = signers
-            .into_iter()
-            .map(|(account_id, signer)| (account_id, signer.signer))
-            .collect();
 
         let near = context.near_client();
         let finality_policy = near.finality_policy();
@@ -160,9 +156,8 @@ mod tests {
 
         let gateway_signers = HashMap::from([(
             gateway_signer_account_id.clone(),
-            ManagedSigner::new([gateway_secret_key])
-                .await
-                .expect("failed to create managed signer"),
+            PooledSigner::new(gateway_signer_account_id.clone(), [gateway_secret_key])
+                .expect("failed to create pooled signer"),
         )]);
 
         let ft_contract_id: AccountId = "mock-ft.near".parse()?;

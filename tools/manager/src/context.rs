@@ -81,11 +81,8 @@ impl CliContext {
         &self,
         signer: &SignerArgs,
     ) -> anyhow::Result<(ManagedAccountId, Client, near_api::PublicKey)> {
-        let (account_id, signing) = signer.resolve(&self.network).await?;
-        let public_key = signing
-            .get_public_key()
-            .await
-            .context("ask the signing backend which key it will sign with")?;
+        let (signing, public_key) = signer.resolve(&self.network).await?;
+        let account_id = signing.account_id().clone();
 
         // A deploy embeds this key as the full access key on the account it
         // creates, and an external backend cannot validate it before resolving.
@@ -102,7 +99,7 @@ impl CliContext {
         }
 
         let client = Client::builder(self.network.clone())
-            .with_signer(account_id.clone(), signing)
+            .with_signer(signing)
             .build()
             .context("build signing client")?;
         Ok((account_id, client, public_key))
@@ -169,9 +166,10 @@ impl CliContext {
             return print_plan(format, plan);
         }
 
-        let (account_id, signing) = signer.resolve(&self.network).await?;
+        let (signing, _) = signer.resolve(&self.network).await?;
+        let account_id = signing.account_id().clone();
         let (base_context, driver, signer_account_ids) = Client::builder(self.network.clone())
-            .with_signer(account_id.clone(), signing)
+            .with_signer(signing)
             .build_parts()
             .context("build oracle-updates client")?;
         let client: Client<OracleUpdatesDispatch, Ctx> =

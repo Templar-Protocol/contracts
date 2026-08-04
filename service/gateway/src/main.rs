@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
     let _log_guard = logging::init();
 
-    let signers = config.build_signers().await?;
+    let signers = config.build_signers()?;
     let store = config.build_store().await?;
     let sources = config.oracle_sources.build()?;
     let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
