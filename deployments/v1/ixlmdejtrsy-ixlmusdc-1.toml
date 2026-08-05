@@ -1,0 +1,27 @@
+extends = ["../profiles/v1.toml", "../profiles/v1-borrow-ixlmusdc.toml"]
+
+name = "ixlmdejtrsy-ixlmusdc-1"
+
+[collateral]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB5y5yhcUCbDKaCx4zNjEHQbwLAdvwucCecVzC5Ub7uNKEb"
+reference = { unlisted = { reason = "Not listed on CoinGecko" } }
+decimals = 18
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    # Pyth Lazer has not yet enabled this feed
+    # { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 1800, weight = 3 },
+    # { kind = "pyth", oracle = "pyth-oracle.near", price_id = "0210be8d6073809a6b26cede532b7e60bacd4478a0f9f1c3f2e6d86a7f0bdce6", weight = 1 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "deJTRSY_FUNDAMENTAL/USD", weight = 5 },
+]
+
+[market]
+interest_rate_strategy = { Linear = { base = "0.03", top = "0.03" } }
+mcr_maintenance = "1.07"
+mcr_liquidation = "1.05"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.025"
+borrow_range = { minimum = "1 atom" }
+supply_range = { minimum = "0.04 tokens" }
+supply_withdrawal_range = { minimum = "0.04 tokens" }
+yield_weights = { supply = 19, static = { "revenue.tmplr.near" = 1 } }

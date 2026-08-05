@@ -1,0 +1,9 @@
+schema = 5
+
+extends = ["./mainnet.toml"]
+
+registry = "v1.tmplr.near"
+
+[governance]
+admin = "tmplr.near"
+ttl_default = "0s"
