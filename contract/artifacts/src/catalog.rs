@@ -9,8 +9,8 @@
 
 use crate::ArtifactId;
 
-/// The converse does not hold: a real contract with no releases simply has not
-/// shipped yet, which is true of the NEAR vault.
+/// The converse does not hold: a real contract with no releases simply has no
+/// version anyone has chosen to cut a WASM for yet.
 #[test]
 fn mocks_are_never_released() {
     for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
@@ -102,25 +102,6 @@ fn release_false_packages() -> std::collections::BTreeSet<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// `release-artifacts.yml` only fires on tags matching `*-contract-v*`, and
-/// release-plz builds tags as `{package}-v{version}`. A catalogued contract
-/// whose package name does not end in `-contract` would therefore be released
-/// with no WASM and no catalog entry, and the pipeline would stay green.
-#[test]
-fn every_catalogued_artifact_matches_the_release_tag_glob() {
-    for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
-        if artifact.package_name.starts_with("mock-") {
-            continue;
-        }
-        assert!(
-            artifact.package_name.ends_with("-contract"),
-            "`{}` is catalogued, so its release tag must match the \
-             `*-contract-v*` trigger in .github/workflows/release-artifacts.yml",
-            artifact.package_name,
-        );
-    }
 }
 
 /// `release = true` is release-plz's default, so an unclassified crate is

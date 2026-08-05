@@ -1,19 +1,21 @@
 name: Release Artifacts
 
 # Cuts a contract's canonical WASM — the only way a release blob is produced.
-# On a release tag: build in the pinned NEP-330 image at that tag's commit,
-# upload it to the GitHub Release, and hand the catalog row — tag, asset,
-# digest, length — to `catalog-pr.yml`, which records the whole release batch at
-# once.
-# Why at the tag, and why the record lands a commit later, are in "Contract WASM
-# artifacts" in RELEASING.md.
+# Invoked per version being shipped, via `just release-wasm <tag>`: build in the
+# pinned NEP-330 image at that tag's commit, upload it to the GitHub Release, and
+# hand the catalog row — tag, asset, digest, length — to `catalog-pr.yml`.
+# Why the build happens at the tag, why it is not fired by the tag, and why the
+# record lands a commit later are in "Contract WASM artifacts" in RELEASING.md.
 
 on:
-  push:
-    tags:
-      # Broad glob: which packages are catalogued is decided in `ids.rs`, not
-      # here. A tagged package the catalog doesn't know about exits cleanly below.
-      - "*-contract-v*"
+  # Dispatch from the default branch and name the tag, rather than running at the
+  # tag: GitHub reads this file from the ref it is dispatched against, so
+  # `--ref <tag>` would run whatever copy of it that tag happens to carry.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and publish the WASM for
+        required: true
 
 permissions:
   contents: read
@@ -33,13 +35,14 @@ jobs:
       - name: Checkout the tag
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: ${{ inputs.tag }}
           # The reproducible build reads committed git state.
           fetch-depth: 0
           persist-credentials: false
 
       # Not `./.github/actions/rust`: the WASM build runs inside the cargo-near
       # Docker image, so a host rust-cache entry for this job would be cold on
-      # every release tag and just add eviction pressure.
+      # every invocation and just add eviction pressure.
       - uses: dtolnay/rust-toolchain@dd44c20b1206a46e25fba8503d5d7c9a33bd355a
         with:
           toolchain: "1.86.0"
@@ -48,7 +51,7 @@ jobs:
       - name: Resolve the artifact from the tag
         id: catalog
         env:
-          REF_NAME: ${{ github.ref_name }}
+          REF_NAME: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           # Exit 2 = not a catalogued NEAR artifact (a Soroban tag, say);
@@ -106,12 +109,12 @@ jobs:
         if: steps.catalog.outputs.build == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REF_NAME: ${{ github.ref_name }}
+          REF_NAME: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          # release-plz creates the tag and the GitHub Release moments apart, and
-          # this job races the tag push. Wait for the release rather than failing
-          # a build that succeeded.
+          # release-plz creates the tag and the GitHub Release moments apart, so a
+          # dispatch made straight after a release PR merges can arrive between
+          # the two. Wait rather than failing a build that succeeded.
           published=false
           for attempt in 1 2 3 4 5; do
             if gh release view "$REF_NAME" >/dev/null 2>&1; then
@@ -167,7 +170,7 @@ jobs:
           ASSET: ${{ steps.catalog.outputs.asset }}
           SHA256: ${{ steps.build.outputs.sha256 }}
           LENGTH: ${{ steps.build.outputs.length }}
-          REF_NAME: ${{ github.ref_name }}
+          REF_NAME: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           # Same feature set as the catalog lookup above: a different one is a

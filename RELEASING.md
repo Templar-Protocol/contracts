@@ -108,8 +108,8 @@ scaffolding, where a version number would be noise.
 Only Tier C carries `publish = false` in its own `Cargo.toml`. Tiers A and B
 must not: release-plz skips a crate whose manifest forbids publishing, so
 marking contracts and services that way left them with no versions, no
-changelogs and no tags — and with no `*-contract-v*` tag, no canonical WASM
-either. Uploads are prevented centrally by `[workspace] publish = false`
+changelogs and no tags — and with no release tag, nothing a canonical WASM could
+be cut from. Uploads are prevented centrally by `[workspace] publish = false`
 instead.
 
 ## ⚠️ Publishing to crates.io is currently blocked
@@ -156,17 +156,18 @@ registry either.
 
 ## Contract WASM artifacts
 
-Releasing a **NEAR contract that `contract/artifacts` catalogues** also produces
-its canonical WASM — automatically, with no manual step to forget. Soroban
-contracts are tagged and released like any Tier B crate but get no WASM asset:
-the catalog is NEAR-only, and `release-artifacts.yml` exits cleanly on a tag it
-does not recognise.
+A **NEAR contract that `contract/artifacts` catalogues** gets its canonical WASM
+cut on request, for a version you intend to deploy. Soroban contracts are tagged
+and released like any Tier B crate but get no WASM asset: the catalog is
+NEAR-only, and `release-artifacts.yml` exits cleanly on a tag it does not
+recognise.
 
-1. Merge your work as normal, then merge the Release PR. That tags the version.
+1. Merge your work as normal, then merge the Release PR. That tags the version
+   and builds nothing.
 
-2. The tag fires
-   [`release-artifacts.yml`](.github/workflows/release-artifacts.yml), which
-   builds the contract in the pinned NEP-330 Docker image **at that tag's
+2. For each version you are shipping, run `just release-wasm <tag>`. That
+   dispatches [`release-artifacts.yml`](.github/workflows/release-artifacts.yml),
+   which builds the contract in the pinned NEP-330 Docker image **at that tag's
    commit**, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
    GitHub Release, and hands over one catalog row — the version, the tag, the
    asset, and the digest and byte length of the bytes it just built, each
@@ -175,15 +176,15 @@ does not recognise.
 3. Each of those builds finishing fires
    [`catalog-pr.yml`](.github/workflows/catalog-pr.yml), which commits every row
    the catalog is still missing to the standing `record/releases` branch and
-   opens or updates one PR. A release batch tags several contracts, so this is
-   what keeps a batch to one PR, and so to one commit on `dev`, rather than one
-   of each per contract. Builds finish minutes apart, so the branch itself
-   usually collects a commit per catalog run; the squash-merge is what makes
-   that invisible, and `test.yml` cancels the PR's superseded runs.
+   opens or updates one draft PR. Shipping several contracts at once keeps them
+   to one PR, and so to one commit on `dev`, rather than one of each per
+   contract. Builds finish minutes apart, so the branch itself usually collects
+   a commit per catalog run; the squash-merge is what makes that invisible, and
+   `test.yml` cancels the PR's superseded runs.
 
-4. Merge that PR. Until you do, the artifacts crate will not serve those
-   versions — an unrecorded release has no reviewed hash to check downloaded
-   bytes against.
+4. Mark that PR ready and merge it. Until you do, the artifacts crate will not
+   serve those versions — an unrecorded release has no reviewed hash to check
+   downloaded bytes against.
 
 Only one catalog job runs at a time, and each one records *every* pending row,
 so a build that finishes while one is running is picked up by the next. If the
@@ -191,12 +192,32 @@ job itself fails, fix it and re-run it from the Actions tab (`workflow_dispatch`
 is enabled for exactly this) — nothing needs recording by hand as long as the
 rows are still live, which they are for seven days.
 
-Note what is *not* in that list: nothing asks a developer to declare a release
+### Why the WASM is not cut by the tag
+
+release-plz bumps a crate whose dependencies moved, so releasing a library
+releases every contract that links it: `templar-common` 1.4.1 tagged nine
+contracts, four of which had no change to shipped code at all. Those bytes are
+not redundant — NEP-330 embeds the version and commit, so every rebuild differs
+— which is exactly why they cannot be deduplicated after the fact and must
+simply not be built.
+
+Suppressing the version bump instead would be worse: two byte-sets would share
+one version, and `{name}@{version}#{sha}`, the immutable-asset rule, and the
+digest pin all depend on version→bytes being a function.
+
+So **a release tag with no WASM is an expected state**, and the newest catalogued
+release is expected to lag the newest tag. `just release-wasm-status <tag>` answers
+whether a given one has been built. Nothing is lost by waiting: the tag is
+permanent and the build reproducible, so a version built months later yields the
+same bytes.
+
+Note what still does *not* happen: nothing asks a developer to declare a release
 up front. A `Cargo.toml` bump cannot assert one, because bumps and releases
 routinely diverge — market's crate version reached 1.4.0 while 1.3.0 was the
 newest release, and registry reached 1.2.1 against a released 1.1.0. Only CI,
 after the fact, can write the entry: a reproducible build's digest cannot be
-known until the build exists.
+known until the build exists. Choosing *which* versions get a WASM is the one
+deliberate step.
 
 A catalogued entry is the **canonical build for a released version** — the bytes
 CI built at that tag and published. It is not a claim that they run on any
