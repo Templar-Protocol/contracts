@@ -155,7 +155,9 @@ reviewed hash to check downloaded bytes against.
 
 A release tag with no WASM is an expected state, not a gap: most versions are
 bumped by a dependency release and never deployed. Any of them can be built later
-from its tag for identical bytes.
+from its tag for identical bytes — though `just release-wasm` itself only reaches
+tags cut after `--resolve` landed (#528); older ones must be built from a checkout
+of the tag and recorded with `record-release`.
 
 Why the build happens at the tag, why the tag does not trigger it, and why the
 catalog row necessarily lands one commit later are explained in

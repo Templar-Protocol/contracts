@@ -211,6 +211,15 @@ whether a given one has been built. Nothing is lost by waiting: the tag is
 permanent and the build reproducible, so a version built months later yields the
 same bytes.
 
+One cutoff: `just release-wasm` resolves the tag by running the resolver *from
+that tag's checkout*, so it only reaches tags cut after `--resolve` landed
+([#528](https://github.com/Templar-Protocol/contracts/pull/528)). Dispatching an
+older one fails rather than silently publishing nothing. Those tags are still
+buildable, just not through the recipe — check the tag out and follow the rebuild
+under [Why the build happens in CI, at the
+tag](#why-the-build-happens-in-ci-at-the-tag), then hand the digest and byte
+length to `record-release`.
+
 Note what still does *not* happen: nothing asks a developer to declare a release
 up front. A `Cargo.toml` bump cannot assert one, because bumps and releases
 routinely diverge — market's crate version reached 1.4.0 while 1.3.0 was the
