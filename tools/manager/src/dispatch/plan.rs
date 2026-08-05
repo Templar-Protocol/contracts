@@ -40,12 +40,12 @@ use crate::spec::{
 /// rather than from the market.
 ///
 /// The registry refuses a deposit below `1e19 * code.len()`, and the market's is
-/// the last step — undersized there, it fails after 9.9 NEAR is spent. Each keeps
+/// the last step — undersized there, it fails after 10.5 NEAR is spent. Each keeps
 /// 50 KB of headroom over its pinned release, held there by
 /// `deposits_cover_the_released_artifacts`. Over-provisioning burns nothing:
 /// the deposit is forwarded to the account being created.
 const GOVERNANCE_DEPOSIT: NearToken = NearToken::from_millinear(4_500);
-const ORACLE_DEPOSIT: NearToken = NearToken::from_millinear(5_400);
+const ORACLE_DEPOSIT: NearToken = NearToken::from_millinear(6_000);
 const MARKET_DEPOSIT: NearToken = NearToken::from_millinear(5_800);
 
 /// `market plan` — run the preflight, then write the deployment as a file.
@@ -467,7 +467,7 @@ pub(crate) async fn build(
 
         // The proposals are created and executed by `signer_id`, but only
         // `governance.admin` is granted the Admin role at init. Mismatched, the two
-        // registry deploys succeed and every proposal reverts — 9.9 NEAR spent on
+        // registry deploys succeed and every proposal reverts — 10.5 NEAR spent on
         // exactly the orphaned half-deployment this tool exists to prevent.
         // The retired shell deploy made this unrepresentable: it passed the
         // signer as the admin.
@@ -500,7 +500,7 @@ pub(crate) async fn build(
 
     // Re-run here, not left to the `config.validate` check: that check is
     // skippable, and the market enforces this at init. Skipping it can only buy
-    // a 9.9 NEAR half-deployment that reverts on the last step.
+    // a 10.5 NEAR half-deployment that reverts on the last step.
     configuration
         .validate()
         .map_err(|error| anyhow::anyhow!("{error}"))
@@ -1141,7 +1141,7 @@ mod tests {
 
     /// The registry refuses `deposit < 1e19 * code.len()`, so a contract that
     /// outgrows its constant fails the deploy — the market's on the last step,
-    /// after 9.9 NEAR is spent. Releasing a larger contract must therefore break
+    /// after 10.5 NEAR is spent. Releasing a larger contract must therefore break
     /// a test, not a deployment.
     ///
     /// Sized from the catalog's recorded byte length, which `fetch` verifies
