@@ -14,9 +14,3 @@ near-sdk = { workspace = true, features = ["unit-testing"] }
 p256.workspace = true
 templar-common.workspace = true
 templar-universal-account = { workspace = true, features = ["signing"] }
-
-[[example]]
-name = "generate_testnet_configuration"
-
-[[example]]
-name = "registry_add_version_args"
