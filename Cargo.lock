@@ -13982,18 +13982,8 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "cargo_metadata 0.23.1",
- "near-contract-standards",
- "near-crypto",
- "near-jsonrpc-client",
- "near-jsonrpc-primitives",
- "near-primitives",
- "near-sdk",
- "templar-common",
  "templar-contract-artifacts",
  "templar-gateway-types",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
 ]
 
 [[package]]
