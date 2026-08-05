@@ -24,6 +24,13 @@ env:
   CARGO_TERM_COLOR: always
   SQLX_OFFLINE: "true"
 
+# Per tag, and never cancelled: two dispatches for one tag can both clear the
+# asset-existence check and collide on upload, but cancelling the first could
+# interrupt one mid-flight. The loser queues and replays against identical bytes.
+concurrency:
+  group: release-artifact-${{ inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
   release-artifact:
     name: Build and publish the release WASM

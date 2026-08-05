@@ -175,8 +175,9 @@ recognise.
 
 3. Each of those builds finishing fires
    [`catalog-pr.yml`](.github/workflows/catalog-pr.yml), which commits every row
-   the catalog is still missing to the standing `record/releases` branch and
-   opens or updates one draft PR. Shipping several contracts at once keeps them
+   the catalog is still missing to the standing `record/releases` branch. It
+   opens that PR as a draft, and thereafter only refreshes its body — a PR you
+   have marked ready stays ready. Shipping several contracts at once keeps them
    to one PR, and so to one commit on `dev`, rather than one of each per
    contract. Builds finish minutes apart, so the branch itself usually collects
    a commit per catalog run; the squash-merge is what makes that invisible, and
