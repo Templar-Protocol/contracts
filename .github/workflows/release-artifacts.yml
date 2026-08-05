@@ -56,16 +56,23 @@ jobs:
           set -euo pipefail
           # Exit 2 = not a catalogued NEAR artifact (a Soroban tag, say);
           # 1 = a genuine failure. A skip must not look like a broken lookup.
+          #
+          # clap also exits 2 on a usage error, and this file is read from the
+          # default branch while the checkout is the tag — so a tag whose
+          # `prebuild-test-contracts` predates `--resolve` would otherwise skip
+          # silently and green a release with no WASM. Demand the sentinel that
+          # only the skip path prints.
           status=0
           resolved=$(cargo run --quiet -p templar-contract-artifacts \
             --features workspace-loader,clap --bin prebuild-test-contracts -- \
             --resolve "$REF_NAME") || status=$?
 
-          if [ "$status" -eq 2 ]; then
+          if [ "$status" -eq 2 ] && [ "$resolved" = "skip=not-catalogued" ]; then
             echo "::notice::${REF_NAME} has no catalogued WASM artifact; nothing to build."
             exit 0
           elif [ "$status" -ne 0 ]; then
-            echo "::error::${REF_NAME} names a catalogued artifact but cannot be built; see the error above." >&2
+            echo "::error::${REF_NAME} cannot be resolved; it may predate the \
+          \`--resolve\` flag, in which case build it from a checkout of the tag." >&2
             exit "$status"
           fi
 
