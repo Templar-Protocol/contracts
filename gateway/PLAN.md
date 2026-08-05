@@ -29,11 +29,24 @@ All gateway code lives under `gateway/`, with the transport binary under `servic
 Current crates:
 
 1. `gateway/core`
-2. `gateway/oracle-updates-spec`
-3. `gateway/runtime`
-4. `gateway/store`
-5. `gateway/testing`
-6. `service/gateway`
+2. `gateway/types`
+3. `gateway/macros`
+4. `gateway/methods-spec`, `gateway/oracle-updates-spec`, `gateway/artifacts-spec`
+5. `gateway/methods-dispatch`, `gateway/oracle-updates-dispatch`, `gateway/artifacts-dispatch`
+6. `gateway/client`
+7. `gateway/catalog`
+8. `gateway/runtime`
+9. `gateway/store`
+10. `gateway/testing`
+11. `service/gateway`
+
+Each `*-spec` crate declares a method family's request and response types; its
+`*-dispatch` counterpart plans and executes them against `core`. `catalog`
+generates `gateway/METHODS.md` from the spec crates' method lists, so the
+reference cannot drift from what the service registers.
+
+The sections below cover only the crates whose boundaries carry a design
+constraint.
 
 ### `gateway/core`
 
@@ -281,29 +294,9 @@ The gateway surface is expected to include:
 - public read methods
 - operation-producing write methods
 
-Illustrative read surface:
-
-- `system.health`
-- `system.version`
-- `chain.viewAccount`
-- `chain.viewFunction`
-- `chain.getTransaction`
-- `registry.listDeployments`
-- `registry.listVersions`
-- `market.getConfiguration`
-- `market.listBorrowPositions`
-- `ua.getKey`
-- `storage.getBalanceBounds`
-- `storage.getBalanceOf`
-
-Illustrative write surface:
-
-- `tx.functionCall`
-- `storage.deposit`
-- `storage.ensureDeposit`
-- `registry.deploy`
-- `ua.execute`
-- `ua.createAccount`
+The methods themselves are not enumerated here. `gateway/METHODS.md` is generated
+from the specs and is the only listing that cannot drift; `gateway/README.md`
+holds the naming conventions a new method should follow.
 
 The exact surface should continue to become more typed over time.
 
