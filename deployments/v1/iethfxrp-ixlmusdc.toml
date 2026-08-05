@@ -1,0 +1,25 @@
+extends = ["../profiles/v1.toml", "../profiles/irs-stable.toml", "../profiles/v1-borrow-ixlmusdc.toml"]
+
+name = "iethfxrp-ixlmusdc"
+
+[collateral]
+asset = "nep245:intents.near:nep141:eth-0xce6170ea245dc8d1f275a710a062b70f125f0110.omft.near"
+symbol = "FXRP"
+# Bridged; priced as XRP. Pinning records that assertion.
+reference = { coin_gecko = { id = "ripple" } }
+decimals = 6
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "pyth-lazer.templar-alpha.near", feed_id = 14, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "XRP", weight = 2 },
+]
+
+[market]
+mcr_maintenance = "1.25"
+mcr_liquidation = "1.2"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.1"
+borrow_range = { minimum = "1 atom" }
+supply_range = { minimum = "0.04 tokens" }
+supply_withdrawal_range = { minimum = "0.04 tokens" }
