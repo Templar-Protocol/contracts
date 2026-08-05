@@ -1,0 +1,16 @@
+schema = 5
+
+[versions]
+market = "v1.3.0"
+proxy_oracle = "templar-proxy-oracle-near-contract@0.4.1#fb9b3b46bbedd16665dbc31f0efc605c8ef49acfa5ff17608fbc3b490b4a6cb3"
+proxy_governance = "templar-proxy-oracle-near-governance-contract@0.3.1#40b1719a525dae7117a776ccefa281f97470e1213e83bbf054bd77eae5b0568a"
+
+[market]
+time_chunk = "10m"
+price_maximum_age = "120s"
+# 1.5% band for the third-party price cross-check.
+reference_tolerance = "0.015"
+origination_fee = { Flat = "0 atoms" }
+supply_withdrawal_fee = { fee = { Flat = "0 atoms" }, duration = "0", behavior = "Fixed" }
+yield_weights = { supply = 4, static = { "revenue.tmplr.near" = 1 } }
+protocol_account_id = "revenue.tmplr.near"

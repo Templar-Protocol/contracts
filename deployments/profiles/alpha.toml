@@ -1,0 +1,9 @@
+schema = 5
+
+extends = ["./mainnet.toml"]
+
+registry = "templar-alpha.near"
+
+[governance]
+admin = "templar-alpha.near"
+ttl_default = "0s"
