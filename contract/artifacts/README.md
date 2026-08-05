@@ -139,15 +139,29 @@ artifacts are missing from `target/near` and exit non-zero without building.
 
 ## Cutting a release
 
-**There is nothing to do by hand.** Merging the release PR tags the version;
-`.github/workflows/release-artifacts.yml` builds the WASM reproducibly at that
-tag and uploads it, and `catalog-pr.yml` adds one file under `releases/` for
-every catalogued release in the batch, on one shared PR. Until that PR merges,
-`fetch` will not serve the version — an unrecorded release has no reviewed hash
-to check downloaded bytes against.
+Merging the release PR tags the version but builds nothing. Cut the WASM for a
+version you intend to deploy:
 
-Why the build happens at the tag, and why the catalog row necessarily lands one
-commit later, are explained in [RELEASING.md](../../RELEASING.md#contract-wasm-artifacts).
+```bash
+just release-wasm templar-market-contract-v1.5.0
+just release-wasm-status templar-market-contract-v1.5.0
+```
+
+That dispatches `.github/workflows/release-artifacts.yml`, which builds the WASM
+reproducibly at the tag and uploads it; `catalog-pr.yml` then adds one file under
+`releases/` for every artifact awaiting a record, on one shared PR. Until that PR
+merges, `fetch` will not serve the version — an unrecorded release has no
+reviewed hash to check downloaded bytes against.
+
+A release tag with no WASM is an expected state, not a gap: most versions are
+bumped by a dependency release and never deployed. Any of them can be built later
+from its tag for identical bytes — though `just release-wasm` itself only reaches
+tags cut after `--resolve` landed (#528); older ones must be built from a checkout
+of the tag and recorded with `record-release`.
+
+Why the build happens at the tag, why the tag does not trigger it, and why the
+catalog row necessarily lands one commit later are explained in
+[RELEASING.md](../../RELEASING.md#contract-wasm-artifacts).
 
 Releases predating this workflow were recovered from the chain and are
 reproducible on the same terms. Several were built from paths that have since
@@ -167,7 +181,6 @@ Seconds, no contract builds:
 |---|---|
 | `no_release_is_ahead_of_its_source` | a release claiming a version the crate never reached (the reverse — source ahead of the newest release — is normal) |
 | `mocks_are_never_released` | a mock that acquired a release |
-| `every_catalogued_artifact_matches_the_release_tag_glob` | a contract whose tag would not fire the artifact workflow |
 | `internal_crates_are_excluded_from_releases` | a crate whose manifest forbids publishing that release-plz would still tag |
 | `no_tier_can_reach_a_registry` | `release-plz.toml` losing the one setting that defers crates.io |
 
@@ -177,7 +190,7 @@ checked by `build.rs`, so a malformed record fails the build rather than a
 download.
 
 What this does **not** check is whether the bytes match what the source actually
-compiles to. That needs a reproducible rebuild, which runs on release tags in
+compiles to. That needs a reproducible rebuild, which `just release-wasm` runs in
 `.github/workflows/release-artifacts.yml`.
 
 

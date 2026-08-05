@@ -59,11 +59,17 @@ struct Args {
 /// `--resolve` found no catalogued artifact for the tag. Distinct from failure.
 const EXIT_NOT_CATALOGUED: u8 = 2;
 
+/// Printed on the skip path so a caller can tell it from clap's usage error,
+/// which also exits 2. The workflow builds a tag it did not come from, so a tag
+/// predating `--resolve` would otherwise skip silently and publish no WASM.
+const SKIP_SENTINEL: &str = "skip=not-catalogued";
+
 pub fn main() -> ExitCode {
     let args = Args::parse();
 
     if let Some(tag) = &args.resolve {
         let Some(artifact) = crate::artifact_from_release_tag(tag) else {
+            println!("{SKIP_SENTINEL}");
             eprintln!("{tag} names no catalogued NEAR artifact");
             return ExitCode::from(EXIT_NOT_CATALOGUED);
         };

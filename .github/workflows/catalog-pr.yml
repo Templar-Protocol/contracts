@@ -208,6 +208,7 @@ jobs:
           gh pr create \
             --base dev \
             --head "$branch" \
+            --draft \
             --title "chore(artifacts): record released contract WASMs" \
             --body-file "$body" \
           || gh pr edit "$branch" --body-file "$body"

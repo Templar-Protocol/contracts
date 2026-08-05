@@ -113,8 +113,6 @@ mod tests {
         let meta = ArtifactId::Vault.metadata();
         assert_eq!(meta.id, ArtifactId::Vault);
         assert_eq!(meta.package_name, "templar-vault-contract");
-        // No NEAR vault has shipped yet, so there is no released version.
-        assert_eq!(meta.version(), None);
     }
 
     #[test]

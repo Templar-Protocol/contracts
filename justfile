@@ -197,3 +197,72 @@ artifacts-clean:
     [ -n "$dir" ] || { echo "could not resolve the artifact cache directory" >&2; exit 1; }
     rm -rf -- "$dir"
     echo "deleted $dir"
+
+# Report whether a release tag's WASM is built, published and recorded.
+release-wasm-status +tags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Captured, not piped into `grep -q`: under `pipefail` the early exit can
+    # SIGPIPE the producer and turn a match into a false negative.
+    recorded_tags=$(cut -f3 contract/artifacts/releases/*.tsv)
+    for tag in "$@"; do
+        if grep -Fxq "$tag" <<<"$recorded_tags"; then
+            recorded=yes
+        else
+            recorded=no
+        fi
+        assets=$(gh release view "$tag" --json assets \
+            --jq '.assets[].name | select(endswith(".wasm"))' 2>/dev/null || true)
+        if [ -n "$assets" ]; then
+            published=yes
+        else
+            published=no
+        fi
+        case "${recorded}/${published}" in
+            yes/yes) echo "${tag}: built and recorded" ;;
+            no/yes)  echo "${tag}: published, not yet recorded — the catalog PR is pending" ;;
+            yes/no)  echo "${tag}: recorded, but the release carries no WASM asset" ;;
+            no/no)   echo "${tag}: not built" ;;
+        esac
+    done
+
+# Build and publish a released version's canonical WASM, and queue its catalog row.
+release-wasm +tags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    recorded_tags=$(cut -f3 contract/artifacts/releases/*.tsv)
+    pending=()
+    # Every tag is checked before any is dispatched, so a bad one late in the
+    # list cannot leave the earlier ones half-dispatched.
+    for tag in "$@"; do
+        git rev-parse -q --verify "refs/tags/${tag}" >/dev/null ||
+            { echo "no such tag: ${tag} (try 'git fetch --tags')" >&2; exit 1; }
+
+        if grep -Fxq "$tag" <<<"$recorded_tags"; then
+            echo "${tag}: already recorded; nothing to build"
+            continue
+        fi
+
+        # Exit code only, and answered by the local worktree rather than the tag
+        # — so a package renamed since the tag reads as uncatalogued here even
+        # though CI, checking the tag out, would resolve it.
+        status=0
+        err=$(cargo run --quiet -p templar-contract-artifacts \
+            --features workspace-loader,clap --bin prebuild-test-contracts -- \
+            --resolve "$tag" 2>&1 >/dev/null) || status=$?
+        if [ "$status" -eq 2 ]; then
+            echo "${tag}: names no catalogued NEAR WASM artifact" >&2
+            exit 1
+        elif [ "$status" -ne 0 ]; then
+            printf '%s\n' "$err" >&2
+            exit "$status"
+        fi
+        pending+=("$tag")
+    done
+
+    # Dispatched against the default branch, never the tag: GitHub runs the
+    # workflow file as it exists at the ref it is dispatched against.
+    for tag in "${pending[@]+"${pending[@]}"}"; do
+        gh workflow run release-artifacts.yml --ref dev -f tag="$tag"
+        echo "${tag}: dispatched"
+    done
