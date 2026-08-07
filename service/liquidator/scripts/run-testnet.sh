@@ -64,7 +64,7 @@ IGNORED_COLLATERAL_ASSETS="${IGNORED_COLLATERAL_ASSETS}"
 IGNORED_MARKETS="${IGNORED_MARKETS}"
 
 # Oracle price update configuration
-PYTH_HERMES_URL="${PYTH_HERMES_URL:-https://hermes-beta.pyth.network}"
+PYTH_HERMES_URL="${PYTH_HERMES_URL}"
 REDSTONE_GATEWAY_URL="${REDSTONE_GATEWAY_URL:-https://oracle-gateway-1.a.redstone.vip}"
 
 # Build binary
@@ -198,7 +198,7 @@ if [ -n "$IGNORED_MARKETS" ]; then
 fi
 
 # Add oracle price update arguments
-CMD_ARGS+=("--hermes-url" "$PYTH_HERMES_URL")
+[ -n "$PYTH_HERMES_URL" ] && CMD_ARGS+=("--hermes-url" "$PYTH_HERMES_URL")
 CMD_ARGS+=("--redstone-gateway-url" "$REDSTONE_GATEWAY_URL")
 
 # Add Telegram notification arguments (use = syntax because chat IDs start with -)

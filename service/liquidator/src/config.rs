@@ -471,6 +471,27 @@ mod tests {
         }
     }
 
+    /// A VAA is only accepted by the Pyth receiver whose guardian set signed it.
+    #[test]
+    fn hermes_url_defaults_to_the_selected_networks_endpoint() {
+        for network in [Network::Mainnet, Network::Testnet] {
+            let mut args = create_test_args();
+            args.network = network;
+            args.hermes_url = None;
+
+            assert_eq!(args.build_config().hermes_url, network.hermes_url());
+        }
+    }
+
+    #[test]
+    fn an_explicit_hermes_url_overrides_the_network_default() {
+        let override_url: Url = "https://hermes.example/".parse().expect("a valid endpoint");
+        let mut args = create_test_args();
+        args.hermes_url = Some(override_url.clone());
+
+        assert_eq!(args.build_config().hermes_url, override_url);
+    }
+
     #[test]
     fn test_parse_collateral_strategy_swap_to_borrow() {
         let mut args = create_test_args();
