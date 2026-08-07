@@ -86,7 +86,7 @@ struct TestStack {
 
 impl TestStack {
     async fn start() -> Result<Self> {
-        Self::start_with_oracle_update_config("https://hermes-beta.pyth.network".parse().unwrap())
+        Self::start_with_oracle_update_config(templar_gateway_client::Network::Testnet.hermes_url())
             .await
     }
 

@@ -32,11 +32,23 @@ pub use spec::SpecNs;
 pub use storage::StorageNs;
 
 use anyhow::Context as _;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_types::Base64Bytes;
 
+/// Drop repeats from a repeatable `--price-id`, which would otherwise widen a Hermes
+/// query or resolve the same dependency twice.
+pub(crate) fn dedup_price_ids(price_ids: Vec<PriceIdentifier>) -> Vec<PriceIdentifier> {
+    price_ids
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Resolve a base64-encoded binary argument supplied either inline or by file path.
-/// `what` names the payload in error messages (e.g. "Pyth VAA").
+/// `what` names the payload in error messages (e.g. "Pyth update data").
 ///
 /// Callers pair the two options in a required [`clap::ArgGroup`], so "neither" is a
 /// parse error rather than a runtime one.

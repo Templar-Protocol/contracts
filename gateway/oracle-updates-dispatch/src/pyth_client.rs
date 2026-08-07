@@ -1,9 +1,14 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_core::OraclePayloadSource;
 use thiserror::Error;
 use url::Url;
+
+/// A plan that blocks on Hermes holds up every step behind it.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
 pub enum PythClientError {
@@ -47,16 +52,19 @@ impl OraclePayloadSource for PythHttpClient {
         #[derive(Deserialize)]
         struct Data(#[serde(deserialize_with = "hex::deserialize")] Vec<u8>);
 
-        let mut request = self.http.get(format!(
-            "{}/v2/updates/price/latest",
-            self.hermes_url.as_str().trim_end_matches('/'),
-        ));
+        let ids = price_ids
+            .iter()
+            .map(|price_id| ("ids[]", price_id))
+            .collect::<Vec<_>>();
 
-        for price_id in price_ids {
-            request = request.query(&[("ids[]", price_id)]);
-        }
-
-        let response = request
+        let response = self
+            .http
+            .get(format!(
+                "{}/v2/updates/price/latest",
+                self.hermes_url.as_str().trim_end_matches('/'),
+            ))
+            .query(&ids)
+            .timeout(FETCH_TIMEOUT)
             .send()
             .await
             .map_err(|error| PythClientError::HttpRequest(error.to_string()))?

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use clap::Parser;
 use near_sdk::AccountId;
 use templar_gateway_client::Network;
+use url::Url;
 
 use crate::{
     notifier::{Notifier, TelegramConfig},
@@ -141,13 +142,10 @@ pub struct Args {
     #[arg(long, env = "MAX_LOOP_ITERATIONS", default_value_t = 10)]
     pub max_loop_iterations: u32,
 
-    /// Pyth Hermes API URL for fetching price data
-    #[arg(
-        long,
-        env = "PYTH_HERMES_URL",
-        default_value = "https://hermes.pyth.network"
-    )]
-    pub hermes_url: String,
+    /// Pyth Hermes API URL for fetching price data. Defaults to Pyth's endpoint for
+    /// `--network`.
+    #[arg(long, env = "PYTH_HERMES_URL")]
+    pub hermes_url: Option<Url>,
 
     /// RedStone gateway URL for fetching fresh prices
     #[arg(
@@ -397,7 +395,10 @@ impl Args {
             ignored_markets,
             loop_liquidation: self.loop_liquidation,
             max_loop_iterations: self.max_loop_iterations,
-            hermes_url: self.hermes_url.clone(),
+            hermes_url: self
+                .hermes_url
+                .clone()
+                .unwrap_or_else(|| self.network.hermes_url()),
             redstone_gateway_url: self.redstone_gateway_url.clone(),
             min_swap_value_usd: self.min_swap_value_usd,
             batch_swap_on_cycle_start: self.batch_swap_on_cycle_start,
@@ -456,7 +457,7 @@ mod tests {
             ignored_markets: vec![],
             loop_liquidation: false,
             max_loop_iterations: 10,
-            hermes_url: "https://hermes.pyth.network".to_string(),
+            hermes_url: None,
             redstone_gateway_url: "https://oracle-gateway-1.a.redstone.vip".to_string(),
             min_swap_value_usd: 10.0,
             batch_swap_on_cycle_start: true,
@@ -468,6 +469,27 @@ mod tests {
             telegram_chat_id: String::new(),
             telegram_thread_id: String::new(),
         }
+    }
+
+    /// A VAA is only accepted by the Pyth receiver whose guardian set signed it.
+    #[test]
+    fn hermes_url_defaults_to_the_selected_networks_endpoint() {
+        for network in [Network::Mainnet, Network::Testnet] {
+            let mut args = create_test_args();
+            args.network = network;
+            args.hermes_url = None;
+
+            assert_eq!(args.build_config().hermes_url, network.hermes_url());
+        }
+    }
+
+    #[test]
+    fn an_explicit_hermes_url_overrides_the_network_default() {
+        let override_url: Url = "https://hermes.example/".parse().expect("a valid endpoint");
+        let mut args = create_test_args();
+        args.hermes_url = Some(override_url.clone());
+
+        assert_eq!(args.build_config().hermes_url, override_url);
     }
 
     #[test]

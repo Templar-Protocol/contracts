@@ -3,6 +3,12 @@
 use std::fmt;
 
 use near_api::NetworkConfig;
+use url::Url;
+
+/// Pyth's public Hermes endpoints. A VAA is only accepted by the Pyth receiver whose
+/// guardian set signed it, so the endpoint has to follow the NEAR network.
+const HERMES_MAINNET_URL: &str = "https://hermes.pyth.network";
+const HERMES_TESTNET_URL: &str = "https://hermes-beta.pyth.network";
 
 /// A NEAR network, used by off-chain consumers (CLIs, bots, services) to pick
 /// the default RPC endpoint when constructing a [`crate::Client`].
@@ -31,6 +37,20 @@ impl Network {
             Network::Mainnet => "https://rpc.mainnet.fastnear.com",
             Network::Testnet => "https://rpc.testnet.fastnear.com",
         }
+    }
+
+    /// Pyth's public Hermes endpoint for this network, for consumers that submit or read
+    /// Pyth price updates. Overridable the same way as [`rpc_url`](Self::rpc_url).
+    // The endpoint constants are compile-time literals known to be valid.
+    #[allow(clippy::expect_used)]
+    #[must_use]
+    pub fn hermes_url(self) -> Url {
+        match self {
+            Network::Mainnet => HERMES_MAINNET_URL,
+            Network::Testnet => HERMES_TESTNET_URL,
+        }
+        .parse()
+        .expect("Hermes endpoint constants must be valid URLs")
     }
 }
 
@@ -166,7 +186,20 @@ impl NetworkConfigBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::NetworkConfigBuilder;
+    use super::{Network, NetworkConfigBuilder};
+
+    /// A mainnet Pyth receiver rejects a VAA signed by the testnet guardian set.
+    #[test]
+    fn each_network_gets_its_own_hermes_endpoint() {
+        assert_eq!(
+            Network::Mainnet.hermes_url().as_str(),
+            "https://hermes.pyth.network/"
+        );
+        assert_eq!(
+            Network::Testnet.hermes_url().as_str(),
+            "https://hermes-beta.pyth.network/"
+        );
+    }
 
     #[test]
     fn embedded_api_key_moves_to_header() {

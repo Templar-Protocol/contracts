@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/Templar-Protocol/contracts/compare/templar-relayer-v0.2.0...templar-relayer-v0.2.1) - 2026-08-07
+
+### Added
+
+- *(gateway)* [**breaking**] oracle.updatePyth fetches its own payload (ENG-462) ([#586](https://github.com/Templar-Protocol/contracts/pull/586))
+
 ## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-relayer-v0.1.2...templar-relayer-v0.2.0) - 2026-08-04
 
 ### Added

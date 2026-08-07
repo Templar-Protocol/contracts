@@ -8,7 +8,7 @@ use templar_gateway_oracle_updates_spec::oracle as oracle_spec;
 use templar_gateway_types::MethodSpec;
 
 use crate::cli::{GenericMethodCall, WriteMethodCall};
-use crate::context::{all_sources, lazer_source, redstone_source, CliContext};
+use crate::context::{all_sources, lazer_source, pyth_source, redstone_source, CliContext};
 
 pub(super) async fn read(ctx: CliContext, call: GenericMethodCall) -> anyhow::Result<()> {
     let method = call.method.clone();
@@ -70,10 +70,13 @@ pub(super) async fn write(ctx: CliContext, call: WriteMethodCall) -> anyhow::Res
     }
 
     if let Some(route) = oracle_route(&method) {
+        let network = ctx.network();
         return match route {
             OracleRoute::Pyth => {
-                ctx.oracle_write(signer, body!(oracle_spec::UpdatePyth), Ok)
-                    .await
+                ctx.oracle_write(signer, body!(oracle_spec::UpdatePyth), |base| {
+                    Ok(pyth_source(base, &oracle_sources.pyth, network))
+                })
+                .await
             }
             OracleRoute::RedStone => {
                 ctx.oracle_write(signer, body!(oracle_spec::UpdateRedStone), |base| {
@@ -89,7 +92,7 @@ pub(super) async fn write(ctx: CliContext, call: WriteMethodCall) -> anyhow::Res
             }
             OracleRoute::Prices => {
                 ctx.oracle_write(signer, body!(oracle_spec::UpdatePrices), |base| {
-                    all_sources(base, &oracle_sources)
+                    all_sources(base, &oracle_sources, network)
                 })
                 .await
             }

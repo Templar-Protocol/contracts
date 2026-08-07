@@ -17,7 +17,7 @@ services:
       - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
 
     command: [
-      "--network", "${NETWORK:-mainnet}",
+      "--network", "${NEAR_NETWORK:-mainnet}",
       "--signer-account", "${SIGNER_ACCOUNT_ID}",
       "--signer-key", "${SIGNER_KEY}",
       "--registries", "${REGISTRY_ACCOUNT_IDS:-v1.tmplr.near}",
@@ -29,7 +29,6 @@ services:
       "--transaction-timeout", "${TRANSACTION_TIMEOUT:-60}",
       "--collateral-strategy", "${COLLATERAL_STRATEGY:-hold}",
       "--max-loop-iterations", "${MAX_LOOP_ITERATIONS:-10}",
-      "--hermes-url", "${PYTH_HERMES_URL:-https://hermes.pyth.network}",
       "--redstone-gateway-url", "${REDSTONE_GATEWAY_URL:-https://oracle-gateway-1.a.redstone.vip}",
       # Uncomment to enable loop liquidation (repeatedly liquidate until healthy):
       # "--loop-liquidation",

@@ -25,6 +25,8 @@ pub struct Configuration {
     pub relay: Relay,
     #[clap(flatten)]
     pub ua: UniversalAccount,
+    /// In-process oracle payload sources. A mainnet deployment must set
+    /// `--pyth-hermes-url`; it defaults to testnet's.
     #[clap(flatten)]
     pub oracle_sources: OracleSourceArgs,
     /// Broom batch size.
