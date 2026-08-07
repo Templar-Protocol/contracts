@@ -7,7 +7,7 @@ use super::*;
 
 use soroban_sdk::{
     testutils::{storage::Instance as _, Address as _, Events as _, Ledger, LedgerInfo},
-    Address, Env, Event, Symbol,
+    Address, Bytes, Env, Event, Symbol,
 };
 use templar_proxy_oracle_soroban_common::{Asset as CommonAsset, NormalizedPrice};
 
@@ -21,6 +21,8 @@ mod mock_parent {
     enum Key {
         Price(Asset),
         History(Asset),
+        SourceBase,
+        ReadTrap,
     }
 
     #[contract]
@@ -37,11 +39,31 @@ mod mock_parent {
                 .persistent()
                 .set(&Key::History(asset), &history);
         }
+
+        pub fn set_source_base(env: Env, base: Asset) {
+            env.storage().persistent().set(&Key::SourceBase, &base);
+        }
+
+        pub fn set_read_trap(env: Env, enabled: bool) {
+            env.storage().persistent().set(&Key::ReadTrap, &enabled);
+        }
+    }
+
+    fn assert_readable(env: &Env) {
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&Key::ReadTrap)
+            .unwrap_or(false)
+        {
+            panic!("parent read");
+        }
     }
 
     #[contractimpl]
     impl templar_proxy_oracle_soroban_common::ProxyOracleTrait for MockParent {
         fn aggregated_latest(env: Env, asset: Asset) -> Option<NormalizedPrice> {
+            assert_readable(&env);
             env.storage().persistent().get(&Key::Price(asset))
         }
 
@@ -50,6 +72,7 @@ mod mock_parent {
             asset: Asset,
             records: u32,
         ) -> Option<Vec<NormalizedPrice>> {
+            assert_readable(&env);
             if records == 0 {
                 return None;
             }
@@ -61,10 +84,14 @@ mod mock_parent {
             let start = history.len().saturating_sub(records);
             Some(history.slice(start..))
         }
+
+        fn source_base(env: Env) -> Option<Asset> {
+            assert_readable(&env);
+            env.storage().persistent().get(&Key::SourceBase)
+        }
     }
 }
 use mock_parent::{MockParent, MockParentClient};
-
 fn ledger(env: &Env, timestamp: u64) {
     env.ledger().set(LedgerInfo {
         timestamp,
@@ -97,6 +124,7 @@ fn fixture(decimals: u32, resolution: u32) -> Fixture {
 
     let parent_id = env.register(MockParent, ());
     let parent = MockParentClient::new(&env, &parent_id);
+    parent.set_source_base(&base);
 
     let adapter_id = env.register(
         Sep40Adapter,
@@ -275,7 +303,7 @@ fn price_finds_matching_timestamp() {
 }
 
 #[test]
-fn set_metadata_owner_gated_changes_decimals_resolution_and_base() {
+fn set_decimals_changes_scale_without_relabeling_metadata() {
     let f = fixture(8, 1);
     f.parent.set_aggregated(
         &f.asset,
@@ -287,21 +315,17 @@ fn set_metadata_owner_gated_changes_decimals_resolution_and_base() {
     );
     assert_eq!(f.adapter.lastprice(&f.asset).unwrap().price, 5_000_000_000);
 
-    // Owner replaces the mutable triple in a single call; auth is mocked.
-    let new_base = CommonAsset::Other(Symbol::new(&f.env, "EUR"));
-    f.adapter.set_metadata(&4, &2, &new_base);
+    f.adapter.set_decimals(&4);
     assert_eq!(f.adapter.decimals(), 4);
-    assert_eq!(f.adapter.resolution(), 2);
-    assert_eq!(f.adapter.base(), new_base);
-    // New scaling: 500_000 with expo=-4 at decimals=4 → 500_000 * 10^0 = 500_000.
+    assert_eq!(f.adapter.resolution(), 1);
+    assert_eq!(f.adapter.base(), f.base);
     assert_eq!(f.adapter.lastprice(&f.asset).unwrap().price, 500_000);
 }
 
 #[test]
-fn set_metadata_emits_event_with_changed_fields() {
+fn set_decimals_emits_event() {
     let f = fixture(8, 1);
-    let new_base = CommonAsset::Other(Symbol::new(&f.env, "EUR"));
-    f.adapter.set_metadata(&4, &2, &new_base);
+    f.adapter.set_decimals(&4);
     let emitted = f
         .env
         .events()
@@ -309,27 +333,15 @@ fn set_metadata_emits_event_with_changed_fields() {
         .filter_by_contract(&f.adapter.address)
         .events()
         .to_vec();
-    let expected = MetadataUpdated {
-        decimals: 4,
-        resolution: 2,
-        base: new_base,
-    }
-    .to_xdr(&f.env, &f.adapter.address);
+    let expected = DecimalsUpdated { decimals: 4 }.to_xdr(&f.env, &f.adapter.address);
     assert!(emitted.contains(&expected));
 }
 
 #[test]
 #[should_panic]
-fn set_metadata_rejects_decimals_above_18() {
+fn set_decimals_rejects_values_above_18() {
     let f = fixture(8, 1);
-    f.adapter.set_metadata(&19, &1, &f.base);
-}
-
-#[test]
-#[should_panic]
-fn set_metadata_rejects_zero_resolution() {
-    let f = fixture(8, 1);
-    f.adapter.set_metadata(&8, &0, &f.base);
+    f.adapter.set_decimals(&19);
 }
 
 #[test]
@@ -338,6 +350,41 @@ fn upgrade_rejects_zero_wasm_hash() {
     let zero = soroban_sdk::BytesN::from_array(&f.env, &[0; 32]);
     let res = f.adapter.try_upgrade(&zero, &f.owner);
     assert!(res.is_err());
+}
+
+#[test]
+fn successful_upgrade_emits_hash() {
+    let f = fixture(8, 1);
+    let wasm_hash = f.env.deployer().upload_contract_wasm(Bytes::new(&f.env));
+    f.adapter.upgrade(&wasm_hash, &f.owner);
+    let emitted = f
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&f.adapter.address)
+        .events()
+        .to_vec();
+    let expected = AdapterUpgraded {
+        new_wasm_hash: wasm_hash,
+    }
+    .to_xdr(&f.env, &f.adapter.address);
+    assert!(emitted.contains(&expected));
+}
+
+#[test]
+fn decommissioned_flag_survives_wasm_upgrade() {
+    let f = fixture(8, 1);
+    f.adapter.decommission();
+    let wasm_hash = f.env.deployer().upload_contract_wasm(Bytes::new(&f.env));
+    f.adapter.upgrade(&wasm_hash, &f.owner);
+
+    assert!(f.env.as_contract(&f.adapter_id, || {
+        f.env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DECOMMISSIONED)
+            .unwrap_or(false)
+    }));
 }
 
 #[test]
@@ -359,4 +406,187 @@ fn two_step_ownership_transfer_round_trip() {
     assert_eq!(f.adapter.get_owner(), Some(f.owner));
     f.adapter.accept_ownership();
     assert_eq!(f.adapter.get_owner(), Some(new_owner));
+}
+
+#[test]
+fn lastprice_rejects_nonzero_downscale_to_zero() {
+    let f = fixture(0, 1);
+    f.parent.set_aggregated(
+        &f.asset,
+        &NormalizedPrice {
+            mantissa: 1,
+            expo: -1,
+            timestamp: 100,
+        },
+    );
+
+    assert_eq!(f.adapter.lastprice(&f.asset), None);
+}
+
+#[test]
+#[should_panic]
+fn constructor_rejects_mismatched_parent_base() {
+    let f = fixture(8, 1);
+    let eur = CommonAsset::Other(Symbol::new(&f.env, "EUR"));
+    f.parent.set_source_base(&eur);
+    let _ = f.env.register(
+        Sep40Adapter,
+        (&f.owner, &f.parent_id, &f.asset, &8_u32, &1_u32, &f.base),
+    );
+}
+
+#[test]
+fn parent_base_drift_fails_all_price_reads_closed() {
+    let f = fixture(8, 1);
+    f.parent.set_aggregated(
+        &f.asset,
+        &NormalizedPrice {
+            mantissa: 500_000,
+            expo: -4,
+            timestamp: 100,
+        },
+    );
+    let mut history = soroban_sdk::Vec::new(&f.env);
+    history.push_back(NormalizedPrice {
+        mantissa: 500_000,
+        expo: -4,
+        timestamp: 100,
+    });
+    f.parent.set_history(&f.asset, &history);
+    f.parent
+        .set_source_base(&CommonAsset::Other(Symbol::new(&f.env, "EUR")));
+
+    assert_eq!(f.adapter.price(&f.asset, &100), None);
+    assert_eq!(f.adapter.prices(&f.asset, &1), None);
+    assert_eq!(f.adapter.lastprice(&f.asset), None);
+}
+
+#[test]
+fn timestamps_are_bucketed_and_history_collisions_keep_newest() {
+    let f = fixture(8, 60);
+    f.parent.set_aggregated(
+        &f.asset,
+        &NormalizedPrice {
+            mantissa: 200,
+            expo: -2,
+            timestamp: 119,
+        },
+    );
+    let mut history = soroban_sdk::Vec::new(&f.env);
+    for (mantissa, timestamp) in [(100_i64, 101_u64), (200, 119), (300, 120)] {
+        history.push_back(NormalizedPrice {
+            mantissa,
+            expo: -2,
+            timestamp,
+        });
+    }
+    f.parent.set_history(&f.asset, &history);
+
+    assert_eq!(f.adapter.lastprice(&f.asset).unwrap().timestamp, 60);
+    assert_eq!(f.adapter.price(&f.asset, &60).unwrap().price, 200_000_000);
+    assert_eq!(f.adapter.price(&f.asset, &101), None);
+    let prices = f.adapter.prices(&f.asset, &3).unwrap();
+    assert_eq!(prices.len(), 2);
+    assert_eq!(prices.get(0).unwrap().timestamp, 60);
+    assert_eq!(prices.get(0).unwrap().price, 200_000_000);
+    assert_eq!(prices.get(1).unwrap().timestamp, 120);
+    assert_eq!(prices.get(1).unwrap().price, 300_000_000);
+}
+
+#[test]
+fn timestamp_bucketing_handles_u64_max_without_overflow() {
+    let f = fixture(8, 60);
+    f.parent.set_aggregated(
+        &f.asset,
+        &NormalizedPrice {
+            mantissa: 100,
+            expo: -2,
+            timestamp: u64::MAX,
+        },
+    );
+
+    assert_eq!(
+        f.adapter.lastprice(&f.asset).unwrap().timestamp,
+        u64::MAX - (u64::MAX % 60)
+    );
+}
+
+#[test]
+fn prices_skips_unconvertible_history_entries() {
+    let f = fixture(8, 1);
+    let mut history = soroban_sdk::Vec::new(&f.env);
+    history.push_back(NormalizedPrice {
+        mantissa: 100,
+        expo: -2,
+        timestamp: 100,
+    });
+    history.push_back(NormalizedPrice {
+        mantissa: i64::MAX,
+        expo: i32::MAX,
+        timestamp: 101,
+    });
+    history.push_back(NormalizedPrice {
+        mantissa: 200,
+        expo: -2,
+        timestamp: 102,
+    });
+    f.parent.set_history(&f.asset, &history);
+
+    let prices = f.adapter.prices(&f.asset, &3).unwrap();
+    assert_eq!(prices.len(), 2);
+    assert_eq!(prices.get(0).unwrap().price, 100_000_000);
+    assert_eq!(prices.get(1).unwrap().price, 200_000_000);
+    let mut invalid = soroban_sdk::Vec::new(&f.env);
+    invalid.push_back(NormalizedPrice {
+        mantissa: i64::MAX,
+        expo: i32::MAX,
+        timestamp: 103,
+    });
+    f.parent.set_history(&f.asset, &invalid);
+    assert_eq!(f.adapter.prices(&f.asset, &1), None);
+}
+
+#[test]
+fn decommission_stops_reads_and_allows_renunciation() {
+    let f = fixture(8, 1);
+    f.parent.set_aggregated(
+        &f.asset,
+        &NormalizedPrice {
+            mantissa: 500_000,
+            expo: -4,
+            timestamp: 100,
+        },
+    );
+    assert!(f.adapter.lastprice(&f.asset).is_some());
+    assert!(f.adapter.try_renounce_ownership().is_err());
+
+    f.adapter.decommission();
+    let emitted = f
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&f.adapter.address)
+        .events()
+        .to_vec();
+    let expected = AdapterDecommissioned {
+        decommissioned: true,
+    }
+    .to_xdr(&f.env, &f.adapter.address);
+    assert!(emitted.contains(&expected));
+    f.adapter.decommission();
+    assert!(f
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&f.adapter.address)
+        .events()
+        .is_empty());
+
+    f.parent.set_read_trap(&true);
+    assert_eq!(f.adapter.price(&f.asset, &100), None);
+    assert_eq!(f.adapter.prices(&f.asset, &1), None);
+    assert_eq!(f.adapter.lastprice(&f.asset), None);
+    assert!(f.adapter.assets().is_empty());
+    f.adapter.renounce_ownership();
+    assert_eq!(f.adapter.get_owner(), None);
 }
