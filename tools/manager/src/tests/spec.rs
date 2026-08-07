@@ -159,7 +159,7 @@ fn source_accessors_cover_both_variants() {
 fn extends_applies_profiles_then_lets_the_market_win() {
     let spec = alpha_market();
 
-    // From alpha-mainnet.toml.
+    // From alpha.toml, and mainnet.toml beneath it.
     assert_eq!(spec.registry.as_str(), "templar-alpha.near");
     assert_eq!(spec.market_version, "v1.3.0");
     // From irs-stable.toml.

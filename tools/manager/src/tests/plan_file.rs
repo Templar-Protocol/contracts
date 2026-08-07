@@ -318,8 +318,13 @@ async fn an_oracle_version_that_ignores_owner_id_is_refused() {
     };
     let admin = governance.admin.clone();
     // Well-formed key, pre-0.3.0 version: the guard must reject it for what the
-    // version *means*, not because the key failed to parse.
-    *oracle_version = oracle_version.replace("@0.3.0#", "@0.2.0#");
+    // version *means*, not because the key failed to parse. Rebuilt rather than
+    // substituted, so a profile version bump cannot silently make this a no-op.
+    let (name, hash) = oracle_version
+        .split_once('@')
+        .and_then(|(name, rest)| rest.split_once('#').map(|(_, hash)| (name, hash)))
+        .expect("fixture version key is `<name>@<version>#<hash>`");
+    *oracle_version = format!("{name}@0.2.0#{hash}");
 
     let error = crate::dispatch::plan::build(&client, &spec, &public_key, &admin)
         .await

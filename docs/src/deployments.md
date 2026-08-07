@@ -44,7 +44,7 @@ it extends and states only what differs. Abbreviated — a market also needs a
 any file under `deployments/` for a complete one:
 
 ```toml
-extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-standard.toml"]
+extends = ["../profiles/alpha.toml", "../profiles/irs-standard.toml"]
 name = "my-market"
 
 [oracle.direct]                    # reads an oracle that already exists

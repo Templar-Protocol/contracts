@@ -1,4 +1,4 @@
-extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-standard.toml"]
+extends = ["../profiles/alpha.toml", "../profiles/irs-standard.toml"]
 
 name = "liqtest-stnear-usdc"
 
@@ -25,6 +25,7 @@ mcr_maintenance = "1.5"
 mcr_liquidation = "1.5"
 maximum_usage_ratio = "0.99"
 liquidation_maximum_spread = "0.1"
+price_maximum_age = "60s"
 borrow_range = { minimum = "1 atom", maximum = "1000 tokens" }
 supply_range = { minimum = "0.04 tokens", maximum = "1000 tokens" }
 supply_withdrawal_range = { minimum = "0.04 tokens" }

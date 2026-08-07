@@ -30,7 +30,8 @@ for the bare ticker would be ambiguous.
 
 | Profile | Supplies |
 |---|---|
-| `alpha-mainnet` / `v1-mainnet` | registry, versions, governance, shared market params |
+| `mainnet` | versions and the market params every mainnet market shares |
+| `alpha` / `v1` | registry and governance for one deployment, over `mainnet` |
 | `irs-standard` / `irs-stable` | one interest-rate curve |
 | `v1-borrow-*` / `v1-collateral-*` | one asset leg: token, decimals, aggregator, sources, and the `symbol`/`reference` pair the price cross-check needs |
 
