@@ -8,8 +8,12 @@
 use std::{collections::HashMap, num::NonZeroU32, sync::Arc, time::Duration};
 
 use near_sdk::AccountId;
-use templar_gateway_client::{collect_paginated, Network, NetworkConfigBuilder, SigningClient};
+use templar_gateway_client::{
+    collect_paginated, Client, Network, NetworkConfigBuilder, SigningClient,
+};
+use templar_gateway_core::GatewayContextBuilder;
 use templar_gateway_methods_spec::{contract, market, registry};
+use templar_gateway_oracle_updates_dispatch::GatewayContextBuilderOracleExt as _;
 use templar_gateway_types::common::Pagination;
 use tokio::{
     select,
@@ -24,8 +28,8 @@ use templar_common::{
 };
 
 use crate::{
-    inventory::InventoryManager, liquidation_strategy::LiquidationStrategy, swap::SwapProvider,
-    CollateralStrategy, Liquidator, LiquidatorError,
+    inventory::InventoryManager, liquidation_strategy::LiquidationStrategy,
+    oracle::PythUpdatesClient, swap::SwapProvider, CollateralStrategy, Liquidator, LiquidatorError,
 };
 
 /// Page size for listing registry deployments.
@@ -95,7 +99,7 @@ pub struct ServiceConfig {
     /// Maximum iterations for loop liquidation (safety limit)
     pub max_loop_iterations: u32,
     /// Pyth Hermes API URL for fetching price data
-    pub hermes_url: String,
+    pub hermes_url: url::Url,
     /// RedStone gateway URL for fetching fresh prices
     pub redstone_gateway_url: String,
     /// Minimum USD value to attempt a swap (JIT or batch)
@@ -114,6 +118,8 @@ pub struct ServiceConfig {
 pub struct LiquidatorService {
     config: ServiceConfig,
     client: SigningClient,
+    /// Shares the methods client's operation driver; see [`LiquidatorService::new`].
+    pyth_updates: PythUpdatesClient,
     inventory: Arc<RwLock<InventoryManager>>,
     markets: HashMap<AccountId, Liquidator>,
     /// Swap provider passed to liquidators for immediate post-liquidation swaps
@@ -157,8 +163,30 @@ impl LiquidatorService {
             .parse()
             .expect("invalid signer secret key");
 
-        let client = SigningClient::connect(network, config.signer_account.clone(), secret_key)
+        // The methods client and the oracle-updates client share one operation driver
+        // (store, signer pool, executor) and a base context, so idempotency and replay
+        // span both.
+        let (base_context, driver, signer_account_ids) = Client::builder(network)
+            .secret_key(config.signer_account.clone(), secret_key)
+            .expect("failed to register gateway signer")
+            .build_parts()
             .expect("failed to construct gateway client");
+        let client = Client::from_parts(
+            base_context.clone(),
+            driver.clone(),
+            signer_account_ids.clone(),
+        )
+        .into_signing(config.signer_account.clone())
+        .expect("failed to bind gateway signer");
+        let pyth_updates: PythUpdatesClient = Client::from_parts(
+            GatewayContextBuilder::new(base_context)
+                .with_pyth_source(config.hermes_url.clone())
+                .build(),
+            driver,
+            signer_account_ids,
+        )
+        .into_signing(config.signer_account.clone())
+        .expect("failed to bind gateway signer");
 
         let inventory = Arc::new(RwLock::new(InventoryManager::new(
             client.clone(),
@@ -171,7 +199,8 @@ impl LiquidatorService {
         // Create oracle fetcher for batch swap price checks
         let oracle_fetcher = crate::OracleFetcher::new(
             client.clone(),
-            Some(config.hermes_url.clone()),
+            pyth_updates.clone(),
+            config.hermes_url.clone(),
             Some(config.redstone_gateway_url.clone()),
             None,
         );
@@ -188,6 +217,7 @@ impl LiquidatorService {
         Self {
             config,
             client,
+            pyth_updates,
             inventory,
             markets: HashMap::new(),
             oneclick_provider,
@@ -558,6 +588,7 @@ impl LiquidatorService {
 
                 let mut liquidator = Liquidator::new(
                     &self.client,
+                    &self.pyth_updates,
                     &self.inventory,
                     market.clone(),
                     config,
@@ -567,7 +598,7 @@ impl LiquidatorService {
                     self.oneclick_provider.clone(),
                     self.config.loop_liquidation,
                     self.config.max_loop_iterations,
-                    Some(self.config.hermes_url.clone()),
+                    self.config.hermes_url.clone(),
                     Some(self.config.redstone_gateway_url.clone()),
                     self.config.swap_retry_config.clone(),
                     self.config.min_swap_value_usd,

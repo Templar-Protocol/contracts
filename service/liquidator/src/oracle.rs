@@ -13,7 +13,10 @@ use templar_common::{
     Decimal,
 };
 use templar_gateway_client::SigningClient;
+use templar_gateway_core::GatewayContext;
 use templar_gateway_methods_spec::{contract, lst_oracle, proxy_oracle, pyth as pyth_spec};
+use templar_gateway_oracle_updates_dispatch::{Dispatch as OracleUpdatesDispatch, WithPythSource};
+use templar_gateway_oracle_updates_spec::oracle as oracle_updates;
 use templar_gateway_types::{
     common::ContractArgs, Base64Bytes, ContractMethodName, OperationStatus,
 };
@@ -22,6 +25,7 @@ use templar_proxy_oracle_near_common::{
     price_transformer::{Call, PriceTransformer},
     request::OracleRequest,
 };
+use url::Url;
 
 use crate::{
     rpc::{gateway_is_method_not_found, RpcError},
@@ -50,18 +54,11 @@ struct HermesParsedPrice {
     publish_time: i64,
 }
 
-/// Binary (VAA) response from Pyth Hermes for on-chain price updates.
-#[derive(serde::Deserialize)]
-struct HermesBinaryResponse {
-    binary: HermesBinaryData,
-}
-
-#[derive(serde::Deserialize)]
-struct HermesBinaryData {
-    data: Vec<String>,
-}
-
 // ── Shared types ─────────────────────────────────────────────────────────────
+
+/// A gateway client bound to the oracle-updates dispatcher, over a context carrying
+/// the in-process Hermes payload source that `oracle.updatePyth` fetches from.
+pub type PythUpdatesClient = SigningClient<OracleUpdatesDispatch, WithPythSource<GatewayContext>>;
 
 /// Shared cache of detected proxy oracle accounts.
 pub type ProxyOracleCache =
@@ -74,6 +71,7 @@ pub type ProxyOracleCache =
 /// aggregation.
 pub struct OracleFetcher {
     client: SigningClient,
+    pyth_updates: PythUpdatesClient,
     /// Cache of which oracles are LST oracles (`oracle_account` -> `underlying_oracle`)
     lst_oracle_cache: std::sync::Arc<tokio::sync::RwLock<HashMap<AccountId, Option<AccountId>>>>,
     /// Cache of detected proxy oracles (oracles that use cross-contract calls).
@@ -83,7 +81,7 @@ pub struct OracleFetcher {
     /// HTTP client for API calls
     http_client: reqwest::Client,
     /// Pyth Hermes API URL (e.g., <https://hermes.pyth.network>)
-    hermes_url: String,
+    hermes_url: Url,
 }
 
 impl OracleFetcher {
@@ -96,18 +94,20 @@ impl OracleFetcher {
     /// [`SigningClient`].
     pub fn new(
         client: SigningClient,
-        hermes_url: Option<String>,
+        pyth_updates: PythUpdatesClient,
+        hermes_url: Url,
         _redstone_gateway_url: Option<String>,
         proxy_oracle_cache: Option<ProxyOracleCache>,
     ) -> Self {
         Self {
             client,
+            pyth_updates,
             lst_oracle_cache: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             proxy_oracle_cache: proxy_oracle_cache.unwrap_or_else(|| {
                 std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashSet::new()))
             }),
             http_client: reqwest::Client::new(),
-            hermes_url: hermes_url.unwrap_or_else(|| "https://hermes.pyth.network".to_string()),
+            hermes_url,
         }
     }
 
@@ -203,7 +203,10 @@ impl OracleFetcher {
         &self,
         price_ids: &[PriceIdentifier],
     ) -> Option<OracleResponse> {
-        let url = format!("{}/v2/updates/price/latest", self.hermes_url);
+        let url = format!(
+            "{}/v2/updates/price/latest",
+            self.hermes_url.as_str().trim_end_matches('/')
+        );
         let mut query_params: Vec<(&str, String)> = price_ids
             .iter()
             .map(|id| ("ids[]", id.to_string()))
@@ -456,8 +459,8 @@ impl OracleFetcher {
         Ok(true)
     }
 
-    /// Pushes fresh Pyth prices on-chain by fetching a VAA from Hermes and
-    /// submitting an `update_price_feeds` transaction to the oracle contract.
+    /// Pushes fresh Pyth prices on-chain via `oracle.updatePyth`, which fetches the
+    /// VAA covering `price_ids` from Hermes inside the gateway.
     ///
     /// The market contract reads prices from the on-chain oracle during
     /// liquidation execution, so prices must be fresh there — not just in the
@@ -473,59 +476,14 @@ impl OracleFetcher {
         tracing::info!(
             oracle = %oracle,
             price_ids = ?price_ids,
-            "Fetching VAA from Hermes for on-chain price update"
-        );
-
-        // Fetch binary VAA from Hermes
-        let url = format!("{}/v2/updates/price/latest", self.hermes_url);
-        let query_params: Vec<_> = price_ids
-            .iter()
-            .map(|id| ("ids[]", id.to_string()))
-            .collect();
-
-        let response = self
-            .http_client
-            .get(&url)
-            .query(&query_params)
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-            .map_err(|e| LiquidatorError::OracleUpdateError(format!("Hermes API error: {e}")))?;
-
-        if !response.status().is_success() {
-            return Err(LiquidatorError::OracleUpdateError(format!(
-                "Hermes API returned status: {}",
-                response.status()
-            )));
-        }
-
-        let body: HermesBinaryResponse = response.json().await.map_err(|e| {
-            LiquidatorError::OracleUpdateError(format!("Failed to parse Hermes response: {e}"))
-        })?;
-
-        let vaa_hex = body.binary.data.first().ok_or_else(|| {
-            LiquidatorError::OracleUpdateError("No VAA data in Hermes response".to_string())
-        })?;
-
-        // Hermes returns the update payload as a hex string. The gateway's
-        // `pyth.updatePriceFeeds` carries the raw bytes (`Base64Bytes`) and
-        // re-hex-encodes them for the on-chain `update_price_feeds` call, so the
-        // hex string is decoded here to keep the on-chain bytes identical to the
-        // pre-migration behaviour.
-        let vaa_bytes = hex::decode(vaa_hex).map_err(|e| {
-            LiquidatorError::OracleUpdateError(format!("Invalid VAA hex from Hermes: {e}"))
-        })?;
-
-        tracing::info!(
-            vaa_size = vaa_bytes.len(),
-            "Fetched VAA from Hermes, submitting to oracle"
+            "Requesting on-chain Pyth price update"
         );
 
         match self
-            .client
-            .execute(pyth_spec::UpdatePriceFeeds {
+            .pyth_updates
+            .execute(oracle_updates::UpdatePyth {
                 oracle_id: oracle.clone(),
-                data: Base64Bytes(vaa_bytes),
+                price_ids: price_ids.to_vec(),
             })
             .await
         {

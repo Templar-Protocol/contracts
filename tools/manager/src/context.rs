@@ -16,7 +16,7 @@ use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_oracle_updates_dispatch::{
     build_oracle_updates_context, Dispatch as OracleUpdatesDispatch,
     GatewayContextBuilderOracleExt as _, LazerSourceArgs, OracleSourceArgs, OracleUpdatesContext,
-    RedStoneSourceArgs, WithLazerSource, WithRedStoneSource,
+    PythSourceArgs, RedStoneSourceArgs, WithLazerSource, WithPythSource, WithRedStoneSource,
 };
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
@@ -213,6 +213,17 @@ impl CliContext {
     }
 }
 
+/// `layer_sources` for `oracle.updatePyth`.
+pub(crate) fn pyth_source(
+    base: GatewayContext,
+    args: &PythSourceArgs,
+    network: Network,
+) -> WithPythSource<GatewayContext> {
+    GatewayContextBuilder::new(base)
+        .with_pyth_source(args.hermes_url(network.hermes_url()))
+        .build()
+}
+
 /// `layer_sources` for `oracle.updateRedStone`.
 pub(crate) fn redstone_source(
     base: GatewayContext,
@@ -238,8 +249,12 @@ pub(crate) fn lazer_source(
 pub(crate) fn all_sources(
     base: GatewayContext,
     args: &OracleSourceArgs,
+    network: Network,
 ) -> anyhow::Result<OracleUpdatesContext> {
-    Ok(build_oracle_updates_context(base, args.build()?)?)
+    Ok(build_oracle_updates_context(
+        base,
+        args.build(network.hermes_url())?,
+    )?)
 }
 
 /// Succeed only when a submitted write reached a `Succeeded` terminal status.

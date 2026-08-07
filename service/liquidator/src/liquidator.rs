@@ -361,6 +361,7 @@ impl Liquidator {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: &SigningClient,
+        pyth_updates: &oracle::PythUpdatesClient,
         inventory: &inventory::SharedInventory,
         market: AccountId,
         market_config: MarketConfiguration,
@@ -370,7 +371,7 @@ impl Liquidator {
         swap_provider: Option<crate::swap::SwapProviderImpl>,
         loop_liquidation: bool,
         max_loop_iterations: u32,
-        hermes_url: Option<String>,
+        hermes_url: url::Url,
         redstone_gateway_url: Option<String>,
         swap_retry_config: crate::swap::SwapRetryConfig,
         min_swap_value_usd: f64,
@@ -380,6 +381,7 @@ impl Liquidator {
         let scanner = scanner::MarketScanner::new(client.clone(), market.clone());
         let oracle_fetcher = oracle::OracleFetcher::new(
             client.clone(),
+            pyth_updates.clone(),
             hermes_url,
             redstone_gateway_url,
             proxy_oracle_cache,

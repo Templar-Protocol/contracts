@@ -12,12 +12,11 @@ use clap::Subcommand;
 
 /// The gateway's `oracle.*` update methods. Each fetches its payload inside the
 /// gateway, so a subcommand carries only the source flags its own method reaches:
-/// `update-pyth` takes the VAA directly and needs none, and only `update-lazer` and
-/// `update-prices` require `--pyth-lazer-api-key`.
+/// only `update-lazer` and `update-prices` require `--pyth-lazer-api-key`.
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum OracleNs {
-    /// Submit a caller-supplied Pyth VAA to a Pyth oracle.
+    /// Fetch a Pyth VAA from Hermes and write it to a Pyth oracle.
     #[command(name = "update-pyth")]
     Pyth(UpdatePyth),
     /// Fetch signed prices from the RedStone bridge and write them to a RedStone adapter.

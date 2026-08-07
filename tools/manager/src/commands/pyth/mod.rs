@@ -9,8 +9,8 @@ pub use update_price_feeds::UpdatePriceFeeds;
 use clap::Subcommand;
 
 /// Direct reads and writes against a Pyth oracle contract. Unlike `oracle update-pyth`,
-/// these do not resolve price dependencies and fetch no payload — `update-price-feeds`
-/// submits caller-supplied update data verbatim.
+/// these fetch no payload — `update-price-feeds` submits caller-supplied update data
+/// verbatim.
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum PythNs {

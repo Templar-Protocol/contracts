@@ -1,12 +1,10 @@
-use std::collections::BTreeSet;
-
 use clap::Args;
 use near_account_id::AccountId;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
 use templar_gateway_oracle_updates_spec::oracle as spec;
 
-use crate::commands::{proxy_oracle::parse_price_identifier, signer::SignerArgs};
+use crate::commands::{dedup_price_ids, proxy_oracle::parse_price_identifier, signer::SignerArgs};
 
 /// Resolves the oracle's price dependencies at plan time, so it may reach any of the
 /// three payload sources and carries all of their flags.
@@ -27,12 +25,9 @@ pub struct UpdatePrices {
 
 impl UpdatePrices {
     pub fn into_spec(self) -> spec::UpdatePrices {
-        // A repeated `--price-id` would resolve its dependencies twice, planning the
-        // same underlying update again.
-        let price_ids: BTreeSet<PriceIdentifier> = self.price_ids.into_iter().collect();
         spec::UpdatePrices {
             oracle_id: self.oracle_id,
-            price_ids: price_ids.into_iter().collect(),
+            price_ids: dedup_price_ids(self.price_ids),
         }
     }
 }

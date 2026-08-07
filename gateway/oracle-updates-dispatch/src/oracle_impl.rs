@@ -7,7 +7,7 @@ use templar_gateway_core::{
     client::{proxy_oracle::UpdatePricesArgs, ContractWriteOptions},
     plan_pyth_lazer_update, plan_pyth_update, plan_redstone_write_prices, query_oracle_kind,
     resolve_price_dependencies, GatewayError, GatewayResult, HasNearClient, OperationPlan,
-    OraclePayloadSource, PlanWrite,
+    OraclePayloadSource, PlanWrite, PlannedTransaction,
 };
 use templar_gateway_oracle_updates_spec::oracle::{
     UpdateLazer, UpdatePrices, UpdatePyth, UpdateRedStone,
@@ -17,27 +17,30 @@ use templar_proxy_oracle_near_common::request::{LazerRequest, OracleRequest};
 
 use crate::{Dispatch, ProvidesLazerSource, ProvidesPythSource, ProvidesRedStoneSource};
 
-/// The VAA arrives in the request body, so this is the one oracle update that reaches no
-/// payload source — and, submitting the caller's bytes verbatim, a duplicate of
-/// `pyth.updatePriceFeeds`. That is a wart, not a design: ENG-462 reshapes the body to
-/// `price_ids` and fetches from Hermes like the other three, restoring the
-/// `ProvidesPythSource` bound this impl would then actually use.
 #[async_trait]
 impl<C> PlanWrite<UpdatePyth, C> for Dispatch
 where
-    C: HasNearClient,
+    C: HasNearClient + ProvidesPythSource,
 {
     async fn plan(
         request: templar_gateway_types::common::WriteRequest<UpdatePyth>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
-        plan_pyth_update(
-            ctx.near_client(),
+        if body.price_ids.is_empty() {
+            tracing::warn!(
+                oracle_id = %body.oracle_id,
+                "oracle.updatePyth requested with no price ids; nothing to update"
+            );
+            return Ok(OperationPlan { steps: Vec::new() });
+        }
+        plan_pyth_feed_update(
+            &ctx,
             request.signer_account_id,
             body.oracle_id,
-            body.vaa.0,
+            &body.price_ids,
         )
+        .await
         .map(OperationPlan::from)
     }
 }
@@ -145,6 +148,27 @@ where
     }
 }
 
+/// Fetch the VAA covering `price_ids` from Hermes and plan the adapter write.
+async fn plan_pyth_feed_update<C>(
+    ctx: &C,
+    signer_account_id: ManagedAccountId,
+    oracle_id: AccountId,
+    price_ids: &[PriceIdentifier],
+) -> GatewayResult<PlannedTransaction>
+where
+    C: HasNearClient + ProvidesPythSource,
+{
+    tracing::debug!(
+        %oracle_id,
+        price_count = price_ids.len(),
+        "fetching Pyth payload for gateway oracle update"
+    );
+    let vaa = OraclePayloadSource::fetch_payload(ctx.pyth_source(), price_ids)
+        .await
+        .map_err(|error| GatewayError::HttpRequest(error.to_string()))?;
+    plan_pyth_update(ctx.near_client(), signer_account_id, oracle_id, vaa)
+}
+
 async fn plan_grouped_updates<C>(
     ctx: &C,
     signer_account_id: ManagedAccountId,
@@ -187,20 +211,9 @@ where
 
     for (oracle_id, price_ids) in pyth_updates {
         let price_ids = price_ids.into_iter().collect::<Vec<_>>();
-        tracing::debug!(
-            %oracle_id,
-            price_count = price_ids.len(),
-            "fetching Pyth payload for gateway oracle update"
+        steps.push(
+            plan_pyth_feed_update(ctx, signer_account_id.clone(), oracle_id, &price_ids).await?,
         );
-        let vaa = OraclePayloadSource::fetch_payload(ctx.pyth_source(), &price_ids)
-            .await
-            .map_err(|error| GatewayError::HttpRequest(error.to_string()))?;
-        steps.push(plan_pyth_update(
-            ctx.near_client(),
-            signer_account_id.clone(),
-            oracle_id,
-            vaa,
-        )?);
     }
 
     for (oracle_id, feed_ids) in redstone_updates {
@@ -268,14 +281,14 @@ mod tests {
     use base64::Engine as _;
     use near_api::types::transaction::actions::Action;
     use near_api::NetworkConfig;
-    use templar_gateway_core::{NearClient, PlannedTransaction};
+    use templar_gateway_core::NearClient;
     use templar_gateway_types::common::WriteRequest;
     use thiserror::Error;
 
-    // Every source error is mapped identically to `GatewayError::ExternalService(err.to_string())`,
-    // so one variant exercises that path; the tests differ by entry point, not error kind.
+    // Every source error carries `err.to_string()` into its gateway variant, so one
+    // variant exercises that path; the tests differ by entry point, not error kind.
     #[derive(Debug, Clone, Error)]
-    #[error("fake lazer source unavailable")]
+    #[error("fake source unavailable")]
     struct FakeError;
 
     #[derive(Clone)]
@@ -295,7 +308,7 @@ mod tests {
 
     #[derive(Clone)]
     struct FakePythSource {
-        payload: Vec<u8>,
+        outcome: Result<Vec<u8>, FakeError>,
     }
 
     #[async_trait]
@@ -307,7 +320,7 @@ mod tests {
             &self,
             _price_ids: &[PriceIdentifier],
         ) -> Result<Vec<u8>, FakeError> {
-            Ok(self.payload.clone())
+            self.outcome.clone()
         }
     }
 
@@ -391,21 +404,111 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn update_lazer_plans_one_adapter_write() {
-        let payload = vec![0xAA, 0xBB, 0xCC, 0xDD];
-        let ctx = TestCtx {
+    /// A `TestCtx` whose every source succeeds with an empty payload. Override the one
+    /// source under test with struct-update syntax.
+    fn inert_ctx() -> TestCtx {
+        TestCtx {
             near_client: test_client(),
             pyth_source: FakePythSource {
-                payload: Vec::new(),
+                outcome: Ok(Vec::new()),
             },
             redstone_source: FakeRedStoneSource {
                 payload: Vec::new(),
             },
             lazer_source: FakeLazerSource {
-                outcome: Ok(payload.clone()),
+                outcome: Ok(Vec::new()),
             },
-        };
+        }
+    }
+
+    fn pyth_ctx(outcome: Result<Vec<u8>, FakeError>) -> TestCtx {
+        TestCtx {
+            pyth_source: FakePythSource { outcome },
+            ..inert_ctx()
+        }
+    }
+
+    fn lazer_ctx(outcome: Result<Vec<u8>, FakeError>) -> TestCtx {
+        TestCtx {
+            lazer_source: FakeLazerSource { outcome },
+            ..inert_ctx()
+        }
+    }
+
+    fn update_pyth_request(
+        oracle_id: AccountId,
+        price_ids: Vec<PriceIdentifier>,
+    ) -> WriteRequest<UpdatePyth> {
+        WriteRequest {
+            signer_account_id: signer_id(),
+            idempotency_key: None,
+            body: UpdatePyth {
+                oracle_id,
+                price_ids,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn update_pyth_writes_the_vaa_it_fetched() {
+        let vaa = vec![0x01, 0x02, 0x03, 0x04];
+        let oracle_id: AccountId = "pyth.near".parse().expect("valid account id");
+        let request = update_pyth_request(oracle_id.clone(), vec![PriceIdentifier([0xAA; 32])]);
+
+        let plan =
+            <Dispatch as PlanWrite<UpdatePyth, TestCtx>>::plan(request, pyth_ctx(Ok(vaa.clone())))
+                .await
+                .expect("UpdatePyth plan must succeed with a fresh payload");
+
+        assert_eq!(plan.steps.len(), 1, "UpdatePyth must plan exactly one step");
+        let step = &plan.steps[0];
+        assert_eq!(step.receiver_id, oracle_id);
+
+        let (method, args_bytes) = unpack_function_call(step);
+        assert_eq!(method, "update_price_feeds");
+        let args_json: serde_json::Value =
+            serde_json::from_slice(&args_bytes).expect("args must be valid json");
+        assert_eq!(
+            args_json["data"],
+            hex::encode(&vaa),
+            "the adapter must receive the fetched VAA as hex; got: {args_json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_pyth_with_no_price_ids_plans_nothing() {
+        let request = update_pyth_request("pyth.near".parse().unwrap(), Vec::new());
+
+        let plan =
+            <Dispatch as PlanWrite<UpdatePyth, TestCtx>>::plan(request, pyth_ctx(Err(FakeError)))
+                .await
+                .expect("an empty UpdatePyth must not reach the source");
+
+        assert!(plan.steps.is_empty(), "expected a step-less plan");
+    }
+
+    #[tokio::test]
+    async fn update_pyth_propagates_source_error() {
+        let request = update_pyth_request(
+            "pyth.near".parse().unwrap(),
+            vec![PriceIdentifier([0xAA; 32])],
+        );
+
+        let error =
+            <Dispatch as PlanWrite<UpdatePyth, TestCtx>>::plan(request, pyth_ctx(Err(FakeError)))
+                .await
+                .expect_err("a Hermes error must surface as a plan error");
+
+        assert!(
+            matches!(error, GatewayError::HttpRequest(ref msg) if msg.contains("unavailable")),
+            "expected HttpRequest carrying the source-error detail, got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_lazer_plans_one_adapter_write() {
+        let payload = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        let ctx = lazer_ctx(Ok(payload.clone()));
         let oracle_id: AccountId = "pyth-lazer.near".parse().expect("valid account id");
         let request = WriteRequest {
             signer_account_id: signer_id(),
@@ -456,18 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_lazer_propagates_source_error() {
-        let ctx = TestCtx {
-            near_client: test_client(),
-            pyth_source: FakePythSource {
-                payload: Vec::new(),
-            },
-            redstone_source: FakeRedStoneSource {
-                payload: Vec::new(),
-            },
-            lazer_source: FakeLazerSource {
-                outcome: Err(FakeError),
-            },
-        };
+        let ctx = lazer_ctx(Err(FakeError));
         let request = WriteRequest {
             signer_account_id: signer_id(),
             idempotency_key: None,
@@ -492,16 +584,13 @@ mod tests {
         let pyth_payload = vec![0x11_u8; 16];
         let lazer_payload = vec![0x22_u8; 24];
         let ctx = TestCtx {
-            near_client: test_client(),
             pyth_source: FakePythSource {
-                payload: pyth_payload.clone(),
-            },
-            redstone_source: FakeRedStoneSource {
-                payload: Vec::new(),
+                outcome: Ok(pyth_payload.clone()),
             },
             lazer_source: FakeLazerSource {
                 outcome: Ok(lazer_payload.clone()),
             },
+            ..inert_ctx()
         };
         let pyth_oracle: AccountId = "pyth.near".parse().unwrap();
         let lazer_oracle: AccountId = "pyth-lazer.near".parse().unwrap();
@@ -569,18 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_prices_lazer_source_error_is_hard_error() {
-        let ctx = TestCtx {
-            near_client: test_client(),
-            pyth_source: FakePythSource {
-                payload: vec![0x11_u8; 16],
-            },
-            redstone_source: FakeRedStoneSource {
-                payload: Vec::new(),
-            },
-            lazer_source: FakeLazerSource {
-                outcome: Err(FakeError),
-            },
-        };
+        let ctx = lazer_ctx(Err(FakeError));
         let lazer_oracle: AccountId = "pyth-lazer.near".parse().unwrap();
         let requests = vec![OracleRequest::lazer(lazer_oracle, 7)];
 
@@ -600,18 +678,7 @@ mod tests {
     // gateway sandbox test `oracle_update_prices_endpoint_resolves_and_updates_dependencies`.
     #[test]
     fn proxy_reaggregation_step_calls_proxy_update_prices() {
-        let ctx = TestCtx {
-            near_client: test_client(),
-            pyth_source: FakePythSource {
-                payload: Vec::new(),
-            },
-            redstone_source: FakeRedStoneSource {
-                payload: Vec::new(),
-            },
-            lazer_source: FakeLazerSource {
-                outcome: Ok(Vec::new()),
-            },
-        };
+        let ctx = inert_ctx();
         let oracle_id: AccountId = "proxy.near".parse().expect("valid account id");
         let price_ids = vec![PriceIdentifier([0x11; 32]), PriceIdentifier([0x22; 32])];
 

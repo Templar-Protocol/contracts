@@ -151,9 +151,11 @@ fn update_prices_deduplicates_repeated_price_ids() {
     );
 }
 
+/// A repeated `--price-id` only widens the Hermes query for the same VAA.
 #[test]
-fn update_pyth_decodes_its_vaa() {
-    // "hello" encoded as standard base64.
+fn update_pyth_deduplicates_repeated_price_ids() {
+    const OTHER_PRICE_ID: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
     let cli = Cli::try_parse_from(
         [
             "tmplrmgr",
@@ -161,8 +163,12 @@ fn update_pyth_decodes_its_vaa() {
             "update-pyth",
             "--oracle-id",
             "pyth.testnet",
-            "--vaa-base64",
-            "aGVsbG8=",
+            "--price-id",
+            OTHER_PRICE_ID,
+            "--price-id",
+            PRICE_ID,
+            "--price-id",
+            OTHER_PRICE_ID,
         ]
         .into_iter()
         .chain(CREDS),
@@ -175,12 +181,20 @@ fn update_pyth_decodes_its_vaa() {
     else {
         panic!("expected oracle update-pyth");
     };
-    let spec = cmd.try_into_spec().expect("a valid base64 VAA");
-    assert_eq!(spec.vaa.0, b"hello");
+    let spec = cmd.into_spec();
+    assert_eq!(spec.oracle_id.as_str(), "pyth.testnet");
+    assert_eq!(
+        spec.price_ids,
+        vec![
+            parse_price_identifier(PRICE_ID).expect("a valid price id"),
+            parse_price_identifier(OTHER_PRICE_ID).expect("a valid price id"),
+        ],
+        "duplicates dropped, and the remainder ordered by identifier"
+    );
 }
 
 #[test]
-fn update_pyth_requires_a_vaa() {
+fn update_pyth_requires_a_price_id() {
     let error = Cli::try_parse_from(
         [
             "tmplrmgr",
@@ -192,7 +206,7 @@ fn update_pyth_requires_a_vaa() {
         .into_iter()
         .chain(CREDS),
     )
-    .expect_err("oracle update-pyth should require a VAA");
+    .expect_err("oracle update-pyth should require a price id");
 
     assert_eq!(
         error.kind(),
@@ -205,9 +219,9 @@ fn update_pyth_requires_a_vaa() {
 /// A parse-succeeds assertion could not catch a regression here: the token is optional
 /// at parse time, so flattening it everywhere would still parse.
 #[rstest]
-#[case::update_pyth(&["update-pyth", "--oracle-id", "pyth.testnet", "--vaa-base64", "aGVsbG8="])]
+#[case::update_pyth(&["update-pyth", "--oracle-id", "pyth.testnet", "--price-id", PRICE_ID])]
 #[case::update_red_stone(&["update-red-stone", "--oracle-id", "redstone.testnet", "--feed-id", "BTC"])]
-fn sourceless_and_redstone_updates_reject_lazer_flags(#[case] subcommand: &[&str]) {
+fn pyth_and_redstone_updates_reject_lazer_flags(#[case] subcommand: &[&str]) {
     let error = Cli::try_parse_from(
         ["tmplrmgr", "oracle"]
             .into_iter()
