@@ -1286,6 +1286,77 @@ impl SandboxHarness {
             .map_err(|error| anyhow::anyhow!("get_configuration failed: {error}"))
     }
 
+    /// The generic read escape hatch: call a view by name and decode its JSON.
+    ///
+    /// Counterpart to [`call_function`](Self::call_function), for entrypoints with no gateway
+    /// method spec — a contract's own tests reach its views before the gateway learns about them.
+    pub async fn view_json<T: serde::de::DeserializeOwned + Send + Sync + 'static>(
+        &self,
+        contract_id: &AccountId,
+        method_name: &str,
+        args: impl serde::Serialize,
+    ) -> Result<T> {
+        near_api::Contract(contract_id.clone())
+            .call_function_raw(method_name, serde_json::to_vec(&args)?)
+            .read_only()
+            .at(TEST_FINALITY_POLICY.query_reference())
+            .fetch_from(&self.network)
+            .await
+            .map(|response| response.data)
+            .with_context(|| format!("view {contract_id}.{method_name} failed"))
+    }
+
+    /// Complete the `Owner` two-step handover: `current` proposes `next`, then `next` accepts.
+    pub async fn transfer_ownership(
+        &self,
+        contract_id: &AccountId,
+        current: &ManagedAccountId,
+        next: &ManagedAccountId,
+    ) -> Result<()> {
+        self.execute(
+            current,
+            templar_gateway_methods_spec::owner::ProposeOwner {
+                contract_id: contract_id.clone(),
+                account_id: Some(next.0.clone()),
+            },
+        )
+        .await?;
+        self.execute(
+            next,
+            templar_gateway_methods_spec::owner::AcceptOwner {
+                contract_id: contract_id.clone(),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Delete every access key on `account_id`, signed by one of those keys — the last thing it
+    /// can do. Nothing off-chain can deploy over the account afterwards; only its own code can.
+    pub async fn revoke_all_access_keys(&self, account_id: &AccountId) -> Result<()> {
+        let keys = self
+            .view_access_keys(account_id)
+            .await?
+            .into_iter()
+            .map(|(public_key, _)| public_key.parse::<near_api::types::PublicKey>())
+            .collect::<Result<Vec<_>, _>>()?;
+        anyhow::ensure!(!keys.is_empty(), "{account_id} already has no access keys");
+
+        Account(account_id.clone())
+            .delete_keys(keys)
+            .with_signer(crate::sandbox::test_signer())
+            .wait_until(TEST_FINALITY_POLICY.transaction_status())
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+
+        anyhow::ensure!(
+            self.view_access_keys(account_id).await?.is_empty(),
+            "{account_id} should have no access keys left",
+        );
+        Ok(())
+    }
+
     /// List `account_id`'s access keys at the sandbox's optimistic query
     /// reference as `(public_key, is_full_access)`.
     pub async fn view_access_keys(&self, account_id: &AccountId) -> Result<Vec<(String, bool)>> {

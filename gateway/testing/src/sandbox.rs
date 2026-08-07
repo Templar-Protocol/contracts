@@ -351,17 +351,62 @@ impl SandboxHarness {
     }
 
     pub async fn deploy_registry(&self) -> Result<AccountId> {
+        self.deploy_registry_code(crate::wasm::registry().await.to_vec())
+            .await
+    }
+
+    /// Deploy a *released* registry, for migration tests that have to start from the binary a
+    /// live registry is actually running rather than from current source.
+    pub async fn deploy_registry_version(&self, version: &str) -> Result<AccountId> {
+        let code = crate::wasm::released(crate::ArtifactId::Registry, version).await;
+        self.deploy_registry_code(code).await
+    }
+
+    async fn deploy_registry_code(&self, code: Vec<u8>) -> Result<AccountId> {
         let account_id = self.registry_signer_account_id.0.clone();
         deploy_contract(
             &self.network,
             account_id.clone(),
             test_signer(),
-            crate::wasm::registry().await.to_vec(),
+            code,
             "new",
             serde_json::json!({}),
         )
         .await?;
         Ok(account_id)
+    }
+
+    /// Replace the registry's code and run `migrate` in the same transaction, signed by a
+    /// full-access key on the registry itself. Returns the gas the batch burnt.
+    ///
+    /// How a registry predating the `upgrade` method has to be upgraded — it has no such method,
+    /// so the batch an operator signs is the only route. `migrate` is reachable because it admits
+    /// its own account, which is what a full-access key on that account signs as.
+    ///
+    /// `gas` is on the `migrate` action, where the signer sets it directly rather than a contract
+    /// constant carving it out — the reason this path can afford a migration `upgrade` could not.
+    /// A sandbox caps a transaction well below mainnet, so a burn measured here is a lower bound
+    /// on what is affordable, not on what is needed.
+    pub async fn redeploy_registry_with_migrate(
+        &self,
+        code: Vec<u8>,
+        migrate_args: impl serde::Serialize,
+        gas: near_api::types::NearGas,
+    ) -> Result<near_api::types::NearGas> {
+        let result = Contract::deploy(self.registry_signer_account_id.0.clone())
+            .use_code(code)
+            .with_init_call(templar_common::upgrade::MIGRATE_METHOD, migrate_args)?
+            .gas(gas)
+            .with_signer(test_signer())
+            .wait_until(TEST_FINALITY_POLICY.transaction_status())
+            .send_to(&self.network)
+            .await?;
+        // Returned rather than asserted: a migration that must fail — a mismatched one — is a
+        // case worth testing, and it is the caller who knows which it expects.
+        let success = result
+            .into_result()
+            .map_err(|error| anyhow::anyhow!("registry deploy+migrate failed: {error}"))?;
+        Ok(success.total_gas_burnt)
     }
 
     pub async fn deploy_market(&self) -> Result<(AccountId, MarketConfiguration)> {
