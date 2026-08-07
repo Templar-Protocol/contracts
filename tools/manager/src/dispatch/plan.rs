@@ -9,6 +9,7 @@ use anyhow::Context as _;
 use near_account_id::AccountId;
 use near_api::types::NearToken;
 use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::registry::RegistryEntryView;
 use templar_common::Nanoseconds;
 use templar_gateway_client::{Client, Network};
 use templar_gateway_core::{
@@ -853,12 +854,11 @@ fn deploy_target(
 /// deployment map still holds, and `market remove` deletes the account without
 /// removing that entry, so a torn-down name is free and unusable at once.
 ///
-/// Best-effort in one direction: `get_deployment` reports a `Reserved` entry as
-/// absent, and no registry view distinguishes it, so a name another deploy has
-/// reserved but not yet created is invisible here. That window is a concurrent
-/// in-flight deploy of the same name — a failed one removes its entry — and the
-/// registry rejects it either way, so the unseen case costs a failed step
-/// rather than a bad deployment. Closing it needs an additive view.
+/// Against a registry too old to serve `get_registry_entry` this stays blind in
+/// one direction: `get_deployment` reports a reserved entry as absent, so a name
+/// another deploy has claimed but not yet finalized looks free. That costs a
+/// refused final step rather than a bad deployment, since the registry rejects
+/// it either way.
 async fn target_conflict(
     ctx: &CliContext,
     registry_id: &AccountId,
@@ -868,23 +868,50 @@ async fn target_conflict(
         return Ok(Some(format!("`{account_id}` already exists")));
     }
 
-    let claimed = ctx
-        .client
-        .read(registry::GetDeployment {
-            registry_id: registry_id.clone(),
-            account_id: account_id.clone(),
-        })
-        .await
-        .with_context(|| format!("read `{registry_id}`'s deployment record for `{account_id}`"))?
-        .deployment
-        .is_some();
+    let entry = if super::preflight::serves_entry_and_version_views(ctx, registry_id).await {
+        ctx.client
+            .read(registry::GetRegistryEntry {
+                registry_id: registry_id.clone(),
+                account_id: account_id.clone(),
+            })
+            .await
+            .with_context(|| format!("read `{registry_id}`'s entry for `{account_id}`"))?
+            .entry
+    } else {
+        // The older view reports a reserved name as absent, so the fallback is exactly this
+        // mapping with one state it can never produce.
+        ctx.client
+            .read(registry::GetDeployment {
+                registry_id: registry_id.clone(),
+                account_id: account_id.clone(),
+            })
+            .await
+            .with_context(|| {
+                format!("read `{registry_id}`'s deployment record for `{account_id}`")
+            })?
+            .deployment
+            .map(RegistryEntryView::Deployed)
+    };
 
-    Ok(claimed.then(|| {
-        format!(
+    Ok(claimed_reason(registry_id, account_id, entry.as_ref()))
+}
+
+/// Why an entry in the deployment map blocks `account_id`, if it does.
+fn claimed_reason(
+    registry_id: &AccountId,
+    account_id: &AccountId,
+    entry: Option<&RegistryEntryView>,
+) -> Option<String> {
+    match entry? {
+        RegistryEntryView::Deployed(_) => Some(format!(
             "`{registry_id}` still records a deployment for `{account_id}`, so it \
              would be refused as a collision even though the account is gone"
-        )
-    }))
+        )),
+        RegistryEntryView::Reserved => Some(format!(
+            "`{registry_id}` has `{account_id}` reserved by a deploy that never \
+             finalized, so it would be refused as a collision"
+        )),
+    }
 }
 
 /// The same question `targets_available` asks at plan time, re-asked at the
@@ -1386,5 +1413,61 @@ mod tests {
         let error = super::ensure_schema(&foreign, std::path::Path::new("plan.json"))
             .expect_err("wrong schema");
         assert!(error.to_string().contains("Regenerate it"), "{error:#}");
+    }
+
+    use near_account_id::AccountId;
+    use templar_common::registry::{Deployment, RegistryEntryView};
+
+    /// `Reserved` is the whole reason `get_registry_entry` exists: `deploy` refuses the name just
+    /// as firmly as a deployed one, while `get_deployment` reports it absent.
+    #[test]
+    fn claimed_reason_separates_reserved_from_deployed_and_free() {
+        let registry: AccountId = "v1.tmplr.near".parse().unwrap();
+        let account: AccountId = "market.v1.tmplr.near".parse().unwrap();
+        let deployment = Deployment {
+            version_key: "market@1.5.0".to_owned(),
+            code_hash: near_sdk::json_types::Base58CryptoHash::from([1u8; 32]),
+            block_height: 1.into(),
+        };
+
+        assert_eq!(super::claimed_reason(&registry, &account, None), None);
+
+        let deployed = RegistryEntryView::Deployed(deployment);
+        let reserved = RegistryEntryView::Reserved;
+        let deployed = super::claimed_reason(&registry, &account, Some(&deployed))
+            .expect("a deployed name is claimed");
+        let reserved = super::claimed_reason(&registry, &account, Some(&reserved))
+            .expect("a reserved name is claimed too");
+
+        assert!(
+            deployed.contains("still records a deployment"),
+            "{deployed}"
+        );
+        assert!(reserved.contains("never finalized"), "{reserved}");
+    }
+
+    /// The legacy fallback maps a deployment record onto the same answer, and structurally cannot
+    /// produce `Reserved` — which is the one state it is blind to.
+    #[test]
+    fn the_legacy_fallback_can_never_report_reserved() {
+        let registry: AccountId = "v1.tmplr.near".parse().unwrap();
+        let account: AccountId = "market.v1.tmplr.near".parse().unwrap();
+        let from_legacy =
+            |deployment: Option<Deployment>| deployment.map(RegistryEntryView::Deployed);
+
+        assert_eq!(
+            super::claimed_reason(&registry, &account, from_legacy(None).as_ref()),
+            None,
+            "an absent record reads as free, reserved or not",
+        );
+        let deployment = Deployment {
+            version_key: "market@1.5.0".to_owned(),
+            code_hash: near_sdk::json_types::Base58CryptoHash::from([1u8; 32]),
+            block_height: 1.into(),
+        };
+        assert!(matches!(
+            from_legacy(Some(deployment)),
+            Some(RegistryEntryView::Deployed(_)),
+        ));
     }
 }
