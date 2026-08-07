@@ -13465,6 +13465,7 @@ dependencies = [
  "primitive-types 0.14.0",
  "rand 0.8.5",
  "redstone",
+ "regex",
  "rstest",
  "schemars 0.8.22",
  "serde",
@@ -13480,6 +13481,7 @@ dependencies = [
  "rstest",
  "schemars 0.8.22",
  "serde",
+ "serde_json",
  "templar-primitives",
 ]
 
@@ -13491,6 +13493,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "hex-literal",
+ "primitive-types 0.14.0",
  "rstest",
  "schemars 0.8.22",
  "serde",
