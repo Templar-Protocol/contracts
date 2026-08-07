@@ -3,7 +3,7 @@ use near_sdk::json_types::Base58CryptoHash;
 use rstest::rstest;
 use templar_common::{oracle::pyth::PriceIdentifier, Decimal};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
-    AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig, StepwiseChange,
+    CircuitBreaker, CircuitBreakerSetConfig, StepwiseChange,
 };
 
 fn method_policy(ttl_secs: u64, role: Role) -> MethodPolicy {
@@ -665,16 +665,6 @@ fn method_edit(method: &str, role: Role) -> ReflexiveOperation {
     "admin_set_manual_trip",
     target::GAS_FOR_TARGET_DEFAULT
 )]
-#[case::rearm(
-    LegacyOperation::Rearm {
-        id: PRICE_ID,
-        breaker_id: 1,
-        armed_after_ns: Nanoseconds::from_secs(5),
-        accepted_history_source: AcceptedHistorySource::Empty,
-    },
-    "admin_rearm",
-    target::GAS_FOR_TARGET_DEFAULT
-)]
 #[case::set_enforced(
     LegacyOperation::SetEnforced { id: PRICE_ID, breaker_id: 1, is_enforced: false },
     "admin_set_enforced",
@@ -707,6 +697,17 @@ fn every_legacy_target_operation_maps_to_its_admin_method(
     let call = target_call(legacy);
     assert_eq!(call.method_name, expected_method);
     assert_eq!(call.gas, expected_gas);
+}
+
+#[test]
+fn legacy_rearm_is_rejected_during_migration() {
+    assert!(Operation::try_from(LegacyOperation::Rearm {
+        id: PRICE_ID,
+        breaker_id: 1,
+        armed_after_ns: Nanoseconds::from_secs(5),
+        accepted_history_source: LegacyHistoryMode::Empty,
+    })
+    .is_err());
 }
 
 /// The two legacy variants that were already reflexive keep their exact payload.

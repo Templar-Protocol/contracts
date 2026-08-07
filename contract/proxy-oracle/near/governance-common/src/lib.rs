@@ -13,7 +13,7 @@ use templar_common::upgrade::UpgradeSource;
 pub use interface::{
     error, CreateProposalArgs, Event, Governance, OperationPolicy, Proposal, Validatable,
 };
-pub use legacy::{LegacyOperation, LegacyOperationKind, LegacyTtlConfig};
+pub use legacy::{LegacyHistoryMode, LegacyOperation, LegacyOperationKind, LegacyTtlConfig};
 pub use templar_common::Nanoseconds;
 
 /// The longest timelock any proposal may carry (180 days). Bounds both target-method and reflexive

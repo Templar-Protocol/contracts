@@ -11,7 +11,7 @@ use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 use templar_gateway_types::{NearToken, ProposalEncoding};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
-    AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig,
+    CircuitBreaker, CircuitBreakerSetConfig,
 };
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
@@ -126,8 +126,7 @@ impl ProposalOperation {
 
 /// Operations dispatched to the governed proxy oracle. Each builds the generic `TargetFunctionCall`
 /// directly via the shared `target::admin_*` builders (correct `admin_*` method name + gas default).
-/// Complex nested payloads (circuit breakers, history sources) are supplied as JSON files that
-/// deserialize into the real kernel types.
+/// Complex circuit-breaker payloads are supplied as JSON files that deserialize into kernel types.
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum OracleOp {
@@ -187,18 +186,7 @@ impl OracleOp {
                 let metadata = a.metadata_base64.map(decode_base64).transpose()?;
                 target::admin_set_manual_trip(a.price_id, a.tripped, metadata, a.gas)?
             }
-            Self::Rearm(a) => {
-                let accepted_history_source =
-                    load_json_file::<AcceptedHistorySource>(&a.history_source_file)
-                        .context("parse accepted history source")?;
-                target::admin_rearm(
-                    a.price_id,
-                    a.breaker_id,
-                    a.armed_after,
-                    accepted_history_source,
-                    a.gas,
-                )?
-            }
+            Self::Rearm(a) => target::admin_rearm(a.price_id, a.breaker_id, a.arming_delay, a.gas)?,
             Self::SetEnforced(a) => {
                 target::admin_set_enforced(a.price_id, a.breaker_id, a.enforced, a.gas)?
             }
@@ -365,10 +353,7 @@ pub struct RearmArgs {
     breaker_id: u32,
     /// Delay before the breaker re-arms (e.g. `30s`, `1000ns`).
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
-    armed_after: Nanoseconds,
-    /// AcceptedHistorySource definition JSON
-    #[arg(long, value_name = "PATH")]
-    history_source_file: PathBuf,
+    arming_delay: Nanoseconds,
     /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
     #[arg(long, value_name = "GAS")]
     gas: Option<Gas>,
@@ -487,6 +472,30 @@ impl UpgradeArgs {
             None => Vec::new(),
         });
         Ok((code, migrate_args))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rearm_serializes_relative_delay_under_its_public_field_name() {
+        let operation = OracleOp::Rearm(RearmArgs {
+            price_id: PriceIdentifier([0; 32]),
+            breaker_id: 7,
+            arming_delay: Nanoseconds::from_secs(30),
+            gas: None,
+        })
+        .into_operation()
+        .unwrap();
+        let Operation::TargetFunctionCall(call) = operation else {
+            panic!("expected target function call");
+        };
+        let args: serde_json::Value = serde_json::from_slice(&call.args.0).unwrap();
+
+        assert_eq!(args["arming_delay_ns"], "30000000000");
+        assert!(args.get("armed_after_ns").is_none());
     }
 }
 

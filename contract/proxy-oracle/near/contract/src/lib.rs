@@ -21,10 +21,9 @@ use templar_common::{
 };
 use templar_proxy_oracle_kernel::proxy::{
     circuit_breaker::{
-        AcceptedHistorySource, CircuitBreaker, CircuitBreakerOutcome, CircuitBreakerSet,
-        CircuitBreakerSetConfig,
+        CircuitBreaker, CircuitBreakerOutcome, CircuitBreakerSet, CircuitBreakerSetConfig,
     },
-    Proxy,
+    Aggregator, Proxy,
 };
 use templar_proxy_oracle_near_common::{
     cache::{bounded_resolve_error_message, CachedProxyPrice, CachedProxyPriceStatus},
@@ -46,6 +45,14 @@ pub(crate) fn emit_outcome<T>(price_id: PriceIdentifier, outcome: CircuitBreaker
         Event::from_kernel(price_id, event).emit();
     }
     outcome.value
+}
+
+fn has_zero_weighted_source(proxy: &Proxy<Source>) -> bool {
+    match &proxy.aggregator {
+        Aggregator::MedianLow(median) => median.sources.iter().any(|source| source.weight == 0),
+        Aggregator::MedianHigh(median) => median.sources.iter().any(|source| source.weight == 0),
+        Aggregator::Priority(_) => false,
+    }
 }
 
 #[derive(Debug, Owner, PanicOnDefault)]
@@ -105,6 +112,13 @@ impl Contract {
         self.state.get_proxy_circuit_breaker_set(id)
     }
 
+    pub fn get_proxy_circuit_breaker_set_for_repair(
+        &self,
+        id: PriceIdentifier,
+    ) -> Option<CircuitBreakerSet> {
+        self.state.get_proxy_circuit_breaker_set_for_repair(id)
+    }
+
     pub fn get_cached_proxy_price(&self, id: PriceIdentifier) -> Option<CachedProxyPrice> {
         self.state.get_cached_proxy_price(id)
     }
@@ -156,7 +170,7 @@ impl Contract {
     }
 
     pub fn update_prices(
-        &self,
+        &mut self,
         price_ids: Vec<PriceIdentifier>,
     ) -> PromiseOrValue<HashMap<PriceIdentifier, CachedProxyPriceStatus>> {
         if price_ids.is_empty() {
@@ -171,11 +185,21 @@ impl Contract {
             HashMap::<AccountId, HashSet<redstone::FeedId>>::with_capacity(price_ids.len());
         let mut lazer_requests = HashMap::<AccountId, HashSet<u32>>::with_capacity(price_ids.len());
         let mut transformer_promises = Vec::with_capacity(price_ids.len());
+        let now = Nanoseconds::near_timestamp();
+        let mut results = HashMap::new();
 
         for price_id in &price_ids {
-            let Some(proxy) = self.state.proxy_entry(*price_id) else {
-                // Skip unknown.
-                continue;
+            let proxy = match self.state.validated_proxy_entry(*price_id) {
+                Ok(Some(proxy)) => proxy,
+                Ok(None) => continue,
+                Err(error) => {
+                    let message = bounded_resolve_error_message(error.to_string());
+                    let status = self
+                        .state
+                        .cache_price_update_failure(*price_id, now, message);
+                    results.insert(*price_id, status);
+                    continue;
+                }
             };
             let pending = proxy.prepare_price_update();
 
@@ -249,15 +273,16 @@ impl Contract {
             .chain(transformer_promises)
             .reduce(near_sdk::Promise::and)
         else {
-            return PromiseOrValue::Value(HashMap::new());
+            return PromiseOrValue::Value(results);
         };
 
-        PromiseOrValue::Promise(
-            promise.then(
-                self_ext!(Self::GAS_FOR_UPDATE_01_CALLBACK)
-                    .update_prices_01_consume_results(oracle_order, invoked),
+        PromiseOrValue::Promise(promise.then(
+            self_ext!(Self::GAS_FOR_UPDATE_01_CALLBACK).update_prices_01_consume_results(
+                oracle_order,
+                invoked,
+                results,
             ),
-        )
+        ))
     }
 
     pub const GAS_FOR_UPDATE_01_CALLBACK: Gas = Gas::from_tgas(10);
@@ -270,11 +295,11 @@ impl Contract {
         &mut self,
         oracle_order: Vec<OracleType>,
         invoked: Vec<state::v1::PendingProxyPriceUpdate>,
+        mut results: HashMap<PriceIdentifier, CachedProxyPriceStatus>,
     ) -> HashMap<PriceIdentifier, CachedProxyPriceStatus> {
         let callback = CallbackHandler::new(&oracle_order);
 
         let now = Nanoseconds::near_timestamp();
-        let mut results = HashMap::new();
 
         let mut i = oracle_order.len() as u64;
         for pending in invoked {
@@ -330,6 +355,9 @@ impl Contract {
 impl ProxyOracleAdminInterface for Contract {
     fn admin_set_proxy(&mut self, id: PriceIdentifier, proxy: Option<Proxy<Source>>) {
         self.assert_owner();
+        if proxy.as_ref().is_some_and(has_zero_weighted_source) {
+            env::panic_str("Proxy sources must have positive weights");
+        }
         self.state.set_proxy(id, proxy);
     }
 
@@ -343,7 +371,8 @@ impl ProxyOracleAdminInterface for Contract {
             .state
             .proxy_entry_mut(id)
             .unwrap_or_else(|| env::panic_str("Proxy not found"))
-            .configure_circuit_breakers(config);
+            .configure_circuit_breakers(config)
+            .unwrap_or_else(|error| env::panic_str(&error.to_string()));
         emit_outcome(id, result);
     }
 
@@ -404,20 +433,20 @@ impl ProxyOracleAdminInterface for Contract {
         emit_outcome(id, result);
     }
 
-    fn admin_rearm(
-        &mut self,
-        id: PriceIdentifier,
-        breaker_id: u32,
-        armed_after_ns: Nanoseconds,
-        accepted_history_source: AcceptedHistorySource,
-    ) {
+    fn admin_rearm(&mut self, id: PriceIdentifier, breaker_id: u32, arming_delay_ns: Nanoseconds) {
         self.assert_owner();
 
+        let armed_after_ns = Nanoseconds::from_ns(
+            Nanoseconds::near_timestamp()
+                .as_ns()
+                .checked_add(arming_delay_ns.as_ns())
+                .unwrap_or_else(|| env::panic_str("Rearm delay overflows ledger timestamp")),
+        );
         let result = self
             .state
             .proxy_entry_mut(id)
             .unwrap_or_else(|| env::panic_str("Proxy not found"))
-            .rearm(breaker_id, armed_after_ns, accepted_history_source)
+            .rearm(breaker_id, armed_after_ns)
             .unwrap_or_reject();
         emit_outcome(id, result);
     }
