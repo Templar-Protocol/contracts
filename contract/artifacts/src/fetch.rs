@@ -73,6 +73,12 @@ pub enum FetchError {
         version: String,
     },
 
+    #[error(
+        "no catalogued release hashes to {sha256}. Those bytes were never released, so \
+         they can only come from wherever the digest was read."
+    )]
+    UncataloguedDigest { sha256: String },
+
     #[error("failed to download {url} after {attempts} attempts: {source}")]
     Download {
         url: String,
@@ -191,6 +197,21 @@ type Memo = Mutex<HashMap<(ArtifactId, &'static str), Arc<[u8]>>>;
 fn memo() -> &'static Memo {
     static MEMO: OnceLock<Memo> = OnceLock::new();
     MEMO.get_or_init(Default::default)
+}
+
+/// Bytes of whichever catalogued release hashes to `sha256` (lowercase hex).
+///
+/// The digest-keyed entry point to [`released_bytes`], for a caller that knows a wasm's hash but
+/// not which release it is — reading `code_hash` off a registry, say. Returns
+/// [`FetchError::UncataloguedDigest`] when nothing matches, which is a routine outcome: it means
+/// the bytes were never released and must come from wherever the caller found the hash.
+pub async fn released_bytes_by_sha256(sha256: &str) -> Result<Vec<u8>, FetchError> {
+    let Some((artifact, release)) = crate::release_by_sha256(sha256) else {
+        return Err(FetchError::UncataloguedDigest {
+            sha256: sha256.to_owned(),
+        });
+    };
+    released_bytes(artifact, release.version).await
 }
 
 /// Bytes of a released contract version, from the cache or the GitHub Release.
