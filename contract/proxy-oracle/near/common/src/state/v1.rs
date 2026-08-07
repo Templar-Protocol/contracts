@@ -12,8 +12,8 @@ use templar_proxy_oracle_kernel::{
     primitive::AccountId as KernelAccountId,
     proxy::{
         circuit_breaker::{
-            AcceptedHistorySource, CircuitBreaker, CircuitBreakerError, CircuitBreakerOutcome,
-            CircuitBreakerSet, CircuitBreakerSetConfig,
+            CircuitBreaker, CircuitBreakerError, CircuitBreakerOutcome, CircuitBreakerSet,
+            CircuitBreakerSetConfig, CircuitBreakerSetParseError,
         },
         Proxy,
     },
@@ -66,8 +66,7 @@ impl ProxyEntryMut<'_> {
     fn edit_circuit_breaker_set<T>(&mut self, f: impl FnOnce(&mut CircuitBreakerSet) -> T) -> T {
         let original = self
             .state
-            .circuit_breakers
-            .get(&self.id)
+            .load_circuit_breaker_set(self.id)
             .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
         let mut set = original.clone();
         let value = f(&mut set);
@@ -128,11 +127,8 @@ impl ProxyEntryMut<'_> {
         &mut self,
         breaker_id: u32,
         armed_after_ns: Nanoseconds,
-        accepted_history_source: AcceptedHistorySource,
     ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
-        self.edit_circuit_breaker_set(|set| {
-            set.rearm(breaker_id, armed_after_ns, accepted_history_source)
-        })
+        self.edit_circuit_breaker_set(|set| set.rearm(breaker_id, armed_after_ns))
     }
 }
 
@@ -199,7 +195,12 @@ impl State {
             state: self,
             id,
             proxy,
-        })
+        }))
+    }
+
+    pub fn proxy_entry(&self, id: PriceIdentifier) -> Option<ProxyEntry<'_>> {
+        self.validated_proxy_entry(id)
+            .unwrap_or_else(|_| env::panic_str("Invalid circuit breaker set"))
     }
 
     pub fn proxy_entry_mut(&mut self, id: PriceIdentifier) -> Option<ProxyEntryMut<'_>> {
@@ -220,6 +221,24 @@ impl State {
     fn invalidate_price_cache(&mut self, id: PriceIdentifier) {
         self.cached_prices.remove(&id);
         self.bump_cache_epoch(id);
+    }
+
+    pub fn cache_price_update_failure(
+        &mut self,
+        id: PriceIdentifier,
+        now: Nanoseconds,
+        message: String,
+    ) -> CachedProxyPriceStatus {
+        self.bump_cache_epoch(id);
+        let status = CachedProxyPriceStatus::ResolveFailed { message };
+        self.cached_prices.insert(
+            &id,
+            &CachedProxyPrice {
+                updated_at_ns: now,
+                status: status.clone(),
+            },
+        );
+        status
     }
 
     pub fn set_proxy(&mut self, id: PriceIdentifier, proxy: Option<Proxy<Source>>) {
@@ -264,7 +283,7 @@ impl State {
             return None;
         }
 
-        let Some(mut set) = self.circuit_breakers.get(&price_id) else {
+        let Some(mut set) = self.load_circuit_breaker_set(price_id) else {
             env::panic_str(&format!(
                 "Circuit breaker set not found for price {price_id}"
             ));
@@ -385,6 +404,14 @@ mod tests {
         let price_id = PriceIdentifier([0x11; 32]);
         let mut state = state();
         state.set_proxy(price_id, Some(proxy(price_id)));
+        state
+            .proxy_entry_mut(price_id)
+            .unwrap()
+            .configure_circuit_breakers(CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: 2,
+            })
+            .unwrap();
 
         for breaker_id in 0..u32::try_from(MAX_CIRCUIT_BREAKERS_PER_PROXY).unwrap() {
             state

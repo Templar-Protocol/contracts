@@ -10,17 +10,16 @@
 //!
 //! B1: single-asset propagates source → runtime cache → SEP-40 adapter
 //! B2: two assets are isolated (trip on one doesn't touch the other)
-//! B3: refresh deduplicates repeated asset entries in its input
-//! B4: empty input refreshes every registered asset
+//! B3: each registered asset refreshes in its own transaction
 
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Symbol, Vec as SVec};
-use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig, SourceConfig};
+use soroban_sdk::{contract, contractimpl, Address, Bytes, Env, Symbol};
+use templar_proxy_oracle_soroban_common::{
+    Asset, PriceData, PriceFeedTrait, ProxyConfig, SourceConfig,
+};
 use templar_proxy_oracle_soroban_contract::RefreshStatus;
 use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
-use templar_proxy_oracle_soroban_integration_tests::common::{
-    Bootstrap, MockOracle, MockOracleClient, ADAPTER_DECIMALS, ADAPTER_RESOLUTION,
-};
+use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 
 #[test]
 fn healthy_refresh_propagates_to_sep40_adapter() {
@@ -50,57 +49,82 @@ fn healthy_refresh_propagates_to_sep40_adapter() {
     assert_eq!(sep40.timestamp, ts);
 }
 
-/// Helper: deploy a second mock upstream and register `asset` against it.
-fn add_feed(b: &Bootstrap, asset: &Asset) -> Address {
-    let upstream_id = b.env.register(
-        MockOracle,
-        (&b.base_usd, &ADAPTER_DECIMALS, &ADAPTER_RESOLUTION),
-    );
-    let mut sources = SVec::new(&b.env);
-    sources.push_back(SourceConfig {
-        oracle: upstream_id.clone(),
-        asset: asset.clone(),
-    });
+/// Registers `asset` against the fixture's three upstream oracles.
+fn add_feed(b: &Bootstrap, asset: &Asset) {
     b.submit_and_execute(
         &b.admin,
         GovernanceAction::SetProxy(
             asset.clone(),
             ProxyConfig {
-                sources,
-                min_sources: 1,
+                sources: b.source_configs(asset),
+                min_sources: 3,
                 max_age_secs: Some(300),
                 max_clock_drift_secs: Some(60),
             },
         ),
     );
-    upstream_id
 }
 
+#[contract]
+struct BudgetExhaustingOracle;
+
+#[contractimpl]
+impl PriceFeedTrait for BudgetExhaustingOracle {
+    fn base(env: Env) -> Asset {
+        let payload = Bytes::from_array(&env, &[0_u8; 32]);
+        for _ in 0..50_000 {
+            let _ = env.crypto().sha256(&payload);
+        }
+        Asset::Other(Symbol::new(&env, "USD"))
+    }
+
+    fn assets(env: Env) -> soroban_sdk::Vec<Asset> {
+        soroban_sdk::Vec::new(&env)
+    }
+
+    fn decimals(env: Env) -> u32 {
+        let _ = env;
+        8
+    }
+
+    fn resolution(env: Env) -> u32 {
+        let _ = env;
+        1
+    }
+
+    fn price(env: Env, asset: Asset, timestamp: u64) -> Option<PriceData> {
+        let _ = (env, asset, timestamp);
+        None
+    }
+
+    fn prices(env: Env, asset: Asset, records: u32) -> Option<soroban_sdk::Vec<PriceData>> {
+        let _ = (env, asset, records);
+        None
+    }
+
+    fn lastprice(env: Env, asset: Asset) -> Option<PriceData> {
+        let _ = (env, asset);
+        None
+    }
+}
 #[test]
 fn two_independent_assets_have_isolated_state() {
     let b = Bootstrap::new();
     b.configure_default_feed();
     let eth = Asset::Other(Symbol::new(&b.env, "ETH"));
-    let eth_upstream_id = add_feed(&b, &eth);
-    let eth_upstream = MockOracleClient::new(&b.env, &eth_upstream_id);
+    add_feed(&b, &eth);
 
     b.push_upstream_price(&b.asset_btc, 5_000_000_000, 100);
-    eth_upstream.set_price(&eth, &2_000_000_000_i128, &100_u64);
-
-    // Both refresh cleanly.
-    let assets = SVec::from_array(&b.env, [b.asset_btc.clone(), eth.clone()]);
-    let results = b.runtime.refresh(&assets);
-    assert_eq!(results.len(), 2);
+    b.push_upstream_price(&eth, 2_000_000_000, 100);
     assert!(matches!(
-        results.get(0).unwrap().1,
+        b.runtime.refresh(&b.asset_btc),
         RefreshStatus::Accepted(_)
     ));
     assert!(matches!(
-        results.get(1).unwrap().1,
+        b.runtime.refresh(&eth),
         RefreshStatus::Accepted(_)
     ));
 
-    // Manually trip BTC via governance.
     let tripper = Address::generate(&b.env);
     b.grant_role(
         &tripper,
@@ -111,54 +135,80 @@ fn two_independent_assets_have_isolated_state() {
         GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None),
     );
 
-    let results = b.runtime.refresh(&assets);
-    // Match by asset rather than position — refresh result ordering is an
-    // implementation detail (and inputs are deduplicated).
-    let btc_status = results
-        .iter()
-        .find(|(asset, _)| asset == &b.asset_btc)
-        .unwrap()
-        .1;
-    let eth_status = results.iter().find(|(asset, _)| asset == &eth).unwrap().1;
-    assert!(matches!(btc_status, RefreshStatus::Blocked(_)));
-    assert!(matches!(eth_status, RefreshStatus::Accepted(_)));
+    assert!(matches!(
+        b.runtime.refresh(&b.asset_btc),
+        RefreshStatus::Blocked(_)
+    ));
+    assert!(matches!(
+        b.runtime.refresh(&eth),
+        RefreshStatus::Accepted(_)
+    ));
 }
 
 #[test]
-fn refresh_deduplicates_repeated_assets_in_input() {
+fn refresh_returns_one_requested_asset_status() {
     let b = Bootstrap::new();
     b.configure_default_feed();
     b.push_upstream_price(&b.asset_btc, 5_000_000_000, 100);
 
-    let assets = SVec::from_array(
-        &b.env,
-        [
-            b.asset_btc.clone(),
-            b.asset_btc.clone(),
-            b.asset_btc.clone(),
-        ],
-    );
-    let results = b.runtime.refresh(&assets);
-    assert_eq!(results.len(), 1);
+    assert!(matches!(
+        b.runtime.refresh(&b.asset_btc),
+        RefreshStatus::Accepted(_)
+    ));
 }
 
 #[test]
-fn refresh_with_empty_input_refreshes_every_registered_asset() {
+fn registered_assets_refresh_in_separate_calls() {
     let b = Bootstrap::new();
     b.configure_default_feed();
     let eth = Asset::Other(Symbol::new(&b.env, "ETH"));
-    let eth_upstream_id = add_feed(&b, &eth);
-    MockOracleClient::new(&b.env, &eth_upstream_id).set_price(&eth, &2_000_000_000_i128, &100_u64);
+    add_feed(&b, &eth);
+    b.push_upstream_price(&eth, 2_000_000_000, 100);
     b.push_upstream_price(&b.asset_btc, 5_000_000_000, 100);
 
-    let results = b.runtime.refresh(&SVec::new(&b.env));
-    assert_eq!(results.len(), 2);
-    // Order is whatever `registered_assets()` produces — assert by set
-    // membership rather than position.
-    let mut seen_assets: std::vec::Vec<Asset> = std::vec::Vec::new();
-    for entry in results.iter() {
-        seen_assets.push(entry.0);
-    }
-    assert!(seen_assets.contains(&b.asset_btc));
-    assert!(seen_assets.contains(&eth));
+    assert!(matches!(
+        b.runtime.refresh(&b.asset_btc),
+        RefreshStatus::Accepted(_)
+    ));
+    assert!(matches!(
+        b.runtime.refresh(&eth),
+        RefreshStatus::Accepted(_)
+    ));
+}
+
+#[test]
+#[should_panic(expected = "Error(Budget, ExceededLimit)")]
+fn hostile_source_cannot_abort_a_separate_asset_refresh() {
+    let b = Bootstrap::new();
+    b.configure_default_feed();
+    b.push_upstream_price(&b.asset_btc, 5_000_000_000, 100);
+    assert!(matches!(
+        b.runtime.refresh(&b.asset_btc),
+        RefreshStatus::Accepted(_)
+    ));
+
+    let eth = Asset::Other(Symbol::new(&b.env, "ETH"));
+    let hostile_oracle = b.env.register(BudgetExhaustingOracle, ());
+    let mut sources = b.source_configs(&eth);
+    sources.set(
+        0,
+        SourceConfig {
+            oracle: hostile_oracle,
+            asset: eth.clone(),
+        },
+    );
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::SetProxy(
+            eth.clone(),
+            ProxyConfig {
+                sources,
+                min_sources: 3,
+                max_age_secs: Some(300),
+                max_clock_drift_secs: Some(60),
+            },
+        ),
+    );
+    b.push_upstream_price(&eth, 2_000_000_000, 100);
+    b.runtime.refresh(&eth);
 }

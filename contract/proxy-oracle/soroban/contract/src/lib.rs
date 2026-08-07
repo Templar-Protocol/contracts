@@ -60,7 +60,6 @@ pub(crate) const MAX_REGISTERED_ASSETS: u32 = 64;
 
 // `RefreshFailure` / `CacheBlocked` event codes published as the `code` field.
 pub(crate) const AGGREGATION_FAILED_CODE: u32 = 1;
-pub(crate) const CIRCUIT_BREAKER_FAILED_CODE: u32 = 2;
 pub(crate) const STORAGE_FAILED_CODE: u32 = 3;
 pub(crate) const SOURCE_UNAVAILABLE_CODE: u32 = 5;
 pub(crate) const UNKNOWN_ASSET_CODE: u32 = 6;

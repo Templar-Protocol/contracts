@@ -112,13 +112,6 @@ impl Contract {
         self.state.get_proxy_circuit_breaker_set(id)
     }
 
-    pub fn get_proxy_circuit_breaker_set_for_repair(
-        &self,
-        id: PriceIdentifier,
-    ) -> Option<CircuitBreakerSet> {
-        self.state.get_proxy_circuit_breaker_set_for_repair(id)
-    }
-
     pub fn get_cached_proxy_price(&self, id: PriceIdentifier) -> Option<CachedProxyPrice> {
         self.state.get_cached_proxy_price(id)
     }

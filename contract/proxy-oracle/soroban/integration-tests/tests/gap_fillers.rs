@@ -13,8 +13,8 @@
 //! R3 — `list_role(Admin)` reflects post-grant/post-revoke membership
 
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Symbol, Vec as SVec};
-use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig, SourceConfig};
+use soroban_sdk::{Address, Symbol};
+use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig};
 use templar_proxy_oracle_soroban_governance_common::{GovernanceAction, OperationKind, Role};
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 
@@ -47,16 +47,12 @@ fn get_proposal_returns_action_and_maturity() {
     );
 
     let asset = Asset::Other(Symbol::new(&b.env, "ETH"));
-    let mut sources = SVec::new(&b.env);
-    sources.push_back(SourceConfig {
-        oracle: b.upstream_id.clone(),
-        asset: asset.clone(),
-    });
+    let sources = b.source_configs(&asset);
     let action = GovernanceAction::SetProxy(
         asset,
         ProxyConfig {
             sources,
-            min_sources: 1,
+            min_sources: 3,
             max_age_secs: Some(300),
             max_clock_drift_secs: Some(60),
         },

@@ -10,8 +10,9 @@
 
 use rstest::rstest;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Symbol, Vec as SVec};
-use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig, SourceConfig};
+use soroban_sdk::{Address, Symbol};
+use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig};
+use templar_proxy_oracle_soroban_contract::RefreshStatus;
 use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
 use templar_proxy_oracle_soroban_integration_tests::common::{ledger, Bootstrap};
 use templar_proxy_oracle_soroban_sep40_adapter_contract::{Sep40Adapter, Sep40AdapterClient};
@@ -97,68 +98,54 @@ fn refresh_restores_freshness() {
 }
 
 #[test]
-fn freshness_with_no_max_age_never_expires() {
+fn one_manipulated_source_cannot_move_the_median() {
     let b = Bootstrap::new();
-    // Configure feed manually with max_age=None.
-    let mut sources = SVec::new(&b.env);
-    sources.push_back(SourceConfig {
-        oracle: b.upstream_id.clone(),
-        asset: b.asset_btc.clone(),
-    });
-    b.submit_and_execute(
-        &b.admin,
-        GovernanceAction::SetProxy(
-            b.asset_btc.clone(),
-            ProxyConfig {
-                sources,
-                min_sources: 1,
-                max_age_secs: None,
-                max_clock_drift_secs: Some(60),
-            },
-        ),
+    b.configure_default_feed();
+    b.push_upstream_prices(
+        &b.asset_btc,
+        [5_000_000_000, 5_100_000_000, 50_000_000_000],
+        100,
     );
 
-    b.push_upstream_price(&b.asset_btc, 5_000_000_000, 100);
-    let _ = b.refresh_one(&b.asset_btc);
-    // Big jump forward.
-    ledger::advance_secs(&b.env, 365 * 24 * 3600);
-    assert!(b.adapter.lastprice(&b.asset_btc).is_some());
+    assert!(matches!(
+        b.refresh_one(&b.asset_btc),
+        RefreshStatus::Accepted(price) if price.mantissa == 5_100_000_000
+    ));
+    assert_eq!(
+        b.adapter.lastprice(&b.asset_btc).unwrap().price,
+        5_100_000_000
+    );
 }
 
 #[test]
-fn future_dated_source_eventually_expires_by_updated_at() {
-    // Regression test for the CodeRabbit fix: bound freshness by
-    // `cached.updated_at`, not `price.timestamp`. A source that publishes a
-    // far-future timestamp gets accepted into the cache, but as wall-clock
-    // time advances past the cache's `updated_at + max_age`, the freshness
-    // gate must still kick in.
+fn freshness_without_max_age_is_rejected() {
     let b = Bootstrap::new();
-    // Use a tight freshness window so we don't have to wait long.
-    let mut sources = SVec::new(&b.env);
-    sources.push_back(SourceConfig {
-        oracle: b.upstream_id.clone(),
-        asset: b.asset_btc.clone(),
-    });
-    b.submit_and_execute(
-        &b.admin,
-        GovernanceAction::SetProxy(
-            b.asset_btc.clone(),
-            ProxyConfig {
-                sources,
-                min_sources: 1,
-                max_age_secs: Some(60),
-                max_clock_drift_secs: None,
-            },
-        ),
+    let action = GovernanceAction::SetProxy(
+        b.asset_btc.clone(),
+        ProxyConfig {
+            sources: b.source_configs(&b.asset_btc),
+            min_sources: 3,
+            max_age_secs: None,
+            max_clock_drift_secs: Some(60),
+        },
     );
 
-    let now = b.env.ledger().timestamp();
-    let future = now + 365 * 24 * 3600;
-    b.push_upstream_price(&b.asset_btc, 5_000_000_000, future);
-    let _ = b.refresh_one(&b.asset_btc);
-    assert!(b.adapter.lastprice(&b.asset_btc).is_some());
+    let id = b.governance.next_proposal_id();
+    assert!(b
+        .governance
+        .try_create_proposal(&b.admin, &id, &action, &0)
+        .is_err());
+    assert!(b.runtime.get_proxy(&b.asset_btc).is_none());
+}
 
-    ledger::advance_secs(&b.env, 120);
+#[test]
+fn future_dated_source_is_not_published() {
+    let b = Bootstrap::new();
+    b.configure_default_feed();
+    let future = b.env.ledger().timestamp() + 365 * 24 * 3600;
+    b.push_upstream_price(&b.asset_btc, 5_000_000_000, future);
+
+    let _ = b.refresh_one(&b.asset_btc);
     assert!(b.adapter.lastprice(&b.asset_btc).is_none());
 }
 
