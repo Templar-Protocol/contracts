@@ -18,7 +18,7 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
             idempotency_key: None,
             body: oracle_updates::UpdatePyth {
                 oracle_id: pyth_oracle_id.clone(),
-                vaa: Base64Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
+                price_ids: vec![PriceIdentifier([0x11; 32])],
             },
         })
         .await?;
@@ -37,7 +37,8 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
     .await?;
     assert_eq!(
         last_pyth_update,
-        serde_json::Value::String("deadbeef".to_owned())
+        serde_json::Value::String("cafebabe".to_owned()),
+        "the adapter must receive the VAA the gateway fetched from Hermes"
     );
 
     let redstone_result = stack

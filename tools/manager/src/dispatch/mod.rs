@@ -30,7 +30,9 @@ use crate::commands::{
     spec::SpecNs,
     storage::StorageNs,
 };
-use crate::context::{all_sources, lazer_source, print_json, redstone_source, CliContext};
+use crate::context::{
+    all_sources, lazer_source, print_json, pyth_source, redstone_source, CliContext,
+};
 
 /// A kernel price as a plain number.
 ///
@@ -172,10 +174,14 @@ async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> 
 /// The `oracle.*` updates, served by the oracle-updates dispatcher. Each arm layers
 /// only the payload sources its method fetches from — see [`CliContext::oracle_write`].
 async fn oracle(ctx: CliContext, ns: OracleNs) -> anyhow::Result<()> {
+    let network = ctx.network();
     match ns {
         OracleNs::Pyth(a) => {
-            let signer = a.signer.clone();
-            ctx.oracle_write(signer, a.try_into_spec()?, Ok).await
+            let (signer, sources) = (a.signer.clone(), a.sources.clone());
+            ctx.oracle_write(signer, a.into_spec(), |base| {
+                Ok(pyth_source(base, &sources, network))
+            })
+            .await
         }
         OracleNs::RedStone(a) => {
             let (signer, sources) = (a.signer.clone(), a.sources.clone());
@@ -191,8 +197,10 @@ async fn oracle(ctx: CliContext, ns: OracleNs) -> anyhow::Result<()> {
         }
         OracleNs::Prices(a) => {
             let (signer, sources) = (a.signer.clone(), a.sources.clone());
-            ctx.oracle_write(signer, a.into_spec(), |base| all_sources(base, &sources))
-                .await
+            ctx.oracle_write(signer, a.into_spec(), |base| {
+                all_sources(base, &sources, network)
+            })
+            .await
         }
     }
 }

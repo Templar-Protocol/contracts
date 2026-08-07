@@ -80,6 +80,7 @@ pub struct Config {
     pub migrate_database: bool,
 
     /// In-process oracle payload sources (Pyth Hermes, RedStone bridge, Pyth Lazer).
+    /// A mainnet deployment must set `--pyth-hermes-url`; it defaults to testnet's.
     #[command(flatten)]
     pub oracle_sources: OracleSourceArgs,
 
@@ -131,6 +132,7 @@ mod tests {
 
     use super::*;
     use rstest::rstest;
+    use templar_gateway_client::Network;
 
     #[test]
     fn parses_minimal_config() {
@@ -154,10 +156,6 @@ mod tests {
         );
         assert_eq!(config.database_url, None);
         assert!(!config.migrate_database);
-        assert_eq!(
-            config.oracle_sources.pyth_hermes_url.as_str(),
-            "https://hermes-beta.pyth.network/"
-        );
         assert_eq!(
             config.oracle_sources.redstone.redstone_node_path,
             PathBuf::from("node")
@@ -231,13 +229,13 @@ mod tests {
             Ok(()) => {
                 config
                     .oracle_sources
-                    .build()
+                    .build(Network::Testnet.hermes_url())
                     .expect("valid Lazer config should build");
             }
             Err(expected_msg) => {
                 let error = config
                     .oracle_sources
-                    .build()
+                    .build(Network::Testnet.hermes_url())
                     .expect_err("invalid Lazer config should fail");
                 assert!(error.to_string().contains(expected_msg));
             }
