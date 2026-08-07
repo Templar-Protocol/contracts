@@ -6,7 +6,7 @@ mod rpc;
 use crate::rpc::attach_gateway;
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
-use templar_gateway_client::NetworkConfigBuilder;
+use templar_gateway_client::{Network, NetworkConfigBuilder};
 use templar_gateway_core::GatewayContext;
 use templar_gateway_oracle_updates_dispatch::GatewayContextBuilderOracleExt;
 use tokio::signal;
@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
 
     let signers = config.build_signers()?;
     let store = config.build_store().await?;
-    let sources = config.oracle_sources.build()?;
+    let sources = config.oracle_sources.build(Network::Testnet.hermes_url())?;
     let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
         .api_key(
             config

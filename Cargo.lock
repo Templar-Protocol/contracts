@@ -13334,6 +13334,8 @@ dependencies = [
  "templar-gateway-client",
  "templar-gateway-core",
  "templar-gateway-methods-spec",
+ "templar-gateway-oracle-updates-dispatch",
+ "templar-gateway-oracle-updates-spec",
  "templar-gateway-testing",
  "templar-gateway-types",
  "templar-proxy-oracle-near-common",
@@ -13342,6 +13344,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

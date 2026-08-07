@@ -20,4 +20,4 @@ pub use redstone_client::{RedStoneBridgeClient, RedStoneBridgeError, RedStoneRes
 pub use source_provider_impl::{ProvidesLazerSource, ProvidesPythSource, ProvidesRedStoneSource};
 pub use sources::{build_oracle_updates_context, OracleSourceConfig, OracleUpdatesContext};
 #[cfg(feature = "clap")]
-pub use sources::{LazerSourceArgs, OracleSourceArgs, RedStoneSourceArgs};
+pub use sources::{LazerSourceArgs, OracleSourceArgs, PythSourceArgs, RedStoneSourceArgs};

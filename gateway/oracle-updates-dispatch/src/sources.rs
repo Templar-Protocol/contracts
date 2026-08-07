@@ -42,7 +42,7 @@ pub fn build_oracle_updates_context(
 }
 
 #[cfg(feature = "clap")]
-pub use args::{LazerSourceArgs, OracleSourceArgs, RedStoneSourceArgs};
+pub use args::{LazerSourceArgs, OracleSourceArgs, PythSourceArgs, RedStoneSourceArgs};
 
 #[cfg(feature = "clap")]
 mod args {
@@ -54,6 +54,26 @@ mod args {
 
     use super::OracleSourceConfig;
     use crate::{LazerSourceConfig, LazerSubscriptionConfig};
+
+    /// CLI surface for the in-process Pyth Hermes payload source.
+    #[derive(Args, Debug, Clone)]
+    pub struct PythSourceArgs {
+        /// Pyth Hermes API URL. Defaults to Pyth's public endpoint for the network
+        /// the consumer targets.
+        /// See: <https://docs.pyth.network/price-feeds/core/api-reference>
+        #[arg(long = "pyth-hermes-url", env = "PYTH_HERMES_URL")]
+        pub pyth_hermes_url: Option<Url>,
+    }
+
+    impl PythSourceArgs {
+        /// The configured endpoint, or `default` when `--pyth-hermes-url` is unset.
+        /// `default` must match the network the caller submits updates to, as
+        /// `Network::hermes_url` returns.
+        #[must_use]
+        pub fn hermes_url(&self, default: Url) -> Url {
+            self.pyth_hermes_url.clone().unwrap_or(default)
+        }
+    }
 
     /// CLI surface for the in-process RedStone bridge payload source.
     #[derive(Args, Debug, Clone)]
@@ -129,19 +149,11 @@ mod args {
 
     /// Every in-process oracle payload source at once. Flatten it into a consumer's
     /// `clap` configuration and call [`OracleSourceArgs::build`]; flatten a single
-    /// member instead when only one source is reachable. The Pyth Hermes URL is inline
-    /// because no consumer builds a Hermes source on its own today — only because
-    /// `oracle.updatePyth` takes its VAA from the request body instead of fetching it,
-    /// which ENG-462 fixes. Expect a `PythSourceArgs` sibling then.
+    /// member instead when only one source is reachable.
     #[derive(Args, Debug, Clone)]
     pub struct OracleSourceArgs {
-        /// Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
-        #[arg(
-            long = "pyth-hermes-url",
-            env = "PYTH_HERMES_URL",
-            default_value = "https://hermes-beta.pyth.network"
-        )]
-        pub pyth_hermes_url: Url,
+        #[command(flatten)]
+        pub pyth: PythSourceArgs,
         #[command(flatten)]
         pub redstone: RedStoneSourceArgs,
         #[command(flatten)]
@@ -149,14 +161,16 @@ mod args {
     }
 
     impl OracleSourceArgs {
-        /// Validate and assemble the runtime [`OracleSourceConfig`].
+        /// Validate and assemble the runtime [`OracleSourceConfig`], falling back to
+        /// `hermes_default` when `--pyth-hermes-url` is unset — see
+        /// [`PythSourceArgs::hermes_url`].
         ///
         /// # Errors
         /// Returns an error if the Lazer websocket configuration is invalid — see
         /// [`LazerSourceArgs::build`].
-        pub fn build(&self) -> anyhow::Result<OracleSourceConfig> {
+        pub fn build(&self, hermes_default: Url) -> anyhow::Result<OracleSourceConfig> {
             Ok(OracleSourceConfig {
-                pyth_hermes_url: self.pyth_hermes_url.clone(),
+                pyth_hermes_url: self.pyth.hermes_url(hermes_default),
                 redstone_node_path: self.redstone.redstone_node_path.clone(),
                 lazer: self.lazer.build()?,
             })

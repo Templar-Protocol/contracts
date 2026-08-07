@@ -12,7 +12,9 @@ use templar_common::{
     market::DepositMsg,
     oracle::pyth,
 };
-use templar_gateway_client::{collect_paginated, Client as GatewayClient, NetworkConfigBuilder};
+use templar_gateway_client::{
+    collect_paginated, Client as GatewayClient, Network, NetworkConfigBuilder,
+};
 use templar_gateway_core::{
     FinalityPolicy, GatewayContext, GatewayError, GatewayResult, PlanWrite, PooledSigner,
 };
@@ -128,8 +130,10 @@ impl App {
             driver.clone(),
             signer_account_ids.clone(),
         );
-        let oracle_context =
-            build_oracle_updates_context(base_context, args.oracle_sources.build()?)?;
+        let oracle_context = build_oracle_updates_context(
+            base_context,
+            args.oracle_sources.build(Network::Testnet.hermes_url())?,
+        )?;
         let oracle_updates =
             OracleUpdatesClient::from_parts(oracle_context, driver, signer_account_ids);
 
