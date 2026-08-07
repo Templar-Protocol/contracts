@@ -73,16 +73,12 @@ fn hypernative_key_cannot_do_anything_else() {
     let hypernative = setup_with_hypernative(&b);
 
     let other_asset = templar_proxy_oracle_soroban_common::Asset::Other(Symbol::new(&b.env, "ETH"));
-    let mut sources = soroban_sdk::Vec::new(&b.env);
-    sources.push_back(templar_proxy_oracle_soroban_common::SourceConfig {
-        oracle: b.upstream_id.clone(),
-        asset: other_asset.clone(),
-    });
+    let sources = b.source_configs(&other_asset);
     let setproxy = GovernanceAction::SetProxy(
         other_asset,
         templar_proxy_oracle_soroban_common::ProxyConfig {
             sources,
-            min_sources: 1,
+            min_sources: 3,
             max_age_secs: Some(300),
             max_clock_drift_secs: Some(60),
         },
@@ -103,8 +99,7 @@ fn hypernative_key_cannot_do_anything_else() {
             b.asset_btc.clone(),
             0,
             RearmConfig {
-                armed_after_secs: 0,
-                accepted_history_source_code: 0,
+                arming_delay_secs: 0,
             },
         ),
         GovernanceAction::SetEnforced(

@@ -414,7 +414,7 @@ mod tests {
         let resolution = proxy
             .resolve(
                 &mut circuit_breakers,
-                [Some(price(120, 0, 1_000)), None],
+                [Some(price(120, 0, 1_001)), None],
                 now,
             )
             .unwrap();
@@ -429,7 +429,7 @@ mod tests {
         let resolution = proxy
             .resolve(
                 &mut circuit_breakers,
-                [Some(price(130, 0, 1_000)), None],
+                [Some(price(130, 0, 1_002)), None],
                 now,
             )
             .unwrap();

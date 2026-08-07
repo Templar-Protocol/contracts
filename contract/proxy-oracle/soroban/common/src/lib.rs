@@ -78,6 +78,7 @@ pub trait ProxyOracleTrait {
     /// apply a freshness filter; callers that care about staleness should
     /// inspect the returned timestamps.
     fn aggregated_history(env: Env, asset: Asset, records: u32) -> Option<Vec<NormalizedPrice>>;
+    fn source_base(env: Env) -> Option<Asset>;
 }
 
 /// Convert a normalized exponent-form price to SEP-40 `PriceData` with the
@@ -100,9 +101,14 @@ pub fn normalized_to_sep40(
             )
             .ok_or(ContractError::ConversionOverflow)?;
     } else {
-        value /= 10_i128
+        let divisor = 10_i128
             .checked_pow(scale.unsigned_abs())
             .ok_or(ContractError::ConversionOverflow)?;
+        let scaled = value / divisor;
+        if value != 0 && scaled == 0 {
+            return Err(ContractError::ConversionOverflow);
+        }
+        value = scaled;
     }
     Ok(PriceData {
         price: value,
@@ -125,6 +131,8 @@ pub enum ContractError {
     TooManySources = 9,
     TooManyBreakers = 10,
     BreakerError = 11,
+    TooManyAssets = 12,
+    TooFewSources = 13,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,6 +149,45 @@ pub struct ProxyConfig {
     pub min_sources: u32,
     pub max_age_secs: Option<u64>,
     pub max_clock_drift_secs: Option<u64>,
+}
+
+pub const MAX_SOURCES_PER_PROXY: u32 = 16;
+pub const MAX_SOURCE_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+pub const MAX_CLOCK_DRIFT_SECS: u64 = 60 * 60;
+
+pub fn validate_proxy_config(config: &ProxyConfig) -> Result<(), ContractError> {
+    if config.sources.len() < 3 {
+        return Err(ContractError::TooFewSources);
+    }
+    if config.sources.len() > MAX_SOURCES_PER_PROXY {
+        return Err(ContractError::TooManySources);
+    }
+    if config.min_sources < 3 || config.min_sources > config.sources.len() {
+        return Err(ContractError::InvalidInput);
+    }
+    let (Some(max_age_secs), Some(max_clock_drift_secs)) =
+        (config.max_age_secs, config.max_clock_drift_secs)
+    else {
+        return Err(ContractError::InvalidInput);
+    };
+    if max_age_secs > MAX_SOURCE_AGE_SECS || max_clock_drift_secs > MAX_CLOCK_DRIFT_SECS {
+        return Err(ContractError::InvalidInput);
+    }
+    for i in 0..config.sources.len() {
+        let source = config.sources.get(i).ok_or(ContractError::InvalidInput)?;
+        for j in (i + 1)..config.sources.len() {
+            if source.oracle
+                == config
+                    .sources
+                    .get(j)
+                    .ok_or(ContractError::InvalidInput)?
+                    .oracle
+            {
+                return Err(ContractError::InvalidInput);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Soroban wire format for a 512-bit `Decimal`. Wrapping `BytesN<64>` (the
@@ -211,7 +258,13 @@ pub struct MonotonicRunConfig {
 pub struct WindowedChangeDeltaConfig {
     pub window_len: u32,
     pub lookback_windows: u32,
-    pub max_relative_change_delta: SorobanDecimal,
+    pub max_relative_mean_change: SorobanDecimal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[contracttype]
+pub struct CumulativeChangeConfig {
+    pub max_relative_change: SorobanDecimal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,6 +273,7 @@ pub enum CircuitBreakerConfig {
     StepwiseChange(StepwiseChangeConfig),
     MonotonicRun(MonotonicRunConfig),
     WindowedChangeDelta(WindowedChangeDeltaConfig),
+    CumulativeChange(CumulativeChangeConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,8 +285,7 @@ pub struct SetEnforcedConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[contracttype]
 pub struct RearmConfig {
-    pub armed_after_secs: u64,
-    pub accepted_history_source_code: u32,
+    pub arming_delay_secs: u64,
 }
 
 #[cfg(test)]
@@ -257,5 +310,33 @@ mod tests {
         assert_eq!(wrapped.to_decimal(), original, "to_decimal");
         assert_eq!(Decimal::from(&wrapped), original, "From<&SorobanDecimal>");
         assert_eq!(Decimal::from(wrapped), original, "From<SorobanDecimal>");
+    }
+
+    #[test]
+    fn normalized_to_sep40_preserves_only_representable_values() {
+        let price = |mantissa, expo| NormalizedPrice {
+            mantissa,
+            expo,
+            timestamp: 100,
+        };
+
+        assert_eq!(
+            normalized_to_sep40(&price(1, -1), 0),
+            Err(ContractError::ConversionOverflow)
+        );
+        assert_eq!(
+            normalized_to_sep40(&price(-1, -1), 0),
+            Err(ContractError::ConversionOverflow)
+        );
+        assert_eq!(normalized_to_sep40(&price(10, -1), 0).unwrap().price, 1);
+        assert_eq!(normalized_to_sep40(&price(0, -1), 0).unwrap().price, 0);
+        assert_eq!(
+            normalized_to_sep40(&price(i64::MAX, 120), 18),
+            Err(ContractError::ConversionOverflow)
+        );
+        assert_eq!(
+            normalized_to_sep40(&price(500_000, -4), 8).unwrap().price,
+            5_000_000_000
+        );
     }
 }

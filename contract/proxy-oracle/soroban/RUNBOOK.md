@@ -128,13 +128,17 @@ the `--action` JSON).
 ```json
 {"SetProxy": [{"Other":"BTC"}, {
   "sources": [{"oracle":"<SRC1>","asset":{"Other":"BTC"}},
-              {"oracle":"<SRC2>","asset":{"Other":"BTC"}}],
-  "min_sources": 2, "max_age_secs": 120, "max_clock_drift_secs": 30 }]}
+              {"oracle":"<SRC2>","asset":{"Other":"BTC"}},
+              {"oracle":"<SRC3>","asset":{"Other":"BTC"}},
+              {"oracle":"<SRC4>","asset":{"Other":"BTC"}}],
+  "min_sources": 3, "max_age_secs": 120, "max_clock_drift_secs": 30 }]}
 ```
 
-1–16 sources; `min_sources ∈ [1, n]`; no duplicate `(oracle, asset)`;
-`max_age_secs` required for production. `RemoveProxy` clears the proxy, breakers,
-history, and cache for the asset.
+3–16 sources; `min_sources ∈ [3, n]`; no duplicate oracle address; both
+freshness bounds are required. `max_age_secs` is capped at 604800 (seven days)
+and `max_clock_drift_secs` at 3600 (one hour). Changing the source set or quorum
+clears the breaker set, history, and cache; configure and add breakers again after
+the source migration. `RemoveProxy` clears all state for the asset.
 
 **Breakers** — configure the set, add a breaker, then enforce it:
 
@@ -142,16 +146,21 @@ history, and cache for the asset.
 {"ConfigureBreakers": [{"Other":"BTC"}, 60, 16]}                          // sample_interval_secs, history_len (1–32)
 {"AddBreaker": [{"Other":"BTC"}, {"StepwiseChange": {"max_relative_change":"<hex>"}}]}
 {"SetEnforced": [{"Other":"BTC"}, <BREAKER_ID>, {"is_enforced": true}]}
-{"Rearm": [{"Other":"BTC"}, <BREAKER_ID>, {"armed_after_secs": 3600, "accepted_history_source_code": 0}]}
+{"Rearm": [{"Other":"BTC"}, <BREAKER_ID>, {"arming_delay_secs": 3600}]}
 ```
 
 Kinds: `StepwiseChange` (1, sudden jumps), `MonotonicRun` (2, staged ramps),
-`WindowedChangeDelta` (3, slow drift). Unenforced breakers still evaluate but a
-trip does not block the feed. `history_len` must cover every installed rule —
-too small silently disables protection. `accepted_history_source_code`: `0` =
-Empty (clear baseline), `1` = Observed (seed from history collected while
-tripped). Inert params (zero thresholds/streaks/lookback, window < 2) are
-rejected.
+`WindowedChangeDelta` (3, window-mean drift), and `CumulativeChange` (4,
+change from its immutable accepted baseline). Unenforced breakers still evaluate
+but a trip does not block the feed. `history_len` must cover every installed
+rule; undersized configurations are rejected. `MonotonicRun` requires
+`sample_interval_secs = 0` so every accepted step is evaluated. Rearm preserves
+both shared histories. To recover any breaker after a sustained legitimate move,
+disable enforcement, refresh an accepted price, rearm, then re-enable enforcement.
+To intentionally establish a new cumulative baseline, remove the breaker,
+complete a successful refresh, then add it again. Every persisted breaker set is
+semantically valid. An invalid stored set is unreachable; recover from genuine
+corruption with `remove_proxy` followed by `set_proxy`.
 
 **Roles** — `SetRole(account, role, set)` for `Admin`, `ManualTripper`,
 `CircuitBreakerOperator`, `ProxyConfigurationManager`. The last `Admin` cannot be
@@ -164,23 +173,31 @@ revoked. Inspect on governance: `has_role --account --role`, `list_role --role`,
 storage-only.
 
 ```bash
-inv --id $RT -- refresh --assets '[{"Other":"BTC"}]'   # or '[]' for all configured
+inv --id $RT -- refresh --asset '{"Other":"BTC"}'
 ```
 
-Returns `Vec<(Asset, RefreshStatus)>`: `Accepted` (cache updated), `Blocked`
-(breaker), `ResolveFailed` (aggregation/conversion), `SourceUnavailable` (no
-source responded), `UnknownAsset`. Refresh at least as often as the shortest
-`max_age_secs`, and before any action depending on a fresh price.
+Returns `RefreshStatus`: `Accepted` (cache updated), `Blocked` (breaker),
+`ResolveFailed` (aggregation or internal storage state), `SourceUnavailable` (no
+source responded), or `UnknownAsset`. Every candidate is evaluated by breakers
+before its publication time determines whether it advances source-time storage. A
+successful candidate with an equal or predating timestamp leaves
+`aggregated_latest` and `aggregated_history` at their newest source-time
+aggregate; a failed or blocked refresh replaces the cache and fails closed. Use
+`aggregated_latest` for the current aggregate and `aggregated_history` for
+monotonic audit samples. Historical reads are unavailable while the asset is
+manually or automatically blocked, but they do not apply a freshness cutoff.
 
 ## 7. TTL extension
 
 ```bash
-inv --id $RT  -- extend_ttl
-inv --id $GOV -- extend_ttl --caller <ADMIN>    # admin-only
+inv --id $RT  -- extend_ttl --asset '{"Other":"BTC"}'
+inv --id $GOV -- extend_ttl
 ```
+Governance TTL extension is permissionless: the invoker pays the transaction fee, but no role or authorization is required.
 
-Run at least weekly (more often on fast ledgers); automate alongside `refresh`. A
-missed extension can evict storage, making the contract appear uninitialized.
+The runtime accepts only registered assets. Once the proxy exists, it renews every
+surviving per-asset key independently; a missing cache, history, breaker set, or
+asset registry does not prevent maintenance.
 
 ## 8. Monitoring events
 
@@ -190,20 +207,21 @@ Compact typed events. Topics are indexed; alert on anything unexpected.
 
 | Event | Topics | Payload | Meaning / response |
 |-------|--------|---------|--------------------|
-| `RefreshSuccess` | asset | mantissa, expo, timestamp | price accepted, cache updated |
-| `RefreshFailure` | asset | code | failed refresh — 1 aggregation/quorum, 2 breaker error, 3 storage (missing key; maybe TTL-evicted), 4 conversion overflow, 5 all sources down, 6 unknown asset |
+| `RefreshSuccess` | asset | mantissa, expo, timestamp | source-time price accepted for cache/history |
+| `RefreshEvaluated` | asset | mantissa, expo, timestamp | candidate accepted by breakers but not advanced; paired with the served `RefreshSuccess` |
+| `RefreshFailure` | asset | code | failed refresh — 1 aggregation/quorum, 3 internal storage state, 5 all sources down, 6 unknown asset |
 | `CacheBlocked` | asset | reason_code | valid price blocked — 1 manual, 2 automatic breaker |
 | `CircuitBreakerConfigSet` | asset | sample_interval_secs, history_len | breaker set reconfigured |
-| `CircuitBreakerAdded` | asset, breaker_id | breaker_kind (1/2/3) | breaker added |
+| `CircuitBreakerAdded` | asset, breaker_id | breaker_kind (1/2/3/4) | breaker added |
 | `CircuitBreakerRemoved` | asset, breaker_id | — | breaker removed; state cleared, cache invalidated |
 | `CircuitBreakerEnforcementSet` | asset, breaker_id | is_enforced | enforcement toggled |
-| `CircuitBreakerRearmed` | asset, breaker_id | armed_after_secs, accepted_history_source_code (0/1) | breaker rearmed |
-| `CircuitBreakerTripped` | asset, breaker_id | tripped_at_secs, price, timestamp, is_enforced | automatic trip; blocks iff `is_enforced` |
+| `CircuitBreakerRearmed` | asset, breaker_id | armed_at_secs | breaker rearmed |
+| `CircuitBreakerTripped` | asset, breaker_id | tripped_at_secs, price, expo, publish_timestamp_secs, is_enforced | automatic trip; blocks iff `is_enforced` |
 | `ManualTripSet` | asset | is_manually_tripped, metadata | governed trip/untrip — correlate the operator via the governance proposal |
-| `ProxySet` | asset | source_count, min_sources | proxy config set; cache invalidated |
+| `ProxySet` | asset | source_count, min_sources | source/quorum change clears breaker state, history, and cache; other config changes clear history and cache |
 | `ProxyRemoved` | asset | — | proxy + all state cleared; downstream now reads `None` |
 | `ContractUpgraded` | — | new_wasm_hash | runtime code swapped — high impact, verify |
-| `TtlExtended` | — | asset_count | runtime `extend_ttl` ran |
+| `TtlExtended` | asset | — | runtime `extend_ttl(asset)` ran |
 
 The runtime also emits `stellar_access` ownership events on transfer / accept /
 renounce.
@@ -239,11 +257,12 @@ A trip invalidates the cache immediately; `aggregated_latest` and adapter
 
 ## 10. Incident — source outage
 
-`RefreshFailure code 5` = all sources down; `code 1` = fewer than `min_sources`
-responded. If quorum is still met, no action is needed. Otherwise: manually trip
-the feed to make the failure explicit, or propose lowering `min_sources` /
-adding a backup source. The cache holds the last accepted price until
-`max_age_secs` elapses, after which reads fail closed.
+`RefreshFailure code 5` = all sources down while unblocked; `code 1` = fewer
+than `min_sources` positive-weight sources responded; and `code 2` = a breaker
+rejected the aggregate. A pre-existing manual or enforced breaker reports
+`CacheBlocked` instead. Every failure status replaces the cached result,
+including source and quorum failures, so downstream reads fail closed until a
+later accepted refresh.
 
 ## 11. Upgrade
 
