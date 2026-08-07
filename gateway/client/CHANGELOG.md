@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-client-v0.2.0...templar-gateway-client-v0.2.1) - 2026-08-07
+
+### Added
+
+- *(gateway-client)* add Network::hermes_url ([#585](https://github.com/Templar-Protocol/contracts/pull/585))
+
 ## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-client-v0.1.2...templar-gateway-client-v0.2.0) - 2026-08-04
 
 ### Added
