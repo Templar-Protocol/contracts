@@ -55,9 +55,40 @@ pub struct GetDeployment {
     pub account_id: AccountId,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetDeploymentResult {
     pub deployment: Option<templar_common::registry::Deployment>,
+}
+
+/// Get a name's registry entry, including one merely reserved by an in-flight deploy.
+///
+/// Unlike `registry.getDeployment`, which reports a reserved name as absent even though `deploy`
+/// would refuse it.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "registry.getRegistryEntry", output = GetRegistryEntryResult)]
+pub struct GetRegistryEntry {
+    pub registry_id: AccountId,
+    pub account_id: AccountId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetRegistryEntryResult {
+    pub entry: Option<templar_common::registry::RegistryEntryView>,
+}
+
+/// Get a registered version's code hash and whether it can still be deployed.
+///
+/// Unlike `registry.listVersions`, which keeps listing a version whose code was removed.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "registry.getVersion", output = GetVersionResult)]
+pub struct GetVersion {
+    pub registry_id: AccountId,
+    pub version_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetVersionResult {
+    pub version: Option<templar_common::registry::VersionInfo>,
 }
 
 /// Add a deployable version to a registry.
