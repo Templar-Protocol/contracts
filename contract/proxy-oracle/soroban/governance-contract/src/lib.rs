@@ -69,7 +69,7 @@ impl ProxyOracleGovernance {
 
     pub fn next_proposal_id(env: Env) -> Result<u64, GovernanceError> {
         extend_instance_ttl(&env);
-        Ok(load_header(&env)?.next_id)
+        Ok(load_header(&env)?.next_id())
     }
 
     pub fn get_proposal(env: Env, id: u64) -> Option<Proposal> {
@@ -88,7 +88,7 @@ impl ProxyOracleGovernance {
 
     pub fn get_operation_ttl(env: Env, kind: OperationKind) -> Result<u64, GovernanceError> {
         extend_instance_ttl(&env);
-        Ok(load_header(&env)?.ttls.get(kind).as_ns())
+        Ok(load_header(&env)?.ttls().get(kind).as_ns())
     }
 
     pub fn create_proposal(
@@ -101,16 +101,21 @@ impl ProxyOracleGovernance {
         extend_instance_ttl(&env);
         require_authorized(&env, &caller, &operation)?;
         let mut header = load_header(&env)?;
-        let ttl_ns = effective_ttl(&header, &operation, requested_ttl)?;
+        if requested_ttl > MAX_PROPOSAL_TTL_NS {
+            return Err(GovernanceError::TtlExceedsMaximum);
+        }
         let kernel_proposal = header
             .create(
                 id,
                 operation.clone(),
                 now(&env)?,
                 caller,
-                Nanoseconds::from_ns(ttl_ns),
+                Nanoseconds::from_ns(requested_ttl),
             )
             .map_err(map_create_error)?;
+        if kernel_proposal.ttl.as_ns() > MAX_PROPOSAL_TTL_NS {
+            return Err(GovernanceError::TtlExceedsMaximum);
+        }
         let proposal = proposal_from_kernel(kernel_proposal);
         save_proposal(&env, id, &proposal);
         save_header(&env, &header);

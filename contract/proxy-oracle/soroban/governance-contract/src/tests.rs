@@ -5,12 +5,52 @@ use alloc::vec::Vec as StdVec;
 use soroban_sdk::testutils::{
     storage::Persistent as _, Address as _, Events as _, Ledger, LedgerInfo,
 };
-use soroban_sdk::{Bytes, BytesN, Event, Symbol};
+use soroban_sdk::{contract, contractimpl, Bytes, BytesN, Event, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
-    Asset, CircuitBreakerConfig, MonotonicRunConfig, ProxyConfig, RearmConfig, SetEnforcedConfig,
-    SorobanDecimal, SourceConfig, StepwiseChangeConfig, WindowedChangeDeltaConfig,
+    Asset, CircuitBreakerConfig, MonotonicRunConfig, PriceData, PriceFeedTrait, ProxyConfig,
+    RearmConfig, SetEnforcedConfig, SorobanDecimal, SourceConfig, StepwiseChangeConfig,
+    WindowedChangeDeltaConfig,
 };
+
+#[contract]
+struct MockSource;
+
+#[contractimpl]
+impl PriceFeedTrait for MockSource {
+    fn base(env: Env) -> Asset {
+        Asset::Other(Symbol::new(&env, "USD"))
+    }
+
+    fn assets(env: Env) -> Vec<Asset> {
+        Vec::new(&env)
+    }
+
+    fn decimals(env: Env) -> u32 {
+        let _ = env;
+        8
+    }
+
+    fn resolution(env: Env) -> u32 {
+        let _ = env;
+        1
+    }
+
+    fn price(env: Env, asset: Asset, timestamp: u64) -> Option<PriceData> {
+        let _ = (env, asset, timestamp);
+        None
+    }
+
+    fn prices(env: Env, asset: Asset, records: u32) -> Option<Vec<PriceData>> {
+        let _ = (env, asset, records);
+        None
+    }
+
+    fn lastprice(env: Env, asset: Asset) -> Option<PriceData> {
+        let _ = (env, asset);
+        None
+    }
+}
 use templar_proxy_oracle_soroban_contract::{SorobanProxyOracle, SorobanProxyOracleClient};
 use templar_proxy_oracle_soroban_governance_common::{OperationKind, Role, MAX_PROPOSAL_TTL_NS};
 
@@ -57,15 +97,17 @@ fn setup_with_ttl(
     (env, admin, proxy_id, governance_id, proxy)
 }
 
-fn sample_proxy_config(env: &Env, asset: Asset, source: Address) -> ProxyConfig {
+fn sample_proxy_config(env: &Env, asset: Asset, _source: Address) -> ProxyConfig {
     let mut sources = Vec::new(env);
-    sources.push_back(SourceConfig {
-        oracle: source,
-        asset,
-    });
+    for _ in 0..3 {
+        sources.push_back(SourceConfig {
+            oracle: env.register(MockSource, ()),
+            asset: asset.clone(),
+        });
+    }
     ProxyConfig {
         sources,
-        min_sources: 1,
+        min_sources: 3,
         max_age_secs: Some(30),
         max_clock_drift_secs: Some(5),
     }
@@ -448,8 +490,7 @@ fn breaker_governance_workflows_execute_through_runtime() {
             asset.clone(),
             0,
             RearmConfig {
-                armed_after_secs: 100,
-                accepted_history_source_code: 0,
+                arming_delay_secs: 0,
             },
         ),
     );
@@ -487,7 +528,7 @@ fn breaker_governance_workflows_execute_through_runtime() {
             CircuitBreakerConfig::WindowedChangeDelta(WindowedChangeDeltaConfig {
                 window_len: 2,
                 lookback_windows: 1,
-                max_relative_change_delta: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+                max_relative_mean_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
             }),
         ),
     );
@@ -714,35 +755,20 @@ fn create_proposal_requires_admin_auth() {
 fn same_asset_proxy_proposals_can_coexist_and_execute_in_order() {
     let (env, admin, _proxy_id, governance_id, proxy) = setup();
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let source_asset = asset.clone();
-    let source_one = Address::generate(&env);
-    let source_two = Address::generate(&env);
-
-    let config = |source: Address| {
-        let mut sources = Vec::new(&env);
-        sources.push_back(SourceConfig {
-            oracle: source,
-            asset: source_asset.clone(),
-        });
-        ProxyConfig {
-            sources,
-            min_sources: 1,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
-        }
-    };
+    let first_config = sample_proxy_config(&env, asset.clone(), Address::generate(&env));
+    let second_config = sample_proxy_config(&env, asset.clone(), Address::generate(&env));
 
     let first = submit_now(
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::SetProxy(asset.clone(), config(source_one.clone())),
+        GovernanceAction::SetProxy(asset.clone(), first_config.clone()),
     );
     let second = submit_now(
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::SetProxy(asset.clone(), config(source_two.clone())),
+        GovernanceAction::SetProxy(asset.clone(), second_config.clone()),
     );
     assert_ne!(first, second);
 
@@ -762,31 +788,11 @@ fn same_asset_proxy_proposals_can_coexist_and_execute_in_order() {
     env.as_contract(&governance_id, || {
         ProxyOracleGovernance::execute_proposal(env.clone(), admin.clone(), first).unwrap();
     });
-    assert_eq!(
-        proxy
-            .get_proxy(&asset)
-            .unwrap()
-            .sources
-            .get(0)
-            .unwrap()
-            .oracle,
-        source_one
-    );
+    assert_eq!(proxy.get_proxy(&asset), Some(first_config));
     env.as_contract(&governance_id, || {
         ProxyOracleGovernance::execute_proposal(env.clone(), admin.clone(), second).unwrap();
     });
-
-    assert_eq!(proxy.get_proxy(&asset).unwrap().sources.len(), 1);
-    assert_eq!(
-        proxy
-            .get_proxy(&asset)
-            .unwrap()
-            .sources
-            .get(0)
-            .unwrap()
-            .oracle,
-        source_two
-    );
+    assert_eq!(proxy.get_proxy(&asset), Some(second_config));
 }
 
 #[test]
@@ -1117,8 +1123,7 @@ fn breaker_lifecycle_ttls_are_independent() {
                     asset.clone(),
                     0,
                     RearmConfig {
-                        armed_after_secs: 0,
-                        accepted_history_source_code: 0,
+                        arming_delay_secs: 0,
                     },
                 ),
                 0,
@@ -1141,7 +1146,7 @@ fn breaker_lifecycle_ttls_are_independent() {
 }
 
 #[test]
-fn set_action_ttl_requires_proxy_configuration_manager() {
+fn set_action_ttl_requires_target_role() {
     let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
     let manager = Address::generate(&env);
     let non_manager = Address::generate(&env);
@@ -1175,17 +1180,15 @@ fn set_action_ttl_requires_proxy_configuration_manager() {
                 GovernanceAction::SetActionTtl(OperationKind::Upgrade, 42),
                 0,
             )
-            .unwrap()
-            .created_by
         }),
-        manager
+        Err(GovernanceError::Unauthorized)
     );
     assert_eq!(
         env.as_contract(&governance_id, || {
             ProxyOracleGovernance::create_proposal(
                 env.clone(),
                 manager.clone(),
-                2,
+                1,
                 GovernanceAction::SetActionTtl(OperationKind::SetProxy, 42),
                 0,
             )
@@ -1199,8 +1202,8 @@ fn set_action_ttl_requires_proxy_configuration_manager() {
         ProxyOracleGovernance::create_proposal(
             env.clone(),
             admin.clone(),
-            3,
-            GovernanceAction::SetActionTtl(OperationKind::TransferOwnership, 42),
+            2,
+            GovernanceAction::SetActionTtl(OperationKind::SetActionTtl, 42),
             0,
         )
         .unwrap()

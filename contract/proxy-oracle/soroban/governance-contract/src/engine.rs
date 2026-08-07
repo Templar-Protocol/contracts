@@ -7,6 +7,7 @@ use soroban_sdk::{
     Address, Env, IntoVal, Symbol, Val, Vec,
 };
 use templar_primitives::Nanoseconds;
+use templar_proxy_oracle_governance_kernel::OperationPolicy;
 use templar_proxy_oracle_soroban_common::ContractError;
 use templar_proxy_oracle_soroban_governance_common::{
     GovernanceAction, GovernanceError, Role, MAX_PROPOSAL_TTL_NS,
@@ -48,7 +49,9 @@ pub fn effective_ttl(
     if requested_ttl > MAX_PROPOSAL_TTL_NS {
         return Err(GovernanceError::TtlExceedsMaximum);
     }
-    let ttl = governance.effective_ttl(action, Nanoseconds::from_ns(requested_ttl));
+    let ttl = action
+        .minimum_ttl(governance.ttls())
+        .max(Nanoseconds::from_ns(requested_ttl));
     if ttl.as_ns() > MAX_PROPOSAL_TTL_NS {
         return Err(GovernanceError::TtlExceedsMaximum);
     }
@@ -185,7 +188,7 @@ pub fn execute_action(
         }
         GovernanceAction::SetActionTtl(kind, new_ttl_ns) => {
             governance
-                .ttls
+                .ttls_mut()
                 .set(*kind, Nanoseconds::from_ns(*new_ttl_ns));
             ActionTtlSet {
                 kind: *kind,
