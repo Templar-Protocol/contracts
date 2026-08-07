@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use templar_gateway_core::{
-    client::registry::{AddVersionArgs, DeployArgs, GetDeploymentArgs, RemoveVersionArgs},
+    client::registry::{
+        AddVersionArgs, DeployArgs, GetDeploymentArgs, GetRegistryEntryArgs, GetVersionArgs,
+        RemoveVersionArgs,
+    },
     query_contract_kind, ContractWriteOptions, DispatchRead, GatewayResult, HasNearClient,
     OperationPlan, PlanWrite,
 };
@@ -38,6 +41,38 @@ impl<C: HasNearClient> DispatchRead<registry::GetDeployment, C> for Dispatch {
             })
             .await
             .map(|deployment| registry::GetDeploymentResult { deployment })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<registry::GetRegistryEntry, C> for Dispatch {
+    async fn dispatch(
+        request: registry::GetRegistryEntry,
+        ctx: C,
+    ) -> GatewayResult<registry::GetRegistryEntryResult> {
+        ctx.near_client()
+            .registry(request.registry_id)
+            .get_registry_entry(GetRegistryEntryArgs {
+                account_id: request.account_id,
+            })
+            .await
+            .map(|entry| registry::GetRegistryEntryResult { entry })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<registry::GetVersion, C> for Dispatch {
+    async fn dispatch(
+        request: registry::GetVersion,
+        ctx: C,
+    ) -> GatewayResult<registry::GetVersionResult> {
+        ctx.near_client()
+            .registry(request.registry_id)
+            .get_version(GetVersionArgs {
+                version_key: request.version_key,
+            })
+            .await
+            .map(|version| registry::GetVersionResult { version })
     }
 }
 
