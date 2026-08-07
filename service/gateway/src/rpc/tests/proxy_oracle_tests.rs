@@ -6,7 +6,8 @@ use templar_gateway_types::{OperationStatus, ProposalEncoding};
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_common::state::legacy::v0;
 use templar_proxy_oracle_near_governance_common::{
-    target, GovernancePolicy, MethodPolicy, Operation, ReflexiveOperation, Role,
+    target, GovernancePolicy, GovernancePolicyWire, MethodPolicy, Operation, ReflexiveOperation,
+    ReflexiveTtls, Role,
 };
 
 #[tokio::test]
@@ -457,6 +458,29 @@ async fn governance_create_deploys_an_initialized_contract() -> Result<()> {
         })
         .await?;
 
+    // Every field distinct, so a policy field dropped or crossed in the init args
+    // fails here rather than matching a uniform default.
+    let expected_policy = GovernancePolicyWire {
+        reflexive_ttls: ReflexiveTtls {
+            set_policy: Nanoseconds::from_secs(120),
+            set_role: Nanoseconds::from_secs(60),
+            self_upgrade: Nanoseconds::from_secs(180),
+        },
+        default_target: MethodPolicy {
+            ttl: Nanoseconds::from_secs(90),
+            role: Role::Admin,
+        },
+        method_policies: [(
+            "set_proxy".to_owned(),
+            MethodPolicy {
+                ttl: Nanoseconds::from_secs(30),
+                role: Role::ProxyConfigurationManager,
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+
     let admin_id = stack.harness.beneficiary_account_id.clone();
     let create = stack
         .controller
@@ -473,8 +497,8 @@ async fn governance_create_deploys_an_initialized_contract() -> Result<()> {
                 },
                 proxy_oracle_id: oracle_id.clone(),
                 admin_id: admin_id.clone(),
-                policy: GovernancePolicy::uniform(Nanoseconds::zero())
-                    .expect("a zero-TTL uniform policy is in bounds"),
+                policy: GovernancePolicy::try_from(expected_policy.clone())
+                    .expect("a non-uniform policy within bounds"),
             },
         })
         .await?;
@@ -510,7 +534,7 @@ async fn governance_create_deploys_an_initialized_contract() -> Result<()> {
             &proxy_oracle_governance::GetGovernancePolicy { governance_id },
         )
         .await?;
-    assert_eq!(policy.policy.default_target.ttl, Nanoseconds::zero());
+    assert_eq!(policy.policy, expected_policy);
 
     stack.shutdown().await;
     Ok(())

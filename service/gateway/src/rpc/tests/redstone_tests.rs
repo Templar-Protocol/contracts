@@ -151,11 +151,7 @@ async fn redstone_create_deploys_a_configured_adapter() -> Result<()> {
             oracle_id: oracle_id.clone(),
         })
         .await?;
-    assert_eq!(
-        config.config.signer_count_threshold,
-        expected.signer_count_threshold
-    );
-    assert_eq!(config.config.signers, expected.signers);
+    assert_eq!(config.config, expected);
 
     // The `admin_id` the init args named, not the deploying registry.
     let admins = stack
