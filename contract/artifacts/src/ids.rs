@@ -211,22 +211,26 @@ impl ArtifactMetadata {
     }
 }
 
-/// The catalogued release whose bytes hash to `sha256` (lowercase hex), across every artifact.
+/// The catalogued release whose bytes hash to `sha256`, across every artifact.
 ///
 /// Lets a caller holding only a digest reach [`crate::fetch::released_bytes`]. A registry reports
 /// the hash it computed from the code itself, so it identifies a release even when the version key
 /// does not — several live keys carry no digest at all, and the `{name}@{version}#{sha}` convention
 /// is not enforced on-chain.
 ///
+/// Raw digest rather than text because the two spellings never match and failing to match is
+/// indistinguishable from "never released": a registry serves base58, the catalog records hex.
+///
 /// Re-releasing identical bytes under a new version would make this ambiguous; the oldest wins,
 /// and either answer yields the same wasm.
-pub fn release_by_sha256(sha256: &str) -> Option<(ArtifactId, &'static ArtifactRelease)> {
+pub fn release_by_sha256(sha256: &[u8; 32]) -> Option<(ArtifactId, &'static ArtifactRelease)> {
+    let sha256 = hex::encode(sha256);
     ArtifactId::ALL.into_iter().find_map(|artifact| {
         artifact
             .metadata()
             .releases()
             .iter()
-            .find(|release| release.sha256.eq_ignore_ascii_case(sha256))
+            .find(|release| release.sha256 == sha256)
             .map(|release| (artifact, release))
     })
 }

@@ -199,16 +199,16 @@ fn memo() -> &'static Memo {
     MEMO.get_or_init(Default::default)
 }
 
-/// Bytes of whichever catalogued release hashes to `sha256` (lowercase hex).
+/// Bytes of whichever catalogued release hashes to `sha256`.
 ///
 /// The digest-keyed entry point to [`released_bytes`], for a caller that knows a wasm's hash but
 /// not which release it is — reading `code_hash` off a registry, say. Returns
 /// [`FetchError::UncataloguedDigest`] when nothing matches, which is a routine outcome: it means
 /// the bytes were never released and must come from wherever the caller found the hash.
-pub async fn released_bytes_by_sha256(sha256: &str) -> Result<Vec<u8>, FetchError> {
+pub async fn released_bytes_by_sha256(sha256: &[u8; 32]) -> Result<Vec<u8>, FetchError> {
     let Some((artifact, release)) = crate::release_by_sha256(sha256) else {
         return Err(FetchError::UncataloguedDigest {
-            sha256: sha256.to_owned(),
+            sha256: hex::encode(sha256),
         });
     };
     released_bytes(artifact, release.version).await

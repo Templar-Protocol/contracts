@@ -191,19 +191,18 @@ fn no_release_is_ahead_of_its_source() {
 fn every_release_resolves_from_its_digest() {
     for artifact in ArtifactId::ALL {
         for release in artifact.metadata().releases() {
-            let (found_artifact, found) =
-                crate::release_by_sha256(release.sha256).unwrap_or_else(|| {
-                    panic!(
-                        "{}@{} is catalogued but its digest {} resolves to nothing",
-                        artifact.metadata().package_name,
-                        release.version,
-                        release.sha256,
-                    )
-                });
+            let digest = digest_of(release);
+            let (found_artifact, found) = crate::release_by_sha256(&digest).unwrap_or_else(|| {
+                panic!(
+                    "{}@{} is catalogued but its digest {} resolves to nothing",
+                    artifact.metadata().package_name,
+                    release.version,
+                    release.sha256,
+                )
+            });
 
-            assert_eq!(
-                (found_artifact, found.version),
-                (artifact, release.version),
+            assert!(
+                std::ptr::eq(found, release),
                 "digest {} is shared by {}@{} and {}@{}",
                 release.sha256,
                 artifact.metadata().package_name,
@@ -215,16 +214,26 @@ fn every_release_resolves_from_its_digest() {
     }
 }
 
+/// A registry reports base58 while the catalog records hex, so the lookup takes neither — it takes
+/// the bytes. This is the shape a caller reaching it from `VersionInfo::code_hash` arrives in.
 #[test]
-fn digest_lookup_ignores_hex_case_and_rejects_strangers() {
+fn digest_lookup_takes_bytes_and_rejects_strangers() {
     let release = ArtifactId::Registry
         .metadata()
         .release("1.2.4")
         .expect("registry 1.2.4 is catalogued");
 
     assert_eq!(
-        crate::release_by_sha256(&release.sha256.to_uppercase()).map(|(id, _)| id),
+        crate::release_by_sha256(&digest_of(release)).map(|(id, _)| id),
         Some(ArtifactId::Registry),
     );
-    assert_eq!(crate::release_by_sha256(&"0".repeat(64)), None);
+    assert_eq!(crate::release_by_sha256(&[0u8; 32]), None);
+}
+
+/// The catalog stores digests as text; `build.rs` has already rejected anything but 64 hex chars.
+fn digest_of(release: &crate::ArtifactRelease) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    hex::decode_to_slice(release.sha256, &mut bytes)
+        .unwrap_or_else(|e| panic!("catalogued digest {} is not hex: {e}", release.sha256));
+    bytes
 }
