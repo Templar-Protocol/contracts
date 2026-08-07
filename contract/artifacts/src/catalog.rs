@@ -182,3 +182,49 @@ fn no_release_is_ahead_of_its_source() {
         );
     }
 }
+
+/// Total and unambiguous: every release is reachable from its own digest, and no two share one.
+///
+/// The lookup is how a caller holding only a hash — read off a registry, say — reaches
+/// `released_bytes`, so a digest that resolved to a different artifact would fetch the wrong wasm.
+#[test]
+fn every_release_resolves_from_its_digest() {
+    for artifact in ArtifactId::ALL {
+        for release in artifact.metadata().releases() {
+            let (found_artifact, found) =
+                crate::release_by_sha256(release.sha256).unwrap_or_else(|| {
+                    panic!(
+                        "{}@{} is catalogued but its digest {} resolves to nothing",
+                        artifact.metadata().package_name,
+                        release.version,
+                        release.sha256,
+                    )
+                });
+
+            assert_eq!(
+                (found_artifact, found.version),
+                (artifact, release.version),
+                "digest {} is shared by {}@{} and {}@{}",
+                release.sha256,
+                artifact.metadata().package_name,
+                release.version,
+                found_artifact.metadata().package_name,
+                found.version,
+            );
+        }
+    }
+}
+
+#[test]
+fn digest_lookup_ignores_hex_case_and_rejects_strangers() {
+    let release = ArtifactId::Registry
+        .metadata()
+        .release("1.2.4")
+        .expect("registry 1.2.4 is catalogued");
+
+    assert_eq!(
+        crate::release_by_sha256(&release.sha256.to_uppercase()).map(|(id, _)| id),
+        Some(ArtifactId::Registry),
+    );
+    assert_eq!(crate::release_by_sha256(&"0".repeat(64)), None);
+}

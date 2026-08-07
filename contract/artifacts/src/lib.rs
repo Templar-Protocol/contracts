@@ -25,8 +25,8 @@ pub mod prebuild;
 mod workspace_loader;
 
 pub use ids::{
-    artifact_catalog, artifact_from_release_tag, ArtifactId, ArtifactMetadata, ArtifactParseError,
-    ArtifactRelease,
+    artifact_catalog, artifact_from_release_tag, release_by_sha256, ArtifactId, ArtifactMetadata,
+    ArtifactParseError, ArtifactRelease,
 };
 #[cfg(feature = "workspace-loader")]
 pub use workspace_loader::{
