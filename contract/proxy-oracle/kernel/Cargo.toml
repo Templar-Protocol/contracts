@@ -11,6 +11,7 @@ description = "Storage-agnostic price-aggregation kernel for Templar proxy oracl
 borsh = { version = "1.5", default-features = false, features = ["derive", "unstable__schema"], optional = true }
 getrandom = { version = "0.2", features = ["custom"], optional = true }
 hex = { version =  "0.4", default-features = false, features = ["alloc"], optional = true }
+primitive-types = { version = "0.14", default-features = false, features = [] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"], optional = true }
 schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
 templar-primitives = { path = "../../../primitives", version = "0.1.1", default-features = false, features = [] }
