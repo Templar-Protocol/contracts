@@ -9,6 +9,7 @@ use anyhow::Context as _;
 use near_account_id::AccountId;
 use near_api::types::NearToken;
 use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::registry::RegistryEntryView;
 use templar_common::Nanoseconds;
 use templar_gateway_client::{Client, Network};
 use templar_gateway_core::{
@@ -853,12 +854,11 @@ fn deploy_target(
 /// deployment map still holds, and `market remove` deletes the account without
 /// removing that entry, so a torn-down name is free and unusable at once.
 ///
-/// Best-effort in one direction: `get_deployment` reports a `Reserved` entry as
-/// absent, and no registry view distinguishes it, so a name another deploy has
-/// reserved but not yet created is invisible here. That window is a concurrent
-/// in-flight deploy of the same name — a failed one removes its entry — and the
-/// registry rejects it either way, so the unseen case costs a failed step
-/// rather than a bad deployment. Closing it needs an additive view.
+/// Against a registry too old to serve `get_registry_entry` this stays blind in
+/// one direction: `get_deployment` reports a reserved entry as absent, so a name
+/// another deploy has claimed but not yet finalized looks free. That costs a
+/// refused final step rather than a bad deployment, since the registry rejects
+/// it either way.
 async fn target_conflict(
     ctx: &CliContext,
     registry_id: &AccountId,
@@ -868,22 +868,43 @@ async fn target_conflict(
         return Ok(Some(format!("`{account_id}` already exists")));
     }
 
-    let claimed = ctx
+    let collision = format!(
+        "`{registry_id}` still records a deployment for `{account_id}`, so it \
+         would be refused as a collision even though the account is gone"
+    );
+
+    if !super::preflight::serves_entry_and_version_views(ctx, registry_id).await {
+        let claimed = ctx
+            .client
+            .read(registry::GetDeployment {
+                registry_id: registry_id.clone(),
+                account_id: account_id.clone(),
+            })
+            .await
+            .with_context(|| {
+                format!("read `{registry_id}`'s deployment record for `{account_id}`")
+            })?
+            .deployment
+            .is_some();
+        return Ok(claimed.then_some(collision));
+    }
+
+    let entry = ctx
         .client
-        .read(registry::GetDeployment {
+        .read(registry::GetRegistryEntry {
             registry_id: registry_id.clone(),
             account_id: account_id.clone(),
         })
         .await
-        .with_context(|| format!("read `{registry_id}`'s deployment record for `{account_id}`"))?
-        .deployment
-        .is_some();
+        .with_context(|| format!("read `{registry_id}`'s entry for `{account_id}`"))?
+        .entry;
 
-    Ok(claimed.then(|| {
-        format!(
-            "`{registry_id}` still records a deployment for `{account_id}`, so it \
-             would be refused as a collision even though the account is gone"
-        )
+    Ok(entry.map(|entry| match entry {
+        RegistryEntryView::Deployed(_) => collision,
+        RegistryEntryView::Reserved => format!(
+            "`{registry_id}` has `{account_id}` reserved by a deploy that never \
+             finalized, so it would be refused as a collision"
+        ),
     }))
 }
 

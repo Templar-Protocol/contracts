@@ -369,11 +369,12 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
         .and_then(|decimals| u8::try_from(decimals).ok()))
 }
 
-/// Every version key must already be registered, or the deploy fails partway.
+/// Every version key must already be registered *and still deployable*, or the deploy fails
+/// partway.
 ///
-/// Membership is all this can check: `remove_version` soft-deletes, and no
-/// registry view distinguishes that from a live version, so a soft-deleted one
-/// passes here and fails mid-deploy. Closing it needs an additive view.
+/// Against a registry too old to serve `get_version` this falls back to membership, which cannot
+/// see that `remove_version` cleared a version's code — such a key passes here and fails
+/// mid-deploy, after the governance and oracle steps have already run.
 async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     // A direct market deploys only itself, so the proxy versions it never uses
     // need not be registered.
@@ -381,6 +382,38 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     if let Some((_, oracle_version, governance_version)) = spec.proxy() {
         labeled.push(("oracle", oracle_version));
         labeled.push(("governance", governance_version));
+    }
+
+    if serves_entry_and_version_views(ctx, &spec.registry).await {
+        let mut checks = Vec::with_capacity(labeled.len());
+        for (label, key) in labeled {
+            let status = match ctx
+                .client
+                .read(registry::GetVersion {
+                    registry_id: spec.registry.clone(),
+                    version_key: key.clone(),
+                })
+                .await
+            {
+                Ok(result) => match result.version {
+                    Some(info) if info.availability.is_deployable() => Status::passed(key.clone()),
+                    Some(_) => Status::failed(format!(
+                        "`{key}`'s code was removed from {}; the deploy would fail partway",
+                        spec.registry,
+                    )),
+                    None => Status::failed(format!(
+                        "`{key}` is not registered in {}; the deploy would fail partway",
+                        spec.registry,
+                    )),
+                },
+                Err(error) => Status::failed(format!(
+                    "could not read `{key}` in {}: {error}",
+                    spec.registry,
+                )),
+            };
+            checks.push(Check::new(format!("registry.version.{label}"), status));
+        }
+        return checks;
     }
 
     let registered = match ctx
@@ -620,6 +653,29 @@ pub(super) async fn exists(ctx: &CliContext, account_id: &AccountId) -> anyhow::
             Err(anyhow::Error::new(error).context(format!("look up account {account_id}")))
         }
     }
+}
+
+/// Whether `registry_id` serves the views that make the target and version checks sound.
+///
+/// Unreadable or unparseable counts as "no". Every registry deployed so far predates these
+/// views, so the checks that want them have to degrade to what any registry can answer — failing
+/// closed would refuse to plan against all of them.
+pub(super) async fn serves_entry_and_version_views(
+    ctx: &CliContext,
+    registry_id: &AccountId,
+) -> bool {
+    ctx.client
+        .read(contract::GetVersion {
+            contract_id: registry_id.clone(),
+        })
+        .await
+        .ok()
+        .and_then(|result| result.parsed)
+        .is_some_and(|version| {
+            version
+                .cast::<templar_gateway_types::Registry>()
+                .supports_entry_and_version_views()
+        })
 }
 
 #[cfg(test)]
