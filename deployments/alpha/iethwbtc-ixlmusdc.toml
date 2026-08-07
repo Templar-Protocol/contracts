@@ -1,6 +1,6 @@
 # Deploys its own proxy oracle, so this market creates a governance contract,
 # the oracle it owns, and the market itself.
-extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-stable.toml"]
+extends = ["../profiles/alpha.toml", "../profiles/irs-stable.toml"]
 
 name = "iethwbtc-ixlmusdc"
 
@@ -33,6 +33,7 @@ mcr_maintenance = "1.2"
 mcr_liquidation = "1.15"
 maximum_usage_ratio = "0.99"
 liquidation_maximum_spread = "0.1"
+price_maximum_age = "60s"
 borrow_range = { minimum = "1 atom" }
 # Deployed at a tenth of the 0.04 every other market floors at: the raw
 # 40000 came from a 6-decimal profile and this borrow asset has 7. The

@@ -1,4 +1,4 @@
-extends = ["../profiles/v1-mainnet.toml", "../profiles/irs-stable.toml"]
+extends = ["../profiles/v1.toml", "../profiles/irs-stable.toml"]
 
 name = "iethwbtc-ixlmusdc"
 
