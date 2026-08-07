@@ -24,6 +24,16 @@ pub struct GetDeploymentArgs {
     pub account_id: AccountId,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct GetRegistryEntryArgs {
+    pub account_id: AccountId,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct GetVersionArgs {
+    pub version_key: String,
+}
+
 #[derive(Debug)]
 pub struct AddVersionArgs {
     pub version_key: String,
@@ -63,6 +73,8 @@ impl BoundContractClient for RegistryClient<'_> {
 impl RegistryClient<'_> {
     contract_views! {
         pub fn get_deployment(GetDeploymentArgs) -> Option<templar_common::registry::Deployment>;
+        pub fn get_registry_entry(GetRegistryEntryArgs) -> Option<templar_common::registry::RegistryEntryView>;
+        pub fn get_version(GetVersionArgs) -> Option<templar_common::registry::VersionInfo>;
         pub fn list_deployments(Pagination) -> Vec<AccountId>;
         pub fn list_versions(Pagination) -> Vec<String>;
     }

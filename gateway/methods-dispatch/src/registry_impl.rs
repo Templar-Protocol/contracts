@@ -1,10 +1,14 @@
 use async_trait::async_trait;
 use templar_gateway_core::{
-    client::registry::{AddVersionArgs, DeployArgs, GetDeploymentArgs, RemoveVersionArgs},
-    query_contract_kind, ContractWriteOptions, DispatchRead, GatewayResult, HasNearClient,
-    OperationPlan, PlanWrite,
+    client::registry::{
+        AddVersionArgs, DeployArgs, GetDeploymentArgs, GetRegistryEntryArgs, GetVersionArgs,
+        RemoveVersionArgs,
+    },
+    query_contract_kind, ContractWriteOptions, DispatchRead, GatewayError, GatewayResult,
+    HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::registry;
+use templar_gateway_types::RegistryVersion;
 
 use crate::Dispatch;
 
@@ -38,6 +42,67 @@ impl<C: HasNearClient> DispatchRead<registry::GetDeployment, C> for Dispatch {
             })
             .await
             .map(|deployment| registry::GetDeploymentResult { deployment })
+    }
+}
+
+/// Refuse a registry too old to serve `get_registry_entry` / `get_version`, rather than answering
+/// from the views it does have.
+///
+/// Both exist to report a state their predecessors collapse — a reserved name, a version whose
+/// code was removed. Synthesising either from `get_deployment` or `list_versions` would return the
+/// very answer they were added to correct, and return it indistinguishably from a real one. A
+/// caller that can degrade should ask the version first, as `tmplrmgr`'s preflight does.
+async fn require_entry_and_version_views<C: HasNearClient>(
+    ctx: &C,
+    registry_id: near_account_id::AccountId,
+) -> GatewayResult<()> {
+    let version: RegistryVersion = ctx
+        .near_client()
+        .contract(registry_id.clone())
+        .cached_version()
+        .await?;
+
+    if !version.supports_entry_and_version_views() {
+        return Err(GatewayError::UnsupportedFeature(format!(
+            "registry {registry_id} is version {version}; \
+             getRegistryEntry and getVersion require 1.3.0"
+        )));
+    }
+
+    Ok(())
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<registry::GetRegistryEntry, C> for Dispatch {
+    async fn dispatch(
+        request: registry::GetRegistryEntry,
+        ctx: C,
+    ) -> GatewayResult<registry::GetRegistryEntryResult> {
+        require_entry_and_version_views(&ctx, request.registry_id.clone()).await?;
+        ctx.near_client()
+            .registry(request.registry_id)
+            .get_registry_entry(GetRegistryEntryArgs {
+                account_id: request.account_id,
+            })
+            .await
+            .map(|entry| registry::GetRegistryEntryResult { entry })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<registry::GetVersion, C> for Dispatch {
+    async fn dispatch(
+        request: registry::GetVersion,
+        ctx: C,
+    ) -> GatewayResult<registry::GetVersionResult> {
+        require_entry_and_version_views(&ctx, request.registry_id.clone()).await?;
+        ctx.near_client()
+            .registry(request.registry_id)
+            .get_version(GetVersionArgs {
+                version_key: request.version_key,
+            })
+            .await
+            .map(|version| registry::GetVersionResult { version })
     }
 }
 
