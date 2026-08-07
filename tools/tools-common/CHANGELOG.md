@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-tools-common-v0.1.3...templar-tools-common-v0.2.0) - 2026-08-07
+
+### Changed
+
+- *(tools-common)* [**breaking**] drop the unused NEAR client layer ([#579](https://github.com/Templar-Protocol/contracts/pull/579))
+
 ## [0.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-tools-common-v0.1.0...templar-tools-common-v0.1.1) - 2026-08-03
 
 ### Added
