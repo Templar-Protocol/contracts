@@ -6,10 +6,10 @@ use templar_gateway_core::{
     },
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
-use templar_gateway_methods_spec::{registry::Deploy, universal_account};
+use templar_gateway_methods_spec::universal_account;
 use templar_universal_account::InitArgs;
 
-use crate::registry_impl::plan_deploy_from_registry;
+use crate::registry_impl::plan_create_from_registry;
 use crate::Dispatch;
 
 fn into_parameters_view(
@@ -71,22 +71,15 @@ impl<C: HasNearClient> PlanWrite<universal_account::Create, C> for Dispatch {
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
-        plan_deploy_from_registry(
+        plan_create_from_registry(
             &ctx,
             request.signer_account_id,
-            Deploy {
-                registry_id: body.registry_id,
-                name: body.account_name,
-                version_key: body.version_key,
-                init_args: serde_json::to_vec(&InitArgs {
-                    key: body.key,
-                    chain_id: body.chain_id.0.into(),
-                    execute: body.execute.map(|transactions| transactions.into_vec()),
-                })?
-                .into(),
-                full_access_keys: body.full_access_keys,
-                deposit: body.deposit,
-            },
+            body.target,
+            serde_json::to_vec(&InitArgs {
+                key: body.key,
+                chain_id: body.chain_id.0.into(),
+                execute: body.execute.map(|transactions| transactions.into_vec()),
+            })?,
         )
         .await
     }

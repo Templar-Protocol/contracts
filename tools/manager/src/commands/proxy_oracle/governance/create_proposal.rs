@@ -19,8 +19,9 @@ use templar_proxy_oracle_near_governance_common::{
     target, FunctionCall, MethodPolicy, Operation, ReflexiveOperation,
 };
 
-use super::{decode_base64, load_json_file, ReflexiveKind, Role};
+use super::{decode_base64, ReflexiveKind, Role};
 use crate::commands::duration::parse_duration;
+use crate::commands::load_json_file;
 use crate::commands::proxy_oracle::parse_price_identifier;
 use crate::commands::signer::SignerArgs;
 use crate::proxy::load_proxy_file;

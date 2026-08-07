@@ -4,12 +4,12 @@ use anyhow::Context as _;
 use clap::Args;
 use near_account_id::AccountId;
 use templar_common::Nanoseconds;
-use templar_gateway_methods_spec::registry as registry_spec;
+use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 use templar_proxy_oracle_near_governance_common::GovernancePolicy;
 
-use super::load_json_file;
-use crate::commands::deploy_common::DeployCommonArgs;
+use crate::commands::deploy_common::DeployTargetArgs;
 use crate::commands::duration::parse_duration;
+use crate::commands::load_json_file;
 use crate::commands::signer::SignerArgs;
 
 /// Create (deploy-from-registry) a governance contract, building its
@@ -23,7 +23,7 @@ use crate::commands::signer::SignerArgs;
 #[derive(Args, Debug)]
 pub struct GovernanceCreate {
     #[command(flatten)]
-    common: DeployCommonArgs,
+    target: DeployTargetArgs,
     /// The proxy oracle account this governance contract will administer
     #[arg(long, value_name = "ACCOUNT_ID")]
     proxy_oracle_id: AccountId,
@@ -40,19 +40,8 @@ pub struct GovernanceCreate {
     pub(crate) signer: SignerArgs,
 }
 
-/// Init args for the governance contract's `new(proxy_oracle_id, admin_id, policy)`.
-///
-/// Public because `market plan` seats a governance contract as part of a
-/// deployment and must encode the same init args this subcommand does.
-#[derive(serde::Serialize)]
-pub struct GovernanceInit {
-    pub proxy_oracle_id: AccountId,
-    pub admin_id: AccountId,
-    pub policy: GovernancePolicy,
-}
-
 impl GovernanceCreate {
-    pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
+    pub fn try_into_spec(self) -> anyhow::Result<spec::Create> {
         let policy: GovernancePolicy = match self.policy_file {
             Some(path) => load_json_file(&path).context("parse GovernancePolicy")?,
             None => {
@@ -60,14 +49,12 @@ impl GovernanceCreate {
             }
         };
 
-        let init = GovernanceInit {
+        let signer = self.signer;
+        Ok(spec::Create {
+            target: self.target.resolve(|| signer.public_key())?,
             proxy_oracle_id: self.proxy_oracle_id,
             admin_id: self.admin_id,
             policy,
-        };
-        let init_args = serde_json::to_vec(&init).context("encode governance init args")?;
-
-        let signer = self.signer;
-        self.common.into_deploy(|| signer.public_key(), init_args)
+        })
     }
 }

@@ -127,32 +127,38 @@ where
         request: templar_gateway_types::common::WriteRequest<registry::Deploy>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
-        plan_deploy_from_registry(&ctx, request.signer_account_id, request.body).await
+        let registry::Deploy { target, init_args } = request.body;
+        plan_create_from_registry(&ctx, request.signer_account_id, target, init_args.0).await
     }
 }
 
-pub async fn plan_deploy_from_registry<C: HasNearClient>(
+/// Plan the deploy of a registered version to a new sub-account under the registry.
+///
+/// Encode `init_args` with `serde_json` unless the payload holds a `HashMap`, whose
+/// order varies per process: JSON Canonicalization sorts keys but rounds every
+/// integer through `f64`, silently altering any `u64` past 2^53.
+pub(crate) async fn plan_create_from_registry<C: HasNearClient>(
     ctx: &C,
     signer_account_id: templar_gateway_types::ManagedAccountId,
-    body: registry::Deploy,
+    target: registry::DeployTarget,
+    init_args: Vec<u8>,
 ) -> GatewayResult<OperationPlan> {
-    let deposit = body.deposit;
     let registry_version = ctx
         .near_client()
-        .contract(body.registry_id.clone())
+        .contract(target.registry_id.clone())
         .cached_version()
         .await?;
     Ok(OperationPlan::single(
-        ctx.near_client().registry(body.registry_id).deploy(
+        ctx.near_client().registry(target.registry_id).deploy(
             ContractWriteOptions::new(signer_account_id)
                 .tgas(300)
-                .deposit(deposit),
+                .deposit(target.deposit),
             registry_version,
             DeployArgs {
-                name: body.name,
-                version_key: body.version_key,
-                init_args: body.init_args,
-                full_access_keys: body
+                name: target.name,
+                version_key: target.version_key,
+                init_args: init_args.into(),
+                full_access_keys: target
                     .full_access_keys
                     .map(|keys| keys.into_iter().map(Into::into).collect()),
             },

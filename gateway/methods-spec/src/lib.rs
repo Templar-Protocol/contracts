@@ -203,6 +203,7 @@ macro_rules! for_each_write_method {
         $callback!($crate::proxy_oracle::UpdatePrices);
         $callback!($crate::proxy_oracle::AdminSetProxy);
         $callback!($crate::proxy_oracle::Upgrade);
+        $callback!($crate::proxy_oracle_governance::Create);
         $callback!($crate::proxy_oracle_governance::CreateProposal);
         $callback!($crate::proxy_oracle_governance::CancelProposal);
         $callback!($crate::proxy_oracle_governance::ExecuteProposal);
@@ -225,6 +226,7 @@ macro_rules! for_each_write_method {
         $callback!($crate::universal_account::Execute);
         $callback!($crate::universal_account::Create);
         $callback!($crate::pyth::UpdatePriceFeeds);
+        $callback!($crate::redstone::Create);
         $callback!($crate::redstone::SetRole);
         $callback!($crate::redstone::WritePrices);
     };

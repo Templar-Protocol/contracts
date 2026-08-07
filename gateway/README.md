@@ -51,8 +51,7 @@ Methods in the same namespace should stay at roughly the same level of abstracti
 
 - Prefer a domain namespace over a low-level namespace when the method represents a standard or protocol concept.
 - For token transfers and balances where the token standard is not fixed at the call site (e.g. an asset that may be NEP-141 or NEP-245), prefer the standard-agnostic `token.*` methods over `ft.*`/`mt.*`. They dispatch on the standard internally, so a caller cannot pick the wrong one.
-- Prefer first-class typed methods when permissioning or validation matters.
-- Use `contract.viewFunction` only for generic contract views that do not deserve a more specific typed RPC.
+- A method must not carry an opaque payload when this codebase has types for it. Give it typed fields; leave the passthrough to the one designated escape-hatch method per namespace (`registry.deploy` for deploys, `contract.viewFunction` for reads). A command with typed args for some inputs and passthrough for others belongs on the typed method — the passthrough case is the escape hatch's.
 
 ## Local DB
 

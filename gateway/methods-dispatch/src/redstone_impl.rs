@@ -1,4 +1,7 @@
 use async_trait::async_trait;
+use near_account_id::AccountId;
+use serde::Serialize;
+use templar_common::oracle::redstone::Config;
 use templar_gateway_core::{
     client::{
         redstone_oracle::{ListRoleArgs, ReadPriceDataArgs, SetRoleArgs},
@@ -9,7 +12,36 @@ use templar_gateway_core::{
 };
 use templar_gateway_methods_spec::redstone;
 
-use crate::Dispatch;
+use crate::{registry_impl::plan_create_from_registry, Dispatch};
+
+/// The RedStone adapter's `new(config, admin_id)`.
+#[derive(Serialize)]
+struct RedstoneInitArgs {
+    config: Config,
+    admin_id: AccountId,
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<redstone::Create, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<redstone::Create>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let redstone::Create {
+            target,
+            config,
+            admin_id,
+        } = request.body;
+
+        plan_create_from_registry(
+            &ctx,
+            request.signer_account_id,
+            target,
+            serde_json::to_vec(&RedstoneInitArgs { config, admin_id })?,
+        )
+        .await
+    }
+}
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<redstone::GetConfig, C> for Dispatch {

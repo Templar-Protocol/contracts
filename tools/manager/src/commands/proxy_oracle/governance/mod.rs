@@ -7,7 +7,7 @@ mod has_role;
 mod list_proposals;
 mod list_role;
 
-pub use create::{GovernanceCreate, GovernanceInit};
+pub use create::GovernanceCreate;
 pub use create_proposal::CreateProposal;
 pub use execute_proposal::ExecuteProposalArgs;
 pub use get_governance_policy::GetGovernancePolicy;
@@ -19,7 +19,6 @@ pub use list_role::ListRole;
 use anyhow::Context as _;
 use clap::{Args, Subcommand};
 use near_account_id::AccountId;
-use serde::de::DeserializeOwned;
 
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 use templar_gateway_types::Base64Bytes;
@@ -99,12 +98,6 @@ impl CancelProposal {
             id: self.proposal.id,
         }
     }
-}
-
-fn load_json_file<T: DeserializeOwned>(path: &std::path::Path) -> anyhow::Result<T> {
-    let contents =
-        std::fs::read(path).with_context(|| format!("read JSON from {}", path.display()))?;
-    serde_json::from_slice(&contents).with_context(|| format!("parse JSON from {}", path.display()))
 }
 
 fn decode_base64(value: String) -> anyhow::Result<Vec<u8>> {

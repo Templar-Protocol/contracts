@@ -23,10 +23,10 @@ templar-gateway-types.workspace = true
 templar-primitives = { workspace = true, features = ["schemars", "serde"] }
 templar-proxy-oracle-kernel = { workspace = true, features = ["serde", "schemars"] }
 templar-proxy-oracle-near-common.workspace = true
+templar-proxy-oracle-near-governance-common.workspace = true
 templar-universal-account.workspace = true
 
 [dev-dependencies]
-templar-proxy-oracle-near-governance-common.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

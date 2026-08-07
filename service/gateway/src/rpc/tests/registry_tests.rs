@@ -41,15 +41,17 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
             body: registry::Deploy {
-                registry_id: registry_id.clone(),
-                name: "deployed-ft".to_owned(),
-                version_key: version_key.clone(),
+                target: registry::DeployTarget {
+                    registry_id: registry_id.clone(),
+                    name: "deployed-ft".to_owned(),
+                    version_key: version_key.clone(),
+                    full_access_keys: None,
+                    deposit: NearToken::from_near(6),
+                },
                 init_args: Base64Bytes(serde_json::to_vec(&serde_json::json!({
                     "name": "Deployed FT",
                     "symbol": "DFT",
                 }))?),
-                full_access_keys: None,
-                deposit: NearToken::from_near(6),
             },
         })
         .await?;

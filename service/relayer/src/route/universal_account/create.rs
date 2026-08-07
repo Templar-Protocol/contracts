@@ -330,11 +330,14 @@ pub async fn create(
             gas_cost_estimate,
             NearToken::from_near(0),
             registry::Deploy::new(
-                app.args.ua.registry_id.clone(),
-                account_slug,
-                app.args.ua.version_key.clone(),
+                registry::DeployTarget {
+                    registry_id: app.args.ua.registry_id.clone(),
+                    name: account_slug,
+                    version_key: app.args.ua.version_key.clone(),
+                    full_access_keys: None,
+                    deposit: NearToken::from_yoctonear(0),
+                },
                 Base64Bytes(init_args),
-                NearToken::from_yoctonear(0),
             ),
         )
         .await

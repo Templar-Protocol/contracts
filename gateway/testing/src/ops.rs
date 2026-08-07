@@ -1264,12 +1264,14 @@ impl SandboxHarness {
         self.execute(
             caller,
             registry::Deploy {
-                registry_id: registry_id.clone(),
-                name: name.to_owned(),
-                version_key: version_key.to_owned(),
+                target: registry::DeployTarget {
+                    registry_id: registry_id.clone(),
+                    name: name.to_owned(),
+                    version_key: version_key.to_owned(),
+                    full_access_keys,
+                    deposit,
+                },
                 init_args: Base64Bytes(init_args),
-                full_access_keys,
-                deposit,
             },
         )
         .await

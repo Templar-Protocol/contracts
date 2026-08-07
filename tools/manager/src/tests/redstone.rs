@@ -1,8 +1,13 @@
 use clap::Parser;
+use templar_gateway_methods_spec::redstone as spec;
 
 use super::CREDS;
 use crate::cli::{Cli, Command};
 use crate::commands::RedstoneNs;
+
+/// An adapter version whose `new` requires `admin_id`, and one whose `new` does not.
+const VERSION_WITH_ADMIN: &str = "templar-redstone-adapter-contract@0.2.0#abc";
+const VERSION_WITHOUT_ADMIN: &str = "templar-redstone-adapter-contract@0.1.0#abc";
 
 #[test]
 fn write_prices_decodes_base64_payload() {
@@ -95,9 +100,9 @@ fn list_role_maps_role_arg_to_snake_case() {
         .expect("list-role params should match the gateway spec");
 }
 
-#[test]
-fn create_prod_preset_builds_config_init_args() {
-    let cli = Cli::try_parse_from(
+/// Parse a `redstone create` invocation carrying the invariant flags plus `extra`.
+fn parse(version: &str, extra: &[&str]) -> Result<Cli, clap::Error> {
+    Cli::try_parse_from(
         [
             "tmplrmgr",
             "redstone",
@@ -107,248 +112,148 @@ fn create_prod_preset_builds_config_init_args() {
             "--name",
             "redstone",
             "--version-key",
-            "templar-redstone-adapter-contract@0.2.0#abc",
-            "--preset",
-            "prod",
-            "--admin-id",
-            "signer.testnet",
+            version,
             "--deposit",
             "3.5 NEAR",
         ]
         .into_iter()
+        .chain(extra.iter().copied())
         .chain(CREDS),
     )
-    .expect("redstone create --preset prod should parse");
-    let deploy = match cli.command {
+}
+
+/// Parse a valid `redstone create` invocation and build its gateway spec.
+fn create(version: &str, source: &[&str]) -> anyhow::Result<spec::Create> {
+    let extra = [&["--admin-id", "signer.testnet"], source].concat();
+    let cli = parse(version, &extra).expect("redstone create should parse");
+
+    match cli.command {
         Command::Redstone {
             command: RedstoneNs::Create(a),
-        } => a.try_into_spec().expect("into deploy spec"),
+        } => a.try_into_spec(),
         _ => panic!("expected redstone create"),
-    };
+    }
+}
 
-    // Wraps registry.deploy; init args carry the built-in prod config.
-    assert_eq!(deploy.name, "redstone");
-    let init: serde_json::Value =
-        serde_json::from_slice(&deploy.init_args.0).expect("init args are json");
-    assert_eq!(
-        init["config"],
-        serde_json::to_value(templar_common::oracle::redstone::config::prod()).unwrap()
-    );
-    assert_eq!(init["admin_id"], "signer.testnet");
+fn write_config_fixture(label: &str, bytes: &[u8]) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "tmplrmgr-redstone-config-{}-{}.json",
+        std::process::id(),
+        label,
+    ));
+    std::fs::write(&path, bytes).expect("write redstone config fixture");
+    path
+}
+
+#[rstest::rstest]
+#[case::prod("prod", templar_common::oracle::redstone::config::prod())]
+#[case::test("test", templar_common::oracle::redstone::config::test())]
+fn create_preset_carries_the_builtin_config(
+    #[case] preset: &str,
+    #[case] expected: templar_common::oracle::redstone::Config,
+) {
+    let spec = create(VERSION_WITH_ADMIN, &["--preset", preset]).expect("into spec");
+
+    assert_eq!(spec.target.name, "redstone");
+    assert_eq!(spec.config, expected);
+    assert_eq!(spec.admin_id.as_str(), "signer.testnet");
 }
 
 #[test]
-fn create_test_preset_builds_config_init_args() {
-    let cli = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "redstone",
-            "create",
-            "--registry-id",
-            "registry.testnet",
-            "--name",
-            "redstone",
-            "--version-key",
-            "templar-redstone-adapter-contract@0.2.0#abc",
-            "--preset",
-            "test",
-            "--admin-id",
-            "signer.testnet",
-            "--deposit",
-            "3.5 NEAR",
-        ]
-        .into_iter()
-        .chain(CREDS),
-    )
-    .expect("redstone create --preset test should parse");
-    let deploy = match cli.command {
-        Command::Redstone {
-            command: RedstoneNs::Create(a),
-        } => a.try_into_spec().expect("into deploy spec"),
-        _ => panic!("expected redstone create"),
-    };
-
-    let init: serde_json::Value =
-        serde_json::from_slice(&deploy.init_args.0).expect("init args are json");
-    assert_eq!(
-        init["config"],
-        serde_json::to_value(templar_common::oracle::redstone::config::test()).unwrap()
+fn create_parses_a_config_file_into_the_typed_config() {
+    let expected = templar_common::oracle::redstone::config::test();
+    let path = write_config_fixture(
+        "typed",
+        serde_json::to_vec(&expected)
+            .expect("config is json")
+            .as_ref(),
     );
-    assert_eq!(init["admin_id"], "signer.testnet");
+
+    let spec = create(
+        VERSION_WITH_ADMIN,
+        &["--config-file", path.to_str().expect("utf-8 path")],
+    )
+    .expect("into spec");
+
+    std::fs::remove_file(&path).expect("remove redstone config fixture");
+
+    assert_eq!(spec.config, expected);
 }
 
+/// `--config-file` takes a bare `Config`, not the whole init args the retired
+/// `--init-args-file` took. Every `Config` field is required, so a file in the old
+/// shape is refused rather than read as a partly-default config.
 #[test]
-fn create_rejects_custom_init_args_for_optional_admin_version() {
-    let init_args = serde_json::to_string(&serde_json::json!({
+fn create_rejects_a_whole_init_args_file_as_a_config() {
+    let init_args = serde_json::to_vec(&serde_json::json!({
         "config": templar_common::oracle::redstone::config::test(),
         "admin_id": "governance.testnet",
     }))
     .unwrap();
-    let cli = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "redstone",
-            "create",
-            "--registry-id",
-            "registry.testnet",
-            "--name",
-            "redstone",
-            "--version-key",
-            "templar-redstone-adapter-contract@0.1.0#abc",
-            "--init-args",
-            init_args.as_str(),
-            "--deposit",
-            "3.5 NEAR",
-        ]
-        .into_iter()
-        .chain(CREDS),
-    )
-    .expect("redstone create with custom init args should parse");
-    let error = match cli.command {
-        Command::Redstone {
-            command: RedstoneNs::Create(a),
-        } => a
-            .try_into_spec()
-            .expect_err("optional-admin adapters must not receive custom init args"),
-        _ => panic!("expected redstone create"),
-    };
+    let path = write_config_fixture("whole-init-args", &init_args);
 
-    assert!(error.to_string().contains("Deploy >= 0.2.0"));
+    let error = create(
+        VERSION_WITH_ADMIN,
+        &["--config-file", path.to_str().expect("utf-8 path")],
+    )
+    .expect_err("a whole-init-args file is not a Config");
+
+    std::fs::remove_file(&path).expect("remove redstone config fixture");
+
+    assert!(error.to_string().contains("parse RedStone config"));
 }
 
 #[test]
-fn create_custom_init_args_preserves_explicit_admin() {
-    let init_args = serde_json::to_string(&serde_json::json!({
-        "config": templar_common::oracle::redstone::config::test(),
-        "admin_id": "governance.testnet",
-        "future_init_field": true,
-    }))
-    .unwrap();
-    let cli = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "redstone",
-            "create",
-            "--registry-id",
-            "registry.testnet",
-            "--name",
-            "redstone",
-            "--version-key",
-            "templar-redstone-adapter-contract@0.2.0#abc",
-            "--init-args",
-            init_args.as_str(),
-            "--deposit",
-            "3.5 NEAR",
-        ]
-        .into_iter()
-        .chain(CREDS),
-    )
-    .expect("redstone create with custom init args should parse");
-    let deploy = match cli.command {
-        Command::Redstone {
-            command: RedstoneNs::Create(a),
-        } => a.try_into_spec().expect("into deploy spec"),
-        _ => panic!("expected redstone create"),
-    };
-
-    assert_eq!(deploy.init_args.0, init_args.as_bytes());
+fn create_requires_an_admin_id() {
+    let error =
+        parse(VERSION_WITH_ADMIN, &["--preset", "prod"]).expect_err("--admin-id is required");
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
 }
 
+/// The version guard still fires on the typed path: a pre-0.2.0 `new` ignores an
+/// `admin_id` it does not declare, leaving the registry as admin.
 #[test]
 fn create_rejects_version_without_required_admin_id() {
-    let cli = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "redstone",
-            "create",
-            "--registry-id",
-            "registry.testnet",
-            "--name",
-            "redstone",
-            "--version-key",
-            "templar-redstone-adapter-contract@0.1.0#abc",
-            "--preset",
-            "prod",
-            "--admin-id",
-            "signer.testnet",
-            "--deposit",
-            "3.5 NEAR",
-        ]
-        .into_iter()
-        .chain(CREDS),
-    )
-    .expect("redstone create --preset prod should parse");
-    let error = match cli.command {
-        Command::Redstone {
-            command: RedstoneNs::Create(a),
-        } => a
-            .try_into_spec()
-            .expect_err("optional-admin adapters must not receive init args"),
-        _ => panic!("expected redstone create"),
-    };
+    let error = create(VERSION_WITHOUT_ADMIN, &["--preset", "prod"])
+        .expect_err("an optional-admin adapter must be refused");
 
     assert!(error.to_string().contains("Deploy >= 0.2.0"));
 }
 
-#[test]
-fn create_preset_requires_explicit_admin_source() {
-    let cli = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "redstone",
-            "create",
-            "--registry-id",
-            "registry.testnet",
-            "--name",
-            "redstone",
-            "--version-key",
-            "templar-redstone-adapter-contract@0.2.0#abc",
-            "--preset",
-            "prod",
-            "--deposit",
-            "3.5 NEAR",
-        ]
-        .into_iter()
-        .chain(CREDS),
-    )
-    .expect("redstone create --preset prod should parse");
-    let error = match cli.command {
-        Command::Redstone {
-            command: RedstoneNs::Create(a),
-        } => a
-            .try_into_spec()
-            .expect_err("presets must name their admin behavior"),
-        _ => panic!("expected redstone create"),
-    };
-
-    assert!(error.to_string().contains("--preset requires --admin-id"));
+#[rstest::rstest]
+#[case::none(&[], clap::error::ErrorKind::MissingRequiredArgument)]
+#[case::both(
+    &["--preset", "prod", "--config-file", "config.json"],
+    clap::error::ErrorKind::ArgumentConflict,
+)]
+fn create_takes_exactly_one_config_source(
+    #[case] source: &[&str],
+    #[case] expected: clap::error::ErrorKind,
+) {
+    let extra = [&["--admin-id", "signer.testnet"], source].concat();
+    let error =
+        parse(VERSION_WITH_ADMIN, &extra).expect_err("exactly one config source is required");
+    assert_eq!(error.kind(), expected);
 }
 
-#[test]
-fn create_rejects_multiple_config_sources() {
-    let error = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "redstone",
-            "create",
-            "--registry-id",
-            "registry.testnet",
-            "--name",
-            "redstone",
-            "--version-key",
-            "templar-redstone-adapter-contract@0.2.0#abc",
-            "--preset",
-            "prod",
-            "--init-args",
-            "{}",
-            "--deposit",
-            "3.5 NEAR",
-        ]
-        .into_iter()
-        .chain(CREDS),
+/// Opaque init args are `registry deploy`'s job now, not a mode on this command.
+#[rstest::rstest]
+#[case::inline("--init-args")]
+#[case::file("--init-args-file")]
+fn create_no_longer_takes_whole_init_args(#[case] flag: &str) {
+    let error = parse(
+        VERSION_WITH_ADMIN,
+        &["--admin-id", "signer.testnet", flag, "{}"],
     )
-    .expect_err("--preset with --init-args should be rejected");
-    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    .expect_err("init-args flags are gone");
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::UnknownArgument,
+        "{error}"
+    );
 }
 
 /// `redstone update-prices` is gone: `oracle update-red-stone` fetches the payload

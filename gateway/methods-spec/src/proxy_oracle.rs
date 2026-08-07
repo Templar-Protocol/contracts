@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_macros::MethodSpec;
-use templar_gateway_types::{primitive::PublicKey, Base64Bytes, NearToken};
+use templar_gateway_types::Base64Bytes;
 use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::input::Source;
 
@@ -15,14 +15,10 @@ use templar_proxy_oracle_near_common::input::Source;
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "proxyOracle.create")]
 pub struct Create {
-    pub registry_id: near_account_id::AccountId,
-    pub name: String,
-    pub version_key: String,
+    #[serde(flatten)]
+    pub target: crate::registry::DeployTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_id: Option<near_account_id::AccountId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub full_access_keys: Option<Vec<PublicKey>>,
-    pub deposit: NearToken,
 }
 
 /// List proxy price feeds.

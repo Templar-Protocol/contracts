@@ -1,4 +1,6 @@
 use async_trait::async_trait;
+use near_account_id::AccountId;
+use serde::Serialize;
 use templar_gateway_core::{
     client::{
         proxy_governance::{
@@ -11,8 +13,44 @@ use templar_gateway_core::{
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
 use templar_gateway_types::{ProposalEncoding, ProxyGovernance};
+use templar_proxy_oracle_near_governance_common::GovernancePolicy;
 
-use crate::Dispatch;
+use crate::{registry_impl::plan_create_from_registry, Dispatch};
+
+/// The governance contract's `new(proxy_oracle_id, admin_id, policy)`.
+#[derive(Serialize)]
+struct GovernanceInitArgs {
+    proxy_oracle_id: AccountId,
+    admin_id: AccountId,
+    policy: GovernancePolicy,
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::Create, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<proxy_oracle_governance::Create>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let proxy_oracle_governance::Create {
+            target,
+            proxy_oracle_id,
+            admin_id,
+            policy,
+        } = request.body;
+
+        plan_create_from_registry(
+            &ctx,
+            request.signer_account_id,
+            target,
+            serde_json::to_vec(&GovernanceInitArgs {
+                proxy_oracle_id,
+                admin_id,
+                policy,
+            })?,
+        )
+        .await
+    }
+}
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::NextProposalId, C> for Dispatch {
