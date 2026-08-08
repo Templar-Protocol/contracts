@@ -86,15 +86,14 @@ impl RegistryClient<'_> {
     ) -> GatewayResult<PlannedTransaction> {
         let args = args.borrow();
         // Exhaustive on purpose: a new source must state which release first accepts it, rather
-        // than defaulting to "every registry understands this". `ExistingGlobal` has no gate yet —
-        // the release that introduces it has no version number until it ships. Pre-1.1.0 has no
-        // encoding for a code hash and `encode_add_version_args` rejects it below; between there
-        // and that release the call encodes fine and fails on chain.
+        // than defaulting to "every registry understands this".
         let unsupported = match args.source {
-            VersionSource::Stored(_) | VersionSource::ExistingGlobal(_) => None,
+            VersionSource::Stored(_) => None,
             VersionSource::PublishGlobal(_) => {
                 (!registry_version.supports_global_contracts()).then_some("global contracts")
             }
+            VersionSource::ExistingGlobal(_) => (!registry_version.supports_existing_global())
+                .then_some("registering a version by code hash"),
         };
         if let Some(feature) = unsupported {
             return Err(std::io::Error::new(
