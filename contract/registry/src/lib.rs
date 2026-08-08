@@ -12,7 +12,7 @@ use near_sdk::{
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     contract::list,
-    registry::{DeployMode, Deployment, RegistryEntryView, VersionAvailability, VersionInfo},
+    registry::{Deployment, RegistryEntryView, VersionAvailability, VersionInfo, VersionSource},
     self_ext,
     upgrade::{UpgradeSource, MIGRATE_METHOD},
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
@@ -211,12 +211,28 @@ impl Contract {
         })
     }
 
+    /// Open a throwaway sub-account funded by the attached deposit, for a caller to act on and
+    /// then `delete_account` back into the registry.
+    ///
+    /// `prefix` separates the publish and probe accounts so a probe cannot land on an in-flight
+    /// publish.
+    fn scratch_account(prefix: &str) -> Promise {
+        let account_id: AccountId = format!("{prefix}.{}", env::current_account_id())
+            .parse()
+            .unwrap_or_else(|_| {
+                templar_common::panic_with_message("Failed to construct scratch account ID.")
+            });
+
+        Promise::new(account_id)
+            .create_account()
+            .transfer(env::attached_deposit())
+    }
+
     #[payable]
     pub fn add_version(
         &mut self,
         #[serializer(borsh)] version_key: String,
-        #[serializer(borsh)] mode: DeployMode,
-        #[serializer(borsh)] code: Vec<u8>,
+        #[serializer(borsh)] source: VersionSource,
     ) -> PromiseOrValue<()> {
         self.assert_owner();
         require!(
@@ -224,38 +240,44 @@ impl Contract {
             "Version key already exists",
         );
 
-        let hash = env::sha256_array(&code);
-
-        match mode {
-            DeployMode::Normal => {
+        match source {
+            VersionSource::Stored(code) => {
                 assert_one_yocto();
                 let version_entry = VersionEntry::Code {
-                    hash,
-                    code: Some(code.clone()),
+                    hash: env::sha256_array(&code.0),
+                    code: Some(code.0),
                 };
                 self.versions.insert(version_key, version_entry);
                 PromiseOrValue::Value(())
             }
-            DeployMode::GlobalHash => {
-                let deposit = env::attached_deposit();
+            VersionSource::PublishGlobal(code) => {
                 require!(
-                    !deposit.is_zero(),
+                    !env::attached_deposit().is_zero(),
                     "Deposit required to pay for global contract deployment",
                 );
-                let version_entry = VersionEntry::GlobalHash(hash);
+                let version_entry = VersionEntry::GlobalHash(env::sha256_array(&code.0));
                 self.versions.insert(version_key.clone(), version_entry);
-                let dummy_id: AccountId = format!("deploy.{}", env::current_account_id())
-                    .parse()
-                    .unwrap_or_else(|_| {
-                        templar_common::panic_with_message(
-                            "Failed to construct deployment account ID.",
-                        )
-                    });
                 PromiseOrValue::Promise(
-                    Promise::new(dummy_id)
-                        .create_account()
-                        .transfer(deposit)
-                        .deploy_global_contract(code)
+                    Self::scratch_account("deploy")
+                        .deploy_global_contract(code.0)
+                        .delete_account(env::current_account_id())
+                        .then(self_ext!(Gas::from_tgas(6)).add_version_01_finalize(version_key)),
+                )
+            }
+            // The hash is verified, not trusted: a hash with no global contract behind it fails
+            // this receipt and `add_version_01_finalize` frees the key again. Without the probe an
+            // unverified typo would burn the key permanently, since `remove_version` panics on a
+            // `GlobalHash` entry.
+            VersionSource::ExistingGlobal(hash) => {
+                // One yocto, as for `Stored`: the probe account is created and deleted inside a
+                // single receipt, so it never has to satisfy a storage-staking minimum, and
+                // `use_global_contract` copies no code to stake for. The cost here is gas.
+                assert_one_yocto();
+                self.versions
+                    .insert(version_key.clone(), VersionEntry::GlobalHash(hash.into()));
+                PromiseOrValue::Promise(
+                    Self::scratch_account("probe")
+                        .use_global_contract(hash)
                         .delete_account(env::current_account_id())
                         .then(self_ext!(Gas::from_tgas(6)).add_version_01_finalize(version_key)),
                 )

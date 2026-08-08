@@ -31,7 +31,7 @@ use templar_common::{
         pyth::{self, OracleResponse, PriceIdentifier, PythTimestamp},
         redstone::{FeedData, FeedId},
     },
-    registry::DeployMode,
+    registry::VersionSource,
 };
 use templar_gateway_testing::{harness, owned_harness, ManagedAccountId, SandboxHarness};
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
@@ -483,16 +483,14 @@ async fn init_with(harness: SandboxHarness) -> InitTest {
             &market_deployer,
             &market_registry,
             MARKET_VERSION,
-            DeployMode::Normal,
-            market_wasm,
+            VersionSource::Stored(market_wasm.into()),
             NearToken::from_yoctonear(1),
         ),
         harness.registry_add_version(
             &ua_deployer,
             &ua_registry,
             "latest",
-            DeployMode::GlobalHash,
-            ua_wasm,
+            VersionSource::PublishGlobal(ua_wasm.into()),
             NearToken::from_near(80),
         ),
     );

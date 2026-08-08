@@ -1225,14 +1225,13 @@ impl SandboxHarness {
             .snapshots)
     }
 
-    /// Add a contract version (wasm) to a registry.
+    /// Add a contract version to a registry.
     pub async fn registry_add_version(
         &self,
         caller: &ManagedAccountId,
         registry_id: &AccountId,
         version_key: &str,
-        deploy_mode: templar_common::registry::DeployMode,
-        code: Vec<u8>,
+        source: templar_common::registry::VersionSource,
         deposit: NearToken,
     ) -> Result<WriteOperationResult> {
         self.execute(
@@ -1240,8 +1239,7 @@ impl SandboxHarness {
             registry::AddVersion {
                 registry_id: registry_id.clone(),
                 version_key: version_key.to_owned(),
-                deploy_mode,
-                code: Base64Bytes(code),
+                source,
                 deposit,
             },
         )

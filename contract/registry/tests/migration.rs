@@ -12,7 +12,7 @@ use near_token::NearToken;
 use rstest::rstest;
 use templar_common::{
     market::YieldWeights,
-    registry::{DeployMode, VersionAvailability},
+    registry::{VersionAvailability, VersionSource},
 };
 use templar_gateway_testing::{harness, SandboxHarness};
 
@@ -57,8 +57,7 @@ async fn populate(harness: &SandboxHarness, registry_id: &AccountId) -> Result<P
                 &deployer,
                 registry_id,
                 key,
-                DeployMode::Normal,
-                code,
+                VersionSource::Stored(code.into()),
                 NearToken::from_yoctonear(1),
             )
             .await?;
@@ -230,8 +229,7 @@ async fn upgrade_replaces_the_key_signed_batch(
             &harness.registry_signer_account_id.clone(),
             &registry_id,
             SELF_VERSION,
-            DeployMode::GlobalHash,
-            current.clone(),
+            VersionSource::PublishGlobal(current.clone().into()),
             cost_per_byte.saturating_mul(current.len() as u128),
         )
         .await?;
@@ -335,8 +333,7 @@ async fn migrates_the_largest_state_a_receipt_can_carry(
                 &deployer,
                 &registry_id,
                 &format!("bulk@{index}"),
-                DeployMode::Normal,
-                vec![u8::try_from(index % 256)?; BLOB],
+                VersionSource::Stored(vec![u8::try_from(index % 256)?; BLOB].into()),
                 NearToken::from_yoctonear(1),
             )
             .await?;
@@ -404,8 +401,7 @@ async fn a_keyless_registry_still_upgrades_through_its_owner(
             &registry_signer,
             &registry_id,
             SELF_VERSION,
-            DeployMode::GlobalHash,
-            current.clone(),
+            VersionSource::PublishGlobal(current.clone().into()),
             cost_per_byte.saturating_mul(current.len() as u128),
         )
         .await?;

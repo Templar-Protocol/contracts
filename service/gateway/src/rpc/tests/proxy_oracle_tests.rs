@@ -447,11 +447,11 @@ async fn governance_create_deploys_an_initialized_contract() -> Result<()> {
             body: registry::AddVersion {
                 registry_id: registry_id.clone(),
                 version_key: "gov@0.2.0".to_owned(),
-                deploy_mode: templar_common::registry::DeployMode::Normal,
-                code: Base64Bytes(
+                source: templar_common::registry::VersionSource::Stored(
                     templar_gateway_testing::wasm::proxy_governance()
                         .await
-                        .to_vec(),
+                        .to_vec()
+                        .into(),
                 ),
                 deposit: NearToken::from_yoctonear(1),
             },

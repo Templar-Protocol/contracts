@@ -3,15 +3,29 @@
 
 use anyhow::Result;
 use near_api::types::AccountId;
+use near_sdk::json_types::Base58CryptoHash;
 use near_token::NearToken;
 use rstest::rstest;
-use templar_common::{market::MarketConfiguration, market::YieldWeights, registry::DeployMode};
+use templar_common::{market::MarketConfiguration, market::YieldWeights, registry::VersionSource};
 use templar_gateway_testing::{harness, SandboxHarness};
 use templar_gateway_types::{primitive::PublicKey, ManagedAccountId};
 
 const MARKET_VERSION: &str = "market@0.0.0";
+/// A second key for the *same* code, registered by hash instead of by publishing it again.
+const BY_HASH_VERSION: &str = "market@0.0.0-by-hash";
 // A valid ed25519 public key (the sandbox genesis key) for the access-key test.
 const TEST_PUBLIC_KEY: &str = "ed25519:5BGSaf6YjVm7565VzWQHNxoyEjwr3jUpRJSGjREvU9dB";
+
+/// Registering an already-published global stakes nothing: the probe account is created and
+/// deleted in one receipt, so it never has to meet a storage minimum.
+const PROBE_DEPOSIT: NearToken = NearToken::from_yoctonear(1);
+
+/// What publishing `len` bytes as a new global contract stakes.
+fn publish_deposit_for(len: usize) -> NearToken {
+    NearToken::from_near(1)
+        .saturating_div(10_000)
+        .saturating_mul(len as u128)
+}
 
 struct Registry {
     id: AccountId,
@@ -26,15 +40,13 @@ async fn setup_registry(harness: &SandboxHarness) -> Result<Registry> {
     let deployer = harness.registry_signer_account_id.clone();
 
     let market_wasm = templar_gateway_testing::wasm::market().await.to_vec();
-    let cost_per_byte = NearToken::from_near(1).saturating_div(10_000);
-    let deposit = cost_per_byte.saturating_mul(market_wasm.len() as u128);
+    let deposit = publish_deposit_for(market_wasm.len());
     harness
         .registry_add_version(
             &deployer,
             &registry_id,
             MARKET_VERSION,
-            DeployMode::GlobalHash,
-            market_wasm,
+            VersionSource::PublishGlobal(market_wasm.into()),
             deposit,
         )
         .await?;
@@ -136,6 +148,133 @@ async fn deploy_with_access_key(#[future(awt)] harness: SandboxHarness) -> Resul
     assert_eq!(keys.len(), 1, "expected exactly the one requested key");
     assert_eq!(keys[0].0, TEST_PUBLIC_KEY);
     assert!(keys[0].1, "the requested key must be full-access");
+
+    Ok(())
+}
+
+/// Read back the code hash the registry recorded for a version.
+async fn version_code_hash(
+    harness: &SandboxHarness,
+    registry_id: &AccountId,
+    version_key: &str,
+) -> Result<Option<Base58CryptoHash>> {
+    let hash = harness
+        .view_json::<Option<String>>(
+            registry_id,
+            "get_version_code_hash",
+            serde_json::json!({ "version_key": version_key }),
+        )
+        .await?;
+
+    Ok(hash.map(|hash| hash.parse()).transpose()?)
+}
+
+/// The point of ENG-631: a second version key pointed at the *same* global contract deploys
+/// identically to the one that paid to publish it, for a deposit that is not in the same league.
+#[rstest]
+#[tokio::test]
+async fn deploy_from_a_version_registered_by_code_hash(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let registry = setup_registry(&harness).await?;
+    let hash = version_code_hash(&harness, &registry.id, MARKET_VERSION)
+        .await?
+        .expect("the published version has a code hash");
+
+    harness
+        .registry_add_version(
+            &registry.deployer,
+            &registry.id,
+            BY_HASH_VERSION,
+            VersionSource::ExistingGlobal(hash),
+            PROBE_DEPOSIT,
+        )
+        .await?;
+
+    // Both keys resolve to one global contract — no second copy of the code was staked.
+    assert_eq!(
+        version_code_hash(&harness, &registry.id, BY_HASH_VERSION).await?,
+        Some(hash),
+    );
+
+    harness
+        .registry_deploy(
+            &registry.deployer,
+            &registry.id,
+            "by-hash",
+            BY_HASH_VERSION,
+            init_args(&registry.configuration)?,
+            None,
+            NearToken::from_near(10),
+        )
+        .await?;
+
+    let market_id: AccountId = format!("by-hash.{}", registry.id).parse()?;
+    assert_eq!(
+        harness.get_configuration(&market_id).await?,
+        registry.configuration,
+        "a market deployed by code hash must be indistinguishable from a published one",
+    );
+
+    // The publish deposit in `setup_registry` stakes storage for every byte of the market wasm;
+    // registering the same code by hash stakes nothing, so the two are not remotely comparable.
+    let publish_deposit = publish_deposit_for(templar_gateway_testing::wasm::market().await.len());
+    assert!(
+        publish_deposit.as_yoctonear() / PROBE_DEPOSIT.as_yoctonear() > 1_000_000,
+        "registering by hash ({PROBE_DEPOSIT}) must be orders of magnitude below \
+         publishing ({publish_deposit})",
+    );
+
+    Ok(())
+}
+
+/// An unverified hash would burn the version key permanently, because `remove_version` panics on a
+/// `GlobalHash` entry. The probe receipt is what makes that state unreachable.
+#[rstest]
+#[tokio::test]
+async fn an_unknown_code_hash_rolls_back_and_frees_the_key(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let registry = setup_registry(&harness).await?;
+    let unknown = Base58CryptoHash::from([0xab; 32]);
+
+    let result = harness
+        .registry_add_version(
+            &registry.deployer,
+            &registry.id,
+            BY_HASH_VERSION,
+            VersionSource::ExistingGlobal(unknown),
+            PROBE_DEPOSIT,
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "a hash with no global contract behind it must fail the receipt, got: {result:?}",
+    );
+
+    assert_eq!(
+        version_code_hash(&harness, &registry.id, BY_HASH_VERSION).await?,
+        None,
+        "the rolled-back key must not survive as an undeployable entry",
+    );
+
+    // Reusable: the failed attempt did not consume the name.
+    let real = version_code_hash(&harness, &registry.id, MARKET_VERSION)
+        .await?
+        .expect("the published version has a code hash");
+    harness
+        .registry_add_version(
+            &registry.deployer,
+            &registry.id,
+            BY_HASH_VERSION,
+            VersionSource::ExistingGlobal(real),
+            PROBE_DEPOSIT,
+        )
+        .await?;
+    assert_eq!(
+        version_code_hash(&harness, &registry.id, BY_HASH_VERSION).await?,
+        Some(real),
+    );
 
     Ok(())
 }

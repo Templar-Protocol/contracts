@@ -175,8 +175,7 @@ impl<C: HasNearClient> PlanWrite<registry::AddVersion, C> for Dispatch {
                 registry_version,
                 AddVersionArgs {
                     version_key: body.version_key,
-                    mode: body.deploy_mode,
-                    code: body.code.0,
+                    source: body.source,
                 },
             )
             .map(OperationPlan::from)

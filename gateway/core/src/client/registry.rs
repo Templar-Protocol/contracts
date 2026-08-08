@@ -2,7 +2,7 @@ use std::{borrow::Borrow, io::ErrorKind};
 
 use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
-use templar_common::registry::DeployMode;
+use templar_common::registry::VersionSource;
 use templar_gateway_types::{
     common::{ContractArgs, Pagination},
     Base64Bytes, ContractMethodName, RegistryVersion,
@@ -37,8 +37,7 @@ pub struct GetVersionArgs {
 #[derive(Debug)]
 pub struct AddVersionArgs {
     pub version_key: String,
-    pub mode: templar_common::registry::DeployMode,
-    pub code: Vec<u8>,
+    pub source: VersionSource,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -86,15 +85,25 @@ impl RegistryClient<'_> {
         args: impl Borrow<AddVersionArgs>,
     ) -> GatewayResult<PlannedTransaction> {
         let args = args.borrow();
-        if args.mode == DeployMode::GlobalHash && !registry_version.supports_global_contracts() {
+        // Exhaustive on purpose: a new source must state which release first accepts it, rather
+        // than defaulting to "every registry understands this". `ExistingGlobal` has no gate yet —
+        // the release that introduces it has no version number until it ships, so a registry too
+        // old for it fails on chain rather than at preflight until that check is added.
+        let unsupported = match args.source {
+            VersionSource::Stored(_) | VersionSource::ExistingGlobal(_) => None,
+            VersionSource::PublishGlobal(_) => {
+                (!registry_version.supports_global_contracts()).then_some("global contracts")
+            }
+        };
+        if let Some(feature) = unsupported {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,
-                format!("Registry version {registry_version} does not support global contracts"),
+                format!("Registry version {registry_version} does not support {feature}"),
             )
             .into());
         }
         let encoded_args =
-            registry_version.encode_add_version_args(&args.version_key, args.mode, &args.code)?;
+            registry_version.encode_add_version_args(&args.version_key, &args.source)?;
         Ok(PlannedTransaction {
             signer_account_id: options.signer_account_id,
             receiver_id: self.contract_id().to_owned(),
