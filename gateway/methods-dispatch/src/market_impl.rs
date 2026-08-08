@@ -11,9 +11,9 @@ use templar_gateway_core::{
     },
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
-use templar_gateway_methods_spec::{market, registry::Deploy};
+use templar_gateway_methods_spec::market;
 
-use crate::registry_impl::plan_deploy_from_registry;
+use crate::registry_impl::plan_create_from_registry;
 use crate::token_ops::{ensure_storage_headroom, ensure_storage_registration, transfer_call_asset};
 use crate::Dispatch;
 
@@ -290,30 +290,25 @@ impl<C: HasNearClient> PlanWrite<market::Create, C> for Dispatch {
         request: templar_gateway_types::common::WriteRequest<market::Create>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
-        let body = request.body;
-        let market_account_id = body
+        let market::Create {
+            target,
+            configuration,
+        } = request.body;
+        let market_account_id = target
             .registry_id
-            .sub_account(&body.name)
+            .sub_account(&target.name)
             .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
-        let configuration = body.configuration;
-        let mut steps = plan_deploy_from_registry(
+        let mut steps = plan_create_from_registry(
             &ctx,
             request.signer_account_id.clone(),
-            Deploy {
-                registry_id: body.registry_id,
-                name: body.name,
-                version_key: body.version_key,
-                // Canonical, so the bytes are a function of the configuration:
-                // `yield_weights.static` is a `HashMap`, whose plain encoding
-                // orders keys differently in each process, and a deployment plan
-                // is compared against a re-derivation made by another one.
-                init_args: serde_json_canonicalizer::to_vec(&MarketInitArgs {
-                    configuration: configuration.clone(),
-                })?
-                .into(),
-                full_access_keys: body.full_access_keys,
-                deposit: body.deposit,
-            },
+            target,
+            // Canonical, so the bytes are a function of the configuration:
+            // `yield_weights.static` is a `HashMap`, whose plain encoding orders
+            // keys differently in each process, and a deployment plan is compared
+            // against a re-derivation made by another one.
+            serde_json_canonicalizer::to_vec(&MarketInitArgs {
+                configuration: configuration.clone(),
+            })?,
         )
         .await?
         .steps;

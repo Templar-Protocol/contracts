@@ -20,13 +20,12 @@ use templar_gateway_methods_spec::{
     market, proxy_oracle, proxy_oracle_governance as gov, registry,
 };
 use templar_gateway_types::common::{WriteOperationResult, WriteRequest};
-use templar_gateway_types::{primitive::PublicKey, Base64Bytes, MethodSpec, ProposalEncoding};
+use templar_gateway_types::{primitive::PublicKey, MethodSpec, ProposalEncoding};
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{GovernancePolicy, Operation};
 
 use crate::commands::market::{Apply, Plan};
-use crate::commands::proxy_oracle::governance::GovernanceInit;
 use crate::context::{print_json, CliContext};
 use crate::report::Reporter;
 use crate::spec::journal::{self, Journal};
@@ -560,12 +559,14 @@ pub(crate) async fn build(
             signer_id,
             &format!("deploy market {}", spec.market_id()?),
             market::Create {
-                registry_id: spec.registry.clone(),
-                name: spec.name.clone(),
-                version_key: spec.market_version.clone(),
+                target: registry::DeployTarget {
+                    registry_id: spec.registry.clone(),
+                    name: spec.name.clone(),
+                    version_key: spec.market_version.clone(),
+                    full_access_keys,
+                    deposit: MARKET_DEPOSIT,
+                },
                 configuration,
-                full_access_keys,
-                deposit: MARKET_DEPOSIT,
             },
         )
         .await?,
@@ -597,28 +598,25 @@ async fn oracle_stack(
     // reaches market creation with an unconfigured oracle.
     crate::commands::proxy_oracle::check_owner_id_is_honored(oracle_version, &governance_id)?;
 
-    let governance_init = serde_json::to_vec(&GovernanceInit {
-        proxy_oracle_id: oracle_id.clone(),
-        admin_id: governance.admin.clone(),
-        // One TTL for every reflexive bucket and for the target default, which
-        // is what a spec's single `ttl_default` means. A deployment needing
-        // per-method timelocks raises them afterwards by proposal.
-        policy: GovernancePolicy::uniform(governance.ttl_default)
-            .context("build the governance policy from `ttl_default`")?,
-    })
-    .context("encode governance init args")?;
-
     let mut steps = step(
         client,
         signer_id,
         &format!("deploy governance {governance_id}"),
-        registry::Deploy {
-            registry_id: spec.registry.clone(),
-            name: crate::spec::governance_name(&spec.name),
-            version_key: governance_version.to_owned(),
-            init_args: Base64Bytes(governance_init),
-            full_access_keys: full_access_keys.clone(),
-            deposit: GOVERNANCE_DEPOSIT,
+        gov::Create {
+            target: registry::DeployTarget {
+                registry_id: spec.registry.clone(),
+                name: crate::spec::governance_name(&spec.name),
+                version_key: governance_version.to_owned(),
+                full_access_keys: full_access_keys.clone(),
+                deposit: GOVERNANCE_DEPOSIT,
+            },
+            proxy_oracle_id: oracle_id.clone(),
+            admin_id: governance.admin.clone(),
+            // One TTL for every reflexive bucket and for the target default, which
+            // is what a spec's single `ttl_default` means. A deployment needing
+            // per-method timelocks raises them afterwards by proposal.
+            policy: GovernancePolicy::uniform(governance.ttl_default)
+                .context("build the governance policy from `ttl_default`")?,
         },
     )
     .await?;
@@ -628,12 +626,14 @@ async fn oracle_stack(
             signer_id,
             &format!("deploy proxy oracle {oracle_id}, owned by governance"),
             proxy_oracle::Create {
-                registry_id: spec.registry.clone(),
-                name: crate::spec::oracle_name(&spec.name),
-                version_key: oracle_version.to_owned(),
+                target: registry::DeployTarget {
+                    registry_id: spec.registry.clone(),
+                    name: crate::spec::oracle_name(&spec.name),
+                    version_key: oracle_version.to_owned(),
+                    full_access_keys,
+                    deposit: ORACLE_DEPOSIT,
+                },
                 owner_id: Some(governance_id),
-                full_access_keys: full_access_keys.clone(),
-                deposit: ORACLE_DEPOSIT,
             },
         )
         .await?,

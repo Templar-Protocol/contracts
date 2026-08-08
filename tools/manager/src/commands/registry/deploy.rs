@@ -2,7 +2,7 @@ use anyhow::Context as _;
 use clap::{ArgGroup, Args};
 use templar_gateway_methods_spec::registry as spec;
 
-use crate::commands::deploy_common::DeployCommonArgs;
+use crate::commands::deploy_common::DeployTargetArgs;
 use crate::commands::signer::SignerArgs;
 
 /// Deploy an already-registered contract version to a new account, granting full
@@ -20,7 +20,7 @@ use crate::commands::signer::SignerArgs;
 ))]
 pub struct Deploy {
     #[command(flatten)]
-    common: DeployCommonArgs,
+    target: DeployTargetArgs,
     /// Contract init args as an inline JSON string (e.g. `null` or `{"owner_id":"a.near"}`).
     #[arg(long, value_name = "JSON")]
     init_args: Option<String>,
@@ -46,6 +46,9 @@ impl Deploy {
             (None, None) => unreachable!("clap requires one of --init-args / --init-args-file"),
         };
         let signer = self.signer;
-        self.common.into_deploy(|| signer.public_key(), init_bytes)
+        Ok(spec::Deploy {
+            target: self.target.resolve(|| signer.public_key())?,
+            init_args: templar_gateway_types::Base64Bytes(init_bytes),
+        })
     }
 }

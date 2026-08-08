@@ -4,24 +4,28 @@ use templar_common::asset::{BorrowAssetAmount, CollateralAssetAmount};
 use templar_gateway_methods_spec::{
     chain::GetBlock,
     market::*,
-    registry::{Deploy, ListDeploymentsByKind},
+    proxy_oracle::Create as ProxyOracleCreate,
+    registry::{Deploy, DeployTarget, ListDeploymentsByKind},
     universal_account::Create as UniversalAccountCreate,
 };
 use templar_gateway_types::{common::Pagination, contract::ContractKind, Base64Bytes, NearToken};
 use templar_primitives::SU128;
 use templar_universal_account::{transaction::Transaction, KeyId};
 
-type UniversalAccountCreateConstructor = fn(
-    AccountId,
-    String,
-    String,
-    KeyId,
-    SU128,
-    Option<Box<[Transaction]>>,
-    NearToken,
-) -> UniversalAccountCreate;
+type UniversalAccountCreateConstructor =
+    fn(DeployTarget, KeyId, SU128, Option<Box<[Transaction]>>) -> UniversalAccountCreate;
 
 fn assert_universal_account_create_constructor(_: UniversalAccountCreateConstructor) {}
+
+fn target() -> DeployTarget {
+    DeployTarget {
+        registry_id: near_account_id::AccountIdRef::new_or_panic("registry.near").to_owned(),
+        name: "market".to_owned(),
+        version_key: "v1.0.0".to_owned(),
+        full_access_keys: None,
+        deposit: NearToken::from_near(1),
+    }
+}
 
 #[test]
 fn liquidate_new_requires_collateral_amount_argument() {
@@ -129,27 +133,12 @@ fn list_borrow_positions_with_args_preserves_flattened_json() {
     );
 }
 
+/// The target's fields stay at the top level of the wire JSON: flattening it is a
+/// deduplication of the Rust declaration, not a params change.
 #[test]
-fn deploy_new_defaults_full_access_keys_to_none() {
-    let request = Deploy::new(
-        "registry.near".parse().unwrap(),
-        "market".to_owned(),
-        "v1.0.0".to_owned(),
-        Base64Bytes(vec![1, 2, 3]),
-        NearToken::from_near(1),
-    );
+fn deploy_flattens_its_target_into_the_same_flat_json() {
+    let request = Deploy::new(target(), Base64Bytes(vec![1, 2, 3]));
 
-    assert_eq!(
-        request,
-        Deploy {
-            registry_id: "registry.near".parse().unwrap(),
-            name: "market".to_owned(),
-            version_key: "v1.0.0".to_owned(),
-            init_args: Base64Bytes(vec![1, 2, 3]),
-            full_access_keys: None,
-            deposit: NearToken::from_near(1),
-        },
-    );
     assert_eq!(
         serde_json::to_value(&request).unwrap(),
         json!({
@@ -160,10 +149,28 @@ fn deploy_new_defaults_full_access_keys_to_none() {
             "deposit": NearToken::from_near(1).as_yoctonear().to_string(),
         }),
     );
+    assert_eq!(
+        serde_json::from_value::<Deploy>(serde_json::to_value(&request).unwrap()).unwrap(),
+        request,
+    );
 }
 
+/// A method's own init fields sit beside the target's on the wire, so the flat body
+/// one method accepts is the flat body every other one accepts.
 #[test]
-fn universal_account_create_new_accepts_seven_required_arguments() {
+fn a_create_reads_its_init_fields_beside_the_flat_target() {
+    let mut body = serde_json::to_value(target()).unwrap();
+    body["owner_id"] = json!("gov.near");
+
+    let oracle = serde_json::from_value::<ProxyOracleCreate>(body).unwrap();
+    assert_eq!(oracle.target, target());
+    assert_eq!(oracle.owner_id, Some("gov.near".parse().unwrap()));
+}
+
+/// `ua.create` now names its sub-account with the shared `name` rather than its own
+/// `account_name`, so its constructor takes the target in place of both.
+#[test]
+fn universal_account_create_new_accepts_four_required_arguments() {
     assert_universal_account_create_constructor(UniversalAccountCreate::new);
 }
 

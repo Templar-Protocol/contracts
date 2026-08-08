@@ -6,7 +6,8 @@ use templar_gateway_types::{OperationStatus, ProposalEncoding};
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_common::state::legacy::v0;
 use templar_proxy_oracle_near_governance_common::{
-    target, MethodPolicy, Operation, ReflexiveOperation, Role,
+    target, GovernancePolicy, GovernancePolicyWire, MethodPolicy, Operation, ReflexiveOperation,
+    ReflexiveTtls, Role,
 };
 
 #[tokio::test]
@@ -421,6 +422,119 @@ async fn borsh_encoding_carries_a_proposal_json_cannot() -> Result<()> {
         })
         .await?;
     assert_eq!(proposal.proposal.map(|p| p.operation), Some(oversized));
+
+    stack.shutdown().await;
+    Ok(())
+}
+
+/// `proxyOracleGovernance.create` deploys from a registry with typed init args, so
+/// the contract must come up administering the oracle it was given, under the
+/// policy it was given — proving the args this build serializes are the args the
+/// contract's `new` accepts.
+#[tokio::test]
+async fn governance_create_deploys_an_initialized_contract() -> Result<()> {
+    let stack = TestStack::start().await?;
+    let registry_id = stack.harness.deploy_registry().await?;
+    // `new` only records the oracle id, so the one the harness already deployed at
+    // startup serves — no need to pay for a second proxy-oracle deploy here.
+    let oracle_id = stack.harness.proxy_oracle_signer_account_id.0.clone();
+
+    stack
+        .controller
+        .request::<registry::AddVersion>(&WriteRequest {
+            signer_account_id: stack.harness.registry_signer_account_id.clone(),
+            idempotency_key: None,
+            body: registry::AddVersion {
+                registry_id: registry_id.clone(),
+                version_key: "gov@0.2.0".to_owned(),
+                deploy_mode: templar_common::registry::DeployMode::Normal,
+                code: Base64Bytes(
+                    templar_gateway_testing::wasm::proxy_governance()
+                        .await
+                        .to_vec(),
+                ),
+                deposit: NearToken::from_yoctonear(1),
+            },
+        })
+        .await?;
+
+    // Every field distinct, so a policy field dropped or crossed in the init args
+    // fails here rather than matching a uniform default.
+    let expected_policy = GovernancePolicyWire {
+        reflexive_ttls: ReflexiveTtls {
+            set_policy: Nanoseconds::from_secs(120),
+            set_role: Nanoseconds::from_secs(60),
+            self_upgrade: Nanoseconds::from_secs(180),
+        },
+        default_target: MethodPolicy {
+            ttl: Nanoseconds::from_secs(90),
+            role: Role::Admin,
+        },
+        method_policies: [(
+            "set_proxy".to_owned(),
+            MethodPolicy {
+                ttl: Nanoseconds::from_secs(30),
+                role: Role::ProxyConfigurationManager,
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+
+    let admin_id = stack.harness.beneficiary_account_id.clone();
+    let create = stack
+        .controller
+        .request::<proxy_oracle_governance::Create>(&WriteRequest {
+            signer_account_id: stack.harness.registry_signer_account_id.clone(),
+            idempotency_key: None,
+            body: proxy_oracle_governance::Create {
+                target: registry::DeployTarget {
+                    registry_id: registry_id.clone(),
+                    name: "gov-created".to_owned(),
+                    version_key: "gov@0.2.0".to_owned(),
+                    full_access_keys: None,
+                    deposit: NearToken::from_near(10),
+                },
+                proxy_oracle_id: oracle_id.clone(),
+                admin_id: admin_id.clone(),
+                policy: GovernancePolicy::try_from(expected_policy.clone())
+                    .expect("a non-uniform policy within bounds"),
+            },
+        })
+        .await?;
+    assert_eq!(create.operation.status, OperationStatus::Succeeded);
+
+    let governance_id = registry_id
+        .sub_account("gov-created")
+        .expect("created governance id should be valid");
+
+    let administered = stack
+        .controller
+        .request::<proxy_oracle_governance::GetProxyOracleId>(
+            &proxy_oracle_governance::GetProxyOracleId {
+                governance_id: governance_id.clone(),
+            },
+        )
+        .await?;
+    assert_eq!(administered.proxy_oracle_id, oracle_id);
+
+    let has_role = stack
+        .controller
+        .request::<proxy_oracle_governance::HasRole>(&proxy_oracle_governance::HasRole {
+            governance_id: governance_id.clone(),
+            account_id: admin_id,
+            role: Role::Admin,
+        })
+        .await?;
+    assert!(has_role.has_role);
+
+    let policy = stack
+        .controller
+        .request::<proxy_oracle_governance::GetGovernancePolicy>(
+            &proxy_oracle_governance::GetGovernancePolicy { governance_id },
+        )
+        .await?;
+    assert_eq!(policy.policy, expected_policy);
 
     stack.shutdown().await;
     Ok(())

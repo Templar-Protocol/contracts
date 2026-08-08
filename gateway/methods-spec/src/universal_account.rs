@@ -2,7 +2,6 @@ use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
-use templar_gateway_types::primitive::PublicKey;
 use templar_universal_account::{transaction::Transaction, KeyId};
 
 /// Get key parameters from a universal account.
@@ -47,13 +46,9 @@ pub struct Execute {
 #[derive(MethodSpec, Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[method(write = "ua.create")]
 pub struct Create {
-    pub registry_id: AccountId,
-    pub account_name: String,
-    pub version_key: String,
+    #[serde(flatten)]
+    pub target: crate::registry::DeployTarget,
     pub key: KeyId,
     pub chain_id: templar_primitives::SU128,
     pub execute: Option<Box<[Transaction]>>,
-    #[method(default)]
-    pub full_access_keys: Option<Vec<PublicKey>>,
-    pub deposit: templar_gateway_types::NearToken,
 }

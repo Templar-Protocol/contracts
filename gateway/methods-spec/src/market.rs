@@ -15,7 +15,7 @@ use templar_common::{
     Decimal,
 };
 use templar_gateway_macros::MethodSpec;
-use templar_gateway_types::{common::Pagination, primitive::PublicKey, NearToken};
+use templar_gateway_types::common::Pagination;
 
 /// Get market configuration.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -256,13 +256,9 @@ pub struct Borrow {
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "market.create")]
 pub struct Create {
-    pub registry_id: AccountId,
-    pub name: String,
-    pub version_key: String,
+    #[serde(flatten)]
+    pub target: crate::registry::DeployTarget,
     pub configuration: MarketConfiguration,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub full_access_keys: Option<Vec<PublicKey>>,
-    pub deposit: NearToken,
 }
 
 /// Supply assets to a market.
