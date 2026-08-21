@@ -8,8 +8,8 @@
 
 //! Group Q — TTL extension surface.
 //!
-//! Q2 `runtime.extend_ttl()` is publicly callable and renews every
-//!    asset-keyed persistent entry.
+//! Q2 `runtime.extend_ttl(asset)` is publicly callable and renews the
+//! selected asset's persistent entries.
 //! Q3 `governance.extend_ttl()` is publicly callable and renews governance
 //!    state plus active proposal bodies.
 //!
@@ -18,8 +18,8 @@
 //! host internals isn't reliable; the contract's `MissingConfig` / storage
 //! error paths are still covered by the unit tests inside each crate.
 
-use soroban_sdk::{Symbol, Vec as SVec};
-use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig, SourceConfig};
+use soroban_sdk::Symbol;
+use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig};
 use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 
@@ -28,28 +28,22 @@ fn runtime_extend_ttl_is_public_and_succeeds_with_assets_configured() {
     let b = Bootstrap::new();
     b.configure_default_feed();
     let eth = Asset::Other(Symbol::new(&b.env, "ETH"));
-    let mut sources = SVec::new(&b.env);
-    sources.push_back(SourceConfig {
-        oracle: b.upstream_id.clone(),
-        asset: eth.clone(),
-    });
+    let sources = b.source_configs(&eth);
     b.submit_and_execute(
         &b.admin,
         GovernanceAction::SetProxy(
-            eth,
+            eth.clone(),
             ProxyConfig {
                 sources,
-                min_sources: 1,
+                min_sources: 3,
                 max_age_secs: Some(300),
                 max_clock_drift_secs: Some(60),
             },
         ),
     );
 
-    // No auth required.
-    b.runtime.extend_ttl();
-    // Still callable a second time.
-    b.runtime.extend_ttl();
+    b.runtime.extend_ttl(&b.asset_btc);
+    b.runtime.extend_ttl(&eth);
 }
 
 #[test]

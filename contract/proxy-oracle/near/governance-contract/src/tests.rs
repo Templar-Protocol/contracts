@@ -74,7 +74,7 @@ fn contract_with_immediate_policy_edits() -> Contract {
     let mut contract = contract();
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_reflexive_ttl(ReflexiveKind::SetPolicy, Nanoseconds::zero())
         .unwrap();
     contract
@@ -351,7 +351,7 @@ fn set_role_grants_adds_and_targeted_revoke_preserves_other_roles() {
     let mut contract = contract();
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_reflexive_ttl(ReflexiveKind::SetRole, Nanoseconds::zero())
         .unwrap();
     let account_id: AccountId = "operator.near".parse().unwrap();
@@ -392,7 +392,7 @@ fn reflexive_timelocks_are_independent() {
     // Shortening the policy-edit bucket must not shorten the set-role bucket.
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_reflexive_ttl(ReflexiveKind::SetPolicy, Nanoseconds::zero())
         .unwrap();
 
@@ -414,7 +414,7 @@ fn shortening_a_reflexive_lock_matures_under_that_lock() {
     let long = Nanoseconds::from_secs(72 * 60 * 60);
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_reflexive_ttl(ReflexiveKind::SelfUpgrade, long)
         .unwrap();
 
@@ -435,7 +435,7 @@ fn shortening_a_method_lock_matures_under_that_lock() {
     let long = Nanoseconds::from_secs(72 * 60 * 60);
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_target_default(MethodPolicy {
             ttl: long,
             role: Role::Admin,
@@ -443,7 +443,7 @@ fn shortening_a_method_lock_matures_under_that_lock() {
         .unwrap();
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_method_policy(
             "admin_upgrade".to_owned(),
             Some(MethodPolicy {
@@ -454,7 +454,7 @@ fn shortening_a_method_lock_matures_under_that_lock() {
         .unwrap();
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_reflexive_ttl(ReflexiveKind::SetPolicy, Nanoseconds::from_secs(60 * 60))
         .unwrap();
 
@@ -478,7 +478,7 @@ fn set_role_cannot_remove_last_admin() {
     let mut contract = contract();
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_reflexive_ttl(ReflexiveKind::SetRole, Nanoseconds::zero())
         .unwrap();
 
@@ -525,7 +525,7 @@ fn generic_target_call_execution_dispatches_proxy_call() {
     // List the target method at zero ttl so it matures immediately.
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_method_policy(
             "own_accept_owner".to_owned(),
             Some(MethodPolicy {
@@ -601,7 +601,7 @@ fn admin_upgrade_execution_dispatches_target_call_with_upgrade_gas() {
     let mut contract = contract();
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_method_policy(
             "admin_upgrade".to_owned(),
             Some(MethodPolicy {
@@ -665,7 +665,7 @@ fn set_method_policy_above_default_reverts_at_execute_until_the_default_is_raise
     unblocked.create_proposal(1, raise_method, Nanoseconds::zero());
     unblocked.execute_proposal(1);
     assert_eq!(
-        unblocked.header.ttls.resolve("admin_set_proxy").ttl,
+        unblocked.header.ttls().resolve("admin_set_proxy").ttl,
         above_default
     );
 }
@@ -676,7 +676,7 @@ fn set_method_policy_execution_updates_resolution() {
     let mut contract = contract();
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_reflexive_ttl(ReflexiveKind::SetPolicy, Nanoseconds::zero())
         .unwrap();
 
@@ -723,7 +723,7 @@ fn self_upgrade_execution_self_deploys_and_migrates() {
     let mut contract = contract();
     contract
         .header
-        .ttls
+        .ttls_mut()
         .set_reflexive_ttl(ReflexiveKind::SelfUpgrade, Nanoseconds::zero())
         .unwrap();
 

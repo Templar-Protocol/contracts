@@ -14,7 +14,7 @@ use templar_proxy_oracle_soroban_common::{
     Asset, ContractError, NormalizedPrice, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD,
 };
 
-use crate::CachedProxyPrice;
+use crate::{CachedProxyPrice, MAX_REGISTERED_ASSETS};
 
 #[derive(Clone)]
 #[contracttype]
@@ -25,6 +25,16 @@ pub enum DataKey {
     Breakers(Asset),
     Cache(Asset),
     History(Asset),
+}
+
+pub(crate) struct PendingHistoryUpdate {
+    key: DataKey,
+    history: Vec<NormalizedPrice>,
+}
+
+pub(crate) enum HistoryUpdate {
+    Append(PendingHistoryUpdate),
+    Unchanged(NormalizedPrice),
 }
 
 pub fn require_proxy_exists(env: &Env, asset: &Asset) -> Result<(), ContractError> {
@@ -45,23 +55,45 @@ pub fn invalidate_cache(env: &Env, asset: &Asset) {
         .remove(&DataKey::Cache(asset.clone()));
 }
 
-pub fn get_assets(env: &Env) -> Vec<Asset> {
-    env.storage()
+pub fn load_assets(env: &Env) -> Result<Vec<Asset>, ContractError> {
+    let assets: Vec<Asset> = env
+        .storage()
         .persistent()
         .get(&DataKey::Assets)
-        .unwrap_or_else(|| Vec::new(env))
-}
-
-pub fn add_asset(env: &Env, asset: &Asset) {
-    let mut assets = get_assets(env);
-    if !assets.iter().any(|entry| &entry == asset) {
-        assets.push_back(asset.clone());
-        env.storage().persistent().set(&DataKey::Assets, &assets);
+        .ok_or(ContractError::StorageError)?;
+    if assets.len() > MAX_REGISTERED_ASSETS {
+        return Err(ContractError::StorageError);
     }
+    for i in 0..assets.len() {
+        let asset = assets.get(i).ok_or(ContractError::StorageError)?;
+        for j in (i + 1)..assets.len() {
+            if asset == assets.get(j).ok_or(ContractError::StorageError)? {
+                return Err(ContractError::StorageError);
+            }
+        }
+    }
+    Ok(assets)
 }
 
-pub fn remove_asset(env: &Env, asset: &Asset) {
-    let mut assets = get_assets(env);
+pub fn add_asset(env: &Env, asset: &Asset) -> Result<(), ContractError> {
+    let mut assets = load_assets(env)?;
+    if assets.iter().any(|entry| &entry == asset) {
+        return Ok(());
+    }
+    if assets.len() >= MAX_REGISTERED_ASSETS {
+        return Err(ContractError::TooManyAssets);
+    }
+    assets.push_back(asset.clone());
+    env.storage().persistent().set(&DataKey::Assets, &assets);
+    Ok(())
+}
+
+pub fn remove_asset(env: &Env, asset: &Asset) -> Result<(), ContractError> {
+    let mut assets: Vec<Asset> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Assets)
+        .ok_or(ContractError::StorageError)?;
     if let Some(index) = assets
         .iter()
         .position(|entry| &entry == asset)
@@ -70,6 +102,7 @@ pub fn remove_asset(env: &Env, asset: &Asset) {
         assets.remove(index);
         env.storage().persistent().set(&DataKey::Assets, &assets);
     }
+    Ok(())
 }
 
 pub fn load_breakers(env: &Env, asset: &Asset) -> Result<CircuitBreakerSet, ContractError> {
@@ -78,9 +111,14 @@ pub fn load_breakers(env: &Env, asset: &Asset) -> Result<CircuitBreakerSet, Cont
         .persistent()
         .get::<_, Bytes>(&DataKey::Breakers(asset.clone()))
     else {
-        return Ok(CircuitBreakerSet::empty());
+        return Err(ContractError::StorageError);
     };
-    postcard::from_bytes(&bytes.to_alloc_vec()).map_err(|_| ContractError::StorageError)
+    let breakers: CircuitBreakerSet =
+        postcard::from_bytes(&bytes.to_alloc_vec()).map_err(|_| ContractError::StorageError)?;
+    breakers
+        .validate()
+        .map_err(|_| ContractError::StorageError)?;
+    Ok(breakers)
 }
 
 pub fn store_breakers(
@@ -88,12 +126,56 @@ pub fn store_breakers(
     asset: &Asset,
     breakers: &CircuitBreakerSet,
 ) -> Result<(), ContractError> {
+    breakers
+        .validate()
+        .map_err(|_| ContractError::StorageError)?;
+    write_breakers(env, asset, breakers)
+}
+
+fn write_breakers(
+    env: &Env,
+    asset: &Asset,
+    breakers: &CircuitBreakerSet,
+) -> Result<(), ContractError> {
     let bytes = postcard::to_allocvec(breakers).map_err(|_| ContractError::StorageError)?;
+    let decoded: CircuitBreakerSet =
+        postcard::from_bytes(&bytes).map_err(|_| ContractError::StorageError)?;
+    decoded
+        .validate()
+        .map_err(|_| ContractError::StorageError)?;
     env.storage().persistent().set(
         &DataKey::Breakers(asset.clone()),
         &Bytes::from_slice(env, &bytes),
     );
     Ok(())
+}
+
+pub fn prepare_history_update(
+    env: &Env,
+    asset: &Asset,
+    price: &NormalizedPrice,
+    max_records: u32,
+) -> HistoryUpdate {
+    let key = DataKey::History(asset.clone());
+    let mut history = env
+        .storage()
+        .persistent()
+        .get::<_, Vec<NormalizedPrice>>(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    if let Some(last) = history.get(history.len().saturating_sub(1)) {
+        if price.timestamp <= last.timestamp {
+            return HistoryUpdate::Unchanged(last);
+        }
+    }
+    history.push_back(price.clone());
+    while history.len() > max_records {
+        history.pop_front();
+    }
+    HistoryUpdate::Append(PendingHistoryUpdate { key, history })
+}
+
+pub fn commit_history_update(env: &Env, update: PendingHistoryUpdate) {
+    env.storage().persistent().set(&update.key, &update.history);
 }
 
 pub fn cache_price(env: &Env, asset: &Asset, cached: &CachedProxyPrice) {
@@ -102,25 +184,10 @@ pub fn cache_price(env: &Env, asset: &Asset, cached: &CachedProxyPrice) {
         .set(&DataKey::Cache(asset.clone()), cached);
 }
 
-pub fn push_history(env: &Env, asset: &Asset, price: &NormalizedPrice, max_records: u32) {
-    let key = DataKey::History(asset.clone());
-    let mut history = env
-        .storage()
+pub fn clear_history(env: &Env, asset: &Asset) {
+    env.storage()
         .persistent()
-        .get::<_, Vec<NormalizedPrice>>(&key)
-        .unwrap_or_else(|| Vec::new(env));
-    if let Some(index) = history
-        .iter()
-        .position(|entry| entry.timestamp == price.timestamp)
-        .and_then(|i| u32::try_from(i).ok())
-    {
-        history.remove(index);
-    }
-    history.push_back(price.clone());
-    while history.len() > max_records {
-        history.pop_front();
-    }
-    env.storage().persistent().set(&key, &history);
+        .remove(&DataKey::History(asset.clone()));
 }
 
 pub fn extend_persistent_ttl(env: &Env, key: &DataKey) {

@@ -35,7 +35,7 @@ use templar_proxy_oracle_kernel::{
     proxy::{
         aggregator::{method::median::MedianLow, Aggregator},
         circuit_breaker::{
-            AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig, PriceBlockedReason,
+            CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatus, PriceBlockedReason,
             StepwiseChange,
         },
         FreshnessFilter, Proxy, WeightedSource,
@@ -93,7 +93,8 @@ fn cache_test_price_and_seed_history(c: &mut Contract, price_id: PriceIdentifier
         set.set_config(CircuitBreakerSetConfig {
             sample_interval_ns: Nanoseconds::zero(),
             history_len: 3,
-        });
+        })
+        .unwrap();
         set.try_accept_price(price, Nanoseconds::zero()).unwrap();
         CachedProxyPriceStatus::Accepted { price }
     })
@@ -104,6 +105,24 @@ fn stepwise_breaker() -> CircuitBreaker {
     CircuitBreaker::StepwiseChange(StepwiseChange {
         max_relative_change: Decimal::from_str("0.10").unwrap(),
     })
+}
+
+#[test]
+#[should_panic(expected = "Proxy sources must have positive weights")]
+pub fn admin_set_proxy_rejects_zero_weight_sources() {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build());
+    let mut c = Contract::new(None);
+    let proxy = Proxy::new(
+        Aggregator::MedianLow(MedianLow::new([WeightedSource::<Source>::new(
+            OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD),
+            0,
+        )])),
+        FreshnessFilter::empty(),
+    );
+
+    c.admin_set_proxy(PriceIdentifier([0x55; 32]), Some(proxy));
 }
 
 #[test]
@@ -310,6 +329,13 @@ pub fn breaker_mutations_invalidate_cached_price() {
     let proxy_id = PriceIdentifier([0x5e; 32]);
     c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
 
+    c.admin_configure_circuit_breakers(
+        proxy_id,
+        CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 2,
+        },
+    );
     cache_test_price(&mut c, proxy_id, proxy_price(100));
     let initial_epoch = c.cache_epoch(proxy_id);
     c.admin_add_circuit_breaker(proxy_id, 0, stepwise_breaker());
@@ -324,12 +350,7 @@ pub fn breaker_mutations_invalidate_cached_price() {
 
     cache_test_price_and_seed_history(&mut c, proxy_id, proxy_price(100));
     let initial_epoch = c.cache_epoch(proxy_id);
-    c.admin_rearm(
-        proxy_id,
-        0,
-        Nanoseconds::from_secs(1),
-        AcceptedHistorySource::Empty,
-    );
+    c.admin_rearm(proxy_id, 0, Nanoseconds::from_secs(1));
     assert!(c.get_cached_proxy_price(proxy_id).is_none());
     assert!(c.cache_epoch(proxy_id) > initial_epoch);
 
@@ -338,6 +359,39 @@ pub fn breaker_mutations_invalidate_cached_price() {
     c.admin_remove_circuit_breaker(proxy_id, 0);
     assert!(c.get_cached_proxy_price(proxy_id).is_none());
     assert!(c.cache_epoch(proxy_id) > initial_epoch);
+}
+
+#[test]
+pub fn rearm_interprets_target_argument_as_relative_delay() {
+    const NOW_NS: u64 = 1_000_000_000;
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .block_timestamp(NOW_NS)
+        .build());
+    let mut c = Contract::new(None);
+    let proxy_id = PriceIdentifier([0x5f; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+    c.admin_configure_circuit_breakers(
+        proxy_id,
+        CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 2,
+        },
+    );
+    c.admin_add_circuit_breaker(proxy_id, 0, stepwise_breaker());
+
+    c.admin_rearm(proxy_id, 0, Nanoseconds::from_secs(30));
+
+    assert!(matches!(
+        c.get_proxy_circuit_breaker_set(proxy_id)
+            .unwrap()
+            .breakers()
+            .get(&0)
+            .unwrap()
+            .status,
+        CircuitBreakerStatus::ArmedAfter { timestamp_ns }
+            if timestamp_ns == Nanoseconds::from_ns(NOW_NS + 30_000_000_000)
+    ));
 }
 
 #[test]
@@ -355,7 +409,8 @@ pub fn stale_pending_update_cannot_write_cache_or_mutate_breakers() {
         set.set_config(CircuitBreakerSetConfig {
             sample_interval_ns: Nanoseconds::zero(),
             history_len: 3,
-        });
+        })
+        .unwrap();
         CachedProxyPriceStatus::Accepted {
             price: proxy_price(100),
         }

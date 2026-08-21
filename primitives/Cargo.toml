@@ -19,6 +19,7 @@ thiserror = { version = "2", default-features = false, features = [] }
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
 rand = "0.8"
+regex = "1"
 rstest.workspace = true
 serde_json.workspace = true
 

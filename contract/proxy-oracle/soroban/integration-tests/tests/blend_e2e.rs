@@ -26,7 +26,7 @@
 use blend_contract_sdk::pool;
 use blend_contract_sdk::testutils::{default_reserve_config, BlendFixture};
 use soroban_sdk::testutils::{Address as _, BytesN as _, Ledger as _, LedgerInfo};
-use soroban_sdk::{token::StellarAssetClient, Address, BytesN, Env, Symbol, Vec as SVec};
+use soroban_sdk::{token::StellarAssetClient, Address, BytesN, Env, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
     Asset, CircuitBreakerConfig, ProxyConfig, SorobanDecimal, SourceConfig, StepwiseChangeConfig,
@@ -56,11 +56,26 @@ struct BlendBootstrap {
     governance: ProxyOracleGovernanceClient<'static>,
     adapter_id: Address,
     adapter: Sep40AdapterClient<'static>,
-    upstream: MockOracleClient<'static>,
+    upstreams: BlendUpstreams,
     pool_addr: Address,
     pool: pool::Client<'static>,
 }
 
+struct BlendUpstreams {
+    first: MockOracleClient<'static>,
+    second: MockOracleClient<'static>,
+    third: MockOracleClient<'static>,
+}
+
+impl BlendUpstreams {
+    fn set_price(&self, asset: &Asset, price: &i128, timestamp: u64) {
+        self.first.set_price(asset, price, &timestamp);
+        self.second.set_price(asset, price, &timestamp);
+        self.third.set_price(asset, price, &timestamp);
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn setup_blend_bootstrap() -> BlendBootstrap {
     let env = Env::default();
     env.mock_all_auths();
@@ -93,10 +108,12 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
     runtime.transfer_ownership(&governance_id, &live_until_ledger);
     runtime.accept_ownership();
 
-    // Mock upstream source (SEP-40 PriceFeedTrait).
     let upstream_id = env.register(MockOracle, (&base_usd, &7_u32, &1_u32));
     let upstream = MockOracleClient::new(&env, &upstream_id);
-
+    let secondary_upstream_id = env.register(MockOracle, (&base_usd, &7_u32, &1_u32));
+    let secondary_upstream = MockOracleClient::new(&env, &secondary_upstream_id);
+    let tertiary_upstream_id = env.register(MockOracle, (&base_usd, &7_u32, &1_u32));
+    let tertiary_upstream = MockOracleClient::new(&env, &tertiary_upstream_id);
     // Adapter, owned by admin, pointing at the runtime, asset = the SAC.
     let adapter_id = env.register(
         Sep40Adapter,
@@ -105,11 +122,17 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
     let adapter = Sep40AdapterClient::new(&env, &adapter_id);
 
     // Configure the runtime feed.
-    let mut sources = SVec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: upstream_id,
-        asset: btc_asset.clone(),
-    });
+    let mut sources = soroban_sdk::Vec::new(&env);
+    for oracle in [
+        upstream_id.clone(),
+        secondary_upstream_id,
+        tertiary_upstream_id,
+    ] {
+        sources.push_back(SourceConfig {
+            oracle,
+            asset: btc_asset.clone(),
+        });
+    }
     let create_id = governance.next_proposal_id();
     governance.create_proposal(
         &admin,
@@ -118,7 +141,7 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
             btc_asset.clone(),
             ProxyConfig {
                 sources,
-                min_sources: 1,
+                min_sources: 3,
                 max_age_secs: Some(300),
                 max_clock_drift_secs: Some(60),
             },
@@ -169,7 +192,11 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
         governance,
         adapter_id,
         adapter,
-        upstream,
+        upstreams: BlendUpstreams {
+            first: upstream,
+            second: secondary_upstream,
+            third: tertiary_upstream,
+        },
         pool_addr,
         pool,
     }
@@ -191,10 +218,9 @@ fn blend_oracle_sees_accepted_price_with_correct_decimals() {
     let b = setup_blend_bootstrap();
     // Push a healthy price to the upstream and refresh; the adapter should
     // then report a SEP-40 price at the adapter's decimals (7 in this setup).
-    b.upstream
-        .set_price(&b.btc_asset, &1_000_000_000_i128, &100_u64);
-    let assets = SVec::from_array(&b.env, [b.btc_asset.clone()]);
-    let _ = b.runtime.refresh(&assets);
+    b.upstreams
+        .set_price(&b.btc_asset, &1_000_000_000_i128, 100_u64);
+    let _ = b.runtime.refresh(&b.btc_asset);
 
     let sep40 = b.adapter.lastprice(&b.btc_asset).unwrap();
     // 1_000_000_000 (i.e. 100.0000000 at 7 decimals) round-trips since
@@ -229,14 +255,13 @@ fn blend_oracle_sees_none_when_circuit_breaker_trips() {
     );
     b.governance.execute_proposal(&b.admin, &id);
 
-    let assets = SVec::from_array(&b.env, [b.btc_asset.clone()]);
-    b.upstream
-        .set_price(&b.btc_asset, &1_000_000_000_i128, &100_u64);
-    let _ = b.runtime.refresh(&assets);
+    b.upstreams
+        .set_price(&b.btc_asset, &1_000_000_000_i128, 100_u64);
+    let _ = b.runtime.refresh(&b.btc_asset);
     ledger::advance_secs(&b.env, 1);
-    b.upstream
-        .set_price(&b.btc_asset, &3_000_000_000_i128, &101_u64);
-    let _ = b.runtime.refresh(&assets);
+    b.upstreams
+        .set_price(&b.btc_asset, &3_000_000_000_i128, 101_u64);
+    let _ = b.runtime.refresh(&b.btc_asset);
 
     // From the Blend pool's perspective, the oracle has nothing to report.
     assert!(b.adapter.lastprice(&b.btc_asset).is_none());
@@ -245,10 +270,9 @@ fn blend_oracle_sees_none_when_circuit_breaker_trips() {
 #[test]
 fn blend_oracle_sees_none_when_freshness_window_expires() {
     let b = setup_blend_bootstrap();
-    let assets = SVec::from_array(&b.env, [b.btc_asset.clone()]);
-    b.upstream
-        .set_price(&b.btc_asset, &1_000_000_000_i128, &100_u64);
-    let _ = b.runtime.refresh(&assets);
+    b.upstreams
+        .set_price(&b.btc_asset, &1_000_000_000_i128, 100_u64);
+    let _ = b.runtime.refresh(&b.btc_asset);
     assert!(b.adapter.lastprice(&b.btc_asset).is_some());
 
     // Advance past max_age_secs=300.

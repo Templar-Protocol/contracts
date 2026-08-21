@@ -5,25 +5,24 @@
 //! `NormalizedPrice { i64, expo, timestamp }`. Adapters scale `NormalizedPrice`
 //! back to SEP-40 with their own per-adapter decimals.
 
+use soroban_sdk::Env;
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_kernel::{
     proxy::{
         aggregator::{method::median::MedianLow, Aggregator},
         circuit_breaker::{
-            AcceptedHistorySource, CircuitBreaker, MonotonicRun, StepwiseChange,
-            WindowedChangeDelta,
+            CircuitBreaker, CumulativeChange, MonotonicRun, StepwiseChange, WindowedChangeDelta,
         },
         FreshnessFilter, Proxy, WeightedSource,
     },
     Price,
 };
 use templar_proxy_oracle_soroban_common::{
-    CircuitBreakerConfig, ContractError, MonotonicRunConfig as SorobanMonotonicRunConfig,
-    NormalizedPrice, PriceData, ProxyConfig, StepwiseChangeConfig as SorobanStepwiseChangeConfig,
+    CircuitBreakerConfig, ContractError, CumulativeChangeConfig as SorobanCumulativeChangeConfig,
+    MonotonicRunConfig as SorobanMonotonicRunConfig, NormalizedPrice, PriceData, PriceFeedClient,
+    ProxyConfig, StepwiseChangeConfig as SorobanStepwiseChangeConfig,
     WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig,
 };
-
-use crate::MAX_SOURCES_PER_PROXY;
 
 /// Convert a source feed's `PriceData` (decimal-prefixed i128) into the
 /// kernel's `Price { i64, expo }` representation, downscaling if `value`
@@ -32,6 +31,9 @@ pub fn source_price_to_kernel(
     source_price: PriceData,
     source_decimals: u32,
 ) -> Result<Price, ContractError> {
+    if source_decimals > 18 {
+        return Err(ContractError::InvalidInput);
+    }
     let mut value = source_price.price;
     let mut expo = i32::try_from(source_decimals)
         .map_err(|_| ContractError::ConversionOverflow)?
@@ -59,16 +61,9 @@ pub fn kernel_price_to_normalized(price: Price) -> NormalizedPrice {
     }
 }
 
-pub fn accepted_history_source(value: u32) -> Result<AcceptedHistorySource, ContractError> {
-    match value {
-        0 => Ok(AcceptedHistorySource::Empty),
-        1 => Ok(AcceptedHistorySource::Observed),
-        _ => Err(ContractError::InvalidInput),
-    }
-}
-
 pub fn circuit_breaker_from_config(
     config: CircuitBreakerConfig,
+    baseline: Option<Price>,
 ) -> Result<CircuitBreaker, ContractError> {
     match config {
         CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
@@ -101,7 +96,7 @@ pub fn circuit_breaker_from_config(
         CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
             window_len,
             lookback_windows,
-            max_relative_change_delta,
+            max_relative_mean_change,
         }) => {
             if window_len < 2 {
                 return Err(ContractError::InvalidInput);
@@ -109,14 +104,26 @@ pub fn circuit_breaker_from_config(
             if lookback_windows == 0 {
                 return Err(ContractError::InvalidInput);
             }
-            let max_relative_change_delta = max_relative_change_delta.to_decimal();
-            if max_relative_change_delta.is_zero() {
+            let max_relative_mean_change = max_relative_mean_change.to_decimal();
+            if max_relative_mean_change.is_zero() {
                 return Err(ContractError::InvalidInput);
             }
             Ok(CircuitBreaker::WindowedChangeDelta(WindowedChangeDelta {
                 window_len,
                 lookback_windows,
-                max_relative_change_delta,
+                max_relative_mean_change,
+            }))
+        }
+        CircuitBreakerConfig::CumulativeChange(SorobanCumulativeChangeConfig {
+            max_relative_change,
+        }) => {
+            let max_relative_change = max_relative_change.to_decimal();
+            if max_relative_change.is_zero() {
+                return Err(ContractError::InvalidInput);
+            }
+            Ok(CircuitBreaker::CumulativeChange(CumulativeChange {
+                baseline: baseline.ok_or(ContractError::InvalidInput)?,
+                max_relative_change,
             }))
         }
     }
@@ -135,22 +142,33 @@ pub fn kernel_proxy_from_config(config: &ProxyConfig) -> Proxy<u32> {
     )
 }
 
-pub fn validate_proxy_config(config: &ProxyConfig) -> Result<(), ContractError> {
-    if config.sources.is_empty() || config.sources.len() > MAX_SOURCES_PER_PROXY {
-        return Err(ContractError::TooManySources);
-    }
-    if config.min_sources == 0 || config.min_sources > config.sources.len() {
-        return Err(ContractError::InvalidInput);
-    }
-    let sources_len = config.sources.len();
-    for i in 0..sources_len {
-        let src_i = config.sources.get(i).ok_or(ContractError::InvalidInput)?;
-        for j in (i + 1)..sources_len {
-            let src_j = config.sources.get(j).ok_or(ContractError::InvalidInput)?;
-            if src_i.oracle == src_j.oracle && src_i.asset == src_j.asset {
-                return Err(ContractError::InvalidInput);
-            }
+pub fn validate_source_decimals(env: &Env, config: &ProxyConfig) -> Result<(), ContractError> {
+    for source in config.sources.iter() {
+        let decimals = PriceFeedClient::new(env, &source.oracle)
+            .try_decimals()
+            .map_err(|_| ContractError::InvalidInput)?
+            .map_err(|_| ContractError::InvalidInput)?;
+        if decimals > 18 {
+            return Err(ContractError::InvalidInput);
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_decimals_are_bounded_at_sep40_maximum() {
+        let price = PriceData {
+            price: 1,
+            timestamp: 100,
+        };
+        assert!(source_price_to_kernel(price.clone(), 18).is_ok());
+        assert_eq!(
+            source_price_to_kernel(price, 19),
+            Err(ContractError::InvalidInput)
+        );
+    }
 }

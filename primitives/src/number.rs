@@ -7,6 +7,8 @@ use alloc::{
     string::String,
     vec::Vec,
 };
+#[cfg(feature = "schemars")]
+use core::fmt::Write as _;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
 use primitive_types::U512;
@@ -16,6 +18,53 @@ pub const FRACTIONAL_BITS: usize = 128;
 pub const FRACTIONAL_DECIMAL_DIGITS: usize = 38;
 /// `floor((512 - FRACTIONAL_BITS) / log2(10))`
 pub const WHOLE_DECIMAL_DIGITS: usize = 115;
+
+const MAX_WHOLE: U512 = U512([
+    u64::MAX,
+    u64::MAX,
+    u64::MAX,
+    u64::MAX,
+    u64::MAX,
+    u64::MAX,
+    0,
+    0,
+]);
+
+#[cfg(feature = "schemars")]
+fn decimal_whole_pattern(include_maximum: bool) -> String {
+    let maximum = MAX_WHOLE.to_string();
+    let bytes = maximum.as_bytes();
+    let mut branches = Vec::with_capacity(bytes.len() + 2);
+    branches.push("0".to_string());
+    branches.push("[1-9][0-9]{0,114}".to_string());
+
+    for (index, &digit) in bytes.iter().enumerate() {
+        let minimum = if index == 0 { b'1' } else { b'0' };
+        if digit > minimum {
+            let mut branch = maximum[..index].to_string();
+            if digit == minimum + 1 {
+                branch.push(char::from(minimum));
+            } else {
+                branch.push('[');
+                branch.push(char::from(minimum));
+                branch.push('-');
+                branch.push(char::from(digit - 1));
+                branch.push(']');
+            }
+            let remaining = bytes.len() - index - 1;
+            match remaining {
+                0 => {}
+                1 => branch.push_str("[0-9]"),
+                _ => write!(&mut branch, "[0-9]{{{remaining}}}").unwrap(),
+            }
+            branches.push(branch);
+        }
+    }
+    if include_maximum {
+        branches.push(maximum);
+    }
+    branches.join("|")
+}
 
 /// Because `U512::exp10` is recursive, linear-time, and prone to stack overflows.
 fn u512_pow10(mut exponent: u32) -> U512 {
@@ -60,7 +109,10 @@ impl schemars::JsonSchema for Decimal {
     fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
         let mut schema = gen.subschema_for::<String>().into_object();
         schema.metadata().description = Some("512-bit fixed-precision decimal".to_string());
-        schema.string().pattern = Some("^(0|[1-9][0-9]{0,115})(\\.[0-9]{1,38})?$".to_string());
+        schema.string().pattern = Some(format!(
+            "^(?:{})(\\.[0-9]{{1,38}})?$",
+            decimal_whole_pattern(true),
+        ));
         schema.into()
     }
 }
@@ -243,21 +295,16 @@ impl Decimal {
             return None;
         }
 
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         if exponent >= 0 {
             let operand = u512_pow10(abs_exponent);
-            let shift_bits = u32::try_from(operand.bits()).ok()?;
-            // Avoid overflow.
-            if self.repr.leading_zeros() >= shift_bits {
-                let repr = self.repr * operand;
+            let (repr, overflowed) = self.repr.overflowing_mul(operand);
+            if !overflowed {
                 return Some(Self { repr });
             }
         } else {
-            let operand = u512_pow10(exponent.abs_diff(0));
-            let shift_bits = u32::try_from(operand.bits()).ok()?.checked_add(1)?;
-            // Do allow precision loss, but don't allow going all the way to zero.
-            if self.repr.leading_zeros().checked_add(shift_bits)? < 512 {
-                let repr = self.repr / operand;
+            let operand = u512_pow10(abs_exponent);
+            let repr = self.repr / operand;
+            if !repr.is_zero() {
                 return Some(Self { repr });
             }
         }
@@ -395,41 +442,59 @@ impl FromStr for Decimal {
     type Err = error::DecimalParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (whole, frac) = if let Some((whole, frac)) = s.split_once('.') {
-            (whole, Some(frac))
-        } else {
-            (s, None)
+        let (whole, frac) = match s.split_once('.') {
+            Some((whole, frac)) if !frac.contains('.') => (whole, Some(frac)),
+            Some(_) => return Err(error::DecimalParseError),
+            None => (s, None),
         };
 
-        let whole =
-            U512::from_dec_str(whole).map_err(|_| error::DecimalParseError)? << FRACTIONAL_BITS;
+        let canonical_whole = whole == "0"
+            || whole
+                .as_bytes()
+                .split_first()
+                .is_some_and(|(&first, rest)| {
+                    first.is_ascii_digit() && first != b'0' && rest.iter().all(u8::is_ascii_digit)
+                });
+        if !canonical_whole {
+            return Err(error::DecimalParseError);
+        }
 
         if let Some(frac) = frac {
-            let mut f = U512::zero();
-            let mut div = 10u128;
-
-            for c in frac.chars().take(FRACTIONAL_DECIMAL_DIGITS) {
-                if let Some(d) = c.to_digit(10) {
-                    if d != 0 {
-                        let d = (U512::from(d) << (FRACTIONAL_BITS * 2)) / div;
-                        f += d;
-                    }
-                    if let Some(next_div) = div.checked_mul(10) {
-                        div = next_div;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
+            if frac.is_empty()
+                || frac.len() > FRACTIONAL_DECIMAL_DIGITS
+                || !frac.as_bytes().iter().all(u8::is_ascii_digit)
+            {
+                return Err(error::DecimalParseError);
             }
-
-            Ok(Self {
-                repr: whole.saturating_add(Decimal::epsilon_round(f >> FRACTIONAL_BITS)),
-            })
-        } else {
-            Ok(Self { repr: whole })
         }
+
+        let whole = U512::from_dec_str(whole).map_err(|_| error::DecimalParseError)?;
+        if whole > MAX_WHOLE {
+            return Err(error::DecimalParseError);
+        }
+        let whole = whole << FRACTIONAL_BITS;
+
+        let Some(frac) = frac else {
+            return Ok(Self { repr: whole });
+        };
+
+        let mut fractional = U512::zero();
+        let mut divisor = 10u128;
+        for digit in frac.bytes().map(|digit| digit - b'0') {
+            if digit != 0 {
+                fractional += (U512::from(digit) << (FRACTIONAL_BITS * 2)) / divisor;
+            }
+            if let Some(next_divisor) = divisor.checked_mul(10) {
+                divisor = next_divisor;
+            }
+        }
+        let fractional = Decimal::epsilon_round(fractional >> FRACTIONAL_BITS);
+        let (repr, overflowed) = whole.overflowing_add(fractional);
+        if overflowed {
+            return Ok(Self::MAX);
+        }
+
+        Ok(Self { repr })
     }
 }
 
@@ -877,6 +942,7 @@ mod tests {
     #[case(Decimal::ONE_HALF)]
     #[case(Decimal::from(u128::MAX))]
     #[case(Decimal::from(u64::MAX) / Decimal::from(u128::MAX))]
+    #[case(Decimal::MAX)]
     #[test]
     fn serialization(#[case] value: Decimal) {
         let serialized = serde_json::to_string(&value).unwrap();
@@ -960,6 +1026,104 @@ mod tests {
     }
 
     #[test]
+    fn hal_29_rejects_noncanonical_or_partial_decimal_text() {
+        let malformed = [
+            "",
+            ".1",
+            "1.",
+            "01",
+            "+1",
+            "-1",
+            " 1",
+            "1 ",
+            "1e1",
+            "1_0",
+            "1.0.0",
+            "1.000000000000000000000000000000000000000",
+            "١",
+        ];
+
+        for value in malformed {
+            assert!(Decimal::from_str(value).is_err(), "{value:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn decimal_max_fixed_text_round_trips() {
+        assert_eq!(
+            Decimal::MAX
+                .to_fixed(FRACTIONAL_DECIMAL_DIGITS)
+                .parse::<Decimal>()
+                .unwrap(),
+            Decimal::MAX
+        );
+    }
+
+    #[test]
+    fn hal_34_enforces_the_exact_whole_range() {
+        let maximum = MAX_WHOLE.to_string();
+        assert!(Decimal::from_str(&maximum).is_ok());
+        assert!(Decimal::from_str(&format!("{maximum}.1")).is_ok());
+
+        let first_out_of_range = (MAX_WHOLE + U512::one()).to_string();
+        assert!(Decimal::from_str(&first_out_of_range).is_err());
+        assert!(Decimal::from_str(&U512::MAX.to_string()).is_err());
+
+        let carrying_fraction = format!("{maximum}.99999999999999999999999999999999999999");
+        assert_eq!(Decimal::from_str(&carrying_fraction).unwrap(), Decimal::MAX);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hal_34_serde_uses_decimal_range_validation() {
+        let first_out_of_range = (MAX_WHOLE + U512::one()).to_string();
+        let encoded = serde_json::to_string(&first_out_of_range).unwrap();
+        assert!(serde_json::from_str::<Decimal>(&encoded).is_err());
+
+        let carrying_fraction = format!("{MAX_WHOLE}.99999999999999999999999999999999999999");
+        let encoded = serde_json::to_string(&carrying_fraction).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Decimal>(&encoded).unwrap(),
+            Decimal::MAX
+        );
+    }
+
+    #[cfg(feature = "schemars")]
+    #[test]
+    fn hal_34_schema_matches_decimal_parser_boundaries() {
+        let schema = schemars::schema_for!(Decimal);
+        let pattern = schema
+            .schema
+            .string
+            .as_ref()
+            .unwrap()
+            .pattern
+            .as_ref()
+            .unwrap();
+        let regex = regex::Regex::new(pattern).unwrap();
+        let maximum = MAX_WHOLE.to_string();
+        let cases = [
+            ("0".to_string(), true),
+            ("1.0".to_string(), true),
+            (maximum.clone(), true),
+            (
+                format!("{maximum}.99999999999999999999999999999999999999"),
+                true,
+            ),
+            ((MAX_WHOLE + U512::one()).to_string(), false),
+            (U512::MAX.to_string(), false),
+            ("01".to_string(), false),
+            ("1.".to_string(), false),
+            ("1e1".to_string(), false),
+        ];
+
+        for (value, expected) in cases {
+            assert_eq!(Decimal::from_str(&value).is_ok(), expected, "{value}");
+            assert_eq!(regex.is_match(&value), expected, "{value}");
+        }
+    }
+
+    #[test]
     fn round_up_repr() {
         let cases = [
             Decimal {
@@ -973,11 +1137,8 @@ mod tests {
             Decimal {
                 repr: U512([u64::MAX - 1, u64::MAX, 1, 0, 0, 0, 0, 0]),
             },
-            Decimal { repr: U512::MAX },
-            Decimal {
-                repr: U512::MAX.saturating_sub(U512::one()),
-            },
             Decimal { repr: U512::zero() },
+            Decimal::MAX,
         ];
 
         for case in cases {

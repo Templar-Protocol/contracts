@@ -9,16 +9,23 @@ use soroban_sdk::{contractevent, Bytes, BytesN, Env};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     CircuitBreakerEvent as KernelCircuitBreakerEvent, Observation,
 };
-use templar_proxy_oracle_soroban_common::Asset;
+use templar_proxy_oracle_soroban_common::{Asset, NormalizedPrice};
 
-use crate::{
-    codes::{accepted_history_source_code, breaker_kind_code},
-    RefreshStatus, SOURCE_UNAVAILABLE_CODE, UNKNOWN_ASSET_CODE,
-};
+use crate::{codes::breaker_kind_code, RefreshStatus, SOURCE_UNAVAILABLE_CODE, UNKNOWN_ASSET_CODE};
 
 #[contractevent]
 #[derive(Clone)]
 pub struct RefreshSuccess {
+    #[topic]
+    pub asset: Asset,
+    pub mantissa: i64,
+    pub expo: i32,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct RefreshEvaluated {
     #[topic]
     pub asset: Asset,
     pub mantissa: i64,
@@ -87,8 +94,7 @@ pub struct CircuitBreakerRearmed {
     pub asset: Asset,
     #[topic]
     pub breaker_id: u32,
-    pub armed_after_secs: u64,
-    pub accepted_history_source_code: u32,
+    pub armed_at_secs: u64,
 }
 
 #[contractevent]
@@ -100,7 +106,8 @@ pub struct CircuitBreakerTripped {
     pub breaker_id: u32,
     pub tripped_at_secs: u64,
     pub price: i128,
-    pub timestamp: u64,
+    pub expo: i32,
+    pub publish_timestamp_secs: u64,
     pub is_enforced: bool,
 }
 
@@ -136,12 +143,26 @@ pub struct ContractUpgraded {
 }
 
 #[contractevent]
-#[derive(Clone)]
 pub struct TtlExtended {
-    pub asset_count: u32,
+    #[topic]
+    pub asset: Asset,
 }
 
-pub fn publish_refresh_event(env: &Env, asset: &Asset, status: &RefreshStatus) {
+pub fn publish_refresh_event(
+    env: &Env,
+    asset: &Asset,
+    status: &RefreshStatus,
+    evaluated_price: Option<&NormalizedPrice>,
+) {
+    if let Some(price) = evaluated_price {
+        RefreshEvaluated {
+            asset: asset.clone(),
+            mantissa: price.mantissa,
+            expo: price.expo,
+            timestamp: price.timestamp,
+        }
+        .publish(env);
+    }
     match status {
         RefreshStatus::Accepted(price) => RefreshSuccess {
             asset: asset.clone(),
@@ -220,12 +241,10 @@ fn publish_breaker_event(env: &Env, asset: &Asset, event: KernelCircuitBreakerEv
         KernelCircuitBreakerEvent::Rearmed {
             breaker_id,
             armed_after_ns,
-            accepted_history_source,
         } => CircuitBreakerRearmed {
             asset: asset.clone(),
             breaker_id,
-            armed_after_secs: armed_after_ns.as_secs(),
-            accepted_history_source_code: accepted_history_source_code(accepted_history_source),
+            armed_at_secs: armed_after_ns.as_secs(),
         }
         .publish(env),
         KernelCircuitBreakerEvent::Tripped {
@@ -234,7 +253,7 @@ fn publish_breaker_event(env: &Env, asset: &Asset, event: KernelCircuitBreakerEv
             price_update:
                 Observation {
                     price,
-                    observed_at_ns,
+                    observed_at_ns: _,
                 },
             is_enforced,
         } => CircuitBreakerTripped {
@@ -242,7 +261,8 @@ fn publish_breaker_event(env: &Env, asset: &Asset, event: KernelCircuitBreakerEv
             breaker_id,
             tripped_at_secs: tripped_at_ns.as_secs(),
             price: i128::from(price.price),
-            timestamp: observed_at_ns.as_secs(),
+            expo: price.expo,
+            publish_timestamp_secs: price.publish_time_ns.as_secs(),
             is_enforced,
         }
         .publish(env),

@@ -12,8 +12,8 @@ use templar_proxy_oracle_kernel::{
     primitive::AccountId as KernelAccountId,
     proxy::{
         circuit_breaker::{
-            AcceptedHistorySource, CircuitBreaker, CircuitBreakerError, CircuitBreakerOutcome,
-            CircuitBreakerSet, CircuitBreakerSetConfig,
+            CircuitBreaker, CircuitBreakerError, CircuitBreakerOutcome, CircuitBreakerSet,
+            CircuitBreakerSetConfig, CircuitBreakerSetParseError,
         },
         Proxy,
     },
@@ -66,8 +66,7 @@ impl ProxyEntryMut<'_> {
     fn edit_circuit_breaker_set<T>(&mut self, f: impl FnOnce(&mut CircuitBreakerSet) -> T) -> T {
         let original = self
             .state
-            .circuit_breakers
-            .get(&self.id)
+            .load_circuit_breaker_set(self.id)
             .unwrap_or_else(|| env::panic_str("Circuit breaker set not found"));
         let mut set = original.clone();
         let value = f(&mut set);
@@ -81,7 +80,7 @@ impl ProxyEntryMut<'_> {
     pub fn configure_circuit_breakers(
         &mut self,
         config: CircuitBreakerSetConfig,
-    ) -> CircuitBreakerOutcome {
+    ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
         self.edit_circuit_breaker_set(|set| set.set_config(config))
     }
 
@@ -128,11 +127,8 @@ impl ProxyEntryMut<'_> {
         &mut self,
         breaker_id: u32,
         armed_after_ns: Nanoseconds,
-        accepted_history_source: AcceptedHistorySource,
     ) -> Result<CircuitBreakerOutcome, CircuitBreakerError> {
-        self.edit_circuit_breaker_set(|set| {
-            set.rearm(breaker_id, armed_after_ns, accepted_history_source)
-        })
+        self.edit_circuit_breaker_set(|set| set.rearm(breaker_id, armed_after_ns))
     }
 }
 
@@ -146,6 +142,11 @@ pub struct State {
 }
 
 impl State {
+    fn load_circuit_breaker_set(&self, id: PriceIdentifier) -> Option<CircuitBreakerSet> {
+        self.circuit_breakers
+            .get(&id)
+            .filter(|set| set.validate().is_ok())
+    }
     pub fn list_proxies(&self, offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier> {
         list(self.proxies.keys(), offset, count)
     }
@@ -159,7 +160,7 @@ impl State {
     }
 
     pub fn get_proxy_circuit_breaker_set(&self, id: PriceIdentifier) -> Option<CircuitBreakerSet> {
-        self.circuit_breakers.get(&id)
+        self.load_circuit_breaker_set(id)
     }
 
     pub fn get_cached_proxy_price(&self, id: PriceIdentifier) -> Option<CachedProxyPrice> {
@@ -181,23 +182,31 @@ impl State {
         self.cache_epochs.get(&id).unwrap_or(0)
     }
 
-    pub fn proxy_entry(&self, id: PriceIdentifier) -> Option<ProxyEntry<'_>> {
-        let proxy = self.proxies.get(&id)?;
-        if self.circuit_breakers.get(&id).is_none() {
-            env::panic_str("Circuit breaker set not found");
-        }
-        Some(ProxyEntry {
+    pub fn validated_proxy_entry(
+        &self,
+        id: PriceIdentifier,
+    ) -> Result<Option<ProxyEntry<'_>>, CircuitBreakerSetParseError> {
+        let Some(proxy) = self.proxies.get(&id) else {
+            return Ok(None);
+        };
+        self.load_circuit_breaker_set(id)
+            .ok_or(CircuitBreakerSetParseError::InvalidConfiguration)?;
+        Ok(Some(ProxyEntry {
             state: self,
             id,
             proxy,
-        })
+        }))
+    }
+
+    pub fn proxy_entry(&self, id: PriceIdentifier) -> Option<ProxyEntry<'_>> {
+        self.validated_proxy_entry(id)
+            .unwrap_or_else(|_| env::panic_str("Invalid circuit breaker set"))
     }
 
     pub fn proxy_entry_mut(&mut self, id: PriceIdentifier) -> Option<ProxyEntryMut<'_>> {
         self.proxies.get(&id)?;
-        if self.circuit_breakers.get(&id).is_none() {
-            env::panic_str("Circuit breaker set not found");
-        }
+        self.load_circuit_breaker_set(id)
+            .unwrap_or_else(|| env::panic_str("Invalid circuit breaker set"));
         Some(ProxyEntryMut { state: self, id })
     }
 
@@ -212,6 +221,24 @@ impl State {
     fn invalidate_price_cache(&mut self, id: PriceIdentifier) {
         self.cached_prices.remove(&id);
         self.bump_cache_epoch(id);
+    }
+
+    pub fn cache_price_update_failure(
+        &mut self,
+        id: PriceIdentifier,
+        now: Nanoseconds,
+        message: String,
+    ) -> CachedProxyPriceStatus {
+        self.bump_cache_epoch(id);
+        let status = CachedProxyPriceStatus::ResolveFailed { message };
+        self.cached_prices.insert(
+            &id,
+            &CachedProxyPrice {
+                updated_at_ns: now,
+                status: status.clone(),
+            },
+        );
+        status
     }
 
     pub fn set_proxy(&mut self, id: PriceIdentifier, proxy: Option<Proxy<Source>>) {
@@ -256,7 +283,7 @@ impl State {
             return None;
         }
 
-        let Some(mut set) = self.circuit_breakers.get(&price_id) else {
+        let Some(mut set) = self.load_circuit_breaker_set(price_id) else {
             env::panic_str(&format!(
                 "Circuit breaker set not found for price {price_id}"
             ));
@@ -298,7 +325,9 @@ mod tests {
     use near_sdk::{test_utils::VMContextBuilder, testing_env};
     use templar_common::Decimal;
     use templar_proxy_oracle_kernel::proxy::{
-        aggregator::Aggregator, circuit_breaker::StepwiseChange, FreshnessFilter,
+        aggregator::Aggregator,
+        circuit_breaker::{MonotonicRun, StepwiseChange},
+        FreshnessFilter,
     };
 
     use crate::{governance::MAX_CIRCUIT_BREAKERS_PER_PROXY, request::OracleRequest};
@@ -330,11 +359,59 @@ mod tests {
     }
 
     #[test]
+    fn invalid_breaker_configuration_is_never_persisted() {
+        testing_env!(VMContextBuilder::new().build());
+        let price_id = PriceIdentifier([0x11; 32]);
+        let mut state = state();
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        state
+            .proxy_entry_mut(price_id)
+            .unwrap()
+            .configure_circuit_breakers(CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: 4,
+            })
+            .unwrap();
+        state
+            .proxy_entry_mut(price_id)
+            .unwrap()
+            .add_circuit_breaker(
+                0,
+                CircuitBreaker::MonotonicRun(MonotonicRun {
+                    max_streak: 1,
+                    min_relative_step_change: Decimal::ONE_HALF,
+                }),
+            )
+            .unwrap();
+        let before = state.circuit_breakers.get(&price_id).unwrap();
+
+        assert_eq!(
+            state
+                .proxy_entry_mut(price_id)
+                .unwrap()
+                .configure_circuit_breakers(CircuitBreakerSetConfig {
+                    sample_interval_ns: Nanoseconds::from_secs(1),
+                    history_len: 4,
+                }),
+            Err(CircuitBreakerError::InvalidConfiguration)
+        );
+        assert_eq!(state.circuit_breakers.get(&price_id), Some(before.clone()));
+        assert!(before.validate().is_ok());
+    }
+    #[test]
     fn proxy_entry_add_circuit_breaker_enforces_maximum_count() {
         testing_env!(VMContextBuilder::new().build());
         let price_id = PriceIdentifier([0x11; 32]);
         let mut state = state();
         state.set_proxy(price_id, Some(proxy(price_id)));
+        state
+            .proxy_entry_mut(price_id)
+            .unwrap()
+            .configure_circuit_breakers(CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: 2,
+            })
+            .unwrap();
 
         for breaker_id in 0..u32::try_from(MAX_CIRCUIT_BREAKERS_PER_PROXY).unwrap() {
             state

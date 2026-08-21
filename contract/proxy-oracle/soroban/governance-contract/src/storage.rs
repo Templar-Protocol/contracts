@@ -42,14 +42,14 @@ pub struct StoredHeader {
 
 pub fn save_header(env: &Env, header: &KernelGovernance) {
     let mut active_ids = Vec::new(env);
-    for id in &header.active_ids {
+    for id in header.active_ids() {
         active_ids.push_back(*id);
     }
     let stored = StoredHeader {
-        next_id: header.next_id,
+        next_id: header.next_id(),
         active_ids,
-        ttls: header.ttls.clone(),
-        max_pending_proposals: header.max_pending_proposals,
+        ttls: header.ttls().clone(),
+        max_pending_proposals: header.max_pending_proposals(),
     };
     env.storage().instance().set(&DataKey::Header, &stored);
 }
@@ -60,10 +60,13 @@ pub fn load_header(env: &Env) -> Result<KernelGovernance, GovernanceError> {
         .instance()
         .get(&DataKey::Header)
         .ok_or(GovernanceError::MissingConfig)?;
-    let mut header = KernelGovernance::new(stored.ttls, stored.max_pending_proposals);
-    header.next_id = stored.next_id;
-    header.active_ids = stored.active_ids.iter().collect();
-    Ok(header)
+    KernelGovernance::try_from_parts(
+        stored.next_id,
+        stored.active_ids.iter().collect(),
+        stored.ttls,
+        stored.max_pending_proposals,
+    )
+    .map_err(|_| GovernanceError::InvalidInput)
 }
 
 pub fn load_proposal(env: &Env, id: u64) -> Option<Proposal> {
@@ -79,7 +82,7 @@ pub fn load_proposal(env: &Env, id: u64) -> Option<Proposal> {
 
 pub fn extend_active_proposal_ttls(env: &Env, header: &KernelGovernance) {
     let storage = env.storage().persistent();
-    for id in &header.active_ids {
+    for id in header.active_ids() {
         let key = DataKey::Proposal(*id);
         if storage.has(&key) {
             storage.extend_ttl(&key, DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);

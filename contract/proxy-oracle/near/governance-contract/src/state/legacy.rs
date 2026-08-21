@@ -8,12 +8,12 @@ use near_sdk::{
 };
 use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Nanoseconds};
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig},
     Proxy,
 };
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{
-    LegacyOperation, LegacyOperationKind, LegacyTtlConfig, Role,
+    LegacyHistoryMode, LegacyOperation, LegacyOperationKind, LegacyTtlConfig, Role,
 };
 
 /// The v0 operation set. Borsh-identical to [`LegacyOperation`] except `AdminUpgrade`, which held a
@@ -47,7 +47,7 @@ pub enum Operation {
         id: PriceIdentifier,
         breaker_id: u32,
         armed_after_ns: Nanoseconds,
-        accepted_history_source: AcceptedHistorySource,
+        accepted_history_source: LegacyHistoryMode,
     },
     SetEnforced {
         id: PriceIdentifier,

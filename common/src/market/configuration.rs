@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn borrow_mcr_maintenance_less_than_1() {
         let mut c = valid_configuration();
-        c.borrow_mcr_maintenance = dec!(".99");
+        c.borrow_mcr_maintenance = dec!("0.99");
         assert_eq!(
             c.validate().unwrap_err().to_string(),
             "Invalid configuration field `borrow_mcr_maintenance`: out of bounds",
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn borrow_mcr_liquidation_less_than_1() {
         let mut c = valid_configuration();
-        c.borrow_mcr_liquidation = dec!(".99");
+        c.borrow_mcr_liquidation = dec!("0.99");
         assert_eq!(
             c.validate().unwrap_err().to_string(),
             "Invalid configuration field `borrow_mcr_liquidation`: out of bounds",

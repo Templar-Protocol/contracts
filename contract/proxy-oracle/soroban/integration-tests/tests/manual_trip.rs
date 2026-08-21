@@ -42,6 +42,9 @@ fn manual_trip_via_governance_blocks_refresh() {
 
     // A manual trip clears the cache immediately on execution, before any refresh.
     assert!(b.adapter.lastprice(&b.asset_btc).is_none());
+    assert!(b.runtime.aggregated_history(&b.asset_btc, &1_u32).is_none());
+    assert!(b.adapter.price(&b.asset_btc, &100_u64).is_none());
+    assert!(b.adapter.prices(&b.asset_btc, &1_u32).is_none());
 
     assert!(matches!(
         b.refresh_one(&b.asset_btc),

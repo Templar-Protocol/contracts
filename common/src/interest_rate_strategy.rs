@@ -282,9 +282,9 @@ mod tests {
     fn exponential2() {
         let s = Exponential2::new(dec!("0.005"), dec!("0.08"), dec!("6")).unwrap();
         assert!(s.at(Decimal::ZERO).near_equal(dec!("0.005")));
-        assert!(s.at(dec!("0.25")).near_equal(dec!(
-            "0.00717669895803117868762306839097547161564207589375463826946828509045412494"
-        )));
+        assert!(s
+            .at(dec!("0.25"))
+            .near_equal(dec!("0.00717669895803117868762306839097547161")));
         assert!(s.at(Decimal::ONE_HALF).near_equal(Decimal::ONE.div(75u32)));
     }
 }

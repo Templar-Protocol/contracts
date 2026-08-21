@@ -48,16 +48,12 @@ fn two_step_ownership_handoff_through_governance() {
 
     // v1's mutations now fail because the runtime owner has moved.
     let eth = Asset::Other(soroban_sdk::Symbol::new(&b.env, "ETH"));
-    let mut sources = soroban_sdk::Vec::new(&b.env);
-    sources.push_back(templar_proxy_oracle_soroban_common::SourceConfig {
-        oracle: b.upstream_id.clone(),
-        asset: eth.clone(),
-    });
+    let sources = b.source_configs(&eth);
     let action = GovernanceAction::SetProxy(
         eth,
         templar_proxy_oracle_soroban_common::ProxyConfig {
             sources,
-            min_sources: 1,
+            min_sources: 3,
             max_age_secs: Some(300),
             max_clock_drift_secs: Some(60),
         },
@@ -91,11 +87,7 @@ fn renounced_owner_cannot_mutate() {
 
     // Any subsequent mutation panics.
     let eth = Asset::Other(soroban_sdk::Symbol::new(&b.env, "ETH"));
-    let mut sources = soroban_sdk::Vec::new(&b.env);
-    sources.push_back(templar_proxy_oracle_soroban_common::SourceConfig {
-        oracle: b.upstream_id.clone(),
-        asset: eth.clone(),
-    });
+    let sources = b.source_configs(&eth);
     // Try to mutate via governance — collapses to RuntimeFailed at best, or
     // host panic; either way the assertion is the test panics.
     b.submit_and_execute(
@@ -104,7 +96,7 @@ fn renounced_owner_cannot_mutate() {
             eth,
             templar_proxy_oracle_soroban_common::ProxyConfig {
                 sources,
-                min_sources: 1,
+                min_sources: 3,
                 max_age_secs: Some(300),
                 max_clock_drift_secs: Some(60),
             },

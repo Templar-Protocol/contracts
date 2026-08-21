@@ -4,8 +4,8 @@ use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN};
 use templar_primitives::Nanoseconds;
 
 use templar_proxy_oracle_soroban_common::{
-    is_zero_wasm_hash, Asset, CircuitBreakerConfig, ProxyConfig, RearmConfig, SetEnforcedConfig,
-    MAX_MANUAL_TRIP_METADATA_LEN,
+    is_zero_wasm_hash, validate_proxy_config, Asset, CircuitBreakerConfig, ProxyConfig,
+    RearmConfig, SetEnforcedConfig, MAX_MANUAL_TRIP_METADATA_LEN,
 };
 
 pub const MAX_PROPOSAL_TTL: Nanoseconds = Nanoseconds::from_secs(180 * 24 * 60 * 60);
@@ -167,22 +167,32 @@ governance_operations! {
     Upgrade(BytesN<32>) => upgrade,
 }
 
+impl OperationKind {
+    pub const fn required_role(self) -> Role {
+        match self {
+            Self::SetManualTrip => Role::ManualTripper,
+            Self::Rearm | Self::SetEnforced => Role::CircuitBreakerOperator,
+            Self::SetProxy
+            | Self::RemoveProxy
+            | Self::ConfigureBreakers
+            | Self::AddBreaker
+            | Self::RemoveBreaker => Role::ProxyConfigurationManager,
+            Self::TransferOwnership
+            | Self::AcceptOwnership
+            | Self::RenounceOwnership
+            | Self::SetActionTtl
+            | Self::SetRole
+            | Self::Upgrade => Role::Admin,
+        }
+    }
+}
+
 impl GovernanceAction {
     pub fn required_role(&self) -> Role {
         match self {
-            Self::SetManualTrip(_, _, _) => Role::ManualTripper,
-            Self::Rearm(_, _, _) | Self::SetEnforced(_, _, _) => Role::CircuitBreakerOperator,
-            Self::SetProxy(_, _)
-            | Self::RemoveProxy(_)
-            | Self::ConfigureBreakers(_, _, _)
-            | Self::AddBreaker(_, _)
-            | Self::RemoveBreaker(_, _)
-            | Self::SetActionTtl(_, _) => Role::ProxyConfigurationManager,
-            Self::TransferOwnership(_)
-            | Self::AcceptOwnership
-            | Self::RenounceOwnership
-            | Self::SetRole(_, _, _)
-            | Self::Upgrade(_) => Role::Admin,
+            Self::SetActionTtl(target, _) if target.required_role() == Role::Admin => Role::Admin,
+            Self::SetActionTtl(_, _) => Role::ProxyConfigurationManager,
+            _ => self.kind().required_role(),
         }
     }
 
@@ -235,8 +245,8 @@ pub fn validate_action(
     max_manual_trip_metadata_len: usize,
 ) -> Result<(), GovernanceError> {
     match action {
-        GovernanceAction::SetProxy(_, config) if config.sources.is_empty() => {
-            Err(GovernanceError::InvalidInput)
+        GovernanceAction::SetProxy(_, config) => {
+            validate_proxy_config(config).map_err(|_| GovernanceError::InvalidInput)
         }
         GovernanceAction::SetManualTrip(_, _, metadata)
             if metadata
@@ -292,24 +302,37 @@ mod tests {
     }
 
     #[test]
-    fn action_kind_and_required_role_follow_soroban_policy() {
+    fn operation_kind_required_role_is_exhaustive() {
+        for (kind, role) in [
+            (OperationKind::SetProxy, Role::ProxyConfigurationManager),
+            (OperationKind::RemoveProxy, Role::ProxyConfigurationManager),
+            (
+                OperationKind::ConfigureBreakers,
+                Role::ProxyConfigurationManager,
+            ),
+            (OperationKind::AddBreaker, Role::ProxyConfigurationManager),
+            (
+                OperationKind::RemoveBreaker,
+                Role::ProxyConfigurationManager,
+            ),
+            (OperationKind::Rearm, Role::CircuitBreakerOperator),
+            (OperationKind::SetEnforced, Role::CircuitBreakerOperator),
+            (OperationKind::SetManualTrip, Role::ManualTripper),
+            (OperationKind::TransferOwnership, Role::Admin),
+            (OperationKind::AcceptOwnership, Role::Admin),
+            (OperationKind::RenounceOwnership, Role::Admin),
+            (OperationKind::SetActionTtl, Role::Admin),
+            (OperationKind::SetRole, Role::Admin),
+            (OperationKind::Upgrade, Role::Admin),
+        ] {
+            assert_eq!(kind.required_role(), role);
+        }
+
         let admin_ttl = GovernanceAction::SetActionTtl(OperationKind::Upgrade, 1);
-        assert_eq!(admin_ttl.kind(), OperationKind::SetActionTtl);
-        assert_eq!(admin_ttl.required_role(), Role::ProxyConfigurationManager);
+        assert_eq!(admin_ttl.required_role(), Role::Admin);
 
         let manager_ttl = GovernanceAction::SetActionTtl(OperationKind::SetProxy, 1);
         assert_eq!(manager_ttl.required_role(), Role::ProxyConfigurationManager);
-
-        let manual_trip = GovernanceAction::SetManualTrip(
-            Asset::Other(soroban_sdk::Symbol::new(
-                &soroban_sdk::Env::default(),
-                "BTC",
-            )),
-            true,
-            None,
-        );
-        assert_eq!(manual_trip.kind(), OperationKind::SetManualTrip);
-        assert_eq!(manual_trip.required_role(), Role::ManualTripper);
     }
 
     #[test]
@@ -338,8 +361,7 @@ mod tests {
             ),
         });
         let rearm = RearmConfig {
-            armed_after_secs: 0,
-            accepted_history_source_code: 0,
+            arming_delay_secs: 0,
         };
         let enforced = SetEnforcedConfig { is_enforced: false };
 
@@ -404,6 +426,40 @@ mod tests {
                 ),
                 1024,
             ),
+            Err(GovernanceError::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn set_proxy_action_uses_shared_proxy_config_validation() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = soroban_sdk::Env::default();
+        let asset = Asset::Other(soroban_sdk::Symbol::new(&env, "BTC"));
+        let mut sources = soroban_sdk::Vec::new(&env);
+        for _ in 0..3 {
+            sources.push_back(templar_proxy_oracle_soroban_common::SourceConfig {
+                oracle: Address::generate(&env),
+                asset: asset.clone(),
+            });
+        }
+        let mut config = ProxyConfig {
+            sources,
+            min_sources: 3,
+            max_age_secs: Some(30),
+            max_clock_drift_secs: Some(5),
+        };
+        assert_eq!(
+            validate_action(
+                &GovernanceAction::SetProxy(asset.clone(), config.clone()),
+                1024,
+            ),
+            Ok(())
+        );
+
+        config.max_age_secs = None;
+        assert_eq!(
+            validate_action(&GovernanceAction::SetProxy(asset, config), 1024),
             Err(GovernanceError::InvalidInput)
         );
     }
