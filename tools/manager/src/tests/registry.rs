@@ -400,7 +400,7 @@ fn deploy_plan_uses_explicit_public_key() {
     let spec = cmd
         .try_into_spec()
         .expect("explicit public key builds spec");
-    let keys = spec.full_access_keys.expect("full-access keys");
+    let keys = spec.target.full_access_keys.expect("full-access keys");
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].0.to_string(), public_key);
 }
@@ -441,7 +441,10 @@ fn deploy_plan_without_signer_grant_needs_no_public_key() {
         .try_into_spec()
         .expect("suppressed signer grant must not resolve a key");
     assert!(
-        spec.full_access_keys.expect("full-access keys").is_empty(),
+        spec.target
+            .full_access_keys
+            .expect("full-access keys")
+            .is_empty(),
         "no signer key should be embedded"
     );
 }

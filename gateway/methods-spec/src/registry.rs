@@ -102,18 +102,30 @@ pub struct AddVersion {
     pub deposit: NearToken,
 }
 
-/// Deploy a contract from a registry version.
-#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(write = "registry.deploy")]
-pub struct Deploy {
+/// The fields every deploy-from-registry method shares, flattened into each so they
+/// stay at the top level of the wire JSON.
+///
+/// A contract this codebase models gets its own `<namespace>.create` declaring only
+/// its init fields beside this, dispatched through `plan_create_from_registry`. One
+/// it does not model goes through [`Deploy`] with opaque `init_args`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DeployTarget {
     pub registry_id: AccountId,
     pub name: String,
     pub version_key: String,
-    pub init_args: Base64Bytes,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[method(default)]
     pub full_access_keys: Option<Vec<PublicKey>>,
     pub deposit: NearToken,
+}
+
+/// Deploy a contract from a registry version, with init args the gateway does not
+/// interpret.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "registry.deploy")]
+pub struct Deploy {
+    #[serde(flatten)]
+    pub target: DeployTarget,
+    pub init_args: Base64Bytes,
 }
 
 /// Remove a version from a registry.

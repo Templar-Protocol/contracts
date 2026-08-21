@@ -17,6 +17,15 @@ pub mod signer;
 pub mod spec;
 pub mod storage;
 
+/// Read and parse a JSON file named by a `--*-file` flag.
+pub fn load_json_file<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> anyhow::Result<T> {
+    use anyhow::Context as _;
+
+    let contents =
+        std::fs::read(path).with_context(|| format!("read JSON from {}", path.display()))?;
+    serde_json::from_slice(&contents).with_context(|| format!("parse JSON from {}", path.display()))
+}
+
 pub use account::AccountNs;
 pub use contract::ContractNs;
 pub use ft::FtNs;

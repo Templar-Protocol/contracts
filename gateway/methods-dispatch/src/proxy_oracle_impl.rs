@@ -9,10 +9,10 @@ use templar_gateway_core::{
     client::ContractWriteOptions,
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
-use templar_gateway_methods_spec::{proxy_oracle, registry::Deploy};
+use templar_gateway_methods_spec::proxy_oracle;
 use templar_gateway_types::{NearGas, NearToken, ProxyOracle, ProxyOracleVersion};
 
-use crate::{registry_impl::plan_deploy_from_registry, Dispatch};
+use crate::{registry_impl::plan_create_from_registry, Dispatch};
 
 #[derive(Serialize)]
 struct ProxyOracleInitArgs {
@@ -27,20 +27,13 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle::Create, C> for Dispatch {
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
 
-        plan_deploy_from_registry(
+        plan_create_from_registry(
             &ctx,
             request.signer_account_id,
-            Deploy {
-                registry_id: body.registry_id,
-                name: body.name,
-                version_key: body.version_key,
-                init_args: serde_json::to_vec(&ProxyOracleInitArgs {
-                    owner_id: body.owner_id,
-                })?
-                .into(),
-                full_access_keys: body.full_access_keys,
-                deposit: body.deposit,
-            },
+            body.target,
+            serde_json::to_vec(&ProxyOracleInitArgs {
+                owner_id: body.owner_id,
+            })?,
         )
         .await
     }

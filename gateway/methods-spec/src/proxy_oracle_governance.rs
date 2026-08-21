@@ -5,7 +5,7 @@ use templar_common::Nanoseconds;
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::ProposalEncoding;
 use templar_proxy_oracle_near_governance_common::{
-    GovernancePolicyWire, Operation, Proposal, Role,
+    GovernancePolicy, GovernancePolicyWire, Operation, Proposal, Role,
 };
 
 /// Get the next governance proposal ID.
@@ -111,6 +111,21 @@ pub struct GetRoles {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetRolesResult {
     pub roles: Vec<Role>,
+}
+
+/// Create a proxy oracle governance contract from the registry.
+///
+/// A governance contract administers exactly one proxy oracle and must be that
+/// oracle's owner, so deploy it before the oracle and name it as the oracle's
+/// [`proxyOracle.create`](crate::proxy_oracle::Create) `owner_id`.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "proxyOracleGovernance.create")]
+pub struct Create {
+    #[serde(flatten)]
+    pub target: crate::registry::DeployTarget,
+    pub proxy_oracle_id: AccountId,
+    pub admin_id: AccountId,
+    pub policy: GovernancePolicy,
 }
 
 /// Create a governance proposal.

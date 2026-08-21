@@ -455,12 +455,14 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
             body: market::Create {
-                registry_id: registry_id.clone(),
-                name: "market-created".to_owned(),
-                version_key: "market@1.0.0".to_owned(),
+                target: registry::DeployTarget {
+                    registry_id: registry_id.clone(),
+                    name: "market-created".to_owned(),
+                    version_key: "market@1.0.0".to_owned(),
+                    full_access_keys: None,
+                    deposit: NearToken::from_near(20),
+                },
                 configuration: configuration.clone(),
-                full_access_keys: None,
-                deposit: NearToken::from_near(20),
             },
         })
         .await?;

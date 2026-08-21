@@ -8,7 +8,7 @@ pub use config_test::test;
 
 pub type SignerAddressBs = [u8; 20];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct Config {
     pub signer_count_threshold: u8,

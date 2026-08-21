@@ -170,7 +170,7 @@ const UNREADABLE: &str = "templar-proxy-oracle-near-contract-0.3.0";
 fn create_carries_owner_id_into_the_gateway_spec() {
     let spec = oracle_create(V0_3_0, Some("gov.testnet")).expect("into spec");
 
-    assert_eq!(spec.name, "proxy-oracle-btc");
+    assert_eq!(spec.target.name, "proxy-oracle-btc");
     assert_eq!(spec.owner_id, Some("gov.testnet".parse().unwrap()));
 
     let json = serde_json::to_value(&spec).unwrap();
@@ -786,8 +786,8 @@ fn proposal_orchestration_flags_conflict_with_print() {
 }
 
 #[test]
-fn governance_create_builds_init_args() {
-    let deploy = match parse_governance(
+fn governance_create_builds_typed_init_fields() {
+    let spec = match parse_governance(
         [
             "create",
             "--registry-id",
@@ -808,21 +808,20 @@ fn governance_create_builds_init_args() {
         .into_iter()
         .chain(CREDS),
     ) {
-        ProxyOracleGovernanceNs::Create(cmd) => cmd.try_into_spec().expect("into deploy spec"),
+        ProxyOracleGovernanceNs::Create(cmd) => cmd.try_into_spec().expect("into spec"),
         _ => panic!("expected governance create"),
     };
 
-    // Wraps registry.deploy with typed init args.
-    assert_eq!(deploy.name, "proxy-governance-market");
-    let init: Value = serde_json::from_slice(&deploy.init_args.0).expect("init args are json");
+    assert_eq!(spec.target.name, "proxy-governance-market");
     assert_eq!(
-        init["proxy_oracle_id"],
+        spec.proxy_oracle_id.as_str(),
         "proxy-oracle-market.registry.testnet"
     );
-    assert_eq!(init["admin_id"], "operator.testnet");
+    assert_eq!(spec.admin_id.as_str(), "operator.testnet");
+
     // A uniform policy: every reflexive lock and the target default at the same (zero) TTL, no
     // per-method overrides.
-    let policy = init["policy"].as_object().expect("policy object");
+    let policy = serde_json::to_value(&spec.policy).expect("policy is json");
     let reflexive = policy["reflexive_ttls"]
         .as_object()
         .expect("reflexive_ttls");
