@@ -11,6 +11,7 @@ use templar_common::{
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Nanoseconds, UnwrapReject,
 };
+use templar_proxy_oracle_governance_kernel::OperationPolicy;
 use templar_proxy_oracle_near_governance_common::{
     gen_ext_governance, CreateProposalArgs, Event, GovernancePolicy, Operation, Proposal,
     ReflexiveOperation, Role, MAX_PROPOSAL_TTL,
@@ -59,7 +60,7 @@ impl Contract {
     pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
 
     fn assert_authorized(&self, operation: &Operation) {
-        let required = operation.required_role(&self.header.ttls);
+        let required = operation.required_role(self.header.ttls());
         let caller = env::predecessor_account_id();
         let has_role = <Self as Rbac>::has_role(&caller, &Role::Admin)
             || <Self as Rbac>::has_role(&caller, &required);
@@ -90,11 +91,9 @@ impl Contract {
         near_sdk::assert_one_yocto();
         self.assert_authorized(&operation);
 
-        let effective_ttl = self.header.effective_ttl(&operation, requested_ttl);
-        if effective_ttl > MAX_PROPOSAL_TTL {
+        if requested_ttl > MAX_PROPOSAL_TTL {
             env::panic_str("Proposal TTL exceeds maximum allowed");
         }
-
         let proposal = self
             .header
             .create(
@@ -102,9 +101,12 @@ impl Contract {
                 operation,
                 Nanoseconds::near_timestamp(),
                 env::predecessor_account_id(),
-                effective_ttl,
+                requested_ttl,
             )
             .unwrap_or_reject();
+        if proposal.ttl > MAX_PROPOSAL_TTL {
+            env::panic_str("Proposal TTL exceeds maximum allowed");
+        }
         let kind = proposal.operation.kind();
         let method = proposal.operation.method();
         self.proposals.insert(id, proposal);
@@ -116,7 +118,7 @@ impl Contract {
 #[near]
 impl ProxyGovernanceInterface for Contract {
     fn next_proposal_id(&self) -> u32 {
-        Self::id_to_u32(self.header.next_id)
+        Self::id_to_u32(self.header.next_id())
     }
 
     fn proposal_count(&self) -> u32 {
@@ -144,11 +146,11 @@ impl ProxyGovernanceInterface for Contract {
         operation: Operation,
         requested_ttl: Nanoseconds,
     ) -> Nanoseconds {
-        self.header.effective_ttl(&operation, requested_ttl)
+        operation.minimum_ttl(self.header.ttls()).max(requested_ttl)
     }
 
     fn get_governance_policy(&self) -> GovernancePolicy {
-        self.header.ttls.clone()
+        self.header.ttls().clone()
     }
 
     #[payable]
@@ -213,19 +215,19 @@ impl ProxyGovernanceInterface for Contract {
             Operation::Reflexive(reflexive) => match reflexive {
                 ReflexiveOperation::SetReflexiveTtl { kind, ttl } => {
                     self.header
-                        .ttls
+                        .ttls_mut()
                         .set_reflexive_ttl(kind, ttl)
                         .unwrap_or_reject();
                 }
                 ReflexiveOperation::SetTargetDefault { policy } => {
                     self.header
-                        .ttls
+                        .ttls_mut()
                         .set_target_default(policy)
                         .unwrap_or_reject();
                 }
                 ReflexiveOperation::SetMethodPolicy { method, policy } => {
                     self.header
-                        .ttls
+                        .ttls_mut()
                         .set_method_policy(method, policy)
                         .unwrap_or_reject();
                 }

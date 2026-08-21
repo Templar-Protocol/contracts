@@ -7,7 +7,9 @@ use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     Symbol, Vec,
 };
-use stellar_access::ownable::{get_owner, set_owner, Ownable};
+use stellar_access::ownable::{
+    get_owner, renounce_ownership as relinquish_ownership, set_owner, Ownable,
+};
 use stellar_macros::only_owner;
 use templar_proxy_oracle_soroban_common::{
     extend_instance_ttl, is_zero_wasm_hash, normalized_to_sep40, Asset, ContractError, PriceData,
@@ -16,31 +18,33 @@ use templar_proxy_oracle_soroban_common::{
 
 const MAX_HISTORY_RECORDS: u32 = 32;
 
-/// Single instance-storage key; all adapter state lives in one `Config`
-/// entry. Soroban's instance storage doesn't charge per-field, and every
-/// `PriceFeedTrait` method reads at least two of these together, so the
-/// per-field `DataKey` enum the adapter used to carry was pure overhead.
+/// Keep the deployed `Config` encoding stable; decommissioning uses a separate key.
 const CONFIG: Symbol = symbol_short!("CONFIG");
+const DECOMMISSIONED: Symbol = symbol_short!("DECOM");
 
 soroban_sdk::contractmeta!(key = "sep", val = "40");
 
-/// Emitted whenever the owner-mutable triple is updated. Constant fields
-/// (`parent_oracle`, `asset`) intentionally omitted: they never change,
-/// and including them would just duplicate constructor data on every event.
 #[contractevent]
 #[derive(Clone)]
-pub struct MetadataUpdated {
+pub struct DecimalsUpdated {
     pub decimals: u32,
-    pub resolution: u32,
-    pub base: Asset,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct AdapterDecommissioned {
+    pub decommissioned: bool,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct AdapterUpgraded {
+    pub new_wasm_hash: BytesN<32>,
 }
 
 #[contract]
 pub struct Sep40Adapter;
 
-/// All adapter state. `parent_oracle` and `asset` are set once at
-/// construction and never mutated thereafter — the typed setter
-/// (`set_metadata`) only touches `decimals` / `resolution` / `base`.
 #[contracttype]
 #[derive(Clone)]
 pub struct Config {
@@ -65,6 +69,10 @@ impl Sep40Adapter {
         if decimals > 18 || resolution == 0 {
             return Err(ContractError::InvalidInput);
         }
+        let parent = ProxyOracleClient::new(&env, &parent_oracle);
+        if !matches!(parent.try_source_base(), Ok(Ok(Some(source_base))) if source_base == base) {
+            return Err(ContractError::InvalidInput);
+        }
         extend_instance_ttl(&env);
         env.storage().instance().set(
             &CONFIG,
@@ -80,33 +88,19 @@ impl Sep40Adapter {
         Ok(())
     }
 
-    /// Update the mutable SEP-40 metadata triple in one call. The
-    /// `parent_oracle` and `asset` fields are intentionally immutable —
-    /// repointing an adapter at a different parent or asset would
-    /// silently invalidate downstream consumers, and the right answer is
-    /// to deploy a new adapter.
     #[only_owner]
-    pub fn set_metadata(
-        env: Env,
-        decimals: u32,
-        resolution: u32,
-        base: Asset,
-    ) -> Result<(), ContractError> {
-        if decimals > 18 || resolution == 0 {
+    pub fn set_decimals(env: Env, decimals: u32) -> Result<(), ContractError> {
+        if decimals > 18 {
             return Err(ContractError::InvalidInput);
         }
         extend_instance_ttl(&env);
         let mut config = load_config(&env);
-        config.decimals = decimals;
-        config.resolution = resolution;
-        config.base = base.clone();
-        env.storage().instance().set(&CONFIG, &config);
-        MetadataUpdated {
-            decimals,
-            resolution,
-            base,
+        if is_decommissioned(&env) {
+            return Err(ContractError::InvalidInput);
         }
-        .publish(&env);
+        config.decimals = decimals;
+        env.storage().instance().set(&CONFIG, &config);
+        DecimalsUpdated { decimals }.publish(&env);
         Ok(())
     }
 
@@ -126,12 +120,26 @@ impl Sep40Adapter {
             return Err(ContractError::InvalidInput);
         }
         extend_instance_ttl(&env);
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        AdapterUpgraded { new_wasm_hash }.publish(&env);
         Ok(())
     }
 
     pub fn extend_ttl(env: Env) {
         extend_instance_ttl(&env);
+    }
+
+    #[only_owner]
+    pub fn decommission(env: Env) {
+        if is_decommissioned(&env) {
+            return;
+        }
+        env.storage().instance().set(&DECOMMISSIONED, &true);
+        AdapterDecommissioned {
+            decommissioned: true,
+        }
+        .publish(&env);
     }
 
     pub fn config(env: Env) -> Option<Config> {
@@ -141,7 +149,14 @@ impl Sep40Adapter {
 }
 
 #[contractimpl(contracttrait)]
-impl Ownable for Sep40Adapter {}
+impl Ownable for Sep40Adapter {
+    fn renounce_ownership(env: &Env) {
+        if !is_decommissioned(env) {
+            env.panic_with_error(ContractError::InvalidInput);
+        }
+        relinquish_ownership(env);
+    }
+}
 
 // SEP-40 getters cannot return Option per the interface contract; panic on
 // missing key is documented fail-closed behavior.
@@ -153,9 +168,13 @@ impl PriceFeedTrait for Sep40Adapter {
     }
 
     fn assets(env: Env) -> Vec<Asset> {
-        let mut v = Vec::new(&env);
-        v.push_back(load_config(&env).asset);
-        v
+        let config = load_config(&env);
+        if is_decommissioned(&env) {
+            return Vec::new(&env);
+        }
+        let mut assets = Vec::new(&env);
+        assets.push_back(config.asset);
+        assets
     }
 
     fn decimals(env: Env) -> u32 {
@@ -167,15 +186,15 @@ impl PriceFeedTrait for Sep40Adapter {
     }
 
     fn price(env: Env, asset: Asset, timestamp: u64) -> Option<PriceData> {
-        let config = load_config(&env);
-        if config.asset != asset {
+        let config = active_config(&env, &asset)?;
+        if timestamp % u64::from(config.resolution) != 0 {
             return None;
         }
         let client = ProxyOracleClient::new(&env, &config.parent_oracle);
         let history = client.aggregated_history(&asset, &MAX_HISTORY_RECORDS)?;
         for entry in history.iter().rev() {
-            if entry.timestamp == timestamp {
-                return normalized_to_sep40(&entry, config.decimals).ok();
+            if bucket_timestamp(entry.timestamp, config.resolution) == timestamp {
+                return normalized_to_adapter(&entry, config.decimals, config.resolution).ok();
             }
         }
         None
@@ -185,30 +204,33 @@ impl PriceFeedTrait for Sep40Adapter {
         if records == 0 {
             return None;
         }
-        let config = load_config(&env);
-        if config.asset != asset {
-            return None;
-        }
+        let config = active_config(&env, &asset)?;
         let client = ProxyOracleClient::new(&env, &config.parent_oracle);
         let history = client.aggregated_history(&asset, &records)?;
-        if history.is_empty() {
-            return None;
-        }
-        let mut out = Vec::new(&env);
+        let mut prices: Vec<PriceData> = Vec::new(&env);
         for entry in history.iter() {
-            out.push_back(normalized_to_sep40(&entry, config.decimals).ok()?);
+            let Ok(price) = normalized_to_adapter(&entry, config.decimals, config.resolution)
+            else {
+                continue;
+            };
+            let previous_index = prices.len().saturating_sub(1);
+            if prices
+                .get(previous_index)
+                .is_some_and(|previous| previous.timestamp == price.timestamp)
+            {
+                prices.set(previous_index, price);
+            } else {
+                prices.push_back(price);
+            }
         }
-        Some(out)
+        (!prices.is_empty()).then_some(prices)
     }
 
     fn lastprice(env: Env, asset: Asset) -> Option<PriceData> {
-        let config = load_config(&env);
-        if config.asset != asset {
-            return None;
-        }
+        let config = active_config(&env, &asset)?;
         let client = ProxyOracleClient::new(&env, &config.parent_oracle);
         let normalized = client.aggregated_latest(&asset)?;
-        normalized_to_sep40(&normalized, config.decimals).ok()
+        normalized_to_adapter(&normalized, config.decimals, config.resolution).ok()
     }
 }
 
@@ -216,6 +238,43 @@ impl PriceFeedTrait for Sep40Adapter {
 fn load_config(env: &Env) -> Config {
     extend_instance_ttl(env);
     env.storage().instance().get(&CONFIG).expect("CONFIG")
+}
+
+fn is_decommissioned(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get::<_, bool>(&DECOMMISSIONED)
+        .unwrap_or(false)
+}
+
+fn active_config(env: &Env, asset: &Asset) -> Option<Config> {
+    let config = load_config(env);
+    if is_decommissioned(env) || &config.asset != asset || !parent_base_matches(env, &config) {
+        return None;
+    }
+    Some(config)
+}
+
+fn parent_base_matches(env: &Env, config: &Config) -> bool {
+    let parent = ProxyOracleClient::new(env, &config.parent_oracle);
+    matches!(parent.try_source_base(), Ok(Ok(Some(base))) if base == config.base)
+}
+
+fn normalized_to_adapter(
+    price: &templar_proxy_oracle_soroban_common::NormalizedPrice,
+    decimals: u32,
+    resolution: u32,
+) -> Result<PriceData, ContractError> {
+    let mut projected = normalized_to_sep40(price, decimals)?;
+    if price.mantissa != 0 && projected.price == 0 {
+        return Err(ContractError::ConversionOverflow);
+    }
+    projected.timestamp = bucket_timestamp(projected.timestamp, resolution);
+    Ok(projected)
+}
+
+fn bucket_timestamp(timestamp: u64, resolution: u32) -> u64 {
+    timestamp - (timestamp % u64::from(resolution))
 }
 
 #[cfg(test)]

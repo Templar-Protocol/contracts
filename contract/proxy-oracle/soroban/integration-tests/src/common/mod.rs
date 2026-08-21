@@ -1,8 +1,8 @@
 //! Shared harness for the proxy-oracle integration test suite.
 //!
-//! [`Bootstrap`] deploys the runtime, governance, SEP-40 adapter, and one
-//! mock upstream oracle into a single in-process `Env` and re-wires
-//! ownership so governance is the runtime's owner. Most scenarios start from
+//! [`Bootstrap`] deploys the runtime, governance, SEP-40 adapter, and three
+//! mock upstream oracles into a single in-process `Env` and re-wires ownership
+//! so governance is the runtime's owner. Most scenarios start from
 //! `Bootstrap::new()` and layer on configuration + role grants from there.
 
 pub mod ledger;
@@ -42,6 +42,10 @@ pub struct Bootstrap {
     pub adapter: Sep40AdapterClient<'static>,
     pub upstream_id: Address,
     pub upstream: MockOracleClient<'static>,
+    secondary_upstream_id: Address,
+    secondary_upstream: MockOracleClient<'static>,
+    tertiary_upstream_id: Address,
+    tertiary_upstream: MockOracleClient<'static>,
     pub asset_btc: Asset,
     pub base_usd: Asset,
 }
@@ -85,18 +89,22 @@ impl Bootstrap {
         runtime.transfer_ownership(&governance_id, &live_until_ledger);
         runtime.accept_ownership();
 
-        // Mock upstream oracle (one source feed).
         let upstream_id = env.register(
             MockOracle,
             (&base_usd, &ADAPTER_DECIMALS, &ADAPTER_RESOLUTION),
         );
         let upstream = MockOracleClient::new(&env, &upstream_id);
+        let secondary_upstream_id = env.register(
+            MockOracle,
+            (&base_usd, &ADAPTER_DECIMALS, &ADAPTER_RESOLUTION),
+        );
+        let secondary_upstream = MockOracleClient::new(&env, &secondary_upstream_id);
+        let tertiary_upstream_id = env.register(
+            MockOracle,
+            (&base_usd, &ADAPTER_DECIMALS, &ADAPTER_RESOLUTION),
+        );
+        let tertiary_upstream = MockOracleClient::new(&env, &tertiary_upstream_id);
 
-        // SEP-40 adapter: owned by `admin` directly. Adapter mutations
-        // (`set_metadata`, `upgrade`) aren't routed through the governance
-        // proposal flow because they don't move oracle state; making the
-        // bootstrap admin the adapter owner reflects that and keeps test
-        // invocations straightforward.
         let adapter_id = env.register(
             Sep40Adapter,
             (
@@ -121,6 +129,10 @@ impl Bootstrap {
             adapter,
             upstream_id,
             upstream,
+            secondary_upstream_id,
+            secondary_upstream,
+            tertiary_upstream_id,
+            tertiary_upstream,
             asset_btc,
             base_usd,
         }
@@ -134,17 +146,12 @@ impl Bootstrap {
         id
     }
 
-    /// Convenience for the common pattern of registering BTC/USD with one
-    /// upstream source.
+    /// Convenience for the common pattern of registering BTC/USD with three
+    /// upstream sources.
     pub fn configure_default_feed(&self) {
-        let mut sources = soroban_sdk::Vec::new(&self.env);
-        sources.push_back(SourceConfig {
-            oracle: self.upstream_id.clone(),
-            asset: self.asset_btc.clone(),
-        });
         let config = ProxyConfig {
-            sources,
-            min_sources: 1,
+            sources: self.source_configs(&self.asset_btc),
+            min_sources: 3,
             max_age_secs: Some(300),
             max_clock_drift_secs: Some(60),
         };
@@ -152,6 +159,21 @@ impl Bootstrap {
             &self.admin,
             GovernanceAction::SetProxy(self.asset_btc.clone(), config),
         );
+    }
+
+    pub fn source_configs(&self, asset: &Asset) -> soroban_sdk::Vec<SourceConfig> {
+        let mut sources = soroban_sdk::Vec::new(&self.env);
+        for oracle in [
+            self.upstream_id.clone(),
+            self.secondary_upstream_id.clone(),
+            self.tertiary_upstream_id.clone(),
+        ] {
+            sources.push_back(SourceConfig {
+                oracle,
+                asset: asset.clone(),
+            });
+        }
+        sources
     }
 
     /// Grant a role via an admin proposal.
@@ -162,21 +184,24 @@ impl Bootstrap {
         );
     }
 
-    /// Drive the mock upstream with an explicit (price, ts).
+    /// Drive each mock upstream with an explicit (price, ts).
     pub fn push_upstream_price(&self, asset: &Asset, price: i128, timestamp: u64) {
         self.upstream.set_price(asset, &price, &timestamp);
+        self.secondary_upstream.set_price(asset, &price, &timestamp);
+        self.tertiary_upstream.set_price(asset, &price, &timestamp);
     }
 
-    /// One-asset refresh helper. Panics if the runtime returned no result
-    /// for the asked-for asset — only possible if the contract changed shape.
-    #[allow(clippy::expect_used)]
+    pub fn push_upstream_prices(&self, asset: &Asset, prices: [i128; 3], timestamp: u64) {
+        self.upstream.set_price(asset, &prices[0], &timestamp);
+        self.secondary_upstream
+            .set_price(asset, &prices[1], &timestamp);
+        self.tertiary_upstream
+            .set_price(asset, &prices[2], &timestamp);
+    }
+
+    /// Refresh a single asset.
     pub fn refresh_one(&self, asset: &Asset) -> RefreshStatus {
-        let assets = soroban_sdk::Vec::from_array(&self.env, [asset.clone()]);
-        let results = self.runtime.refresh(&assets);
-        results
-            .get(0)
-            .expect("runtime returned no entry for refreshed asset")
-            .1
+        self.runtime.refresh(asset)
     }
 }
 

@@ -1,7 +1,7 @@
 use near_sdk::{ext_contract, json_types::Base64VecU8, Promise};
 use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Nanoseconds};
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig},
     Proxy,
 };
 
@@ -29,13 +29,7 @@ pub trait ProxyOracleAdminInterface {
         is_manually_tripped: bool,
         metadata: Option<Base64VecU8>,
     );
-    fn admin_rearm(
-        &mut self,
-        id: PriceIdentifier,
-        breaker_id: u32,
-        armed_after_ns: Nanoseconds,
-        accepted_history_source: AcceptedHistorySource,
-    );
+    fn admin_rearm(&mut self, id: PriceIdentifier, breaker_id: u32, arming_delay_ns: Nanoseconds);
     fn admin_set_enforced(&mut self, id: PriceIdentifier, breaker_id: u32, is_enforced: bool);
     fn admin_upgrade(&mut self, code: UpgradeSource, migrate_args: Base64VecU8) -> Promise;
 }

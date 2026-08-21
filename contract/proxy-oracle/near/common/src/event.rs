@@ -1,8 +1,7 @@
 use near_sdk::{env, json_types::Base64VecU8, near, AccountId};
 use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
-    AcceptedHistorySource, CircuitBreaker, CircuitBreakerEvent as KernelEvent,
-    CircuitBreakerSetConfig, Observation,
+    CircuitBreaker, CircuitBreakerEvent as KernelEvent, CircuitBreakerSetConfig, Observation,
 };
 
 use crate::convert::account_id_try_from_kernel;
@@ -45,7 +44,6 @@ pub enum Event {
         price_id: PriceIdentifier,
         breaker_id: u32,
         armed_after_ns: Nanoseconds,
-        accepted_history_source: AcceptedHistorySource,
     },
     #[event_version("1.0.0")]
     CircuitBreakerTripped {
@@ -99,12 +97,10 @@ impl Event {
             KernelEvent::Rearmed {
                 breaker_id,
                 armed_after_ns,
-                accepted_history_source,
             } => Self::CircuitBreakerRearmed {
                 price_id,
                 breaker_id,
                 armed_after_ns,
-                accepted_history_source,
             },
             KernelEvent::Tripped {
                 breaker_id,

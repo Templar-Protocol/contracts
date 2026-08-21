@@ -13,7 +13,7 @@ use near_sdk::{
 };
 use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Nanoseconds};
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig},
     Proxy,
 };
 use templar_proxy_oracle_near_common::input::Source;
@@ -22,6 +22,21 @@ use crate::{
     target, FunctionCall, GovernancePolicy, MethodPolicy, Operation, ReflexiveKind,
     ReflexiveOperation, Role,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum LegacyOperationConversionError {
+    #[error("legacy rearm proposals must be cancelled before migration")]
+    RearmUnsupported,
+    #[error(transparent)]
+    Serialization(#[from] near_sdk::serde_json::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub enum LegacyHistoryMode {
+    Empty,
+    Observed,
+}
 
 /// The old per-operation kind tag, retained so a legacy `SetActionTtl { kind, .. }` still resolves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +86,7 @@ pub enum LegacyOperation {
         id: PriceIdentifier,
         breaker_id: u32,
         armed_after_ns: Nanoseconds,
-        accepted_history_source: AcceptedHistorySource,
+        accepted_history_source: LegacyHistoryMode,
     },
     SetEnforced {
         id: PriceIdentifier,
@@ -246,15 +261,10 @@ fn map_set_action_ttl(kind: LegacyOperationKind, ttl: Nanoseconds) -> Operation 
 }
 
 impl TryFrom<LegacyOperation> for Operation {
-    type Error = near_sdk::serde_json::Error;
+    type Error = LegacyOperationConversionError;
 
     /// Map to the generic [`Operation`]: target ops become `TargetFunctionCall`s with each method's
-    /// default gas. Only the migration and legacy-JSON paths use this (the CLI builds current-format
-    /// ops directly via [`crate::target`], where operators set gas), so no gas override is threaded.
-    ///
-    /// # Errors
-    ///
-    /// If serializing a target method's args to JSON fails.
+    /// If serializing a target method's args to JSON fails, or the legacy operation is a rearm.
     fn try_from(operation: LegacyOperation) -> Result<Self, Self::Error> {
         Ok(match operation {
             LegacyOperation::SetProxy { id, proxy } => {
@@ -287,18 +297,9 @@ impl TryFrom<LegacyOperation> for Operation {
                 metadata,
                 None,
             )?),
-            LegacyOperation::Rearm {
-                id,
-                breaker_id,
-                armed_after_ns,
-                accepted_history_source,
-            } => Operation::TargetFunctionCall(target::admin_rearm(
-                id,
-                breaker_id,
-                armed_after_ns,
-                accepted_history_source,
-                None,
-            )?),
+            LegacyOperation::Rearm { .. } => {
+                return Err(LegacyOperationConversionError::RearmUnsupported);
+            }
             LegacyOperation::SetEnforced {
                 id,
                 breaker_id,

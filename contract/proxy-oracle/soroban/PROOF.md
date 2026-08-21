@@ -17,20 +17,22 @@ kill switch**.
 Each Templar defense closes one of those gaps; an attack must defeat all of them
 at once.
 
-- **Multi-source quorum** — with `n ≥ 3` independent sources and `min_sources =
-  ⌈n/2⌉`, no single compromised source determines the price. Median of
+- **Multi-source quorum** — with three independent sources and `min_sources =
+  3`, no single compromised source determines the price. Median of
   `[1.06, 1.06, 106.74]` is `1.06`; the attacker must compromise a majority.
-- **StepwiseChange** — blocks a single step exceeding `max_relative_change`
-  versus the last **accepted** price (`δ = |p_new − h_last| / h_last`). Blend
-  compared against the previous sample, which could itself be manipulated;
-  Templar compares against accepted history. For Blend: `δ = 100.9 > 0.10` →
-  blocked.
-- **MonotonicRun** — blocks sustained directional movement: same direction for
-  more than `max_streak` windows with per-window change ≥ `min_relative_step_change`.
-  Catches staged ramps that each stay under StepwiseChange.
-- **WindowedChangeDelta** — blocks statistical outliers by comparing the recent
-  window average against the historical average (`δ = |A_recent − A_history| /
-  A_history`). A 100× jump makes `A_recent ≈ 50× A_history`.
+- **StepwiseChange** — blocks a single step strictly exceeding
+  `max_relative_change` versus the last **accepted** price
+  (`δ = |p_new − h_last| / h_last`). Blend compared against the previous sample,
+  which could itself be manipulated; Templar compares against accepted history.
+- **MonotonicRun** — blocks at least `max_streak` same-direction transitions
+  whose relative change is at least `min_relative_step_change`. It requires
+  zero sampling so it evaluates every accepted step.
+- **WindowedChangeDelta** — blocks when the exact means of equal-sized current
+  and historical windows differ by more than `max_relative_mean_change`.
+- **CumulativeChange** — blocks a price that strictly exceeds its threshold from
+  the immutable accepted baseline captured when the rule is installed. To
+  intentionally rebase it, remove the rule, complete a successful refresh, then
+  add it again.
 - **Freshness filter** — rejects prices older than `max_age_secs` or more than
   `max_clock_drift_secs` in the future, so stale or pre-manufactured prices
   cannot be replayed.
@@ -60,13 +62,13 @@ the freshness window, and avoid any operator manual trip.
 ```rust
 let proxy_config = ProxyConfig {
     sources: vec![pyth, redstone, reflector],
-    min_sources: 2,
+    min_sources: 3,
     max_age_secs: Some(300),
     max_clock_drift_secs: Some(60),
 };
-let stepwise  = StepwiseChange { max_relative_change: dec("0.10") };
+let stepwise = StepwiseChange { max_relative_change: dec("0.10") };
 let monotonic = MonotonicRun { max_streak: 3, min_relative_step_change: dec("0.01") };
-let windowed  = WindowedChangeDelta { window_len: 2, lookback_windows: 3, max_relative_change_delta: dec("0.15") };
+let windowed = WindowedChangeDelta { window_len: 2, lookback_windows: 3, max_relative_mean_change: dec("0.15") };
 ```
 
 Set `history_len` ≥ the largest lookback any installed breaker needs. Guard the
@@ -80,7 +82,9 @@ cargo test -p templar-proxy-oracle-soroban-contract --features testutils blend_e
 
 | Scenario | Expected outcome |
 |----------|------------------|
+| 4 sources, 1 unavailable | `min_sources: 3` retains quorum |
 | 3 sources, 1 manipulated | median returns the honest price |
+| source outage | cache records failure; reads fail closed |
 | 100× single-step jump | StepwiseChange trips, cache blocked |
 | 20% pump × 4 windows | MonotonicRun trips on window 4 |
 | 50× statistical outlier | WindowedChangeDelta blocks |

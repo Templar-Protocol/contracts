@@ -1,8 +1,10 @@
 use core::str::FromStr;
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 use rstest::rstest;
-#[cfg(all(feature = "borsh", feature = "serde"))]
+#[cfg(all(feature = "borsh", feature = "serde", feature = "std"))]
 use std::eprintln;
 use templar_primitives::{Decimal, Nanoseconds};
 
@@ -23,7 +25,16 @@ fn price_with_conf(value: i64, conf: u64) -> Price {
         price: value,
         conf,
         expo: 0,
-        publish_time_ns: Nanoseconds::zero(),
+        publish_time_ns: next_test_publish_time(),
+    }
+}
+
+fn price_at(value: i64, publish_time_s: u64) -> Price {
+    Price {
+        price: value,
+        conf: 0,
+        expo: 0,
+        publish_time_ns: Nanoseconds::from_secs(publish_time_s),
     }
 }
 
@@ -32,8 +43,14 @@ fn price_with_expo(value: i64, expo: i32) -> Price {
         price: value,
         conf: 0,
         expo,
-        publish_time_ns: Nanoseconds::zero(),
+        publish_time_ns: next_test_publish_time(),
     }
+}
+
+fn next_test_publish_time() -> Nanoseconds {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+
+    Nanoseconds::from_secs(NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 fn observation(value: i64) -> Observation {
@@ -92,26 +109,51 @@ fn assert_manually_blocked(
     acceptance
 }
 
-#[cfg(all(feature = "borsh", feature = "serde"))]
-fn calibration_breaker(index: u32) -> CircuitBreaker {
+#[cfg(all(feature = "borsh", feature = "serde", feature = "std"))]
+fn calibration_breaker(history_len: u32, index: u32) -> CircuitBreaker {
+    if history_len == 1 {
+        return CircuitBreaker::CumulativeChange(CumulativeChange {
+            baseline: price(100),
+            max_relative_change: Decimal::ONE,
+        });
+    }
+
+    let stepwise = || {
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: Decimal::ONE,
+        })
+    };
+    let monotonic = || {
+        CircuitBreaker::MonotonicRun(MonotonicRun {
+            max_streak: 1,
+            min_relative_step_change: Decimal::ONE,
+        })
+    };
+    if history_len < 4 {
+        return if index % 2 == 0 {
+            stepwise()
+        } else {
+            monotonic()
+        };
+    }
+
     match index % 3 {
-        0 => CircuitBreaker::StepwiseChange(StepwiseChange {
-            max_relative_change: dec("10"),
-        }),
-        1 => CircuitBreaker::MonotonicRun(MonotonicRun {
-            max_streak: u32::MAX,
-            min_relative_step_change: Decimal::ZERO,
-        }),
+        0 => stepwise(),
+        1 => monotonic(),
         _ => CircuitBreaker::WindowedChangeDelta(WindowedChangeDelta {
             window_len: 2,
             lookback_windows: 1,
-            max_relative_change_delta: dec("10"),
+            max_relative_mean_change: Decimal::ONE,
         }),
     }
 }
 
-#[cfg(all(feature = "borsh", feature = "serde"))]
-fn calibration_set(history_len: u32, breaker_count: u32) -> CircuitBreakerSet {
+#[cfg(all(feature = "borsh", feature = "serde", feature = "std"))]
+fn calibration_set(history_len: u32, breaker_count: u32) -> Option<CircuitBreakerSet> {
+    if history_len == 0 && breaker_count > 0 {
+        return None;
+    }
+
     let mut set = breaker_set(Nanoseconds::zero(), history_len);
     for i in 0..history_len {
         set.try_accept_price(
@@ -121,13 +163,13 @@ fn calibration_set(history_len: u32, breaker_count: u32) -> CircuitBreakerSet {
         .unwrap();
     }
     for breaker_id in 0..breaker_count {
-        set.add(breaker_id, calibration_breaker(breaker_id))
+        set.add(breaker_id, calibration_breaker(history_len, breaker_id))
             .unwrap();
     }
-    set
+    Some(set)
 }
 
-#[cfg(all(feature = "borsh", feature = "serde"))]
+#[cfg(all(feature = "borsh", feature = "serde", feature = "std"))]
 #[test]
 #[ignore = "prints Borsh and JSON sizes for choosing circuit breaker resource bounds"]
 fn calibrate_circuit_breaker_set_serialized_sizes() {
@@ -137,10 +179,24 @@ fn calibrate_circuit_breaker_set_serialized_sizes() {
     eprintln!("history_len,breaker_count,borsh_bytes,json_bytes");
     for &history_len in HISTORY_LENGTHS {
         for &breaker_count in BREAKER_COUNTS {
-            let set = calibration_set(history_len, breaker_count);
+            let Some(set) = calibration_set(history_len, breaker_count) else {
+                continue;
+            };
             let borsh_bytes = borsh::to_vec(&set).unwrap().len();
             let json_bytes = serde_json::to_vec(&set).unwrap().len();
             eprintln!("{history_len},{breaker_count},{borsh_bytes},{json_bytes}");
+        }
+    }
+}
+
+#[cfg(all(feature = "borsh", feature = "serde", feature = "std"))]
+#[test]
+fn calibration_set_contains_only_valid_breakers() {
+    for history_len in [0, 1, 2, 4, 32] {
+        for breaker_count in [0, 1, 16] {
+            let set = calibration_set(history_len, breaker_count);
+            assert_eq!(set.is_some(), history_len > 0 || breaker_count == 0);
+            assert!(set.is_none_or(|set| set.validate().is_ok()));
         }
     }
 }
@@ -200,14 +256,14 @@ fn monotonic_run_accounts_for_price_exponent() {
 }
 
 #[test]
-fn windowed_change_delta_compares_current_to_lookback_window() {
+fn windowed_change_delta_compares_window_means() {
     let breaker = WindowedChangeDelta {
         window_len: 2,
         lookback_windows: 1,
-        max_relative_change_delta: dec("0.05"),
+        max_relative_mean_change: dec("0.05"),
     };
 
-    assert!(breaker.should_trip(&history([100, 101, 100, 110])));
+    assert!(breaker.should_trip(&history([100, 100, 100, 111])));
     assert!(breaker.should_trip(&history([0, 0, 0, 1])));
 }
 
@@ -216,7 +272,7 @@ fn windowed_change_delta_accounts_for_price_exponent() {
     let breaker = WindowedChangeDelta {
         window_len: 2,
         lookback_windows: 1,
-        max_relative_change_delta: dec("0.05"),
+        max_relative_mean_change: dec("0.05"),
     };
     let mut equivalent = RingBuffer::new(4);
     equivalent.push(observation_with_expo(100, -2));
@@ -229,7 +285,7 @@ fn windowed_change_delta_accounts_for_price_exponent() {
 
 #[test]
 fn set_adds_and_removes_breakers_by_id() {
-    let mut set = CircuitBreakerSet::empty();
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
     let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
         max_relative_change: dec("0.10"),
     });
@@ -239,14 +295,15 @@ fn set_adds_and_removes_breakers_by_id() {
     set.set_config(CircuitBreakerSetConfig {
         sample_interval_ns: Nanoseconds::zero(),
         history_len: 2,
-    });
+    })
+    .unwrap();
     set.try_accept_price(price(100), Nanoseconds::zero())
         .unwrap();
 
     assert_eq!(id, 0);
     assert_eq!(set.next_id(), 1);
-    assert_eq!(set.accepted_history().get(0).unwrap().price, price(100));
-    assert_eq!(set.observed_history().get(0).unwrap().price, price(100));
+    assert_eq!(set.accepted_history().get(0).unwrap().price.price, 100);
+    assert_eq!(set.observed_history().get(0).unwrap().price.price, 100);
 
     set.remove(id).unwrap();
 
@@ -255,7 +312,7 @@ fn set_adds_and_removes_breakers_by_id() {
 
 #[test]
 fn set_adds_breakers_with_explicit_monotonic_ids() {
-    let mut set = CircuitBreakerSet::empty();
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
     let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
         max_relative_change: dec("0.10"),
     });
@@ -273,6 +330,62 @@ fn set_adds_breakers_with_explicit_monotonic_ids() {
     assert_eq!(set.next_id(), 2);
     assert!(set.breakers().contains_key(&0));
     assert!(set.breakers().contains_key(&1));
+}
+
+#[test]
+fn inert_rules_are_rejected_before_persistence() {
+    assert_eq!(
+        breaker_set(Nanoseconds::zero(), 1).add(
+            0,
+            CircuitBreaker::StepwiseChange(StepwiseChange {
+                max_relative_change: dec("0.10"),
+            }),
+        ),
+        Err(CircuitBreakerError::InvalidConfiguration)
+    );
+    assert_eq!(
+        breaker_set(Nanoseconds::zero(), 0).add(
+            0,
+            CircuitBreaker::CumulativeChange(CumulativeChange {
+                baseline: price(100),
+                max_relative_change: dec("0.10"),
+            }),
+        ),
+        Err(CircuitBreakerError::InvalidConfiguration)
+    );
+    assert_eq!(
+        breaker_set(Nanoseconds::zero(), 4).add(
+            0,
+            CircuitBreaker::WindowedChangeDelta(WindowedChangeDelta {
+                window_len: 1,
+                lookback_windows: 1,
+                max_relative_mean_change: dec("0.10"),
+            }),
+        ),
+        Err(CircuitBreakerError::InvalidConfiguration)
+    );
+}
+
+#[test]
+fn monotonic_run_cannot_be_added_or_reconfigured_with_sampling() {
+    let breaker = CircuitBreaker::MonotonicRun(MonotonicRun {
+        max_streak: 1,
+        min_relative_step_change: dec("0.10"),
+    });
+    assert_eq!(
+        breaker_set(Nanoseconds::from_secs(1), 4).add(0, breaker.clone()),
+        Err(CircuitBreakerError::InvalidConfiguration)
+    );
+
+    let mut set = breaker_set(Nanoseconds::zero(), 4);
+    set.add(0, breaker).unwrap();
+    assert_eq!(
+        set.set_config(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::from_secs(1),
+            history_len: 4,
+        }),
+        Err(CircuitBreakerError::InvalidConfiguration)
+    );
 }
 
 #[test]
@@ -305,7 +418,7 @@ fn set_accepts_custom_rule_type() {
 
 #[test]
 fn set_rejects_unexpected_breaker_id() {
-    let mut set = CircuitBreakerSet::empty();
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
     let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
         max_relative_change: dec("0.10"),
     });
@@ -332,7 +445,7 @@ fn set_rejects_invalid_price_without_recording_history() {
 }
 
 fn unchecked_set_with_stale_next_id() -> UncheckedCircuitBreakerSet {
-    let mut set = CircuitBreakerSet::empty();
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
     set.add(
         0,
         CircuitBreaker::StepwiseChange(StepwiseChange {
@@ -361,6 +474,44 @@ fn borsh_rejects_set_with_stale_next_id() {
     assert!(borsh::from_slice::<CircuitBreakerSet>(&bytes).is_err());
 }
 
+#[test]
+fn structural_decode_defers_semantic_validation_to_runtime_storage() {
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
+    set.add(
+        0,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }),
+    )
+    .unwrap();
+    let mut unchecked = UncheckedCircuitBreakerSet::from(set);
+    unchecked.accepted_history.set_capacity(1);
+    unchecked.observed_history.set_capacity(1);
+
+    assert_eq!(
+        CircuitBreakerSet::try_from(unchecked.clone())
+            .unwrap()
+            .validate(),
+        Err(CircuitBreakerSetParseError::InvalidConfiguration)
+    );
+
+    #[cfg(feature = "serde")]
+    assert_eq!(
+        serde_json::from_value::<CircuitBreakerSet>(serde_json::to_value(&unchecked).unwrap())
+            .unwrap()
+            .validate(),
+        Err(CircuitBreakerSetParseError::InvalidConfiguration)
+    );
+
+    #[cfg(feature = "borsh")]
+    assert_eq!(
+        borsh::from_slice::<CircuitBreakerSet>(&borsh::to_vec(&unchecked).unwrap())
+            .unwrap()
+            .validate(),
+        Err(CircuitBreakerSetParseError::InvalidConfiguration)
+    );
+}
+
 #[cfg(feature = "serde")]
 #[test]
 fn serde_rejects_set_with_stale_next_id() {
@@ -387,7 +538,7 @@ fn set_rejects_parse_when_history_capacities_differ() {
 #[cfg(feature = "serde")]
 #[test]
 fn serde_serializes_set_like_unchecked_representation() {
-    let mut set = CircuitBreakerSet::empty();
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
     set.add(
         0,
         CircuitBreaker::StepwiseChange(StepwiseChange {
@@ -407,8 +558,8 @@ fn serde_serializes_set_like_unchecked_representation() {
 fn set_rejects_add_when_next_id_is_exhausted() {
     let mut set = CircuitBreakerSet::try_from(UncheckedCircuitBreakerSet {
         sample_interval_ns: Nanoseconds::zero(),
-        accepted_history: RingBuffer::new(0),
-        observed_history: RingBuffer::new(0),
+        accepted_history: RingBuffer::new(2),
+        observed_history: RingBuffer::new(2),
         next_id: u32::MAX,
         is_manually_tripped: false,
         breakers: BTreeMap::new(),
@@ -426,7 +577,7 @@ fn set_rejects_add_when_next_id_is_exhausted() {
 
 #[test]
 fn set_prioritizes_unexpected_breaker_id_over_exhaustion() {
-    let mut set = CircuitBreakerSet::empty();
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
     let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
         max_relative_change: dec("0.10"),
     });
@@ -451,8 +602,7 @@ fn future_armed_breaker_records_history_without_tripping() {
         }),
     )
     .unwrap();
-    set.rearm(id, Nanoseconds::from_secs(10), AcceptedHistorySource::Empty)
-        .unwrap();
+    set.rearm(id, Nanoseconds::from_secs(10)).unwrap();
 
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
@@ -499,7 +649,7 @@ fn set_returns_tripped_for_new_and_existing_trips() {
         vec![id],
     );
     assert!(acceptance.events.is_empty());
-    assert_eq!(set.accepted_history().get(0).unwrap().price, price(100));
+    assert_eq!(set.accepted_history().get(0).unwrap().price.price, 100);
     assert_eq!(
         set.observed_history()
             .iter()
@@ -510,7 +660,7 @@ fn set_returns_tripped_for_new_and_existing_trips() {
 }
 
 #[test]
-fn set_returns_first_new_blocking_breaker_id() {
+fn hal_30_records_every_simultaneous_fresh_breaker_trip() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let first_id = 0;
     set.add(
@@ -532,10 +682,27 @@ fn set_returns_first_new_blocking_breaker_id() {
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
 
-    assert_blocked_by(
+    let outcome = assert_blocked_by(
         set.try_accept_price(price(150), Nanoseconds::from_secs(2)),
-        vec![first_id],
+        vec![first_id, second_id],
     );
+    assert_eq!(outcome.events.len(), 2);
+    assert!(matches!(
+        outcome.events[0],
+        CircuitBreakerEvent::Tripped { breaker_id, .. } if breaker_id == first_id
+    ));
+    assert!(matches!(
+        outcome.events[1],
+        CircuitBreakerEvent::Tripped { breaker_id, .. } if breaker_id == second_id
+    ));
+    assert!(matches!(
+        set.breakers()[&first_id].status,
+        CircuitBreakerStatus::Tripped { .. }
+    ));
+    assert!(matches!(
+        set.breakers()[&second_id].status,
+        CircuitBreakerStatus::Tripped { .. }
+    ));
 }
 
 #[test]
@@ -558,9 +725,9 @@ fn too_soon_sample_can_trip_without_being_persisted() {
     );
 
     assert_eq!(set.accepted_history().len(), 1);
-    assert_eq!(set.accepted_history().get(0).unwrap().price, price(100));
+    assert_eq!(set.accepted_history().get(0).unwrap().price.price, 100);
     assert_eq!(set.observed_history().len(), 1);
-    assert_eq!(set.observed_history().get(0).unwrap().price, price(100));
+    assert_eq!(set.observed_history().get(0).unwrap().price.price, 100);
     assert_eq!(
         set.accepted_history().get(0).unwrap().observed_at_ns,
         Nanoseconds::from_secs(1)
@@ -571,7 +738,7 @@ fn too_soon_sample_can_trip_without_being_persisted() {
         CircuitBreakerStatus::Tripped {
             price_update,
             ..
-        } if price_update.price == price(200) && price_update.observed_at_ns == Nanoseconds::from_secs(2)
+        } if price_update.price.price == 200 && price_update.observed_at_ns == Nanoseconds::from_secs(2)
     ));
 }
 
@@ -599,9 +766,51 @@ fn cumulative_too_soon_drift_trips_against_persisted_baseline() {
     );
 
     assert_eq!(set.accepted_history().len(), 1);
-    assert_eq!(set.accepted_history().get(0).unwrap().price, price(100));
+    assert_eq!(set.accepted_history().get(0).unwrap().price.price, 100);
     assert_eq!(set.observed_history().len(), 1);
-    assert_eq!(set.observed_history().get(0).unwrap().price, price(100));
+    assert_eq!(set.observed_history().get(0).unwrap().price.price, 100);
+}
+
+#[test]
+fn cumulative_baseline_persists_until_remove_refresh_add_recovery() {
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
+    set.try_accept_price(price(100), Nanoseconds::from_secs(1))
+        .unwrap();
+    set.add(
+        0,
+        CircuitBreaker::CumulativeChange(CumulativeChange {
+            baseline: price(100),
+            max_relative_change: dec("0.10"),
+        }),
+    )
+    .unwrap();
+
+    assert_blocked_by(
+        set.try_accept_price(price(111), Nanoseconds::from_secs(2)),
+        vec![0],
+    );
+    set.rearm(0, Nanoseconds::zero()).unwrap();
+    assert_blocked_by(
+        set.try_accept_price(price(111), Nanoseconds::from_secs(3)),
+        vec![0],
+    );
+
+    set.remove(0).unwrap();
+    set.try_accept_price(price(111), Nanoseconds::from_secs(4))
+        .unwrap();
+    set.add(
+        1,
+        CircuitBreaker::CumulativeChange(CumulativeChange {
+            baseline: price(111),
+            max_relative_change: dec("0.10"),
+        }),
+    )
+    .unwrap();
+    assert!(set
+        .try_accept_price(price(120), Nanoseconds::from_secs(5))
+        .unwrap()
+        .value
+        .is_ok());
 }
 
 #[test]
@@ -737,7 +946,7 @@ fn unenforced_breaker_can_trip_without_blocking_until_enforced() {
 
 #[test]
 fn set_enforced_returns_empty_outcome_when_value_is_unchanged() {
-    let mut set = breaker_set(Nanoseconds::zero(), 1);
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = 0;
     set.add(
         id,
@@ -765,6 +974,42 @@ fn set_enforced_returns_empty_outcome_when_value_is_unchanged() {
 }
 
 #[test]
+fn enforced_toggle_refresh_rearm_recovers_from_a_sustained_move() {
+    let mut set = breaker_set(Nanoseconds::zero(), 3);
+    let id = 0;
+    set.add(
+        id,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }),
+    )
+    .unwrap();
+    for (value, second) in [(100, 1), (101, 2), (102, 3)] {
+        set.try_accept_price(price(value), Nanoseconds::from_secs(second))
+            .unwrap();
+    }
+    assert_blocked_by(
+        set.try_accept_price(price(150), Nanoseconds::from_secs(4)),
+        vec![id],
+    );
+
+    set.set_enforced(id, false).unwrap();
+    assert!(set
+        .try_accept_price(price(150), Nanoseconds::from_secs(5))
+        .unwrap()
+        .value
+        .is_ok());
+    set.rearm(id, Nanoseconds::zero()).unwrap();
+    set.set_enforced(id, true).unwrap();
+
+    assert!(set
+        .try_accept_price(price(150), Nanoseconds::from_secs(6))
+        .unwrap()
+        .value
+        .is_ok());
+}
+
+#[test]
 fn armed_after_zero_clears_tripped_status_without_enforcing_breaker() {
     let mut set = breaker_set(Nanoseconds::zero(), 2);
     let id = 0;
@@ -783,8 +1028,7 @@ fn armed_after_zero_clears_tripped_status_without_enforcing_breaker() {
         vec![id],
     );
     set.set_enforced(id, false).unwrap();
-    set.rearm(id, Nanoseconds::zero(), AcceptedHistorySource::Empty)
-        .unwrap();
+    set.rearm(id, Nanoseconds::zero()).unwrap();
 
     let breaker = set.breakers().get(&0).unwrap();
     assert!(!breaker.is_enforced);
@@ -805,47 +1049,36 @@ fn manual_trip_override_blocks_set_without_tripping_breaker() {
     assert!(set.is_blocking());
     assert_manually_blocked(set.try_accept_price(price(100), Nanoseconds::from_secs(5)));
     assert!(set.accepted_history().is_empty());
-    assert_eq!(set.observed_history().get(0).unwrap().price, price(100));
+    assert_eq!(set.observed_history().get(0).unwrap().price.price, 100);
 }
 
 #[test]
-fn accepted_history_can_be_cleared_or_seeded_from_observed_history() {
+fn hal_20_rearm_preserves_both_shared_histories() {
     let mut set = breaker_set(Nanoseconds::zero(), 3);
     set.add(
         0,
         CircuitBreaker::StepwiseChange(StepwiseChange {
-            max_relative_change: dec("10"),
+            max_relative_change: Decimal::ONE,
         }),
     )
     .unwrap();
-
     set.try_accept_price(price(100), Nanoseconds::from_secs(1))
         .unwrap();
     set.set_manual_trip(true, actor_id(), None);
     assert_manually_blocked(set.try_accept_price(price(200), Nanoseconds::from_secs(2)));
 
-    assert_eq!(set.accepted_history().get(0).unwrap().price, price(100));
-    assert_eq!(
-        set.observed_history()
-            .iter()
-            .map(|observation| observation.price.price)
-            .collect::<Vec<_>>(),
-        vec![100, 200]
-    );
+    let accepted = set.accepted_history().clone();
+    let observed = set.observed_history().clone();
+    let outcome = set.rearm(0, Nanoseconds::from_secs(10)).unwrap();
 
-    set.rearm(0, Nanoseconds::zero(), AcceptedHistorySource::Empty)
-        .unwrap();
-    assert!(set.accepted_history().is_empty());
-
-    set.rearm(0, Nanoseconds::zero(), AcceptedHistorySource::Observed)
-        .unwrap();
-    assert_eq!(
-        set.accepted_history()
-            .iter()
-            .map(|observation| observation.price.price)
-            .collect::<Vec<_>>(),
-        vec![100, 200]
-    );
+    assert_eq!(set.accepted_history(), &accepted);
+    assert_eq!(set.observed_history(), &observed);
+    assert_eq!(outcome.events.len(), 1);
+    assert!(set
+        .rearm(0, Nanoseconds::from_secs(10))
+        .unwrap()
+        .events
+        .is_empty());
 }
 
 #[test]
@@ -862,7 +1095,8 @@ fn set_config_resizes_history_in_place() {
     set.set_config(CircuitBreakerSetConfig {
         sample_interval_ns: Nanoseconds::from_secs(10),
         history_len: 2,
-    });
+    })
+    .unwrap();
 
     assert_eq!(set.sample_interval_ns(), Nanoseconds::from_secs(10));
     assert_eq!(
@@ -879,6 +1113,96 @@ fn set_config_resizes_history_in_place() {
             .collect::<Vec<_>>(),
         vec![200, 300]
     );
+}
+
+#[test]
+fn set_config_noops_when_configuration_is_unchanged() {
+    let mut set = breaker_set(Nanoseconds::from_secs(10), 2);
+    let before = set.clone();
+
+    let outcome = set
+        .set_config(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::from_secs(10),
+            history_len: 2,
+        })
+        .unwrap();
+
+    assert_eq!(set, before);
+    assert!(outcome.events.is_empty());
+}
+
+#[test]
+fn unchanged_invalid_configuration_is_rejected() {
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
+    set.add(
+        0,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.10"),
+        }),
+    )
+    .unwrap();
+    let mut unchecked = UncheckedCircuitBreakerSet::from(set);
+    unchecked.accepted_history.set_capacity(1);
+    unchecked.observed_history.set_capacity(1);
+    let mut set = CircuitBreakerSet::try_from(unchecked).unwrap();
+
+    assert_eq!(
+        set.set_config(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 1,
+        }),
+        Err(CircuitBreakerError::InvalidConfiguration)
+    );
+}
+
+#[test]
+fn regressing_price_trips_without_advancing_history() {
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
+    set.add(
+        0,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.25"),
+        }),
+    )
+    .unwrap();
+    set.try_accept_price(price_at(50_000, 102), Nanoseconds::from_secs(102))
+        .unwrap();
+    let before = set.clone();
+
+    let outcome = assert_blocked_by(
+        set.try_accept_price(price_at(30_000, 99), Nanoseconds::from_secs(103)),
+        vec![0],
+    );
+
+    assert_eq!(outcome.events.len(), 1);
+    assert_eq!(set.accepted_history(), before.accepted_history());
+    assert_eq!(set.observed_history(), before.observed_history());
+    assert!(set.is_blocking());
+}
+
+#[test]
+fn equal_publish_time_trips_without_advancing_history() {
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
+    set.add(
+        0,
+        CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: dec("0.25"),
+        }),
+    )
+    .unwrap();
+    set.try_accept_price(price_at(50_000, 102), Nanoseconds::from_secs(102))
+        .unwrap();
+    let before = set.clone();
+
+    let outcome = assert_blocked_by(
+        set.try_accept_price(price_at(70_000, 102), Nanoseconds::from_secs(103)),
+        vec![0],
+    );
+
+    assert_eq!(outcome.events.len(), 1);
+    assert_eq!(set.accepted_history(), before.accepted_history());
+    assert_eq!(set.observed_history(), before.observed_history());
+    assert!(set.is_blocking());
 }
 
 #[test]
@@ -907,7 +1231,7 @@ fn rule_trip_records_causal_price_update() {
             tripped_at_ns,
             price_update,
         } if tripped_at_ns == Nanoseconds::from_secs(5)
-            && price_update.price == price(200)
+            && price_update.price.price == 200
             && price_update.observed_at_ns == Nanoseconds::from_secs(5)
     ));
 }
@@ -934,7 +1258,7 @@ fn production_breaker_set(history_len: u32) -> CircuitBreakerSet {
         CircuitBreaker::WindowedChangeDelta(WindowedChangeDelta {
             window_len: 2,
             lookback_windows: 3,
-            max_relative_change_delta: dec("0.15"),
+            max_relative_mean_change: dec("0.15"),
         }),
     )
     .unwrap();
@@ -1116,7 +1440,7 @@ fn windowed_change_delta_blocks_statistical_outlier() {
         CircuitBreaker::WindowedChangeDelta(WindowedChangeDelta {
             window_len: 2,
             lookback_windows: 3,
-            max_relative_change_delta: dec("0.15"),
+            max_relative_mean_change: dec("0.15"),
         }),
     )
     .unwrap();

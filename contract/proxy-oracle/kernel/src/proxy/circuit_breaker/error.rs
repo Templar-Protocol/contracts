@@ -5,6 +5,7 @@ pub enum ErrorCode {
     BreakerNotFound = 2,
     UnexpectedBreakerId = 5,
     InvalidPrice = 6,
+    InvalidConfiguration = 7,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +14,7 @@ pub enum CircuitBreakerError {
     BreakerNotFound { breaker_id: u32 },
     UnexpectedBreakerId { expected: u32, actual: u32 },
     InvalidPrice,
+    InvalidConfiguration,
 }
 
 impl CircuitBreakerError {
@@ -23,6 +25,7 @@ impl CircuitBreakerError {
             Self::BreakerNotFound { .. } => ErrorCode::BreakerNotFound,
             Self::UnexpectedBreakerId { .. } => ErrorCode::UnexpectedBreakerId,
             Self::InvalidPrice => ErrorCode::InvalidPrice,
+            Self::InvalidConfiguration => ErrorCode::InvalidConfiguration,
         }
     }
 }
@@ -41,6 +44,7 @@ impl core::fmt::Display for CircuitBreakerError {
                 )
             }
             Self::InvalidPrice => write!(f, "invalid price"),
+            Self::InvalidConfiguration => write!(f, "invalid circuit breaker configuration"),
         }
     }
 }

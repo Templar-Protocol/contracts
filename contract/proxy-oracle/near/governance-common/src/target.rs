@@ -8,7 +8,7 @@ use near_sdk::{
 };
 use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Nanoseconds};
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSetConfig},
     Proxy,
 };
 use templar_proxy_oracle_near_common::input::Source;
@@ -51,8 +51,7 @@ struct SetManualTripArgs {
 struct RearmArgs {
     id: PriceIdentifier,
     breaker_id: u32,
-    armed_after_ns: Nanoseconds,
-    accepted_history_source: AcceptedHistorySource,
+    arming_delay_ns: Nanoseconds,
 }
 #[near(serializers = [json])]
 struct SetEnforcedArgs {
@@ -170,8 +169,7 @@ pub fn admin_set_manual_trip(
 pub fn admin_rearm(
     id: PriceIdentifier,
     breaker_id: u32,
-    armed_after_ns: Nanoseconds,
-    accepted_history_source: AcceptedHistorySource,
+    arming_delay_ns: Nanoseconds,
     gas: Option<Gas>,
 ) -> Result<FunctionCall, near_sdk::serde_json::Error> {
     call(
@@ -179,8 +177,7 @@ pub fn admin_rearm(
         &RearmArgs {
             id,
             breaker_id,
-            armed_after_ns,
-            accepted_history_source,
+            arming_delay_ns,
         },
         gas.unwrap_or(GAS_FOR_TARGET_DEFAULT),
     )

@@ -237,6 +237,7 @@ release: optimize
         --runtime-pkg "{{runtime_pkg}}" \
         --governance-pkg "{{governance_pkg}}" \
         --adapter-pkg "{{adapter_pkg}}" \
+        --rust-toolchain "{{soroban_rust_toolchain}}" \
         --out "{{manifest_path}}"
     @echo "✓ Release manifest: {{manifest_path}}"
 

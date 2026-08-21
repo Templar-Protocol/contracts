@@ -16,8 +16,7 @@ use serde_json::json;
 use templar_common::{upgrade::UpgradeSource, Decimal, Nanoseconds};
 use templar_gateway_testing::{harness, wasm, SandboxHarness};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
-    AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatus,
-    StepwiseChange,
+    CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatus, StepwiseChange,
 };
 use templar_proxy_oracle_near_governance_common::{target, Operation, ReflexiveOperation, Role};
 
@@ -33,7 +32,7 @@ fn breaker() -> CircuitBreaker {
 }
 
 /// Each distinct from the default it overwrites, so a silent no-op cannot read as a success.
-const REARMED_AT: Nanoseconds = Nanoseconds::from_secs(4_242);
+const REARM_DELAY: Nanoseconds = Nanoseconds::from_secs(4_242);
 const SAMPLE_INTERVAL: Nanoseconds = Nanoseconds::from_secs(60);
 
 /// Every proxy/circuit-breaker builder in `target.rs`, each proved by the state change it makes on
@@ -88,16 +87,16 @@ async fn every_target_builder_drives_its_admin_method(
         .govern(Operation::TargetFunctionCall(target::admin_rearm(
             PRICE_ID,
             BREAKER,
-            REARMED_AT,
-            AcceptedHistorySource::Empty,
+            REARM_DELAY,
             None,
         )?))
         .await?;
-    assert_eq!(
-        governed.breakers().await?.breakers()[&BREAKER].status,
-        CircuitBreakerStatus::ArmedAfter {
-            timestamp_ns: REARMED_AT
-        },
+    assert!(
+        matches!(
+            governed.breakers().await?.breakers()[&BREAKER].status,
+            CircuitBreakerStatus::ArmedAfter { timestamp_ns }
+                if timestamp_ns.as_ns() >= REARM_DELAY.as_ns()
+        ),
         "admin_rearm"
     );
 

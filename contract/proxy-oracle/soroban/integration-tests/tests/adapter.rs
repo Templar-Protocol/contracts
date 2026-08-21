@@ -9,38 +9,26 @@
 //! Group M — SEP-40 adapter ownership + metadata + upgrade surface.
 
 use soroban_sdk::testutils::{Address as _, BytesN as _};
-use soroban_sdk::{Address, BytesN, Symbol};
-use templar_proxy_oracle_soroban_common::Asset;
+use soroban_sdk::{Address, BytesN};
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 
 #[test]
-fn owner_can_update_metadata_and_persist_state() {
+fn owner_can_update_decimals_and_preserve_immutable_metadata() {
     let b = Bootstrap::new();
-    let new_base = Asset::Other(Symbol::new(&b.env, "EUR"));
-    b.adapter.set_metadata(&4_u32, &2_u32, &new_base);
+    let base = b.adapter.base();
+    let resolution = b.adapter.resolution();
+    b.adapter.set_decimals(&4_u32);
 
     assert_eq!(b.adapter.decimals(), 4);
-    assert_eq!(b.adapter.resolution(), 2);
-    assert_eq!(b.adapter.base(), new_base);
-    let cfg = b.adapter.config().unwrap();
-    assert_eq!(cfg.decimals, 4);
-    assert_eq!(cfg.resolution, 2);
+    assert_eq!(b.adapter.resolution(), resolution);
+    assert_eq!(b.adapter.base(), base);
+    assert_eq!(b.adapter.config().unwrap().decimals, 4);
 }
 
 #[test]
-fn metadata_decimals_above_18_is_rejected() {
+fn decimals_above_18_are_rejected() {
     let b = Bootstrap::new();
-    let new_base = Asset::Other(Symbol::new(&b.env, "EUR"));
-    let result = b.adapter.try_set_metadata(&19_u32, &1_u32, &new_base);
-    assert!(result.is_err());
-}
-
-#[test]
-fn metadata_zero_resolution_is_rejected() {
-    let b = Bootstrap::new();
-    let new_base = Asset::Other(Symbol::new(&b.env, "EUR"));
-    let result = b.adapter.try_set_metadata(&8_u32, &0_u32, &new_base);
-    assert!(result.is_err());
+    assert!(b.adapter.try_set_decimals(&19_u32).is_err());
 }
 
 #[test]

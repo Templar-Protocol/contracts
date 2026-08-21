@@ -9,27 +9,23 @@
 //! Groups H + I — Role-based authorization + last-admin protection.
 
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Symbol, Vec as SVec};
+use soroban_sdk::{Address, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
     CircuitBreakerConfig, ProxyConfig, RearmConfig, SetEnforcedConfig, SorobanDecimal,
-    SourceConfig, StepwiseChangeConfig,
+    StepwiseChangeConfig,
 };
 use templar_proxy_oracle_soroban_governance_common::{GovernanceAction, Role};
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 
 fn sample_setproxy(b: &Bootstrap, label: &str) -> GovernanceAction {
     let asset = templar_proxy_oracle_soroban_common::Asset::Other(Symbol::new(&b.env, label));
-    let mut sources = SVec::new(&b.env);
-    sources.push_back(SourceConfig {
-        oracle: b.upstream_id.clone(),
-        asset: asset.clone(),
-    });
+    let sources = b.source_configs(&asset);
     GovernanceAction::SetProxy(
         asset,
         ProxyConfig {
             sources,
-            min_sources: 1,
+            min_sources: 3,
             max_age_secs: Some(300),
             max_clock_drift_secs: Some(60),
         },
@@ -78,8 +74,7 @@ fn role_holders_can_execute_their_role_specific_actions() {
             b.asset_btc.clone(),
             0,
             RearmConfig {
-                armed_after_secs: 0,
-                accepted_history_source_code: 0,
+                arming_delay_secs: 0,
             },
         ),
     );

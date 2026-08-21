@@ -20,13 +20,14 @@ for NEAR parity, and `RUNBOOK.md` for operations.
    `active_ids`, `get_proposal`, `get_operation_ttl`, `get_effective_proposal_ttl`,
    `next_proposal_id`.
 3. **SEP-40 adapter** (`sep40-adapter-contract/src/lib.rs`) — SEP-40
-   `PriceFeedTrait`, declaring `contractmeta!(key = "sep", val = "40")`; reads the
-   parent via `aggregated_latest` / `aggregated_history` and rescales to the
-   adapter's `decimals`; owner-gated `set_metadata` / `upgrade` via
-   `stellar_access::ownable` (two-step transfer). No on-chain decommission state.
+   `PriceFeedTrait`, declaring `contractmeta!(key = "sep", val = "40")`; binds
+   the parent `source_base`, rescales to immutable resolution and owner-mutable
+   decimals, fails closed after decommission or parent-base drift, and emits
+   telemetry for decommission and upgrade actions.
 4. **Shared DTOs** (`common/src/lib.rs`) and the **kernel**
    (`templar-proxy-oracle-kernel`: `MedianLow` aggregation, `FreshnessFilter`,
-   and the `StepwiseChange` / `MonotonicRun` / `WindowedChangeDelta` breakers).
+   and the `StepwiseChange` / `MonotonicRun` / `WindowedChangeDelta` /
+   `CumulativeChange` breakers).
 
 ## Out of scope
 
@@ -48,14 +49,11 @@ bots, and monitoring infrastructure.
 
 ## Safety topics
 
-**Oracle manipulation.** `set_proxy` rejects `min_sources == 0`,
-`min_sources > sources.len()`, empty source lists, and duplicate `(oracle, asset)`
-pairs, so governance cannot install a zero-quorum config. `FreshnessFilter`
-(enforced in `refresh_one` via `source_kernel_price`) drops stale sources before
-aggregation. Breakers require governance proposals to add/update/remove; manual
-trips require the `ManualTripper` role. `refresh_one` fails closed on missing storage keys
-(`RESOLVE_FAILED_STORAGE_CODE`); `aggregated_latest` and adapter `lastprice`
-return `None` on missing config.
+**Oracle manipulation.** `set_proxy` requires 3–16 distinct oracle addresses,
+`min_sources` in `[3, sources.len()]`, and both freshness bounds. `refresh`
+drops stale or future-dated sources before aggregation and fails closed if its
+per-asset storage is missing. Breakers require governance proposals to
+add/update/remove; manual trips require the `ManualTripper` role.
 
 **Governance and authorization.** Every runtime state-change except `refresh`
 requires owner (`#[only_owner]`) authorization. Proposals are created and
@@ -67,19 +65,25 @@ Ownership handoff emits `OwnershipTransferSubmitted` on submit and completes whe
 the new owner calls `accept_ownership`; monitoring should alert on ownership
 transfer immediately.
 
-**Storage and resources.** `extend_ttl` guards every potentially-absent key with
-`storage.has` before extending and emits `TtlExtended`. Optimized WASM stays
-within budget (runtime/governance ≤ 128 KiB, adapter ≤ 32 KiB), enforced by
-`just size-check`. `refresh` is bounded by source count and the deduplicated
-asset list; breaker evaluation is bounded by history length (≤ 32) and breaker
-count (≤ 16 per asset).
+**Storage and resources.** `extend_ttl(asset)` first requires a registered
+proxy, then guards every potentially-absent asset key before extending it and
+emits `TtlExtended`; arbitrary assets cannot create maintenance-event noise.
+Optimized WASM stays within budget (runtime/governance ≤ 128 KiB, adapter ≤ 32 KiB),
+enforced by `just size-check`. Each refresh handles one asset; breaker evaluation is bounded
+by history length (≤ 32) and breaker count (≤ 16 per asset).
 
 **Operational.** Reads fail closed — `aggregated_latest` / adapter `lastprice`
-return `None` on missing config, non-`Accepted` status, or staleness, with no
-default fallback. Manual trips block the feed immediately and invalidate the
-cache; metadata is event-only (≤ 1024 bytes). Any governance mutation to proxy
-or breaker config clears the cached price (the explicit-removal analogue of
-NEAR's stale-epoch handling).
+return `None` on missing config, non-`Accepted` status, source-age or cache-age
+staleness, or adapter parent-base drift. `aggregated_history` and adapter
+`price` / `prices` return `None` while a manual or enforced automatic breaker
+blocks the asset, while retaining historical records independent of freshness
+otherwise. Every candidate is evaluated by breakers before a strictly newer
+timestamp may advance the cache and history. A non-advancing accepted candidate
+emits `RefreshEvaluated` alongside the served `RefreshSuccess`; a failed or
+blocked refresh replaces the cached result. Every persisted breaker set is
+semantically valid. A source set or quorum change clears the breaker set, cache,
+and history; other governance mutations to proxy or breaker config clear the
+cached price.
 
 ## Known limitations and non-goals
 

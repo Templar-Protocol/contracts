@@ -149,7 +149,7 @@ fn windowed_change_delta_trips_on_accelerated_change() {
         CircuitBreakerConfig::WindowedChangeDelta(WindowedChangeDeltaConfig {
             window_len: 2,
             lookback_windows: 1,
-            max_relative_change_delta: SorobanDecimal::from_decimal(
+            max_relative_mean_change: SorobanDecimal::from_decimal(
                 &b.env,
                 templar_primitives::dec!("0.10"),
             ),
@@ -205,16 +205,15 @@ fn rearm_recovers_a_tripped_breaker() {
             b.asset_btc.clone(),
             0,
             RearmConfig {
-                armed_after_secs: 60,
-                accepted_history_source_code: 1, // Observed
+                arming_delay_secs: 60,
             },
         ),
     );
 
-    // Advance past the grace window and refresh at a stable price.
+    // Advance past the grace window and refresh at the accepted baseline.
     ledger::advance_secs(&b.env, 120);
     let ts = b.env.ledger().timestamp();
-    b.push_upstream_price(&b.asset_btc, 10_000_000_000, ts);
+    b.push_upstream_price(&b.asset_btc, 5_000_000_000, ts);
     assert!(matches!(
         b.refresh_one(&b.asset_btc),
         RefreshStatus::Accepted(_)

@@ -184,6 +184,10 @@ def main() -> None:
         help="SEP-40 adapter Cargo package name",
     )
     parser.add_argument(
+        "--rust-toolchain",
+        help="Rust toolchain used to build the WASM artifacts",
+    )
+    parser.add_argument(
         "--out", required=True, help="Output path for release-manifest.json"
     )
     args = parser.parse_args()
@@ -211,7 +215,7 @@ def main() -> None:
     git_commit = get_git_commit_full(root)
     git_commit_short = get_git_commit(root)
     stellar_cli = get_stellar_cli_version()
-    rust_toolchain = get_rust_toolchain(root)
+    rust_toolchain = args.rust_toolchain or get_rust_toolchain(root)
     runtime_version = get_package_version(root, args.runtime_pkg)
     governance_version = get_package_version(root, args.governance_pkg)
     adapter_version = get_package_version(root, args.adapter_pkg)

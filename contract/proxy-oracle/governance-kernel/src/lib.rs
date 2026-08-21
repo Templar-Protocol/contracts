@@ -47,6 +47,15 @@ impl<Operation, AccountId> Proposal<Operation, AccountId> {
 }
 
 serialize! {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UncheckedGovernance<TtlConfig> {
+    next_id: u64,
+    active_ids: Vec<u64>,
+    ttls: TtlConfig,
+    max_pending_proposals: u32,
+}
+}
+
 /// The governance proposal ledger: a small, owned index over the pending
 /// proposal queue. It tracks only `next_id`, the set of pending ids, the
 /// runtime's timelock policy (`ttls`), and the pending cap — it does **not** own the
@@ -58,13 +67,103 @@ serialize! {
 ///
 /// Role/authorization state lives entirely in the runtime layer (each runtime
 /// uses its own audited RBAC primitive); the kernel performs no role checks.
+#[cfg_attr(
+    feature = "serde",
+    derive(::serde::Deserialize, ::serde::Serialize),
+    serde(
+        try_from = "UncheckedGovernance<TtlConfig>",
+        into = "UncheckedGovernance<TtlConfig>",
+        bound(
+            serialize = "TtlConfig: Clone + ::serde::Serialize",
+            deserialize = "TtlConfig: ::serde::Deserialize<'de>"
+        )
+    )
+)]
+#[cfg_attr(feature = "schemars", derive(::schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "borsh",
+    derive(::borsh::BorshSerialize, ::borsh::BorshSchema)
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Governance<TtlConfig> {
-    pub next_id: u64,
-    pub active_ids: Vec<u64>,
-    pub ttls: TtlConfig,
-    pub max_pending_proposals: u32,
+    next_id: u64,
+    active_ids: Vec<u64>,
+    ttls: TtlConfig,
+    max_pending_proposals: u32,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GovernanceParseError {
+    TooManyPendingProposals,
+    ActiveIdsOutOfOrder,
+    ActiveIdOutOfRange,
+}
+
+impl fmt::Display for GovernanceParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooManyPendingProposals => f.write_str("too many pending proposals"),
+            Self::ActiveIdsOutOfOrder => f.write_str("active proposal IDs are out of order"),
+            Self::ActiveIdOutOfRange => f.write_str("active proposal ID is out of range"),
+        }
+    }
+}
+
+impl<TtlConfig> TryFrom<UncheckedGovernance<TtlConfig>> for Governance<TtlConfig> {
+    type Error = GovernanceParseError;
+
+    fn try_from(value: UncheckedGovernance<TtlConfig>) -> Result<Self, Self::Error> {
+        if value.active_ids.len()
+            > usize::try_from(value.max_pending_proposals).unwrap_or(usize::MAX)
+        {
+            return Err(GovernanceParseError::TooManyPendingProposals);
+        }
+        if value.active_ids.windows(2).any(|ids| ids[0] >= ids[1]) {
+            return Err(GovernanceParseError::ActiveIdsOutOfOrder);
+        }
+        if value
+            .active_ids
+            .iter()
+            .any(|active_id| *active_id >= value.next_id)
+        {
+            return Err(GovernanceParseError::ActiveIdOutOfRange);
+        }
+        Ok(Self {
+            next_id: value.next_id,
+            active_ids: value.active_ids,
+            ttls: value.ttls,
+            max_pending_proposals: value.max_pending_proposals,
+        })
+    }
+}
+
+impl<TtlConfig> From<Governance<TtlConfig>> for UncheckedGovernance<TtlConfig> {
+    fn from(value: Governance<TtlConfig>) -> Self {
+        Self {
+            next_id: value.next_id,
+            active_ids: value.active_ids,
+            ttls: value.ttls,
+            max_pending_proposals: value.max_pending_proposals,
+        }
+    }
+}
+
+#[cfg(feature = "borsh")]
+impl<TtlConfig: ::borsh::BorshDeserialize> ::borsh::BorshDeserialize for Governance<TtlConfig> {
+    fn deserialize_reader<Reader: ::borsh::io::Read>(
+        reader: &mut Reader,
+    ) -> ::borsh::io::Result<Self> {
+        let unchecked =
+            <UncheckedGovernance<TtlConfig> as ::borsh::BorshDeserialize>::deserialize_reader(
+                reader,
+            )?;
+        unchecked.try_into().map_err(|_| {
+            ::borsh::io::Error::new(
+                ::borsh::io::ErrorKind::InvalidData,
+                "could not parse governance ledger",
+            )
+        })
+    }
 }
 
 /// The runtime-defined policy for an operation type. The kernel uses this to
@@ -249,12 +348,42 @@ impl<Ttls> Governance<Ttls> {
         }
     }
 
-    /// The full slice of currently-pending proposal ids in insertion order.
-    /// Callers derive count (`.len()`), iteration, and membership
-    /// (`.contains(&id)`) directly from this — no separate accessors needed.
+    pub fn try_from_parts(
+        next_id: u64,
+        active_ids: Vec<u64>,
+        ttls: Ttls,
+        max_pending_proposals: u32,
+    ) -> Result<Self, GovernanceParseError> {
+        Self::try_from(UncheckedGovernance {
+            next_id,
+            active_ids,
+            ttls,
+            max_pending_proposals,
+        })
+    }
+
+    #[must_use]
+    pub const fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
     #[must_use]
     pub fn active_ids(&self) -> &[u64] {
         &self.active_ids
+    }
+
+    #[must_use]
+    pub const fn ttls(&self) -> &Ttls {
+        &self.ttls
+    }
+
+    pub fn ttls_mut(&mut self) -> &mut Ttls {
+        &mut self.ttls
+    }
+
+    #[must_use]
+    pub const fn max_pending_proposals(&self) -> u32 {
+        self.max_pending_proposals
     }
 
     /// Validates and reserves a new proposal id, returning the proposal body
@@ -271,7 +400,7 @@ impl<Ttls> Governance<Ttls> {
         operation: Operation,
         now: Nanoseconds,
         created_by: AccountId,
-        ttl: Nanoseconds,
+        requested_ttl: Nanoseconds,
     ) -> Result<Proposal<Operation, AccountId>, CreateError<Operation::OnCreateError>>
     where
         Operation: OperationPolicy<Ttls>,
@@ -289,6 +418,7 @@ impl<Ttls> Governance<Ttls> {
         operation
             .validate_on_create()
             .map_err(CreateError::Validation)?;
+        let ttl = operation.minimum_ttl(&self.ttls).max(requested_ttl);
         self.next_id = self.next_id.checked_add(1).ok_or(CreateError::IdOverflow)?;
         self.active_ids.push(id);
         Ok(Proposal {
@@ -344,18 +474,6 @@ impl<Ttls> Governance<Ttls> {
         }
         self.active_ids.remove(index);
         Ok(())
-    }
-
-    #[must_use]
-    pub fn effective_ttl<Operation>(
-        &self,
-        operation: &Operation,
-        requested_ttl: Nanoseconds,
-    ) -> Nanoseconds
-    where
-        Operation: OperationPolicy<Ttls>,
-    {
-        operation.minimum_ttl(&self.ttls).max(requested_ttl)
     }
 
     /// Resolves the position of a pending id, distinguishing "never issued"
@@ -415,6 +533,8 @@ impl<E> From<PendingLookupError> for ExecuteError<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(feature = "borsh", feature = "serde"))]
+    use alloc::vec;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Kind {
@@ -485,7 +605,9 @@ mod tests {
         assert!(governance.active_ids().contains(&0));
         assert!(!governance.active_ids().contains(&1));
 
-        governance.execute(0, &slow, now).unwrap();
+        governance
+            .execute(0, &slow, Nanoseconds::from_secs(11))
+            .unwrap();
         assert_eq!(governance.active_ids().len(), 0);
     }
 
@@ -533,6 +655,44 @@ mod tests {
     }
 
     #[test]
+    fn create_persists_the_requested_or_required_ttl() {
+        let mut governance = governance();
+        let now = Nanoseconds::from_secs(1);
+
+        let below_minimum = governance
+            .create(
+                0,
+                Op("below", Kind::Slow),
+                now,
+                "alice",
+                Nanoseconds::from_secs(9),
+            )
+            .unwrap();
+        let exact_minimum = governance
+            .create(
+                1,
+                Op("exact", Kind::Slow),
+                now,
+                "alice",
+                Nanoseconds::from_secs(10),
+            )
+            .unwrap();
+        let above_minimum = governance
+            .create(
+                2,
+                Op("above", Kind::Slow),
+                now,
+                "alice",
+                Nanoseconds::from_secs(11),
+            )
+            .unwrap();
+
+        assert_eq!(below_minimum.ttl, Nanoseconds::from_secs(10));
+        assert_eq!(exact_minimum.ttl, Nanoseconds::from_secs(10));
+        assert_eq!(above_minimum.ttl, Nanoseconds::from_secs(11));
+    }
+
+    #[test]
     fn cancel_removes_pending_proposal() {
         let mut governance = governance();
         let now = Nanoseconds::from_secs(1);
@@ -576,5 +736,88 @@ mod tests {
                 .unwrap_err(),
             CreateError::TooManyPendingProposals
         );
+    }
+
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn hal_33_rejects_invalid_governance_ledgers_during_borsh_deserialization() {
+        let over_cap = UncheckedGovernance {
+            next_id: 2,
+            active_ids: vec![0, 1],
+            ttls: (),
+            max_pending_proposals: 1,
+        };
+        let out_of_order = UncheckedGovernance {
+            next_id: 2,
+            active_ids: vec![1, 0],
+            ttls: (),
+            max_pending_proposals: 2,
+        };
+        let equal_to_next = UncheckedGovernance {
+            next_id: 2,
+            active_ids: vec![2],
+            ttls: (),
+            max_pending_proposals: 1,
+        };
+        let greater_than_next = UncheckedGovernance {
+            next_id: 2,
+            active_ids: vec![3],
+            ttls: (),
+            max_pending_proposals: 1,
+        };
+
+        for unchecked in [over_cap, out_of_order, equal_to_next, greater_than_next] {
+            let bytes = ::borsh::to_vec(&unchecked).unwrap();
+            assert!(::borsh::from_slice::<Governance<()>>(&bytes).is_err());
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn hal_33_rejects_invalid_governance_ledgers_during_serde_deserialization() {
+        let over_cap = UncheckedGovernance {
+            next_id: 2,
+            active_ids: vec![0, 1],
+            ttls: (),
+            max_pending_proposals: 1,
+        };
+        let out_of_order = UncheckedGovernance {
+            next_id: 2,
+            active_ids: vec![1, 0],
+            ttls: (),
+            max_pending_proposals: 2,
+        };
+        let equal_to_next = UncheckedGovernance {
+            next_id: 2,
+            active_ids: vec![2],
+            ttls: (),
+            max_pending_proposals: 1,
+        };
+        let greater_than_next = UncheckedGovernance {
+            next_id: 2,
+            active_ids: vec![3],
+            ttls: (),
+            max_pending_proposals: 1,
+        };
+
+        for unchecked in [over_cap, out_of_order, equal_to_next, greater_than_next] {
+            let json = serde_json::to_string(&unchecked).unwrap();
+            assert!(serde_json::from_str::<Governance<()>>(&json).is_err());
+        }
+    }
+
+    #[cfg(feature = "borsh")]
+    #[test]
+    fn hal_33_preserves_valid_governance_borsh_bytes() {
+        let unchecked = UncheckedGovernance {
+            next_id: 2,
+            active_ids: vec![0, 1],
+            ttls: (),
+            max_pending_proposals: 2,
+        };
+        let expected = ::borsh::to_vec(&unchecked).unwrap();
+        let governance = Governance::try_from(unchecked).unwrap();
+
+        assert_eq!(::borsh::to_vec(&governance).unwrap(), expected);
     }
 }

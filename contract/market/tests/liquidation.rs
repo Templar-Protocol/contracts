@@ -898,8 +898,8 @@ async fn many_little_partial_liquidations(
 #[rstest]
 #[case(110, 5000, 2450, 50, dec!("1"))]
 #[case(120, 1250, 1000, 88, dec!("1"))]
-#[case(120, 1250, 1000, 88, dec!(".973"))]
-#[case(120, 1250, 1000, 88, dec!(".95"))]
+#[case(120, 1250, 1000, 88, dec!("0.973"))]
+#[case(120, 1250, 1000, 88, dec!("0.95"))]
 #[tokio::test]
 async fn successful_liquidation_good_debt_under_mcr(
     #[future(awt)] harness: SandboxHarness,

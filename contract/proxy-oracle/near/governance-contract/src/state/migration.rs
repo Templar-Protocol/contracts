@@ -46,12 +46,14 @@ impl StateTransformer for V0ToV1 {
             proxy_oracle_id,
         } = input;
 
-        let policy = header.ttls.into_policy();
+        let next_id = header.next_id();
+        let active_ids = header.active_ids().to_vec();
+        let max_pending_proposals = header.max_pending_proposals();
+        let policy = (*header.ttls()).into_policy();
 
         // Drain the v0-typed map and drop it so deletions flush before the new-typed map reuses the
         // same storage prefix — otherwise it would read stale v0 bytes.
-        let migrated: Vec<(u32, Proposal<Operation>)> = header
-            .active_ids
+        let migrated: Vec<(u32, Proposal<Operation>)> = active_ids
             .iter()
             .filter_map(|&id| {
                 let id = u32::try_from(id)
@@ -78,12 +80,8 @@ impl StateTransformer for V0ToV1 {
         }
 
         Ok(State {
-            header: Governance {
-                next_id: header.next_id,
-                active_ids: header.active_ids,
-                ttls: policy,
-                max_pending_proposals: header.max_pending_proposals,
-            },
+            header: Governance::try_from_parts(next_id, active_ids, policy, max_pending_proposals)
+                .map_err(|_| ())?,
             proposals,
             proxy_oracle_id,
         })
@@ -164,12 +162,13 @@ mod tests {
     /// Write a v0 contract state holding exactly one pending proposal, as the migration will find it.
     fn seed_v0_state(id: u32, operation: legacy::Operation) {
         let mut old = legacy::State {
-            header: Governance {
-                next_id: u64::from(id) + 1,
-                active_ids: vec![u64::from(id)],
-                ttls: legacy_ttls(),
-                max_pending_proposals: 64,
-            },
+            header: Governance::try_from_parts(
+                u64::from(id) + 1,
+                vec![u64::from(id)],
+                legacy_ttls(),
+                64,
+            )
+            .unwrap(),
             proposals: LookupMap::new(StorageKey::Proposals),
             proxy_oracle_id: "proxy.near".parse().unwrap(),
         };
@@ -201,14 +200,14 @@ mod tests {
         let new = V0ToV1.run().expect("migration succeeds");
 
         assert_eq!(read_state_version().unwrap(), 1);
-        assert_eq!(new.header.next_id, 8);
-        assert_eq!(new.header.active_ids, vec![7]);
-        assert_eq!(new.header.max_pending_proposals, 64);
+        assert_eq!(new.header.next_id(), 8);
+        assert_eq!(new.header.active_ids(), [7]);
+        assert_eq!(new.header.max_pending_proposals(), 64);
         assert_eq!(new.proxy_oracle_id.as_str(), "proxy.near");
 
         // default_target = max target ttl (42s, Admin); reflexive carried over; self_upgrade
         // defaults to admin_upgrade's lock.
-        let policy = &new.header.ttls;
+        let policy = new.header.ttls();
         assert_eq!(policy.default_target().ttl, Nanoseconds::from_secs(42));
         assert_eq!(policy.default_target().role, Role::Admin);
         assert_eq!(
@@ -267,7 +266,7 @@ mod tests {
         assert_eq!(method, "admin_set_proxy");
         assert_eq!(policy.ttl, over_ceiling);
         assert!(
-            policy.ttl > new.header.ttls.default_target().ttl,
+            policy.ttl > new.header.ttls().default_target().ttl,
             "the raise must land above the seeded default, or this edge no longer exists"
         );
     }

@@ -10,7 +10,9 @@ use alloc::vec::Vec as StdVec;
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger, LedgerInfo};
 use soroban_sdk::{contract, contractimpl, Bytes, Env, Event, Symbol};
 use templar_primitives::Decimal;
-use templar_proxy_oracle_soroban_common::normalized_to_sep40;
+use templar_proxy_oracle_soroban_common::{
+    normalized_to_sep40, MAX_CLOCK_DRIFT_SECS, MAX_SOURCE_AGE_SECS,
+};
 
 #[derive(Clone)]
 #[contracttype]
@@ -55,6 +57,10 @@ impl MockPriceFeed {
 
     pub fn clear_price(env: Env, asset: Asset) {
         env.storage().persistent().remove(&MockKey::Price(asset));
+    }
+
+    pub fn set_decimals(env: Env, decimals: u32) {
+        env.storage().instance().set(&MockKey::Decimals, &decimals);
     }
 }
 
@@ -106,12 +112,57 @@ fn register_mock_source(env: &Env, base: &Asset) -> (Address, MockPriceFeedClien
     (source_id, source)
 }
 
-fn setup() -> (
-    Env,
-    SorobanProxyOracleClient<'static>,
-    MockPriceFeedClient<'static>,
-    Asset,
-) {
+struct MockSources {
+    clients: StdVec<MockPriceFeedClient<'static>>,
+}
+
+impl MockSources {
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    fn set_price(&self, asset: &Asset, price: &i128, timestamp: &u64) {
+        for client in &self.clients {
+            client.set_price(asset, price, timestamp);
+        }
+    }
+
+    fn clear_price(&self, asset: &Asset) {
+        for client in &self.clients {
+            client.clear_price(asset);
+        }
+    }
+
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    fn set_decimals(&self, decimals: &u32) {
+        for client in &self.clients {
+            client.set_decimals(decimals);
+        }
+    }
+}
+
+fn register_mock_sources(env: &Env, base: &Asset) -> (Vec<Address>, MockSources) {
+    let (first_id, first) = register_mock_source(env, base);
+    let (second_id, second) = register_mock_source(env, base);
+    let (third_id, third) = register_mock_source(env, base);
+    (
+        Vec::from_array(env, [first_id, second_id, third_id]),
+        MockSources {
+            clients: vec![first, second, third],
+        },
+    )
+}
+
+fn proxy_sources(env: &Env, base: &Asset, asset: &Asset) -> (MockSources, Vec<SourceConfig>) {
+    let (source_ids, sources) = register_mock_sources(env, base);
+    let mut config_sources = Vec::new(env);
+    for source_id in source_ids.iter() {
+        config_sources.push_back(SourceConfig {
+            oracle: source_id,
+            asset: asset.clone(),
+        });
+    }
+    (sources, config_sources)
+}
+
+fn setup() -> (Env, SorobanProxyOracleClient<'static>, MockSources, Asset) {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set(LedgerInfo {
@@ -124,20 +175,15 @@ fn setup() -> (
     let admin = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let (source_id, source) = register_mock_source(&env, &base);
+    let (source, sources) = proxy_sources(&env, &base, &asset);
     let proxy_id = env.register(SorobanProxyOracle, (&admin, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
 
-    let mut sources = Vec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: source_id,
-        asset: asset.clone(),
-    });
     proxy.set_proxy(
         &asset,
         &ProxyConfig {
             sources,
-            min_sources: 1,
+            min_sources: 3,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
         },
@@ -215,10 +261,9 @@ fn stored_breakers(env: &Env, contract_id: &Address, asset: &Asset) -> CircuitBr
     })
 }
 
-fn assert_refresh_failure_event(env: &Env, proxy: &SorobanProxyOracleClient, asset: &Asset) {
+fn assert_refresh_failure_event(env: &Env, proxy: &SorobanProxyOracleClient, _asset: &Asset) {
     let events = contract_events(env, &proxy.address);
     assert_eq!(events.len(), 1);
-    assert_eq!(legacy_lastprice(proxy, asset), None);
 }
 
 #[test]
@@ -226,11 +271,8 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
     let (env, proxy, source, asset) = setup();
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    let accepted = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(matches!(
-        accepted.get(0).unwrap().1,
-        RefreshStatus::Accepted(_)
-    ));
+    let accepted = proxy.refresh(&asset.clone());
+    assert!(matches!(accepted, RefreshStatus::Accepted(_)));
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![RefreshSuccess {
@@ -247,19 +289,18 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
     );
 
     source.set_price(&asset, &5_100_000_000_i128, &69_u64);
-    let stale = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(matches!(
-        stale.get(0).unwrap().1,
-        RefreshStatus::ResolveFailed(_)
-    ));
+    let stale = proxy.refresh(&asset.clone());
+    assert!(matches!(stale, RefreshStatus::ResolveFailed(_)));
     assert_refresh_failure_event(&env, &proxy, &asset);
+    assert!(legacy_lastprice(&proxy, &asset).is_none());
+    assert!(matches!(
+        proxy.get_cached(&asset).unwrap().status,
+        CachedStatus::ResolveFailed(_)
+    ));
 
     source.clear_price(&asset);
-    let unavailable = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(matches!(
-        unavailable.get(0).unwrap().1,
-        RefreshStatus::SourceUnavailable
-    ));
+    let unavailable = proxy.refresh(&asset.clone());
+    assert!(matches!(unavailable, RefreshStatus::SourceUnavailable));
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![RefreshFailure {
@@ -271,18 +312,7 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
 
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let (second_source_id, second_source) = register_mock_source(&env, &base);
-    let first_source_id = proxy
-        .get_proxy(&asset)
-        .unwrap()
-        .sources
-        .get(0)
-        .unwrap()
-        .oracle;
-    let mut sources = Vec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: first_source_id,
-        asset: asset.clone(),
-    });
+    let mut sources = proxy.get_proxy(&asset).unwrap().sources;
     sources.push_back(SourceConfig {
         oracle: second_source_id,
         asset: asset.clone(),
@@ -291,43 +321,81 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
         &asset,
         &ProxyConfig {
             sources,
-            min_sources: 2,
+            min_sources: 4,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
         },
     );
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     second_source.clear_price(&asset);
-    let quorum = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(matches!(
-        quorum.get(0).unwrap().1,
-        RefreshStatus::ResolveFailed(_)
-    ));
+    let quorum = proxy.refresh(&asset.clone());
+    assert!(matches!(quorum, RefreshStatus::ResolveFailed(_)));
     assert_refresh_failure_event(&env, &proxy, &asset);
 
     let eur = Asset::Other(Symbol::new(&env, "EUR"));
-    let (wrong_base_id, wrong_base_source) = register_mock_source(&env, &eur);
+    let (wrong_base_source, wrong_base_sources) = proxy_sources(&env, &eur, &asset);
     wrong_base_source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    let mut wrong_base_sources = Vec::new(&env);
-    wrong_base_sources.push_back(SourceConfig {
-        oracle: wrong_base_id,
-        asset: asset.clone(),
-    });
     proxy.set_proxy(
         &asset,
         &ProxyConfig {
             sources: wrong_base_sources,
-            min_sources: 1,
+            min_sources: 3,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
         },
     );
-    let base_mismatch = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    let base_mismatch = proxy.refresh(&asset.clone());
+    assert!(matches!(base_mismatch, RefreshStatus::SourceUnavailable));
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
+}
+
+#[test]
+fn cached_read_requires_fresh_cache_and_source_timestamps() {
+    let accepted = |updated_at, timestamp| CachedProxyPrice {
+        updated_at,
+        status: CachedStatus::Accepted(NormalizedPrice {
+            mantissa: 5_000_000_000,
+            expo: -8,
+            timestamp,
+        }),
+    };
+
+    assert!(cached_accepted_no_older_than(&accepted(70, 100), 30, 100).is_some());
+    assert!(cached_accepted_no_older_than(&accepted(70, 100), 30, 101).is_none());
+    assert!(cached_accepted_no_older_than(&accepted(100, 70), 30, 100).is_some());
+    assert!(cached_accepted_no_older_than(&accepted(100, 70), 30, 101).is_none());
+}
+
+#[test]
+fn breaker_block_precedes_source_outage() {
+    let (env, proxy, source, asset) = setup();
+    source.clear_price(&asset);
     assert!(matches!(
-        base_mismatch.get(0).unwrap().1,
+        proxy.refresh(&asset),
         RefreshStatus::SourceUnavailable
     ));
-    assert_eq!(legacy_lastprice(&proxy, &asset), None);
+
+    proxy.set_manual_trip(&asset, &true, &None);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Blocked(1)));
+    proxy.set_manual_trip(&asset, &false, &None);
+
+    source.set_price(&asset, &100_i128, &100_u64);
+    proxy.refresh(&asset);
+    proxy.configure_breakers(&asset, &0, &8);
+    proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
+    );
+    source.set_price(&asset, &100_i128, &100_u64);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+    set_ledger(&env, 101);
+    source.set_price(&asset, &200_i128, &101_u64);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Blocked(2)));
+
+    source.clear_price(&asset);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Blocked(2)));
 }
 
 #[test]
@@ -336,7 +404,7 @@ fn parity_manual_trip_blocks_reads_refresh_and_maps_event_fields() {
     let metadata = Bytes::from_array(&env, &[1_u8, 2, 3]);
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
     assert!(legacy_lastprice(&proxy, &asset).is_some());
 
     proxy.set_manual_trip(&asset, &true, &Some(metadata.clone()));
@@ -356,13 +424,15 @@ fn parity_manual_trip_blocks_reads_refresh_and_maps_event_fields() {
             .is_manually_tripped
     );
     assert_eq!(legacy_lastprice(&proxy, &asset), None);
+    assert_eq!(
+        legacy_prices(&env, &proxy, &asset, MAX_HISTORY_RECORDS),
+        None
+    );
+    assert_eq!(legacy_price(&proxy, &asset, 100), None);
 
     source.set_price(&asset, &5_100_000_000_i128, &100_u64);
-    let blocked = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(matches!(
-        blocked.get(0).unwrap().1,
-        RefreshStatus::Blocked(1)
-    ));
+    let blocked = proxy.refresh(&asset.clone());
+    assert!(matches!(blocked, RefreshStatus::Blocked(1)));
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![CacheBlocked {
@@ -386,15 +456,12 @@ fn parity_breaker_trip_observed_history_rearm_and_events_match_near_matrix() {
     );
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
 
     set_ledger(&env, 101);
     source.set_price(&asset, &10_000_000_000_i128, &101_u64);
-    let tripped = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(matches!(
-        tripped.get(0).unwrap().1,
-        RefreshStatus::Blocked(2)
-    ));
+    let tripped = proxy.refresh(&asset.clone());
+    assert!(matches!(tripped, RefreshStatus::Blocked(2)));
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![
@@ -403,7 +470,8 @@ fn parity_breaker_trip_observed_history_rearm_and_events_match_near_matrix() {
                 breaker_id,
                 tripped_at_secs: 101,
                 price: 10_000_000_000,
-                timestamp: 101,
+                expo: -8,
+                publish_timestamp_secs: 101,
                 is_enforced: true,
             }
             .to_xdr(&env, &proxy.address),
@@ -418,11 +486,8 @@ fn parity_breaker_trip_observed_history_rearm_and_events_match_near_matrix() {
 
     set_ledger(&env, 102);
     source.set_price(&asset, &10_500_000_000_i128, &102_u64);
-    let still_blocked = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(matches!(
-        still_blocked.get(0).unwrap().1,
-        RefreshStatus::Blocked(2)
-    ));
+    let still_blocked = proxy.refresh(&asset.clone());
+    assert!(matches!(still_blocked, RefreshStatus::Blocked(2)));
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![CacheBlocked {
@@ -440,8 +505,7 @@ fn parity_breaker_trip_observed_history_rearm_and_events_match_near_matrix() {
         &asset,
         &breaker_id,
         &SorobanRearmConfig {
-            armed_after_secs: 103,
-            accepted_history_source_code: 1,
+            arming_delay_secs: 3,
         },
     );
     assert_eq!(
@@ -449,28 +513,93 @@ fn parity_breaker_trip_observed_history_rearm_and_events_match_near_matrix() {
         vec![CircuitBreakerRearmed {
             asset: asset.clone(),
             breaker_id,
-            armed_after_secs: 103,
-            accepted_history_source_code: 1,
+            armed_at_secs: 105,
         }
         .to_xdr(&env, &proxy.address)]
     );
     let breakers_after_rearm = stored_breakers(&env, &proxy.address, &asset);
-    assert_eq!(breakers_after_rearm.accepted_history().len(), 3);
+    assert_eq!(breakers_after_rearm.accepted_history().len(), 1);
     assert_eq!(breakers_after_rearm.observed_history().len(), 3);
     assert!(proxy.get_cached(&asset).is_none());
 }
 
 #[test]
+fn hal_21_rearm_delay_arms_at_execution_time() {
+    let (env, proxy, source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &2);
+    let breaker_id = proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
+    );
+    source.set_price(&asset, &100_i128, &100_u64);
+    proxy.refresh(&asset.clone());
+    proxy.rearm(
+        &asset,
+        &breaker_id,
+        &SorobanRearmConfig {
+            arming_delay_secs: 3,
+        },
+    );
+
+    set_ledger(&env, 102);
+    source.set_price(&asset, &200_i128, &102_u64);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+
+    set_ledger(&env, 103);
+    source.set_price(&asset, &400_i128, &103_u64);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Blocked(2)));
+}
+#[test]
 fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
     assert!(proxy.get_cached(&asset).is_some());
 
     let configured = proxy.get_proxy(&asset).unwrap();
     proxy.set_proxy(&asset, &configured);
+    assert!(proxy.get_cached(&asset).is_some());
+    assert!(legacy_lastprice(&proxy, &asset).is_some());
+
+    let mut changed = configured;
+    changed.max_age_secs = Some(31);
+    proxy.set_proxy(&asset, &changed);
     assert!(proxy.get_cached(&asset).is_none());
     assert_eq!(legacy_lastprice(&proxy, &asset), None);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+    proxy.configure_breakers(&asset, &0, &2);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+    proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::CumulativeChange(SorobanCumulativeChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
+    );
+    assert_eq!(
+        stored_breakers(&env, &proxy.address, &asset).breaker_count(),
+        1
+    );
+
+    let mut rotated = proxy.get_proxy(&asset).unwrap();
+    let first_source = rotated.sources.get(0).unwrap();
+    rotated.sources.set(
+        0,
+        SourceConfig {
+            oracle: first_source.oracle,
+            asset: Asset::Other(Symbol::new(&env, "BTC2")),
+        },
+    );
+    proxy.set_proxy(&asset, &rotated);
+    let breakers = stored_breakers(&env, &proxy.address, &asset);
+    assert!(breakers.breakers().is_empty());
+    assert_eq!(breakers.accepted_history().capacity(), 0);
+    assert_eq!(breakers.observed_history().capacity(), 0);
+    assert_eq!(
+        legacy_prices(&env, &proxy, &asset, MAX_HISTORY_RECORDS),
+        None
+    );
 
     let unauth_env = Env::default();
     unauth_env.ledger().set(LedgerInfo {
@@ -508,7 +637,7 @@ fn event_refresh_success_failure_and_cache_blocked_topics_payloads_are_exact() {
     let (env, proxy, source, asset) = setup();
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![RefreshSuccess {
@@ -521,7 +650,7 @@ fn event_refresh_success_failure_and_cache_blocked_topics_payloads_are_exact() {
     );
 
     source.clear_price(&asset);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![RefreshFailure {
@@ -543,7 +672,7 @@ fn event_refresh_success_failure_and_cache_blocked_topics_payloads_are_exact() {
     );
 
     source.set_price(&asset, &5_100_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![CacheBlocked {
@@ -567,20 +696,15 @@ fn event_proxy_set_topics_payload_are_exact() {
     let governance = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let (source_id, _source) = register_mock_source(&env, &base);
+    let (_source, sources) = proxy_sources(&env, &base, &asset);
     let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
-    let mut sources = Vec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: source_id,
-        asset: asset.clone(),
-    });
 
     proxy.set_proxy(
         &asset,
         &ProxyConfig {
             sources,
-            min_sources: 1,
+            min_sources: 3,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
         },
@@ -590,8 +714,8 @@ fn event_proxy_set_topics_payload_are_exact() {
         contract_events(&env, &proxy.address),
         vec![ProxySet {
             asset,
-            source_count: 1,
-            min_sources: 1,
+            source_count: 3,
+            min_sources: 3,
         }
         .to_xdr(&env, &proxy.address)]
     );
@@ -609,7 +733,7 @@ fn event_circuit_breaker_tripped_topics_payload_are_exact() {
     );
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
 
     env.ledger().set(LedgerInfo {
         timestamp: 101,
@@ -618,12 +742,9 @@ fn event_circuit_breaker_tripped_topics_payload_are_exact() {
         ..Default::default()
     });
     source.set_price(&asset, &10_000_000_000_i128, &101_u64);
-    let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    let result = proxy.refresh(&asset.clone());
 
-    assert!(matches!(
-        result.get(0).unwrap().1,
-        RefreshStatus::Blocked(2)
-    ));
+    assert!(matches!(result, RefreshStatus::Blocked(2)));
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![
@@ -632,7 +753,8 @@ fn event_circuit_breaker_tripped_topics_payload_are_exact() {
                 breaker_id,
                 tripped_at_secs: 101,
                 price: 10_000_000_000,
-                timestamp: 101,
+                expo: -8,
+                publish_timestamp_secs: 101,
                 is_enforced: true,
             }
             .to_xdr(&env, &proxy.address),
@@ -697,8 +819,7 @@ fn event_proxy_breaker_governance_and_ttl_topics_payloads_are_exact() {
         &asset,
         &breaker_id,
         &SorobanRearmConfig {
-            armed_after_secs: 100,
-            accepted_history_source_code: 0,
+            arming_delay_secs: 0,
         },
     );
     assert_eq!(
@@ -706,8 +827,7 @@ fn event_proxy_breaker_governance_and_ttl_topics_payloads_are_exact() {
         vec![CircuitBreakerRearmed {
             asset: asset.clone(),
             breaker_id,
-            armed_after_secs: 100,
-            accepted_history_source_code: 0,
+            armed_at_secs: 100,
         }
         .to_xdr(&env, &proxy.address)]
     );
@@ -735,11 +855,14 @@ fn event_proxy_breaker_governance_and_ttl_topics_payloads_are_exact() {
     assert_eq!(proxy.get_owner(), Some(new_governance.clone()));
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    proxy.extend_ttl();
+    proxy.refresh(&asset.clone());
+    proxy.extend_ttl(&asset);
     assert_eq!(
         contract_events(&env, &proxy.address),
-        vec![TtlExtended { asset_count: 1 }.to_xdr(&env, &proxy.address)]
+        vec![TtlExtended {
+            asset: asset.clone()
+        }
+        .to_xdr(&env, &proxy.address)]
     );
 
     proxy.remove_proxy(&asset);
@@ -754,11 +877,8 @@ fn refresh_updates_sep40_lastprice() {
     let (_env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
 
-    let result = proxy.refresh(&Vec::from_array(&proxy.env, [asset.clone()]));
-    assert!(matches!(
-        result.get(0).unwrap().1,
-        RefreshStatus::Accepted(_)
-    ));
+    let result = proxy.refresh(&asset.clone());
+    assert!(matches!(result, RefreshStatus::Accepted(_)));
 
     let price = legacy_lastprice(&proxy, &asset).unwrap();
     assert_eq!(price.price, 5_000_000_000);
@@ -769,7 +889,7 @@ fn refresh_updates_sep40_lastprice() {
 fn lastprice_fails_closed_when_cache_is_stale() {
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
 
     env.ledger().set(LedgerInfo {
         timestamp: 131,
@@ -783,16 +903,47 @@ fn lastprice_fails_closed_when_cache_is_stale() {
 
 #[test]
 fn manual_trip_blocks_refresh_and_cached_read() {
-    let (env, proxy, source, asset) = setup();
+    let (_env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.set_manual_trip(&asset, &true, &None);
 
-    let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    assert!(matches!(
-        result.get(0).unwrap().1,
-        RefreshStatus::Blocked(1)
-    ));
+    let result = proxy.refresh(&asset.clone());
+    assert!(matches!(result, RefreshStatus::Blocked(1)));
     assert_eq!(legacy_lastprice(&proxy, &asset), None);
+}
+
+#[test]
+fn hal_31_idempotent_breaker_mutations_preserve_cache_storage_and_events() {
+    let (env, proxy, source, asset) = setup();
+    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
+    proxy.configure_breakers(&asset, &0, &2);
+    let breaker_id = proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
+    );
+    proxy.refresh(&asset.clone());
+
+    let cached = legacy_lastprice(&proxy, &asset);
+    let breakers = stored_breakers(&env, &proxy.address, &asset);
+
+    proxy.configure_breakers(&asset, &0, &2);
+    assert!(contract_events(&env, &proxy.address).is_empty());
+    assert_eq!(legacy_lastprice(&proxy, &asset), cached);
+    assert_eq!(stored_breakers(&env, &proxy.address, &asset), breakers);
+
+    proxy.set_enforced(
+        &asset,
+        &breaker_id,
+        &SorobanSetEnforcedConfig { is_enforced: true },
+    );
+    assert!(contract_events(&env, &proxy.address).is_empty());
+
+    proxy.set_manual_trip(&asset, &false, &None);
+    assert!(contract_events(&env, &proxy.address).is_empty());
+    assert_eq!(legacy_lastprice(&proxy, &asset), cached);
+    assert_eq!(stored_breakers(&env, &proxy.address, &asset), breakers);
 }
 
 #[test]
@@ -867,7 +1018,7 @@ fn manual_trip_role_metadata_event_payload_is_bounded_and_not_stored() {
 fn prices_returns_cached_history() {
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
     env.ledger().set(LedgerInfo {
         timestamp: 101,
         protocol_version: 25,
@@ -875,7 +1026,7 @@ fn prices_returns_cached_history() {
         ..Default::default()
     });
     source.set_price(&asset, &5_100_000_000_i128, &101_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
 
     let prices = legacy_prices(&env, &proxy, &asset, 2).unwrap();
     assert_eq!(prices.len(), 2);
@@ -888,40 +1039,176 @@ fn prices_returns_cached_history() {
 }
 
 #[test]
-fn same_timestamp_refresh_replaces_history_entry() {
-    let (env, proxy, source, asset) = setup();
-    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    source.set_price(&asset, &5_100_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+fn one_manipulated_source_cannot_move_the_median() {
+    let (_env, proxy, source, asset) = setup();
+    source.clients[0].set_price(&asset, &5_000_000_000_i128, &100_u64);
+    source.clients[1].set_price(&asset, &5_100_000_000_i128, &100_u64);
+    source.clients[2].set_price(&asset, &50_000_000_000_i128, &100_u64);
 
-    let prices = legacy_prices(&env, &proxy, &asset, 2).unwrap();
-    assert_eq!(prices.len(), 1);
-    assert_eq!(prices.get(0).unwrap().price, 5_100_000_000);
+    assert!(matches!(
+        proxy.refresh(&asset.clone()),
+        RefreshStatus::Accepted(price) if price.mantissa == 5_100_000_000
+    ));
     assert_eq!(
-        legacy_price(&proxy, &asset, 100).unwrap().price,
+        legacy_lastprice(&proxy, &asset).unwrap().price,
         5_100_000_000
     );
 }
 
 #[test]
-fn failed_refresh_overwrites_accepted_cache_fail_closed() {
+fn same_timestamp_refresh_preserves_served_history_price() {
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    assert!(matches!(
+        proxy.refresh(&asset.clone()),
+        RefreshStatus::Accepted(_)
+    ));
+    source.set_price(&asset, &5_100_000_000_i128, &100_u64);
+    assert!(matches!(
+        proxy.refresh(&asset.clone()),
+        RefreshStatus::Accepted(_)
+    ));
+
+    let prices = legacy_prices(&env, &proxy, &asset, 2).unwrap();
+    assert_eq!(prices.len(), 1);
+    assert_eq!(prices.get(0).unwrap().price, 5_000_000_000);
+    assert_eq!(
+        legacy_price(&proxy, &asset, 100).unwrap().price,
+        5_000_000_000
+    );
+    assert_eq!(
+        legacy_lastprice(&proxy, &asset).unwrap().price,
+        5_000_000_000
+    );
+}
+
+#[test]
+fn equal_publish_timestamps_do_not_pad_accepted_breaker_history() {
+    let (env, proxy, source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &4);
+    proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::MonotonicRun(SorobanMonotonicRunConfig {
+            max_streak: 3,
+            min_relative_step_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
+    );
+    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
+    proxy.refresh(&asset);
+
+    for _ in 0..4 {
+        proxy.refresh(&asset);
+    }
+
+    let breakers = stored_breakers(&env, &proxy.address, &asset);
+    assert_eq!(breakers.accepted_history().len(), 1);
+    assert_eq!(breakers.observed_history().len(), 1);
+}
+
+#[test]
+fn regressing_median_timestamp_preserves_served_history_price() {
+    let (env, proxy, source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &2);
+    proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE),
+        }),
+    );
+    set_ledger(&env, 102);
+    source.clients[0].set_price(&asset, &4_000_000_000_i128, &101_u64);
+    source.clients[1].set_price(&asset, &5_000_000_000_i128, &102_u64);
+    source.clients[2].set_price(&asset, &6_000_000_000_i128, &100_u64);
+    assert!(matches!(
+        proxy.refresh(&asset.clone()),
+        RefreshStatus::Accepted(_)
+    ));
+    let _ = contract_events(&env, &proxy.address);
+    let breakers = stored_breakers(&env, &proxy.address, &asset);
+
+    source.clients[0].set_price(&asset, &1_000_000_000_i128, &101_u64);
+    source.clients[1].set_price(&asset, &2_000_000_000_i128, &99_u64);
+    source.clients[2].set_price(&asset, &3_000_000_000_i128, &100_u64);
+    assert!(matches!(
+        proxy.refresh(&asset.clone()),
+        RefreshStatus::Accepted(_)
+    ));
+    assert_eq!(
+        contract_events(&env, &proxy.address),
+        vec![
+            RefreshEvaluated {
+                asset: asset.clone(),
+                mantissa: 2_000_000_000,
+                expo: -8,
+                timestamp: 99,
+            }
+            .to_xdr(&env, &proxy.address),
+            RefreshSuccess {
+                asset: asset.clone(),
+                mantissa: 5_000_000_000,
+                expo: -8,
+                timestamp: 102,
+            }
+            .to_xdr(&env, &proxy.address),
+        ]
+    );
+
+    let prices = legacy_prices(&env, &proxy, &asset, 2).unwrap();
+    assert_eq!(prices.len(), 1);
+    assert_eq!(prices.get(0).unwrap().price, 5_000_000_000);
+    assert!(legacy_price(&proxy, &asset, 99).is_none());
+    let latest = legacy_lastprice(&proxy, &asset).unwrap();
+    assert_eq!(latest.price, 5_000_000_000);
+    assert_eq!(latest.timestamp, 102);
+    assert_eq!(stored_breakers(&env, &proxy.address, &asset), breakers);
+}
+
+#[test]
+fn regressing_median_timestamp_trips_breakers() {
+    let (env, proxy, source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &2);
+    proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
+    );
+    set_ledger(&env, 102);
+    source.clients[0].set_price(&asset, &4_000_000_000_i128, &101_u64);
+    source.clients[1].set_price(&asset, &5_000_000_000_i128, &102_u64);
+    source.clients[2].set_price(&asset, &6_000_000_000_i128, &100_u64);
+    assert!(matches!(
+        proxy.refresh(&asset.clone()),
+        RefreshStatus::Accepted(_)
+    ));
+
+    source.clients[0].set_price(&asset, &1_000_000_000_i128, &101_u64);
+    source.clients[1].set_price(&asset, &2_000_000_000_i128, &99_u64);
+    source.clients[2].set_price(&asset, &3_000_000_000_i128, &100_u64);
+    assert!(matches!(
+        proxy.refresh(&asset.clone()),
+        RefreshStatus::Blocked(2)
+    ));
+
+    assert!(legacy_lastprice(&proxy, &asset).is_none());
+    assert!(stored_breakers(&env, &proxy.address, &asset).is_blocking());
+}
+
+#[test]
+fn source_outage_replaces_accepted_cache() {
+    let (_env, proxy, source, asset) = setup();
+    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
+    proxy.refresh(&asset.clone());
     assert!(legacy_lastprice(&proxy, &asset).is_some());
 
     source.clear_price(&asset);
-    let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    let result = proxy.refresh(&asset.clone());
 
-    assert!(matches!(
-        result.get(0).unwrap().1,
-        RefreshStatus::SourceUnavailable
-    ));
-    assert_eq!(legacy_lastprice(&proxy, &asset), None);
+    assert!(matches!(result, RefreshStatus::SourceUnavailable));
+    assert!(legacy_lastprice(&proxy, &asset).is_none());
     assert!(matches!(
         proxy.get_cached(&asset).unwrap().status,
-        CachedStatus::ResolveFailed(5)
+        CachedStatus::ResolveFailed(SOURCE_UNAVAILABLE_CODE)
     ));
 }
 
@@ -939,45 +1226,34 @@ fn refresh_rejects_source_with_wrong_base_asset() {
     let usd = Asset::Other(Symbol::new(&env, "USD"));
     let eur = Asset::Other(Symbol::new(&env, "EUR"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let (source_id, source) = register_mock_source(&env, &eur);
+    let (source, sources) = proxy_sources(&env, &eur, &asset);
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     let proxy_id = env.register(SorobanProxyOracle, (&governance, &usd));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
-    let mut sources = Vec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: source_id,
-        asset: asset.clone(),
-    });
     proxy.set_proxy(
         &asset,
         &ProxyConfig {
             sources,
-            min_sources: 1,
+            min_sources: 3,
             max_age_secs: Some(30),
             max_clock_drift_secs: Some(5),
         },
     );
 
-    let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    let result = proxy.refresh(&asset.clone());
 
-    assert!(matches!(
-        result.get(0).unwrap().1,
-        RefreshStatus::SourceUnavailable
-    ));
+    assert!(matches!(result, RefreshStatus::SourceUnavailable));
     assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
 fn refresh_rejects_future_source_beyond_clock_drift() {
-    let (env, proxy, source, asset) = setup();
+    let (_env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &106_u64);
 
-    let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    let result = proxy.refresh(&asset.clone());
 
-    assert!(matches!(
-        result.get(0).unwrap().1,
-        RefreshStatus::ResolveFailed(1)
-    ));
+    assert!(matches!(result, RefreshStatus::ResolveFailed(1)));
     assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
@@ -991,10 +1267,12 @@ fn set_proxy_rejects_unreachable_min_sources() {
     let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: Address::generate(&env),
-        asset: asset.clone(),
-    });
+    for _ in 0..3 {
+        sources.push_back(SourceConfig {
+            oracle: Address::generate(&env),
+            asset: asset.clone(),
+        });
+    }
 
     assert_eq!(
         proxy.try_set_proxy(
@@ -1013,7 +1291,7 @@ fn set_proxy_rejects_unreachable_min_sources() {
             &asset,
             &ProxyConfig {
                 sources,
-                min_sources: 2,
+                min_sources: 4,
                 max_age_secs: Some(30),
                 max_clock_drift_secs: Some(5),
             },
@@ -1026,7 +1304,7 @@ fn set_proxy_rejects_unreachable_min_sources() {
 fn prices_with_zero_records_returns_none() {
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
 
     assert_eq!(legacy_prices(&env, &proxy, &asset, 0), None);
 }
@@ -1038,27 +1316,29 @@ fn invalid_config_duplicate_source_oracle_asset_pair() {
     let governance = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let (source_id, _source) = register_mock_source(&env, &base);
+    let (source_ids, _sources) = register_mock_sources(&env, &base);
     let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: source_id.clone(),
-        asset: asset.clone(),
-    });
-    sources.push_back(SourceConfig {
-        oracle: source_id.clone(),
-        asset: asset.clone(),
-    });
+    for source_id in [
+        source_ids.get(0).unwrap(),
+        source_ids.get(0).unwrap(),
+        source_ids.get(2).unwrap(),
+    ] {
+        sources.push_back(SourceConfig {
+            oracle: source_id,
+            asset: asset.clone(),
+        });
+    }
 
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
             &ProxyConfig {
                 sources,
-                min_sources: 1,
-                max_age_secs: None,
-                max_clock_drift_secs: None,
+                min_sources: 3,
+                max_age_secs: Some(30),
+                max_clock_drift_secs: Some(5),
             },
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1066,36 +1346,47 @@ fn invalid_config_duplicate_source_oracle_asset_pair() {
 }
 
 #[test]
-fn invalid_config_same_oracle_different_asset_is_not_a_duplicate() {
+fn invalid_config_duplicate_oracle_is_rejected_even_for_distinct_assets() {
     let env = Env::default();
     env.mock_all_auths();
     let governance = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let (source_id, _source) = register_mock_source(&env, &base);
+    let (source_ids, _sources) = register_mock_sources(&env, &base);
     let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: source_id.clone(),
-        asset: Asset::Other(Symbol::new(&env, "BTC")),
-    });
-    sources.push_back(SourceConfig {
-        oracle: source_id.clone(),
-        asset: Asset::Other(Symbol::new(&env, "ETH")),
-    });
+    for (oracle, source_asset) in [
+        (
+            source_ids.get(0).unwrap(),
+            Asset::Other(Symbol::new(&env, "BTC")),
+        ),
+        (
+            source_ids.get(0).unwrap(),
+            Asset::Other(Symbol::new(&env, "ETH")),
+        ),
+        (
+            source_ids.get(1).unwrap(),
+            Asset::Other(Symbol::new(&env, "BTC")),
+        ),
+    ] {
+        sources.push_back(SourceConfig {
+            oracle,
+            asset: source_asset,
+        });
+    }
 
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
             &ProxyConfig {
                 sources,
-                min_sources: 1,
-                max_age_secs: None,
-                max_clock_drift_secs: None,
+                min_sources: 3,
+                max_age_secs: Some(30),
+                max_clock_drift_secs: Some(5),
             },
         ),
-        Ok(Ok(()))
+        Err(Ok(ContractError::InvalidInput))
     );
 }
 
@@ -1121,8 +1412,8 @@ fn assert_set_proxy_rejected(num_sources: u32, min_sources: u32, expected: Contr
             &ProxyConfig {
                 sources,
                 min_sources,
-                max_age_secs: None,
-                max_clock_drift_secs: None,
+                max_age_secs: Some(30),
+                max_clock_drift_secs: Some(5),
             },
         ),
         Err(Ok(expected))
@@ -1130,23 +1421,217 @@ fn assert_set_proxy_rejected(num_sources: u32, min_sources: u32, expected: Contr
 }
 
 #[test]
-fn invalid_config_zero_sources() {
-    assert_set_proxy_rejected(0, 1, ContractError::TooManySources);
+fn invalid_config_freshness_bounds_are_capped() {
+    let (_env, proxy, _source, asset) = setup();
+    let mut config = proxy.get_proxy(&asset).unwrap();
+    config.max_age_secs = Some(MAX_SOURCE_AGE_SECS + 1);
+    assert_eq!(
+        proxy.try_set_proxy(&asset, &config),
+        Err(Ok(ContractError::InvalidInput))
+    );
+
+    config.max_age_secs = Some(MAX_SOURCE_AGE_SECS);
+    config.max_clock_drift_secs = Some(MAX_CLOCK_DRIFT_SECS + 1);
+    assert_eq!(
+        proxy.try_set_proxy(&asset, &config),
+        Err(Ok(ContractError::InvalidInput))
+    );
+}
+
+#[test]
+fn invalid_config_too_few_sources() {
+    for num_sources in 0..3 {
+        assert_set_proxy_rejected(
+            num_sources,
+            num_sources.max(1),
+            ContractError::TooFewSources,
+        );
+    }
+}
+
+#[test]
+fn invalid_proxy_config_is_atomic_and_emits_nothing() {
+    let (env, proxy, source, asset) = setup();
+    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
+    proxy.refresh(&asset.clone());
+    let configured = proxy.get_proxy(&asset).unwrap();
+    let cached = legacy_lastprice(&proxy, &asset);
+    let events = contract_events(&env, &proxy.address);
+    let mut invalid = configured.clone();
+    invalid.max_clock_drift_secs = None;
+
+    assert_eq!(
+        proxy.try_set_proxy(&asset, &invalid),
+        Err(Ok(ContractError::InvalidInput))
+    );
+    assert_eq!(proxy.get_proxy(&asset), Some(configured));
+    assert_eq!(legacy_lastprice(&proxy, &asset), cached);
+    assert_eq!(contract_events(&env, &proxy.address), events);
+}
+
+#[test]
+fn proxy_configuration_rejects_sources_with_too_many_decimals() {
+    let (_env, proxy, source, asset) = setup();
+    source.set_decimals(&19);
+    let config = proxy.get_proxy(&asset).unwrap();
+
+    assert_eq!(
+        proxy.try_set_proxy(&asset, &config),
+        Err(Ok(ContractError::InvalidInput))
+    );
+}
+
+#[test]
+fn registry_cap_allows_reconfiguration_and_slot_reuse() {
+    let (env, proxy, _source, initial_asset) = setup();
+    let template = proxy.get_proxy(&initial_asset).unwrap();
+    let additional_config = |asset: &Asset| {
+        let mut sources = Vec::new(&env);
+        for source in template.sources.iter() {
+            sources.push_back(SourceConfig {
+                oracle: source.oracle,
+                asset: asset.clone(),
+            });
+        }
+        ProxyConfig {
+            sources,
+            min_sources: template.min_sources,
+            max_age_secs: template.max_age_secs,
+            max_clock_drift_secs: template.max_clock_drift_secs,
+        }
+    };
+
+    for _ in 1..MAX_REGISTERED_ASSETS {
+        let asset = Asset::Stellar(Address::generate(&env));
+        proxy.set_proxy(&asset, &additional_config(&asset));
+    }
+    assert_eq!(proxy.registered_assets().len(), MAX_REGISTERED_ASSETS);
+
+    proxy.set_proxy(&initial_asset, &template);
+    assert_eq!(proxy.registered_assets().len(), MAX_REGISTERED_ASSETS);
+
+    let replacement = Asset::Stellar(Address::generate(&env));
+    assert_eq!(
+        proxy.try_set_proxy(&replacement, &additional_config(&replacement)),
+        Err(Ok(ContractError::TooManyAssets))
+    );
+    proxy.remove_proxy(&initial_asset);
+    proxy.set_proxy(&replacement, &additional_config(&replacement));
+    assert_eq!(proxy.registered_assets().len(), MAX_REGISTERED_ASSETS);
+}
+
+#[test]
+fn malformed_registry_and_missing_breakers_fail_closed() {
+    let (env, proxy, _source, asset) = setup();
+    env.as_contract(&proxy.address, || {
+        env.storage().persistent().set(
+            &DataKey::Assets,
+            &Vec::from_array(&env, [asset.clone(), asset.clone()]),
+        );
+    });
+    assert_eq!(
+        proxy.try_registered_assets(),
+        Err(Ok(ContractError::StorageError))
+    );
+
+    let (env, proxy, _source, _asset) = setup();
+    let mut oversized = Vec::new(&env);
+    for _ in 0..=MAX_REGISTERED_ASSETS {
+        oversized.push_back(Asset::Stellar(Address::generate(&env)));
+    }
+    env.as_contract(&proxy.address, || {
+        env.storage().persistent().set(&DataKey::Assets, &oversized);
+    });
+    assert_eq!(
+        proxy.try_registered_assets(),
+        Err(Ok(ContractError::StorageError))
+    );
+
+    let (env, proxy, _source, asset) = setup();
+    env.as_contract(&proxy.address, || {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Breakers(asset.clone()));
+    });
+    assert_eq!(
+        proxy.try_add_breaker(
+            &asset,
+            &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+                max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+            }),
+        ),
+        Err(Ok(ContractError::StorageError))
+    );
+
+    let (env, proxy, _source, asset) = setup();
+    env.as_contract(&proxy.address, || {
+        env.storage().persistent().set(
+            &DataKey::Breakers(asset.clone()),
+            &Bytes::from_array(&env, &[0xff]),
+        );
+    });
+    assert_eq!(
+        proxy.try_add_breaker(
+            &asset,
+            &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+                max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+            }),
+        ),
+        Err(Ok(ContractError::StorageError))
+    );
+}
+
+#[test]
+fn hal_07_rejects_threshold_that_postcard_quantizes_to_zero() {
+    let (env, proxy, _source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &2);
+    let threshold =
+        SorobanDecimal::from_decimal(&env, Decimal::from_repr([1, 0, 0, 0, 0, 0, 0, 0]));
+
+    assert_eq!(
+        proxy.try_add_breaker(
+            &asset,
+            &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+                max_relative_change: threshold,
+            }),
+        ),
+        Err(Ok(ContractError::StorageError))
+    );
+    assert!(stored_breakers(&env, &proxy.address, &asset)
+        .breakers()
+        .is_empty());
+}
+
+#[test]
+fn hal_13_oversized_registry_can_be_shrunk() {
+    let (env, proxy, _source, asset) = setup();
+    let mut assets = Vec::new(&env);
+    assets.push_back(asset.clone());
+    for _ in 0..MAX_REGISTERED_ASSETS {
+        assets.push_back(Asset::Stellar(Address::generate(&env)));
+    }
+    env.as_contract(&proxy.address, || {
+        env.storage().persistent().set(&DataKey::Assets, &assets);
+    });
+
+    proxy.remove_proxy(&asset);
+
+    assert_eq!(proxy.registered_assets().len(), MAX_REGISTERED_ASSETS);
 }
 
 #[test]
 fn invalid_config_quorum_zero() {
-    assert_set_proxy_rejected(1, 0, ContractError::InvalidInput);
+    assert_set_proxy_rejected(3, 0, ContractError::InvalidInput);
 }
 
 #[test]
 fn invalid_config_quorum_above_source_count() {
-    assert_set_proxy_rejected(1, 2, ContractError::InvalidInput);
+    assert_set_proxy_rejected(3, 4, ContractError::InvalidInput);
 }
 
 #[test]
 fn invalid_config_too_many_sources() {
-    assert_set_proxy_rejected(17, 1, ContractError::TooManySources);
+    assert_set_proxy_rejected(17, 3, ContractError::TooManySources);
 }
 
 #[test]
@@ -1160,22 +1645,35 @@ fn invalid_config_max_history_above_limit() {
 }
 
 #[test]
-fn invalid_config_invalid_accepted_history_source_code() {
+fn rearm_rejects_seconds_and_nanosecond_deadline_overflow() {
     let (env, proxy, _source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &2);
     let breaker_id = proxy.add_breaker(
         &asset,
         &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
             max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
         }),
     );
+    set_ledger(&env, u64::MAX);
 
     assert_eq!(
         proxy.try_rearm(
             &asset,
             &breaker_id,
             &SorobanRearmConfig {
-                armed_after_secs: 0,
-                accepted_history_source_code: 99,
+                arming_delay_secs: 1,
+            },
+        ),
+        Err(Ok(ContractError::InvalidInput))
+    );
+
+    set_ledger(&env, 100);
+    assert_eq!(
+        proxy.try_rearm(
+            &asset,
+            &breaker_id,
+            &SorobanRearmConfig {
+                arming_delay_secs: u64::MAX / 1_000_000_000 + 1,
             },
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1227,7 +1725,7 @@ fn inert_breaker_windowed_window_len_below_2() {
         CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
             window_len: 1,
             lookback_windows: 1,
-            max_relative_change_delta: SorobanDecimal::from_decimal(env, Decimal::ONE_HALF),
+            max_relative_mean_change: SorobanDecimal::from_decimal(env, Decimal::ONE_HALF),
         })
     });
 }
@@ -1237,8 +1735,9 @@ fn inert_breaker_windowed_lookback_zero() {
     assert_breaker_inert(|env| {
         CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
             window_len: 2,
+
             lookback_windows: 0,
-            max_relative_change_delta: SorobanDecimal::from_decimal(env, Decimal::ONE_HALF),
+            max_relative_mean_change: SorobanDecimal::from_decimal(env, Decimal::ONE_HALF),
         })
     });
 }
@@ -1249,9 +1748,55 @@ fn inert_breaker_windowed_max_delta_zero() {
         CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
             window_len: 2,
             lookback_windows: 1,
-            max_relative_change_delta: SorobanDecimal::from_decimal(env, Decimal::ZERO),
+            max_relative_mean_change: SorobanDecimal::from_decimal(env, Decimal::ZERO),
         })
     });
+}
+
+#[test]
+fn cumulative_breaker_rejects_stale_cache_baseline() {
+    let (env, proxy, source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &2);
+    set_ledger(&env, 100);
+    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
+    proxy.refresh(&asset.clone());
+    set_ledger(&env, 131);
+
+    assert_eq!(
+        proxy.try_add_breaker(
+            &asset,
+            &CircuitBreakerConfig::CumulativeChange(SorobanCumulativeChangeConfig {
+                max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+            }),
+        ),
+        Err(Ok(ContractError::InvalidInput))
+    );
+}
+
+#[test]
+fn legacy_proxy_without_freshness_bounds_adds_non_cumulative_breakers() {
+    let (env, proxy, _source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &2);
+    env.as_contract(&proxy.address, || {
+        let mut config = env
+            .storage()
+            .persistent()
+            .get::<_, ProxyConfig>(&DataKey::Proxy(asset.clone()))
+            .unwrap();
+        config.max_age_secs = None;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Proxy(asset.clone()), &config);
+    });
+
+    assert!(proxy
+        .try_add_breaker(
+            &asset,
+            &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+                max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+            }),
+        )
+        .is_ok());
 }
 
 #[test]
@@ -1264,28 +1809,88 @@ fn inert_breaker_zero_history() {
     );
 }
 
+#[test]
+fn invalid_breaker_configuration_is_never_persisted() {
+    let (env, proxy, _source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &4);
+    proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::MonotonicRun(SorobanMonotonicRunConfig {
+            max_streak: 1,
+            min_relative_step_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
+    );
+    let before = stored_breakers(&env, &proxy.address, &asset);
+
+    assert_eq!(
+        proxy.try_configure_breakers(&asset, &1, &4),
+        Err(Ok(ContractError::BreakerError))
+    );
+    assert_eq!(stored_breakers(&env, &proxy.address, &asset), before);
+    assert!(before.validate().is_ok());
+}
 // ── TTL tests ────────────────────────────────────────────────────────────────
 
 #[test]
 fn ttl_extend_does_not_panic_before_any_refresh() {
-    // Verify extend_ttl() is safe when Cache and History do not yet exist
-    // (normal state after set_proxy but before any successful refresh).
-    let (_env, proxy, _source, _asset) = setup();
-    // Must not panic — Cache(BTC) and History(BTC) do not exist yet.
-    proxy.extend_ttl();
+    let (_env, proxy, _source, asset) = setup();
+    proxy.extend_ttl(&asset);
+}
+
+fn assert_ttl_extension_survives_missing_key(key: impl FnOnce(&Asset) -> DataKey) {
+    let (env, proxy, _source, asset) = setup();
+    env.as_contract(&proxy.address, || {
+        env.storage().persistent().remove(&key(&asset));
+    });
+
+    assert_eq!(proxy.try_extend_ttl(&asset), Ok(Ok(())));
+    assert_eq!(
+        contract_events(&env, &proxy.address),
+        vec![TtlExtended {
+            asset: asset.clone()
+        }
+        .to_xdr(&env, &proxy.address)]
+    );
+}
+
+#[test]
+fn ttl_extend_survives_missing_assets_registry() {
+    assert_ttl_extension_survives_missing_key(|_| DataKey::Assets);
+}
+
+#[test]
+fn ttl_extend_survives_missing_breakers() {
+    assert_ttl_extension_survives_missing_key(|asset| DataKey::Breakers(asset.clone()));
+}
+
+#[test]
+fn ttl_extend_rejects_missing_proxy() {
+    let (env, proxy, _source, asset) = setup();
+    env.as_contract(&proxy.address, || {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Proxy(asset.clone()));
+    });
+
+    assert_eq!(
+        proxy.try_extend_ttl(&asset),
+        Err(Ok(ContractError::InvalidInput))
+    );
+    assert!(contract_events(&env, &proxy.address).is_empty());
 }
 
 #[test]
 fn ttl_extend_covers_cache_and_history_after_refresh() {
-    // After a successful refresh, extend_ttl must cover Cache and History.
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
-    // Both Cache and History exist now; must not panic.
-    proxy.extend_ttl();
+    proxy.refresh(&asset.clone());
+    proxy.extend_ttl(&asset);
     assert_eq!(
         contract_events(&env, &proxy.address),
-        vec![TtlExtended { asset_count: 1 }.to_xdr(&env, &proxy.address)]
+        vec![TtlExtended {
+            asset: asset.clone()
+        }
+        .to_xdr(&env, &proxy.address)]
     );
 }
 
@@ -1303,9 +1908,9 @@ fn missing_config_refresh_fails_closed_on_missing_base() {
         env.storage().instance().remove(&DataKey::Base);
     });
 
-    let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    let result = proxy.refresh(&asset.clone());
     assert!(matches!(
-        result.get(0).unwrap().1,
+        result,
         RefreshStatus::ResolveFailed(STORAGE_FAILED_CODE)
     ));
     assert_eq!(legacy_lastprice(&proxy, &asset), None);
@@ -1317,7 +1922,7 @@ fn missing_config_lastprice_fails_closed_on_missing_proxy_config() {
     // rather than treating missing max_age as u64::MAX (no freshness limit).
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+    proxy.refresh(&asset.clone());
     assert!(legacy_lastprice(&proxy, &asset).is_some());
 
     // Remove the Proxy config to simulate TTL expiry.
@@ -1332,50 +1937,15 @@ fn missing_config_lastprice_fails_closed_on_missing_proxy_config() {
 }
 
 #[test]
-fn missing_config_lastprice_no_freshness_limit_is_documented_exception() {
-    // max_age_secs = None in a present ProxyConfig is the documented exception:
-    // the operator explicitly configured no freshness limit. lastprice must
-    // return the cached price regardless of age in that case.
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set(LedgerInfo {
-        timestamp: 100,
-        protocol_version: 25,
-        sequence_number: 100,
-        ..Default::default()
-    });
-    let admin = Address::generate(&env);
-    let base = Asset::Other(Symbol::new(&env, "USD"));
-    let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let (source_id, source) = register_mock_source(&env, &base);
-    let proxy_id = env.register(SorobanProxyOracle, (&admin, &base));
-    let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
-    let mut sources = Vec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: source_id,
-        asset: asset.clone(),
-    });
-    // max_age_secs = None: operator deliberately configures no freshness limit.
-    proxy.set_proxy(
-        &asset,
-        &ProxyConfig {
-            sources,
-            min_sources: 1,
-            max_age_secs: None,
-            max_clock_drift_secs: None,
-        },
-    );
-    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
+fn missing_freshness_bounds_are_rejected() {
+    let (_env, proxy, _source, asset) = setup();
+    let mut config = proxy.get_proxy(&asset).unwrap();
+    config.max_age_secs = None;
 
-    // Advance time well past any normal max_age: must still return the price.
-    env.ledger().set(LedgerInfo {
-        timestamp: 999_999,
-        protocol_version: 25,
-        sequence_number: 200,
-        ..Default::default()
-    });
-    assert!(legacy_lastprice(&proxy, &asset).is_some());
+    assert_eq!(
+        proxy.try_set_proxy(&asset, &config),
+        Err(Ok(ContractError::InvalidInput))
+    );
 }
 
 #[test]
@@ -1390,15 +1960,16 @@ fn missing_config_source_base_returns_none() {
 }
 
 #[test]
-fn missing_config_registered_assets_returns_empty() {
+fn missing_registered_assets_fails_closed() {
     let (env, proxy, _source, _asset) = setup();
     env.as_contract(&proxy.address, || {
         env.storage().persistent().remove(&DataKey::Assets);
     });
-    // Post-refactor `registered_assets()` defaults a missing key to empty
-    // rather than panicking — it's an enumeration helper, not a SEP-40
-    // surface promise.
-    assert!(proxy.registered_assets().is_empty());
+
+    assert_eq!(
+        proxy.try_registered_assets(),
+        Err(Ok(ContractError::StorageError))
+    );
 }
 
 #[test]

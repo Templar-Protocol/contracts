@@ -54,6 +54,14 @@ impl Nanoseconds {
         Self(SU64::new(value.saturating_mul(1_000_000_000)))
     }
 
+    /// Creates a `Nanoseconds` value from seconds when the conversion fits.
+    pub const fn checked_from_secs(value: u64) -> Option<Self> {
+        match value.checked_mul(1_000_000_000) {
+            Some(value) => Some(Self(SU64::new(value))),
+            None => None,
+        }
+    }
+
     /// Returns the value as seconds, truncated.
     pub const fn as_secs(&self) -> u64 {
         self.0 .0 / 1_000_000_000
@@ -112,5 +120,23 @@ mod redstone {
         fn from(value: super::Nanoseconds) -> Self {
             Self::from_millis(value.as_ms())
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::Nanoseconds;
+
+    #[test]
+    fn checked_seconds_reject_nanosecond_overflow() {
+        assert_eq!(
+            Nanoseconds::checked_from_secs(u64::MAX / 1_000_000_000),
+            Some(Nanoseconds::from_ns(
+                u64::MAX / 1_000_000_000 * 1_000_000_000
+            ))
+        );
+        assert_eq!(
+            Nanoseconds::checked_from_secs(u64::MAX / 1_000_000_000 + 1),
+            None
+        );
     }
 }

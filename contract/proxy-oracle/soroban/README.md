@@ -4,12 +4,12 @@ Aggregates external SEP-40 price feeds into a normalized, exponent-form cache. A
 
 The runtime is **not** itself a SEP-40 contract. It exposes:
 
-- `refresh(assets)` — pull source prices, aggregate through `templar-proxy-oracle-kernel`, apply freshness + breakers, write accepted/failed status to the cache. The only path that performs source IO.
-- `aggregated_latest(asset) -> Option<NormalizedPrice>` — cached `{ mantissa, expo, timestamp }`, or `None` if not accepted or stale.
-- `aggregated_history(asset, records)` — last N normalized cached prices.
-- Introspection: `registered_assets`, `source_base`, `get_proxy`, `get_cached`, `get_breaker_set_view`, `get_owner`. Named to avoid colliding with SEP-40's `assets()` / `base()`: `source_base` is the validation invariant every source must report against; `registered_assets` enumerates assets with a proxy config.
+- `refresh(asset)` — pull one asset's source prices, aggregate through `templar-proxy-oracle-kernel`, apply freshness + breakers, and write the resulting status to its cache. A failed or blocked refresh replaces an accepted cache, so readers fail closed. A candidate with a non-advancing publication timestamp is still evaluated by breakers; if accepted, the cache retains the latest source-time aggregate and `RefreshEvaluated` records the candidate when it differs. The only path that performs source IO.
+- `aggregated_latest(asset) -> Option<NormalizedPrice>` — the most recently accepted source-time aggregate `{ mantissa, expo, timestamp }`, or `None` if not accepted or stale.
+- `aggregated_history(asset, records)` — the last N accepted aggregates with strictly increasing publication timestamps, or `None` while a manual or enforced automatic breaker blocks the asset. It is a monotonic source-time record, not a time-bucket view of `aggregated_latest`.
+- Introspection: `registered_assets`, `source_base`, `get_proxy`, `get_cached`, `get_breaker_set_view`, `get_owner`. `get_breaker_set_view` reports the live, semantically valid breaker configuration. Named to avoid colliding with SEP-40's `assets()` / `base()`: `source_base` is the validation invariant every source must report against; `registered_assets` enumerates assets with a proxy config.
 
-Reads fail closed: `aggregated_latest` (runtime) and `lastprice` (adapter) return `None` unless the latest cached status is accepted and still fresh.
+Reads fail closed: `aggregated_latest` and adapter `lastprice` return `None` unless the latest cached status is accepted and still fresh. `aggregated_history` and adapter `price` / `prices` return `None` while the asset is blocked but otherwise retain historical records independent of freshness.
 
 RedStone enters through RedStone's own Stellar SEP-40 wrapper contracts; this proxy does not verify RedStone payloads.
 
@@ -27,23 +27,30 @@ The proposal state machine is shared with NEAR via the `no_std` `templar-proxy-o
 
 ## Sep40Adapter
 
-Each adapter is independently `Ownable` and tracks one **immutable** `(parent_oracle, asset)` pair — to repoint either, deploy a new adapter. Owner entrypoints:
+Each adapter is independently `Ownable`, binds one immutable
+`(parent_oracle, asset, base, resolution)` tuple, and requires the parent's
+`source_base` to equal its base at construction and before every price read. To
+repoint or relabel a feed, deploy a new adapter. Owner entrypoints:
 
-- `set_metadata(decimals, resolution, base)` — replace the SEP-40 metadata triple; emits `MetadataUpdated`. `decimals ≤ 18`, `resolution ≠ 0`.
+- `set_decimals(decimals)` — updates only the output precision and emits `DecimalsUpdated`; `decimals ≤ 18`.
+- `decommission()` — permanently disables `price`, `prices`, and `lastprice`; call it before `renounce_ownership`.
 - `extend_ttl()` — permissionless instance-storage maintenance for adapter config.
 - `config() -> Option<Config>` — the full `{ parent_oracle, asset, decimals, resolution, base }`.
-- `upgrade(new_wasm_hash, operator)` — owner-gated wasm swap.
+- `upgrade(new_wasm_hash, operator)` — owner-gated wasm swap; emits `AdapterUpgraded`.
 
-SEP-40 `PriceFeedTrait` reads dispatch to the parent's `aggregated_latest` / `aggregated_history`, rescaled to the adapter's `decimals`. SEP-40 metadata (`contractmeta!(key = "sep", val = "40")`) is declared here, not on the runtime. There is no on-chain adapter registry or decommission state: owners upgrade to a no-op, renounce, transfer to a burn address, or stop publishing. Official adapters are listed in the release manifest.
+`PriceFeedTrait` projects parent prices to the adapter precision and resolution
+buckets; unrepresentable values and a parent-base mismatch fail closed. SEP-40
+metadata (`contractmeta!(key = "sep", val = "40")`) is declared here, not on the
+runtime. Official adapters are listed in the release manifest.
 
 ## Operational notes
 
-- Configure ≥ 1 source; `min_sources` must be in `[1, sources.len()]`. Invalid quorum is rejected.
-- `refresh(assets)` is the only source-IO path; all reads are storage-only.
-- Manage breakers with the governed `add_breaker` / `remove_breaker` / `rearm` / `set_enforced`. Inert params (zero thresholds/streaks/lookback) are rejected.
+- Configure 3–16 sources; `min_sources` must be in `[3, sources.len()]`. Invalid quorum is rejected.
+- `refresh(asset)` is the only source-IO path; all reads are storage-only.
+- Manage breakers with the governed `add_breaker` / `remove_breaker` / `rearm` / `set_enforced`. Inert params and insufficient history are rejected; `MonotonicRun` requires zero sampling, while a `CumulativeChange` baseline is intentionally rebased only by remove → successful refresh → add. Changing an asset's source set or quorum clears its breaker set, cache, and history; configure and add breakers again after the source migration. Every persisted breaker set is semantically valid. An invalid stored set is unreachable; recover from genuine corruption with `remove_proxy` → `set_proxy`.
 - Manual-trip metadata is event-only, capped at 1024 bytes, not stored in breaker state.
 - Schedule an ops/keeper job for Soroban TTL maintenance; do not rely on curators to remember this manually.
-- Runtime `extend_ttl()` is permissionless and renews runtime instance storage plus every registered asset's persistent `Assets`, `Proxy`, `Breakers`, `Cache`, and `History` entries.
+- Runtime `extend_ttl(asset)` is permissionless for registered assets and renews every surviving persistent `Proxy`, `Breakers`, `Cache`, and `History` entry.
 - Governance `extend_ttl()` is permissionless and renews governance instance state plus active persistent proposal bodies.
 - SEP-40 adapter `extend_ttl()` is permissionless and renews adapter instance config. Adapter reads also refresh instance TTL when the remaining TTL is below threshold.
 - Keep optimized WASMs within budget: runtime & governance ≤ 128 KiB, adapter ≤ 32 KiB. Recheck after ABI/event changes.
