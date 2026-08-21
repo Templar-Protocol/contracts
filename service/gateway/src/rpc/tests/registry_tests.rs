@@ -136,10 +136,7 @@ async fn add_version_accepts_every_source_and_each_one_deploys() -> Result<()> {
     let stack = TestStack::start().await?;
     let registry_id = stack.harness.deploy_registry().await?;
     let wasm = stack.harness.ft_wasm().await;
-    // Publishing a global contract stakes 10x the per-byte storage rate for the whole blob.
-    let publish_deposit = NearToken::from_near(1)
-        .saturating_div(10_000)
-        .saturating_mul(wasm.len() as u128);
+    let publish_deposit = templar_gateway_testing::publish_deposit_for(wasm.len());
 
     let add = async |version_key: &str, source: VersionSource, deposit: NearToken| {
         stack

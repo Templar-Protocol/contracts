@@ -14,7 +14,7 @@ use templar_common::{
     market::YieldWeights,
     registry::{VersionAvailability, VersionSource},
 };
-use templar_gateway_testing::{harness, SandboxHarness};
+use templar_gateway_testing::{harness, publish_deposit_for, SandboxHarness};
 
 const MARKET_VERSION: &str = "market@0.0.0";
 const REMOVED_VERSION: &str = "market@0.0.0-removed";
@@ -223,14 +223,13 @@ async fn upgrade_replaces_the_key_signed_batch(
         .await?;
 
     // Publish the new code as a global contract, then upgrade onto it by hash.
-    let cost_per_byte = NearToken::from_near(1).saturating_div(10_000);
     harness
         .registry_add_version(
             &harness.registry_signer_account_id.clone(),
             &registry_id,
             SELF_VERSION,
             VersionSource::PublishGlobal(current.clone().into()),
-            cost_per_byte.saturating_mul(current.len() as u128),
+            publish_deposit_for(current.len()),
         )
         .await?;
     let global_hash = harness
@@ -395,14 +394,13 @@ async fn a_keyless_registry_still_upgrades_through_its_owner(
         .await?;
 
     // Publish the replacement while the registry still owns itself.
-    let cost_per_byte = NearToken::from_near(1).saturating_div(10_000);
     harness
         .registry_add_version(
             &registry_signer,
             &registry_id,
             SELF_VERSION,
             VersionSource::PublishGlobal(current.clone().into()),
-            cost_per_byte.saturating_mul(current.len() as u128),
+            publish_deposit_for(current.len()),
         )
         .await?;
     let global_hash = harness

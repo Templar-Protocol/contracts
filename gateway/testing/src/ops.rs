@@ -2343,6 +2343,14 @@ impl SandboxHarness {
     }
 }
 
+/// What publishing `len` bytes as a new global contract stakes: ten times the per-byte
+/// storage rate, over the whole blob.
+pub fn publish_deposit_for(len: usize) -> NearToken {
+    NearToken::from_near(1)
+        .saturating_div(10_000)
+        .saturating_mul(len as u128)
+}
+
 /// Every receipt in the operation that failed.
 ///
 /// Top-level success is not receipt-level success (see

@@ -87,8 +87,9 @@ impl RegistryClient<'_> {
         let args = args.borrow();
         // Exhaustive on purpose: a new source must state which release first accepts it, rather
         // than defaulting to "every registry understands this". `ExistingGlobal` has no gate yet —
-        // the release that introduces it has no version number until it ships, so a registry too
-        // old for it fails on chain rather than at preflight until that check is added.
+        // the release that introduces it has no version number until it ships. Pre-1.1.0 has no
+        // encoding for a code hash and `encode_add_version_args` rejects it below; between there
+        // and that release the call encodes fine and fails on chain.
         let unsupported = match args.source {
             VersionSource::Stored(_) | VersionSource::ExistingGlobal(_) => None,
             VersionSource::PublishGlobal(_) => {

@@ -7,7 +7,7 @@ use near_sdk::json_types::Base58CryptoHash;
 use near_token::NearToken;
 use rstest::rstest;
 use templar_common::{market::MarketConfiguration, market::YieldWeights, registry::VersionSource};
-use templar_gateway_testing::{harness, SandboxHarness};
+use templar_gateway_testing::{harness, publish_deposit_for, SandboxHarness};
 use templar_gateway_types::{primitive::PublicKey, ManagedAccountId};
 
 const MARKET_VERSION: &str = "market@0.0.0";
@@ -19,13 +19,6 @@ const TEST_PUBLIC_KEY: &str = "ed25519:5BGSaf6YjVm7565VzWQHNxoyEjwr3jUpRJSGjREvU
 /// Registering an already-published global stakes nothing: the probe account is created and
 /// deleted in one receipt, so it never has to meet a storage minimum.
 const PROBE_DEPOSIT: NearToken = NearToken::from_yoctonear(1);
-
-/// What publishing `len` bytes as a new global contract stakes.
-fn publish_deposit_for(len: usize) -> NearToken {
-    NearToken::from_near(1)
-        .saturating_div(10_000)
-        .saturating_mul(len as u128)
-}
 
 struct Registry {
     id: AccountId,
