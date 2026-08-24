@@ -141,3 +141,85 @@ impl RegistryClient<'_> {
         pub fn remove_version(RemoveVersionArgs);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use near_api::{types::transaction::actions::Action, NetworkConfig};
+    use near_sdk::json_types::{Base58CryptoHash, Base64VecU8};
+    use templar_common::registry::VersionSource;
+    use templar_gateway_types::{ManagedAccountId, RegistryVersion};
+
+    use super::{AddVersionArgs, NearClient};
+    use crate::client::ContractWriteOptions;
+
+    const CODE: [u8; 3] = [0xde, 0xad, 0xbe];
+
+    fn plan(
+        version: (u64, u64, u64),
+        source: VersionSource,
+    ) -> crate::GatewayResult<crate::operation::PlannedTransaction> {
+        let client = NearClient::new(NetworkConfig::from_rpc_url(
+            "test",
+            "http://127.0.0.1:1".parse().unwrap(),
+        ));
+        client
+            .registry("registry.near".parse().unwrap())
+            .add_version(
+                ContractWriteOptions::new(ManagedAccountId("owner.near".parse().unwrap()))
+                    .one_yocto(),
+                RegistryVersion::from(version),
+                AddVersionArgs {
+                    version_key: "market@1.5.0".to_owned(),
+                    source,
+                },
+            )
+    }
+
+    #[rstest::rstest]
+    #[case::stored(VersionSource::Stored(Base64VecU8(CODE.to_vec())))]
+    #[case::publish_global(VersionSource::PublishGlobal(Base64VecU8(CODE.to_vec())))]
+    #[case::existing_global(VersionSource::ExistingGlobal(Base58CryptoHash::from([7u8; 32])))]
+    fn every_source_plans_against_2_0_0(#[case] source: VersionSource) {
+        let planned = plan((2, 0, 0), source).expect("2.0.0 accepts every source");
+
+        let [Action::FunctionCall(action)] = &planned.actions[..] else {
+            panic!("expected one function call");
+        };
+        assert_eq!(action.method_name, "add_version");
+    }
+
+    /// The release before the one carrying `ExistingGlobal`: rejected while planning, so nothing
+    /// reaches the chain to fail there.
+    #[test]
+    fn existing_global_is_refused_below_2_0_0() {
+        let error = plan(
+            (1, 2, 4),
+            VersionSource::ExistingGlobal(Base58CryptoHash::from([7u8; 32])),
+        )
+        .expect_err("1.2.4 cannot read a code hash");
+
+        let crate::GatewayError::Io(io) = &error else {
+            panic!("expected an io error: {error}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("code hash"),
+            "error should name the unsupported feature: {error}"
+        );
+    }
+
+    /// `PublishGlobal` keeps its own older gate, so the two thresholds cannot be collapsed.
+    #[test]
+    fn publish_global_is_refused_below_1_1_0() {
+        let error = plan(
+            (1, 0, 0),
+            VersionSource::PublishGlobal(Base64VecU8(CODE.to_vec())),
+        )
+        .expect_err("1.0.0 has no global contracts");
+
+        assert!(
+            error.to_string().contains("global contracts"),
+            "error should name the unsupported feature: {error}"
+        );
+    }
+}

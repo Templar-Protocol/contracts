@@ -48,5 +48,6 @@ templar-gateway-methods-dispatch = { path = "../methods-dispatch" }
 templar-gateway-methods-spec.workspace = true
 near-sandbox.workspace = true
 near-token.workspace = true
+rstest.workspace = true
 templar-gateway-testing.workspace = true
 tokio.workspace = true
