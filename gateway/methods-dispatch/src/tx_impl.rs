@@ -7,7 +7,7 @@ use templar_gateway_core::{
 };
 use templar_gateway_methods_spec::tx;
 use templar_gateway_types::{
-    protocol::{MAX_ACTIONS_PER_RECEIPT, MAX_TOTAL_PREPAID_GAS},
+    protocol::{MAX_ACTIONS_PER_RECEIPT, MAX_TOTAL_PREPAID_GAS, MAX_TRANSACTION_SIZE},
     ActionInput, NearGas,
 };
 
@@ -163,6 +163,9 @@ impl<C: Send + 'static> PlanWrite<tx::DeployAndInit, C> for Dispatch {
     }
 }
 
+/// Signer, key, nonce, receiver, block hash and signature, rounded up.
+const SIGNED_ENVELOPE_BYTES: usize = 512;
+
 /// `None` on overflow, which is over the limit either way.
 fn total_prepaid_gas(actions: &[ActionInput]) -> Option<NearGas> {
     actions
@@ -217,6 +220,16 @@ impl<C: Send + 'static> PlanWrite<tx::Batch, C> for Dispatch {
             .into_iter()
             .map(Action::try_from)
             .collect::<Result<Vec<_>, _>>()?;
+
+        // Bounds the signed size rather than computing it: the envelope is only
+        // known once a nonce and block hash exist, and payloads dominate anyway.
+        let size = borsh::to_vec(&actions)?.len() + SIGNED_ENVELOPE_BYTES;
+        if size > MAX_TRANSACTION_SIZE {
+            return Err(GatewayError::RequestPreconditionFailed(format!(
+                "a batch serializes to at most {MAX_TRANSACTION_SIZE} bytes of \
+                 transaction size, got about {size}"
+            )));
+        }
 
         Ok(OperationPlan::execute(
             request.signer_account_id,
@@ -394,5 +407,27 @@ mod tests {
         plan(vec![transfer(); MAX_ACTIONS_PER_RECEIPT])
             .await
             .expect("transfers prepay nothing, so no batch of them can exceed the gas limit");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_batch_whose_actions_together_exceed_the_transaction_size() {
+        let deploy = |len: usize| ActionInput::DeployContract {
+            code: Base64Bytes(vec![0u8; len]),
+        };
+        let half = MAX_TRANSACTION_SIZE / 2;
+
+        plan(vec![deploy(half - 4096), deploy(half - 4096)])
+            .await
+            .expect("two deploys that fit together are allowed");
+
+        // Each blob is individually deployable; only together do they overflow.
+        let error = plan(vec![deploy(half), deploy(half)])
+            .await
+            .expect_err("over the transaction size must be rejected");
+        assert!(
+            matches!(error, GatewayError::RequestPreconditionFailed(ref message)
+                if message.contains("transaction size")),
+            "unexpected error: {error}"
+        );
     }
 }

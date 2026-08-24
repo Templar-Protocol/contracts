@@ -234,7 +234,7 @@
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
-| `tx.batch` | write | `Batch` → `WriteOperationResult` | Submit several actions to one receiver in a single atomic transaction. |
+| `tx.batch` | write | `Batch` → `WriteOperationResult` | Submit several actions to one receiver in one transaction. |
 | `tx.deployAndInit` | write | `DeployAndInit` → `WriteOperationResult` | Deploy contract code and call its init method in one transaction. |
 | `tx.deployContract` | write | `DeployContract` → `WriteOperationResult` | Deploy contract code to an existing account in a single transaction. |
 | `tx.functionCall` | write | `FunctionCall` → `WriteOperationResult` | Submit a single function-call transaction. |

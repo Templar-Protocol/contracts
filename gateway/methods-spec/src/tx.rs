@@ -94,10 +94,10 @@ pub struct DeployContract {
     pub code: Base64Bytes,
 }
 
-/// Submit several actions to one receiver in a single atomic transaction.
+/// Submit several actions to one receiver in one transaction.
 ///
-/// NEAR applies a receipt's actions in order and reverts all of them if any
-/// fails, so a batch either lands whole or not at all.
+/// They apply in order and all revert if one fails. Receipts a `FunctionCall`
+/// spawns are separate: their failure leaves the batch applied.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "tx.batch")]
 pub struct Batch {
