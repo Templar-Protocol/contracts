@@ -6,10 +6,7 @@ use templar_gateway_core::{
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::tx;
-use templar_gateway_types::{
-    protocol::{MAX_ACTIONS_PER_RECEIPT, MAX_TOTAL_PREPAID_GAS, MAX_TRANSACTION_SIZE},
-    ActionInput, NearGas,
-};
+use templar_gateway_types::protocol::MAX_ACTIONS_PER_RECEIPT;
 
 use crate::Dispatch;
 
@@ -163,28 +160,12 @@ impl<C: Send + 'static> PlanWrite<tx::DeployAndInit, C> for Dispatch {
     }
 }
 
-/// Signer, key, nonce, receiver, block hash and signature, rounded up.
-const SIGNED_ENVELOPE_BYTES: usize = 512;
-
-/// `None` on overflow, which is over the limit either way.
-fn total_prepaid_gas(actions: &[ActionInput]) -> Option<NearGas> {
-    actions
-        .iter()
-        .try_fold(0u64, |total, action| match action {
-            ActionInput::FunctionCall { gas, .. } => total.checked_add(gas.as_gas()),
-            _ => Some(total),
-        })
-        .map(NearGas::from_gas)
-}
-
 #[async_trait]
 impl<C: Send + 'static> PlanWrite<tx::Batch, C> for Dispatch {
     async fn plan(
         request: templar_gateway_types::common::WriteRequest<tx::Batch>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
-        // A rejected submission strands its step in `Submitted`, so every limit
-        // is checked before the operation is persisted.
         let count = request.body.actions.len();
         if count == 0 {
             return Err(GatewayError::RequestPreconditionFailed(
@@ -197,39 +178,12 @@ impl<C: Send + 'static> PlanWrite<tx::Batch, C> for Dispatch {
             )));
         }
 
-        match total_prepaid_gas(&request.body.actions) {
-            Some(total) if total <= MAX_TOTAL_PREPAID_GAS => {}
-            Some(total) => {
-                return Err(GatewayError::RequestPreconditionFailed(format!(
-                    "a batch prepays at most {} gas across its actions, got {}",
-                    MAX_TOTAL_PREPAID_GAS.as_gas(),
-                    total.as_gas()
-                )))
-            }
-            None => {
-                return Err(GatewayError::RequestPreconditionFailed(format!(
-                    "a batch prepays at most {} gas across its actions; this one overflows u64",
-                    MAX_TOTAL_PREPAID_GAS.as_gas()
-                )))
-            }
-        }
-
         let actions = request
             .body
             .actions
             .into_iter()
             .map(Action::try_from)
             .collect::<Result<Vec<_>, _>>()?;
-
-        // Bounds the signed size rather than computing it: the envelope is only
-        // known once a nonce and block hash exist, and payloads dominate anyway.
-        let size = borsh::to_vec(&actions)?.len() + SIGNED_ENVELOPE_BYTES;
-        if size > MAX_TRANSACTION_SIZE {
-            return Err(GatewayError::RequestPreconditionFailed(format!(
-                "a batch serializes to at most {MAX_TRANSACTION_SIZE} bytes of \
-                 transaction size, got about {size}"
-            )));
-        }
 
         Ok(OperationPlan::execute(
             request.signer_account_id,
@@ -256,15 +210,6 @@ mod tests {
                 receiver_id: "target.near".parse().expect("valid account id"),
                 actions,
             },
-        }
-    }
-
-    fn call(gas: NearGas) -> ActionInput {
-        ActionInput::FunctionCall {
-            method_name: ContractMethodName("noop".to_owned()),
-            args: ContractArgs::Raw(Base64Bytes(Vec::new())),
-            gas,
-            deposit: NearToken::from_yoctonear(0),
         }
     }
 
@@ -365,68 +310,6 @@ mod tests {
         assert!(
             matches!(error, GatewayError::RequestPreconditionFailed(ref message)
                 if message.contains("at most 100 actions, got 101")),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn rejects_a_batch_whose_actions_together_prepay_too_much_gas() {
-        let half = NearGas::from_gas(MAX_TOTAL_PREPAID_GAS.as_gas() / 2);
-        plan(vec![call(half), call(half)])
-            .await
-            .expect("the limit itself is allowed");
-
-        // Each action is individually valid; only the sum is not.
-        let error = plan(vec![call(half), call(half), call(NearGas::from_gas(1))])
-            .await
-            .expect_err("over the total must be rejected");
-        assert!(
-            matches!(error, GatewayError::RequestPreconditionFailed(ref message)
-                if message.contains("prepays at most")),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn rejects_a_batch_whose_gas_sum_overflows() {
-        let error = plan(vec![
-            call(NearGas::from_gas(u64::MAX)),
-            call(NearGas::from_gas(1)),
-        ])
-        .await
-        .expect_err("an overflowing sum must be rejected, not wrapped");
-        assert!(
-            matches!(error, GatewayError::RequestPreconditionFailed(ref message)
-                if message.contains("overflows")),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn non_function_call_actions_prepay_no_gas() {
-        plan(vec![transfer(); MAX_ACTIONS_PER_RECEIPT])
-            .await
-            .expect("transfers prepay nothing, so no batch of them can exceed the gas limit");
-    }
-
-    #[tokio::test]
-    async fn rejects_a_batch_whose_actions_together_exceed_the_transaction_size() {
-        let deploy = |len: usize| ActionInput::DeployContract {
-            code: Base64Bytes(vec![0u8; len]),
-        };
-        let half = MAX_TRANSACTION_SIZE / 2;
-
-        plan(vec![deploy(half - 4096), deploy(half - 4096)])
-            .await
-            .expect("two deploys that fit together are allowed");
-
-        // Each blob is individually deployable; only together do they overflow.
-        let error = plan(vec![deploy(half), deploy(half)])
-            .await
-            .expect_err("over the transaction size must be rejected");
-        assert!(
-            matches!(error, GatewayError::RequestPreconditionFailed(ref message)
-                if message.contains("transaction size")),
             "unexpected error: {error}"
         );
     }
