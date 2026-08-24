@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-relayer-v0.2.1...templar-relayer-v0.3.0) - 2026-08-24
+
+### Added
+
+- *(gateway)* [**breaking**] factor out the shared deploy-from-registry op structure (ENG-466) ([#594](https://github.com/Templar-Protocol/contracts/pull/594))
+- *(registry)* [**breaking**] register an existing global contract by code hash (ENG-631) ([#596](https://github.com/Templar-Protocol/contracts/pull/596))
+
 ## [0.2.1](https://github.com/Templar-Protocol/contracts/compare/templar-relayer-v0.2.0...templar-relayer-v0.2.1) - 2026-08-07
 
 ### Added
