@@ -8,7 +8,7 @@ mod sandbox_ext;
 pub mod wasm;
 
 pub use controller::TestController;
-pub use ops::{failed_receipts, DeployedMarket, DeployedVault};
+pub use ops::{failed_receipts, publish_deposit_for, DeployedMarket, DeployedVault};
 pub use sandbox::{
     sandbox_config, test_pooled_signer, test_secret_key, test_signer, SandboxHarness,
 };

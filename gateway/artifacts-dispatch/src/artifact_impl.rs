@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use templar_common::registry::{DeployMode, VersionSource};
 use templar_contract_artifacts::{fetch, version_key_from_digest, ArtifactId};
 use templar_gateway_artifacts_spec::artifact::{
     AddArtifactVersion, ArtifactMetadata, GetArtifact, GetArtifactResult, ListArtifacts,
@@ -111,8 +112,14 @@ impl<C: HasNearClient> PlanWrite<AddArtifactVersion, C> for Dispatch {
                 registry_version,
                 AddVersionArgs {
                     version_key: artifact.version_key,
-                    mode: body.deploy_mode,
-                    code: artifact.code,
+                    // The catalog resolved these bytes itself, so a code hash is not one of the
+                    // choices here — only whether to publish them globally or store them.
+                    source: match body.deploy_mode {
+                        DeployMode::Normal => VersionSource::Stored(artifact.code.into()),
+                        DeployMode::GlobalHash => {
+                            VersionSource::PublishGlobal(artifact.code.into())
+                        }
+                    },
                 },
             )
             .map(OperationPlan::from)

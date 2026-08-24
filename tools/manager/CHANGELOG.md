@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.4.0...templar-manager-v0.5.0) - 2026-08-24
+
+### Added
+
+- *(manager)* make target and version preflight checks sound (ENG-559, ENG-560) ([#591](https://github.com/Templar-Protocol/contracts/pull/591))
+- *(gateway)* [**breaking**] factor out the shared deploy-from-registry op structure (ENG-466) ([#594](https://github.com/Templar-Protocol/contracts/pull/594))
+- *(registry)* [**breaking**] register an existing global contract by code hash (ENG-631) ([#596](https://github.com/Templar-Protocol/contracts/pull/596))
+
+### Fixed
+
+- *(proxy-oracle)* remediate Halborn findings ([#595](https://github.com/Templar-Protocol/contracts/pull/595))
+
 ## [0.4.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.3.0...templar-manager-v0.4.0) - 2026-08-07
 
 ### Added

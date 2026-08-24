@@ -3,10 +3,11 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use clap::{ArgGroup, Args, ValueEnum};
 use near_account_id::AccountId;
-use templar_common::registry::DeployMode;
+use near_sdk::json_types::Base58CryptoHash;
+use templar_common::registry::VersionSource;
 use templar_contract_artifacts::ArtifactId;
 use templar_gateway_methods_spec::registry as spec;
-use templar_gateway_types::{Base64Bytes, NearToken};
+use templar_gateway_types::NearToken;
 use templar_tools_common::build::{build_contract, load_contract, LoadedContract};
 
 use crate::commands::signer::SignerArgs;
@@ -16,20 +17,22 @@ use crate::commands::signer::SignerArgs;
 pub(crate) const STORAGE_AMOUNT_PER_BYTE: NearToken =
     NearToken::from_yoctonear(10_000_000_000_000_000_000);
 
-/// CLI mirror of [`DeployMode`]. Local to the manager so `templar-common` keeps
+/// How to register a wasm blob. Local to the manager so `templar-common` keeps
 /// clap gated behind its (non-default, host-only) `rpc` feature and never pulls
 /// it into a wasm contract build.
+///
+/// The value names predate [`VersionSource`] and are kept as the CLI surface.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum DeployModeArg {
     Normal,
     GlobalHash,
 }
 
-impl From<DeployModeArg> for DeployMode {
-    fn from(mode: DeployModeArg) -> Self {
-        match mode {
-            DeployModeArg::Normal => Self::Normal,
-            DeployModeArg::GlobalHash => Self::GlobalHash,
+impl DeployModeArg {
+    fn with_code(self, code: Vec<u8>) -> VersionSource {
+        match self {
+            Self::Normal => VersionSource::Stored(code.into()),
+            Self::GlobalHash => VersionSource::PublishGlobal(code.into()),
         }
     }
 }
@@ -71,15 +74,16 @@ impl From<ContractArg> for ArtifactId {
 /// Where the WASM to register comes from, and how to identify it.
 ///
 /// Exactly one contract selector is required: `--contract <CONTRACT>` (a known
-/// NEAR contract), `--package` (a Cargo package name or artifact ID), or
-/// `--wasm` (an explicit file). The `--contract`/`--package` modes resolve a
-/// workspace package and, by default, build it reproducibly (`--no-build`
-/// uploads the last `target/near` build instead); `--wasm` uploads arbitrary
-/// bytes and so requires `--version-key`.
+/// NEAR contract), `--package` (a Cargo package name or artifact ID), `--wasm`
+/// (an explicit file), or `--code-hash` (a global contract already on chain).
+/// The `--contract`/`--package` modes resolve a workspace package and, by
+/// default, build it reproducibly (`--no-build` uploads the last `target/near`
+/// build instead); `--wasm` uploads arbitrary bytes and so requires
+/// `--version-key`, as does `--code-hash`, which uploads nothing at all.
 #[derive(Args, Debug)]
 #[command(group(
     ArgGroup::new("contract_source")
-        .args(["contract", "package", "wasm"])
+        .args(["contract", "package", "wasm", "code_hash"])
         .required(true)
         .multiple(false)
 ))]
@@ -93,6 +97,10 @@ pub struct ContractSource {
     /// Upload this WASM file directly, skipping the build (requires --version-key)
     #[arg(long, value_name = "PATH")]
     wasm: Option<PathBuf>,
+    /// Register a global contract already on chain by its code hash, uploading
+    /// nothing (requires --version-key)
+    #[arg(long, value_name = "HASH")]
+    code_hash: Option<Base58CryptoHash>,
     /// Upload the last `target/near` build instead of building (package modes only)
     #[arg(long)]
     no_build: bool,
@@ -143,13 +151,19 @@ pub struct AddVersion {
     #[command(flatten)]
     source: ContractSource,
     /// Version key to store. Derived from the package metadata and WASM hash
-    /// when omitted; required with --wasm.
+    /// when omitted; required with --wasm or --code-hash.
     #[arg(long, value_name = "KEY")]
     version_key: Option<String>,
-    /// Deployment mode (choose explicitly).
-    #[arg(long, value_enum)]
-    deploy_mode: DeployModeArg,
-    /// Deposit in NEAR. Estimated from the WASM size and deploy mode when omitted.
+    /// Deployment mode for an uploaded WASM (choose explicitly). Meaningless
+    /// with --code-hash, which never uploads.
+    #[arg(
+        long,
+        value_enum,
+        required_unless_present = "code_hash",
+        conflicts_with = "code_hash"
+    )]
+    deploy_mode: Option<DeployModeArg>,
+    /// Deposit in NEAR. Estimated from the version source when omitted.
     #[arg(long, value_name = "AMOUNT")]
     deposit: Option<NearToken>,
     #[command(flatten)]
@@ -158,32 +172,40 @@ pub struct AddVersion {
 
 impl AddVersion {
     pub fn try_into_spec(self) -> anyhow::Result<spec::AddVersion> {
-        let deploy_mode = DeployMode::from(self.deploy_mode);
-        let (wasm_bytes, derived_key) = self.source.load()?;
+        let (source, derived_key) = if let Some(hash) = self.source.code_hash {
+            (VersionSource::ExistingGlobal(hash), None)
+        } else {
+            let deploy_mode = self
+                .deploy_mode
+                .context("--deploy-mode is required unless --code-hash is used")?;
+            let (wasm_bytes, derived_key) = self.source.load()?;
+            (deploy_mode.with_code(wasm_bytes), derived_key)
+        };
+
         let version_key = self
             .version_key
             .or(derived_key)
-            .context("--version-key is required when using --wasm")?;
-        let deposit = self
-            .deposit
-            .unwrap_or_else(|| estimate_deposit(deploy_mode, wasm_bytes.len()));
+            .context("--version-key is required when using --wasm or --code-hash")?;
+        let deposit = self.deposit.unwrap_or_else(|| estimate_deposit(&source));
 
         Ok(spec::AddVersion {
             registry_id: self.registry_id,
             version_key,
-            deploy_mode,
-            code: Base64Bytes(wasm_bytes),
+            source,
             deposit,
         })
     }
 }
 
-/// Global-hash uploads stake storage for the code itself; a plain deploy pays
-/// only the record. Overridable with `--deposit`.
-fn estimate_deposit(mode: DeployMode, wasm_len: usize) -> NearToken {
-    match mode {
-        DeployMode::GlobalHash => STORAGE_AMOUNT_PER_BYTE.saturating_mul(wasm_len as u128 * 10),
-        DeployMode::Normal => NearToken::from_yoctonear(1),
+/// Publishing a global contract stakes storage for the code itself. Storing pays
+/// only the record, and registering a global that already exists stakes nothing at
+/// all — both take the nominal yocto. Overridable with `--deposit`.
+fn estimate_deposit(source: &VersionSource) -> NearToken {
+    match source {
+        VersionSource::PublishGlobal(code) => {
+            STORAGE_AMOUNT_PER_BYTE.saturating_mul(code.0.len() as u128 * 10)
+        }
+        VersionSource::Stored(_) | VersionSource::ExistingGlobal(_) => NearToken::from_yoctonear(1),
     }
 }
 
@@ -259,21 +281,37 @@ mod tests {
         }
     }
 
+    fn code(len: usize) -> near_sdk::json_types::Base64VecU8 {
+        vec![0u8; len].into()
+    }
+
     #[test]
     fn estimate_deposit_matches_storage_staking_math() {
-        // Normal deploys pay a nominal 1 yocto; GlobalHash stakes storage for the
+        // Stored pays a nominal 1 yocto; PublishGlobal stakes storage for the
         // code at 1e19 yocto/byte times the 10x global-contract multiplier.
         assert_eq!(
-            estimate_deposit(DeployMode::Normal, 100_000),
+            estimate_deposit(&VersionSource::Stored(code(100_000))),
             NearToken::from_yoctonear(1)
         );
         assert_eq!(
-            estimate_deposit(DeployMode::GlobalHash, 0),
+            estimate_deposit(&VersionSource::PublishGlobal(code(0))),
             NearToken::from_yoctonear(0)
         );
         assert_eq!(
-            estimate_deposit(DeployMode::GlobalHash, 100_000),
+            estimate_deposit(&VersionSource::PublishGlobal(code(100_000))),
             NearToken::from_near(10)
+        );
+    }
+
+    /// Registering an existing global stakes nothing, so the byte-length estimate must not apply —
+    /// that is the entire point of the code-hash source.
+    #[test]
+    fn estimate_deposit_for_a_code_hash_is_nominal() {
+        assert_eq!(
+            estimate_deposit(&VersionSource::ExistingGlobal(Base58CryptoHash::from(
+                [7u8; 32]
+            ))),
+            NearToken::from_yoctonear(1),
         );
     }
 }

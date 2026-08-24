@@ -94,11 +94,11 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
             body: registry::AddVersion {
                 registry_id: registry_id.clone(),
                 version_key: "ua@1.0.0".to_owned(),
-                deploy_mode: templar_common::registry::DeployMode::Normal,
-                code: Base64Bytes(
+                source: templar_common::registry::VersionSource::Stored(
                     templar_gateway_testing::wasm::universal_account()
                         .await
-                        .to_vec(),
+                        .to_vec()
+                        .into(),
                 ),
                 deposit: NearToken::from_yoctonear(1),
             },

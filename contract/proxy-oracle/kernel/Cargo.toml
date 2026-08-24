@@ -4,7 +4,7 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-version = "0.1.1"
+version = "0.1.2"
 description = "Storage-agnostic price-aggregation kernel for Templar proxy oracles"
 
 [dependencies]
@@ -14,7 +14,7 @@ hex = { version =  "0.4", default-features = false, features = ["alloc"], option
 primitive-types = { version = "0.14", default-features = false, features = [] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"], optional = true }
 schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
-templar-primitives = { path = "../../../primitives", version = "0.1.1", default-features = false, features = [] }
+templar-primitives = { path = "../../../primitives", version = "0.1.2", default-features = false, features = [] }
 
 [dev-dependencies]
 hex-literal.workspace = true

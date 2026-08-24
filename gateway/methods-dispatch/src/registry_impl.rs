@@ -65,7 +65,7 @@ async fn require_entry_and_version_views<C: HasNearClient>(
     if !version.supports_entry_and_version_views() {
         return Err(GatewayError::UnsupportedFeature(format!(
             "registry {registry_id} is version {version}; \
-             getRegistryEntry and getVersion require 1.3.0"
+             getRegistryEntry and getVersion require 2.0.0"
         )));
     }
 
@@ -175,8 +175,7 @@ impl<C: HasNearClient> PlanWrite<registry::AddVersion, C> for Dispatch {
                 registry_version,
                 AddVersionArgs {
                     version_key: body.version_key,
-                    mode: body.deploy_mode,
-                    code: body.code.0,
+                    source: body.source,
                 },
             )
             .map(OperationPlan::from)
