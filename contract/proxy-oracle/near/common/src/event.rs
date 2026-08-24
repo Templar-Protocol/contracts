@@ -39,7 +39,7 @@ pub enum Event {
         breaker_id: u32,
         is_enforced: bool,
     },
-    #[event_version("1.0.0")]
+    #[event_version("2.0.0")]
     CircuitBreakerRearmed {
         price_id: PriceIdentifier,
         breaker_id: u32,
