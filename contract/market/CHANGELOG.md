@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1](https://github.com/Templar-Protocol/contracts/compare/templar-market-contract-v1.5.0...templar-market-contract-v1.5.1) - 2026-08-24
+
+### Fixed
+
+- *(proxy-oracle)* remediate Halborn findings ([#595](https://github.com/Templar-Protocol/contracts/pull/595))
+
 ## [1.5.0](https://github.com/Templar-Protocol/contracts/compare/templar-market-contract-v1.4.2...templar-market-contract-v1.5.0) - 2026-08-04
 
 ### Added

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-core-v0.3.0...templar-gateway-core-v0.4.0) - 2026-08-24
+
+### Added
+
+- *(gateway)* serve the registry's entry and version views (ENG-559, ENG-560) ([#590](https://github.com/Templar-Protocol/contracts/pull/590))
+- *(registry)* [**breaking**] register an existing global contract by code hash (ENG-631) ([#596](https://github.com/Templar-Protocol/contracts/pull/596))
+
 ## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-core-v0.2.0...templar-gateway-core-v0.3.0) - 2026-08-04
 
 ### Added

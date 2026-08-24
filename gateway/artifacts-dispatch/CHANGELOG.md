@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-artifacts-dispatch-v0.2.2...templar-gateway-artifacts-dispatch-v0.3.0) - 2026-08-24
+
+### Added
+
+- *(registry)* [**breaking**] register an existing global contract by code hash (ENG-631) ([#596](https://github.com/Templar-Protocol/contracts/pull/596))
+
 ## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-artifacts-dispatch-v0.1.0...templar-gateway-artifacts-dispatch-v0.2.0) - 2026-08-03
 
 ### Added
