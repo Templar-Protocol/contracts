@@ -31,6 +31,18 @@ pub(crate) struct OracleTarget {
 }
 
 impl OracleTarget {
+    /// Build a target from already-parsed selectors, for a command whose own argument group is
+    /// wider than this one's — e.g. one that also accepts a registry to sweep.
+    pub(crate) const fn from_parts(
+        oracle_id: Option<AccountId>,
+        market_id: Option<AccountId>,
+    ) -> Self {
+        Self {
+            oracle_id,
+            market_id,
+        }
+    }
+
     /// The proxy-oracle account: `--oracle-id` verbatim, or the oracle resolved
     /// from `--market-id`.
     pub(crate) async fn resolve(&self, ctx: &CliContext) -> anyhow::Result<AccountId> {
@@ -68,7 +80,7 @@ impl GovernanceTarget {
     pub(crate) async fn resolve(&self, ctx: &CliContext) -> anyhow::Result<AccountId> {
         match (&self.governance_id, &self.oracle_id, &self.market_id) {
             (Some(governance_id), _, _) => Ok(governance_id.clone()),
-            (_, Some(oracle_id), _) => resolve_governance_from_oracle(ctx, oracle_id).await,
+            (_, Some(oracle_id), _) => governance_from_oracle(ctx, oracle_id).await,
             (_, _, Some(market_id)) => resolve_governance_from_market(ctx, market_id).await,
             (None, None, None) => {
                 bail!("one of --governance-id, --oracle-id, or --market-id is required")
@@ -113,19 +125,19 @@ async fn resolve_oracle_from_market(
 
 /// Resolve a market's governance contract: read the market's oracle, then the
 /// governance contract that owns it. No proxy-oracle `getKind` assertion here —
-/// the `getProxyOracleId` round-trip in [`resolve_governance_from_oracle`] is
+/// the `getProxyOracleId` round-trip in [`governance_from_oracle`] is
 /// itself proof the oracle is a proxy oracle governed by that account.
 async fn resolve_governance_from_market(
     ctx: &CliContext,
     market_id: &AccountId,
 ) -> anyhow::Result<AccountId> {
     let oracle_id = read_market_oracle(ctx, market_id).await?;
-    resolve_governance_from_oracle(ctx, &oracle_id).await
+    governance_from_oracle(ctx, &oracle_id).await
 }
 
 /// Resolve a proxy oracle's governance contract: read the oracle's owner, then
 /// confirm it governs that oracle by round-tripping `getProxyOracleId`.
-async fn resolve_governance_from_oracle(
+pub(crate) async fn governance_from_oracle(
     ctx: &CliContext,
     oracle_id: &AccountId,
 ) -> anyhow::Result<AccountId> {

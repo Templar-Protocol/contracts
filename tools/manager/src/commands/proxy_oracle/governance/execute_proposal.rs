@@ -2,6 +2,7 @@ use clap::Args;
 use near_account_id::AccountId;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 
+use crate::commands::proxy_oracle::PreflightArgs;
 use crate::commands::signer::SignerArgs;
 use crate::resolve::GovernanceTarget;
 
@@ -16,6 +17,8 @@ pub struct ExecuteProposalArgs {
     /// failing if it has not yet matured.
     #[arg(long, conflicts_with = "print")]
     when_ready: bool,
+    #[command(flatten)]
+    pub(crate) preflight: PreflightArgs,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,
 }

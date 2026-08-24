@@ -84,8 +84,8 @@ pub fn gate(checks: &[Check], subject: &str, consequence: &str) -> anyhow::Resul
     let failed = failures(checks);
     anyhow::ensure!(
         failed == 0,
-        "{failed} check(s) failed for {subject}; {consequence}. Fix the spec, or \
-         re-run with `--skip-check <id>` for a check that is wrong."
+        "{failed} check(s) failed for {subject}; {consequence}. Fix what the digest \
+         reports, or re-run with `--skip-check <id>` for a check that is wrong."
     );
     Ok(())
 }

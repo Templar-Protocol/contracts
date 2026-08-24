@@ -22,7 +22,16 @@ use crate::context::{print_json, CliContext};
 pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow::Result<()> {
     let execute_when_ready = args.execute_when_ready();
     let signer_args = args.signer.clone();
+    let preflight = args.preflight.clone();
+    let is_oracle_upgrade = args.is_oracle_upgrade();
     let governance_id = args.target.resolve(&ctx).await?;
+
+    // An upgrade proposal is gated before it is even queued, so a deployment that cannot survive
+    // the new code is caught while the fix is still cheap.
+    let preflight_runs = is_oracle_upgrade && preflight.runs(signer_args.print().is_some());
+    if preflight_runs {
+        super::upgrade_preflight::gate_governed_oracle(&ctx, &governance_id, &preflight).await?;
+    }
 
     // Auto-fill the next breaker id for oracle add-circuit-breaker, resolving the proxy
     // oracle (whose set holds the breakers) through the governance contract. This
@@ -61,6 +70,12 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
 
     let execute = if execute_when_ready {
         wait_for_maturity(&ctx, &governance_id, id).await?;
+        // Re-checked after the wait: the timelock is exactly the window in which stored state can
+        // drift away from what the queued code expects.
+        if preflight_runs {
+            super::upgrade_preflight::gate_governed_oracle(&ctx, &governance_id, &preflight)
+                .await?;
+        }
         let result = execute_now(&ctx, &client, &signer, &governance_id, id).await?;
         Some(result)
     } else {
@@ -81,6 +96,15 @@ pub(super) async fn execute(ctx: CliContext, args: ExecuteProposalArgs) -> anyho
     let governance_id = args.target.resolve(&ctx).await?;
     if args.when_ready() {
         wait_for_maturity(&ctx, &governance_id, args.id()).await?;
+    }
+    if args.preflight.runs(args.signer.print().is_some()) {
+        super::upgrade_preflight::gate_queued_upgrade(
+            &ctx,
+            &governance_id,
+            args.id(),
+            &args.preflight,
+        )
+        .await?;
     }
     ctx.write(args.signer.clone(), args.into_spec(governance_id))
         .await
