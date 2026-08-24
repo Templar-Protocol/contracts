@@ -14,15 +14,13 @@ use templar_common::{
 use templar_proxy_oracle_governance_kernel::OperationPolicy;
 use templar_proxy_oracle_near_governance_common::{
     gen_ext_governance, CreateProposalArgs, Event, GovernancePolicy, Operation, Proposal,
-    ReflexiveOperation, Role, MAX_PROPOSAL_TTL,
+    ReflexiveOperation, Role, MAX_PENDING_PROPOSALS, MAX_PROPOSAL_TTL,
 };
 
 mod state;
 use state::State;
 
 gen_ext_governance!(ext_proxy_governance, ProxyGovernanceInterface, Operation);
-
-pub(crate) const MAX_PENDING_PROPOSALS: u32 = 64;
 
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]

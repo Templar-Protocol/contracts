@@ -15,6 +15,9 @@ pub use interface::{
 };
 pub use legacy::{LegacyHistoryMode, LegacyOperation, LegacyOperationKind, LegacyTtlConfig};
 pub use templar_common::Nanoseconds;
+/// Re-exported so off-chain clients can validate a governance ledger with the same code the
+/// contract deserializes through, rather than restating its invariants.
+pub use templar_proxy_oracle_governance_kernel as governance_kernel;
 
 /// The longest timelock any proposal may carry (180 days). Bounds both target-method and reflexive
 /// TTLs written into [`GovernancePolicy`].
@@ -22,6 +25,10 @@ pub const MAX_PROPOSAL_TTL: Nanoseconds = Nanoseconds::from_secs(180 * 24 * 60 *
 
 /// Cap on per-method policy overrides, keeping the single-slot policy blob bounded.
 pub const MAX_METHOD_POLICIES: usize = 64;
+
+/// Cap on simultaneously pending proposals. No view exposes it, so clients reading a ledger back
+/// have to supply it to check the stored `active_ids` against.
+pub const MAX_PENDING_PROPOSALS: u32 = 64;
 
 /// Gas a governance-driven `admin_upgrade` target call needs (a full contract self-deploy + migrate).
 pub const GAS_FOR_ADMIN_UPGRADE: Gas = Gas::from_tgas(280);
