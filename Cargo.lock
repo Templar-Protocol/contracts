@@ -13047,6 +13047,7 @@ dependencies = [
  "near-sandbox",
  "near-sdk",
  "near-token",
+ "rstest",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
