@@ -65,6 +65,19 @@ struct AdminUpgradeArgs {
     migrate_args: Base64VecU8,
 }
 
+/// Method names of the proxy oracle's `admin_*` surface. Shared so proposal builders and the
+/// tooling that inspects a queued proposal cannot disagree on a spelling.
+pub mod method {
+    pub const SET_PROXY: &str = "admin_set_proxy";
+    pub const CONFIGURE_CIRCUIT_BREAKERS: &str = "admin_configure_circuit_breakers";
+    pub const ADD_CIRCUIT_BREAKER: &str = "admin_add_circuit_breaker";
+    pub const REMOVE_CIRCUIT_BREAKER: &str = "admin_remove_circuit_breaker";
+    pub const SET_MANUAL_TRIP: &str = "admin_set_manual_trip";
+    pub const REARM: &str = "admin_rearm";
+    pub const SET_ENFORCED: &str = "admin_set_enforced";
+    pub const UPGRADE: &str = "admin_upgrade";
+}
+
 fn call<A: near_sdk::serde::Serialize>(
     method: &str,
     args: &A,
@@ -87,7 +100,7 @@ pub fn admin_set_proxy(
     gas: Option<Gas>,
 ) -> Result<FunctionCall, near_sdk::serde_json::Error> {
     call(
-        "admin_set_proxy",
+        method::SET_PROXY,
         &SetProxyArgs { id, proxy },
         gas.unwrap_or(GAS_FOR_TARGET_DEFAULT),
     )
@@ -102,7 +115,7 @@ pub fn admin_configure_circuit_breakers(
     gas: Option<Gas>,
 ) -> Result<FunctionCall, near_sdk::serde_json::Error> {
     call(
-        "admin_configure_circuit_breakers",
+        method::CONFIGURE_CIRCUIT_BREAKERS,
         &ConfigureCircuitBreakersArgs { id, config },
         gas.unwrap_or(GAS_FOR_TARGET_DEFAULT),
     )
@@ -118,7 +131,7 @@ pub fn admin_add_circuit_breaker(
     gas: Option<Gas>,
 ) -> Result<FunctionCall, near_sdk::serde_json::Error> {
     call(
-        "admin_add_circuit_breaker",
+        method::ADD_CIRCUIT_BREAKER,
         &AddCircuitBreakerArgs {
             id,
             breaker_id,
@@ -137,7 +150,7 @@ pub fn admin_remove_circuit_breaker(
     gas: Option<Gas>,
 ) -> Result<FunctionCall, near_sdk::serde_json::Error> {
     call(
-        "admin_remove_circuit_breaker",
+        method::REMOVE_CIRCUIT_BREAKER,
         &RemoveCircuitBreakerArgs { id, breaker_id },
         gas.unwrap_or(GAS_FOR_TARGET_DEFAULT),
     )
@@ -153,7 +166,7 @@ pub fn admin_set_manual_trip(
     gas: Option<Gas>,
 ) -> Result<FunctionCall, near_sdk::serde_json::Error> {
     call(
-        "admin_set_manual_trip",
+        method::SET_MANUAL_TRIP,
         &SetManualTripArgs {
             id,
             is_manually_tripped,
@@ -173,7 +186,7 @@ pub fn admin_rearm(
     gas: Option<Gas>,
 ) -> Result<FunctionCall, near_sdk::serde_json::Error> {
     call(
-        "admin_rearm",
+        method::REARM,
         &RearmArgs {
             id,
             breaker_id,
@@ -193,7 +206,7 @@ pub fn admin_set_enforced(
     gas: Option<Gas>,
 ) -> Result<FunctionCall, near_sdk::serde_json::Error> {
     call(
-        "admin_set_enforced",
+        method::SET_ENFORCED,
         &SetEnforcedArgs {
             id,
             breaker_id,
@@ -214,7 +227,7 @@ pub fn admin_upgrade(
     gas: Option<Gas>,
 ) -> Result<FunctionCall, near_sdk::serde_json::Error> {
     call(
-        "admin_upgrade",
+        method::UPGRADE,
         &AdminUpgradeArgs { code, migrate_args },
         gas.unwrap_or(GAS_FOR_ADMIN_UPGRADE),
     )

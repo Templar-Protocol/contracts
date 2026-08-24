@@ -6,6 +6,7 @@ use near_account_id::AccountId;
 use templar_gateway_methods_spec::proxy_oracle as spec;
 use templar_gateway_types::Base64Bytes;
 
+use crate::commands::proxy_oracle::PreflightArgs;
 use crate::commands::signer::SignerArgs;
 use crate::resolve::OracleTarget;
 
@@ -20,6 +21,8 @@ pub struct Upgrade {
     /// Source-state migration required by the target WASM.
     #[arg(long, value_enum)]
     migration: MigrationArg,
+    #[command(flatten)]
+    pub(crate) preflight: PreflightArgs,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,
 }

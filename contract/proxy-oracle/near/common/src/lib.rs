@@ -4,5 +4,6 @@ pub mod event;
 pub mod governance;
 pub mod input;
 pub mod price_transformer;
+pub mod proxy;
 pub mod request;
 pub mod state;

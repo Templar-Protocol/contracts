@@ -1032,3 +1032,100 @@ fn governance_target_requires_exactly_one_selector() {
             .expect("exactly one selector should parse");
     }
 }
+
+/// `proxy-oracle preflight` widens the usual target group with `--registry-id`, which sweeps a
+/// whole fleet, but the three remain mutually exclusive.
+#[test]
+fn preflight_target_requires_exactly_one_selector() {
+    let base = ["tmplrmgr", "proxy-oracle", "preflight"];
+
+    Cli::try_parse_from(base).expect_err("a target selector is required");
+
+    Cli::try_parse_from(base.into_iter().chain([
+        "--oracle-id",
+        "oracle.testnet",
+        "--registry-id",
+        "registry.testnet",
+    ]))
+    .expect_err("preflight selectors are mutually exclusive");
+
+    for selector in [
+        ["--oracle-id", "oracle.testnet"],
+        ["--market-id", "market.testnet"],
+        ["--registry-id", "registry.testnet"],
+    ] {
+        Cli::try_parse_from(base.into_iter().chain(selector))
+            .expect("exactly one selector should parse");
+    }
+}
+
+#[test]
+fn oracle_code_upgrade_proposals_require_preflight() {
+    let upgrade = parse_create_proposal([
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "oracle",
+        "upgrade",
+        "--global-hash",
+        "11111111111111111111111111111111",
+    ]);
+    assert!(upgrade.requires_upgrade_preflight());
+
+    let raw_upgrade = parse_create_proposal([
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "oracle",
+        "call",
+        "--method",
+        target::method::UPGRADE,
+    ]);
+    assert!(raw_upgrade.requires_upgrade_preflight());
+
+    let set_manual_trip = parse_create_proposal([
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "oracle",
+        "set-manual-trip",
+        "--price-id",
+        PRICE_ID,
+        "--tripped",
+    ]);
+    assert!(!set_manual_trip.requires_upgrade_preflight());
+}
+
+/// `--skip-preflight` is an opt-out, so its absence must leave the gate armed.
+#[test]
+fn the_upgrade_preflight_is_on_unless_opted_out() {
+    let armed = parse_create_proposal([
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "oracle",
+        "upgrade",
+        "--global-hash",
+        "11111111111111111111111111111111",
+    ]);
+    assert!(armed.preflight.runs(false));
+    // `--print` builds a payload without submitting, so it stays offline.
+    assert!(!armed.preflight.runs(true));
+
+    let opted_out = parse_create_proposal([
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "--skip-preflight",
+        "oracle",
+        "upgrade",
+        "--global-hash",
+        "11111111111111111111111111111111",
+    ]);
+    assert!(!opted_out.preflight.runs(false));
+}

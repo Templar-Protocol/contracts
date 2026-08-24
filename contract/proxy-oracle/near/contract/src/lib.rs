@@ -23,7 +23,7 @@ use templar_proxy_oracle_kernel::proxy::{
     circuit_breaker::{
         CircuitBreaker, CircuitBreakerOutcome, CircuitBreakerSet, CircuitBreakerSetConfig,
     },
-    Aggregator, Proxy,
+    Proxy,
 };
 use templar_proxy_oracle_near_common::{
     cache::{bounded_resolve_error_message, CachedProxyPrice, CachedProxyPriceStatus},
@@ -31,6 +31,7 @@ use templar_proxy_oracle_near_common::{
     event::{Event, MAX_MANUAL_TRIP_METADATA_LEN},
     governance::ProxyOracleAdminInterface,
     input::Source,
+    proxy::has_zero_weighted_source,
     request::OracleRequest,
     state,
 };
@@ -45,14 +46,6 @@ pub(crate) fn emit_outcome<T>(price_id: PriceIdentifier, outcome: CircuitBreaker
         Event::from_kernel(price_id, event).emit();
     }
     outcome.value
-}
-
-fn has_zero_weighted_source(proxy: &Proxy<Source>) -> bool {
-    match &proxy.aggregator {
-        Aggregator::MedianLow(median) => median.sources.iter().any(|source| source.weight == 0),
-        Aggregator::MedianHigh(median) => median.sources.iter().any(|source| source.weight == 0),
-        Aggregator::Priority(_) => false,
-    }
 }
 
 #[derive(Debug, Owner, PanicOnDefault)]
