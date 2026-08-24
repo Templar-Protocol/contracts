@@ -31,7 +31,7 @@ use templar_common::{
         pyth::{self, OracleResponse, PriceIdentifier, PythTimestamp},
         redstone::{FeedData, FeedId},
     },
-    registry::DeployMode,
+    registry::VersionSource,
 };
 use templar_gateway_testing::{harness, owned_harness, ManagedAccountId, SandboxHarness};
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
@@ -468,10 +468,10 @@ async fn init_with(harness: SandboxHarness) -> InitTest {
     let market_registry = market_registry.unwrap();
 
     // Register the market and universal-account code versions on their
-    // registries. `add_version` asserts a 1-yoctoNEAR deposit for `Normal`
-    // (state-stored) code; a `GlobalHash` version pays the global-contract
-    // deployment cost from the deposit. The two registries have distinct owner
-    // accounts, so their registrations run concurrently.
+    // registries. `add_version` asserts a 1-yoctoNEAR deposit for `Stored`
+    // code; a `PublishGlobal` version pays the global-contract deployment cost
+    // from the deposit. The two registries have distinct owner accounts, so
+    // their registrations run concurrently.
     let market_deployer = harness.registry_signer_account_id.clone();
     let ua_deployer = ManagedAccountId(ua_registry.clone());
     let market_wasm = templar_gateway_testing::wasm::market().await.to_vec();
@@ -483,16 +483,14 @@ async fn init_with(harness: SandboxHarness) -> InitTest {
             &market_deployer,
             &market_registry,
             MARKET_VERSION,
-            DeployMode::Normal,
-            market_wasm,
+            VersionSource::Stored(market_wasm.into()),
             NearToken::from_yoctonear(1),
         ),
         harness.registry_add_version(
             &ua_deployer,
             &ua_registry,
             "latest",
-            DeployMode::GlobalHash,
-            ua_wasm,
+            VersionSource::PublishGlobal(ua_wasm.into()),
             NearToken::from_near(80),
         ),
     );

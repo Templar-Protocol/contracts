@@ -1,8 +1,9 @@
 use std::io::Write as _;
 
 use clap::Parser;
+use near_sdk::json_types::Base58CryptoHash;
 use serde_json::json;
-use templar_common::registry::DeployMode;
+use templar_common::registry::VersionSource;
 
 use super::{with_cleared_credential_env, CREDS, TEST_SECRET_KEY};
 use crate::cli::{Cli, Command};
@@ -209,9 +210,11 @@ fn add_version_wasm_path_builds_global_hash_spec() {
 
     assert_eq!(spec.registry_id.as_str(), "registry.testnet");
     assert_eq!(spec.version_key, "templar-market-contract@1.4.0#deadbeef");
-    assert_eq!(spec.deploy_mode, DeployMode::GlobalHash);
-    assert_eq!(spec.code.0, wasm);
-    // GlobalHash stakes storage for the code: 1e19 yocto/byte * len * 10.
+    assert_eq!(
+        spec.source,
+        VersionSource::PublishGlobal(wasm.to_vec().into())
+    );
+    // Publishing stakes storage for the code: 1e19 yocto/byte * len * 10.
     let expected = 10_000_000_000_000_000_000u128 * (wasm.len() as u128 * 10);
     assert_eq!(spec.deposit.as_yoctonear(), expected);
 }
@@ -235,8 +238,103 @@ fn add_version_normal_mode_uses_minimal_deposit() {
     .expect("into_spec should succeed");
     std::fs::remove_file(&path).ok();
 
-    assert_eq!(spec.deploy_mode, DeployMode::Normal);
+    assert_eq!(
+        spec.source,
+        VersionSource::Stored(b"\0asm-normal".to_vec().into())
+    );
     assert_eq!(spec.deposit.as_yoctonear(), 1);
+}
+
+/// The point of the code-hash source: no bytes are read, uploaded, or priced.
+#[test]
+fn add_version_code_hash_builds_existing_global_spec() {
+    let hash = Base58CryptoHash::from([7u8; 32]);
+    let spec = add_version_spec(&[
+        "tmplrmgr",
+        "registry",
+        "add-version",
+        "--registry-id",
+        "registry.testnet",
+        "--code-hash",
+        &String::from(&hash),
+        "--version-key",
+        "templar-universal-account@1.2.3#deadbeef",
+    ])
+    .expect("into_spec should succeed");
+
+    assert_eq!(spec.version_key, "templar-universal-account@1.2.3#deadbeef");
+    assert_eq!(spec.source, VersionSource::ExistingGlobal(hash));
+    assert_eq!(spec.deposit.as_yoctonear(), 1);
+}
+
+/// Nothing derives a version key from a hash, so it has to be supplied.
+#[test]
+fn add_version_code_hash_requires_a_version_key() {
+    let error = add_version_spec(&[
+        "tmplrmgr",
+        "registry",
+        "add-version",
+        "--registry-id",
+        "registry.testnet",
+        "--code-hash",
+        &String::from(&Base58CryptoHash::from([7u8; 32])),
+    ])
+    .expect_err("a code hash cannot derive a version key");
+
+    assert!(format!("{error:#}").contains("--version-key is required"));
+}
+
+/// `--deploy-mode` decides how to upload bytes; `--code-hash` uploads none, so the pair is
+/// incoherent rather than merely redundant.
+#[test]
+fn add_version_code_hash_conflicts_with_deploy_mode() {
+    let error = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "add-version",
+            "--registry-id",
+            "registry.testnet",
+            "--code-hash",
+            &String::from(&Base58CryptoHash::from([7u8; 32])),
+            "--version-key",
+            "ua@1.0.0#abc",
+            "--deploy-mode",
+            "global-hash",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect_err("--code-hash and --deploy-mode should conflict");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+/// A code hash and a wasm blob are two answers to the same question.
+#[test]
+fn add_version_code_hash_conflicts_with_wasm() {
+    let path = temp_wasm("hash-conflict", b"\0asm");
+    let error = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "add-version",
+            "--registry-id",
+            "registry.testnet",
+            "--code-hash",
+            &String::from(&Base58CryptoHash::from([7u8; 32])),
+            "--wasm",
+            path.to_str().unwrap(),
+            "--version-key",
+            "ua@1.0.0#abc",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect_err("--code-hash and --wasm should conflict");
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
 }
 
 #[test]

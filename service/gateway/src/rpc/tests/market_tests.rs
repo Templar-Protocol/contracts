@@ -442,8 +442,12 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
             body: registry::AddVersion {
                 registry_id: registry_id.clone(),
                 version_key: "market@1.0.0".to_owned(),
-                deploy_mode: templar_common::registry::DeployMode::Normal,
-                code: Base64Bytes(templar_gateway_testing::wasm::market().await.to_vec()),
+                source: templar_common::registry::VersionSource::Stored(
+                    templar_gateway_testing::wasm::market()
+                        .await
+                        .to_vec()
+                        .into(),
+                ),
                 deposit: NearToken::from_yoctonear(1),
             },
         })

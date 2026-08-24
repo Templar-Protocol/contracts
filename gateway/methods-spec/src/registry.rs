@@ -97,8 +97,7 @@ pub struct GetVersionResult {
 pub struct AddVersion {
     pub registry_id: AccountId,
     pub version_key: String,
-    pub deploy_mode: templar_common::registry::DeployMode,
-    pub code: Base64Bytes,
+    pub source: templar_common::registry::VersionSource,
     pub deposit: NearToken,
 }
 
