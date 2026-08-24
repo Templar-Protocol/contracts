@@ -23,12 +23,13 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
     let execute_when_ready = args.execute_when_ready();
     let signer_args = args.signer.clone();
     let preflight = args.preflight.clone();
-    let is_oracle_upgrade = args.is_oracle_upgrade();
+    let requires_upgrade_preflight = args.requires_upgrade_preflight();
     let governance_id = args.target.resolve(&ctx).await?;
 
     // An upgrade proposal is gated before it is even queued, so a deployment that cannot survive
     // the new code is caught while the fix is still cheap.
-    let preflight_runs = is_oracle_upgrade && preflight.runs(signer_args.print().is_some());
+    let preflight_runs =
+        requires_upgrade_preflight && preflight.runs(signer_args.print().is_some());
     if preflight_runs {
         super::upgrade_preflight::gate_governed_oracle(&ctx, &governance_id, &preflight).await?;
     }

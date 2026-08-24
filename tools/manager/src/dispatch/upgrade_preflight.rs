@@ -162,14 +162,27 @@ fn pending_rearm_status(bodies: &[(u32, Value)]) -> Status {
     ))
 }
 
+enum GovernanceResolution<'a> {
+    Resolved(Option<&'a AccountId>),
+    Failed(&'a anyhow::Error),
+}
+
+fn governance_resolution_failure_checks(error: &anyhow::Error) -> [Check; 2] {
+    let detail = format!("could not resolve the governing contract: {error:#}");
+    [
+        Check::new("upgrade.governance_ledger", Status::failed(detail.clone())),
+        Check::new("upgrade.pending_rearm", Status::failed(detail)),
+    ]
+}
+
 /// Every check, recorded in a stable order. Nothing propagates: a failed read is a failed *check*,
 /// so one dead RPC cannot hide the rest.
 ///
-/// `governance_id` is absent for a self-owned oracle, which has no ledger to check.
-pub(super) async fn run(
+/// Governance checks are skipped only when no governance contract owns the oracle.
+async fn run(
     ctx: &CliContext,
     oracle_id: &AccountId,
-    governance_id: Option<&AccountId>,
+    governance: GovernanceResolution<'_>,
     reporter: &mut Reporter,
 ) {
     reporter.phase(&format!("stored state on {oracle_id}"));
@@ -194,19 +207,26 @@ pub(super) async fn run(
         }
     }
 
-    let Some(governance_id) = governance_id else {
-        let reason = format!("{oracle_id} is not owned by a governance contract");
-        reporter.record(Check::new(
-            "upgrade.governance_ledger",
-            Status::Skipped {
-                reason: reason.clone(),
-            },
-        ));
-        reporter.record(Check::new(
-            "upgrade.pending_rearm",
-            Status::Skipped { reason },
-        ));
-        return;
+    let governance_id = match governance {
+        GovernanceResolution::Resolved(Some(governance_id)) => governance_id,
+        GovernanceResolution::Resolved(None) => {
+            let reason = format!("{oracle_id} is not owned by a governance contract");
+            reporter.record(Check::new(
+                "upgrade.governance_ledger",
+                Status::Skipped {
+                    reason: reason.clone(),
+                },
+            ));
+            reporter.record(Check::new(
+                "upgrade.pending_rearm",
+                Status::Skipped { reason },
+            ));
+            return;
+        }
+        GovernanceResolution::Failed(error) => {
+            reporter.extend(governance_resolution_failure_checks(error));
+            return;
+        }
     };
 
     reporter.phase(&format!("governance ledger on {governance_id}"));
@@ -389,18 +409,20 @@ async fn report(
     oracle_id: &AccountId,
     skip: &[String],
 ) -> anyhow::Result<OracleReport> {
-    let governance_id = crate::resolve::governance_from_oracle(ctx, oracle_id)
-        .await
-        .ok();
+    let governance_id = crate::resolve::governance_from_oracle(ctx, oracle_id).await;
+    let governance = match governance_id.as_ref() {
+        Ok(governance_id) => GovernanceResolution::Resolved(governance_id.as_ref()),
+        Err(error) => GovernanceResolution::Failed(error),
+    };
     let mut reporter = ctx.reporter(skip);
-    run(ctx, oracle_id, governance_id.as_ref(), &mut reporter).await;
+    run(ctx, oracle_id, governance, &mut reporter).await;
     reporter.ensure_every_skip_matched()?;
     reporter.digest();
 
     Ok(OracleReport {
         subject: Subject {
             oracle_id: oracle_id.clone(),
-            governance_id,
+            governance_id: governance_id.ok().flatten(),
         },
         checks: reporter.into_checks(),
     })
@@ -560,9 +582,9 @@ mod tests {
     use templar_proxy_oracle_near_governance_common::MAX_PENDING_PROPOSALS;
 
     use super::{
-        breakers_status, classify_breaker_set, governance_ledger_status, is_rearm,
-        pending_rearm_status, source_weights_status, BreakerVerdict, PriceIdentifier, Source,
-        Status, Value,
+        breakers_status, classify_breaker_set, governance_ledger_status,
+        governance_resolution_failure_checks, is_rearm, pending_rearm_status,
+        source_weights_status, BreakerVerdict, PriceIdentifier, Source, Status, Value,
     };
 
     fn price_id(byte: u8) -> PriceIdentifier {
@@ -725,6 +747,21 @@ mod tests {
         let active_ids: Vec<u32> = (0..=MAX_PENDING_PROPOSALS).collect();
         let next_id = u32::try_from(active_ids.len()).unwrap();
         assert!(governance_ledger_status(next_id, &active_ids).is_failure());
+    }
+
+    #[test]
+    fn governance_resolution_failure_fails_both_governance_checks() {
+        let error = anyhow::anyhow!("proxy RPC unavailable");
+        let checks = governance_resolution_failure_checks(&error);
+
+        assert_eq!(checks[0].id, "upgrade.governance_ledger");
+        assert_eq!(checks[1].id, "upgrade.pending_rearm");
+        for check in checks {
+            let Status::Failed { detail } = check.status else {
+                panic!("a resolution failure must fail the check");
+            };
+            assert!(detail.contains("proxy RPC unavailable"), "{detail}");
+        }
     }
 
     #[rstest]

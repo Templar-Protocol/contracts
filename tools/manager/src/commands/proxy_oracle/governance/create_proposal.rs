@@ -65,15 +65,17 @@ impl CreateProposal {
         self.execute_when_ready
     }
 
-    /// Whether this proposal puts new code on the governed oracle, and so has to be preflighted
-    /// against the state that code will load.
-    pub fn is_oracle_upgrade(&self) -> bool {
-        matches!(
-            &self.operation,
+    /// Whether this proposal has to be preflighted against the state new oracle code will load.
+    pub fn requires_upgrade_preflight(&self) -> bool {
+        match &self.operation {
             ProposalOperation::Oracle {
-                op: OracleOp::Upgrade(_)
-            }
-        )
+                op: OracleOp::Upgrade(_),
+            } => true,
+            ProposalOperation::Oracle {
+                op: OracleOp::Call(args),
+            } => args.method == target::method::UPGRADE,
+            ProposalOperation::Oracle { .. } | ProposalOperation::Governance { .. } => false,
+        }
     }
 
     /// When this is an `oracle add-circuit-breaker` proposal with no explicit

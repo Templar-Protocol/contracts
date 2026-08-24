@@ -1059,9 +1059,8 @@ fn preflight_target_requires_exactly_one_selector() {
     }
 }
 
-/// The gate only fires for the operation that actually puts new code on the oracle.
 #[test]
-fn only_an_oracle_upgrade_proposal_is_preflighted() {
+fn oracle_code_upgrade_proposals_require_preflight() {
     let upgrade = parse_create_proposal([
         "--governance-id",
         "gov.testnet",
@@ -1072,7 +1071,19 @@ fn only_an_oracle_upgrade_proposal_is_preflighted() {
         "--global-hash",
         "11111111111111111111111111111111",
     ]);
-    assert!(upgrade.is_oracle_upgrade());
+    assert!(upgrade.requires_upgrade_preflight());
+
+    let raw_upgrade = parse_create_proposal([
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "oracle",
+        "call",
+        "--method",
+        target::method::UPGRADE,
+    ]);
+    assert!(raw_upgrade.requires_upgrade_preflight());
 
     let set_manual_trip = parse_create_proposal([
         "--governance-id",
@@ -1085,7 +1096,7 @@ fn only_an_oracle_upgrade_proposal_is_preflighted() {
         PRICE_ID,
         "--tripped",
     ]);
-    assert!(!set_manual_trip.is_oracle_upgrade());
+    assert!(!set_manual_trip.requires_upgrade_preflight());
 }
 
 /// `--skip-preflight` is an opt-out, so its absence must leave the gate armed.

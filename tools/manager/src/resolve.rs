@@ -80,7 +80,9 @@ impl GovernanceTarget {
     pub(crate) async fn resolve(&self, ctx: &CliContext) -> anyhow::Result<AccountId> {
         match (&self.governance_id, &self.oracle_id, &self.market_id) {
             (Some(governance_id), _, _) => Ok(governance_id.clone()),
-            (_, Some(oracle_id), _) => governance_from_oracle(ctx, oracle_id).await,
+            (_, Some(oracle_id), _) => {
+                require_governance(governance_from_oracle(ctx, oracle_id).await?, oracle_id)
+            }
             (_, _, Some(market_id)) => resolve_governance_from_market(ctx, market_id).await,
             (None, None, None) => {
                 bail!("one of --governance-id, --oracle-id, or --market-id is required")
@@ -132,15 +134,17 @@ async fn resolve_governance_from_market(
     market_id: &AccountId,
 ) -> anyhow::Result<AccountId> {
     let oracle_id = read_market_oracle(ctx, market_id).await?;
-    governance_from_oracle(ctx, &oracle_id).await
+    require_governance(governance_from_oracle(ctx, &oracle_id).await?, &oracle_id)
 }
 
-/// Resolve a proxy oracle's governance contract: read the oracle's owner, then
-/// confirm it governs that oracle by round-tripping `getProxyOracleId`.
+/// Resolve the governance contract that owns a proxy oracle.
+///
+/// A self-owned oracle or an owner that governs another oracle has no governing contract; RPC
+/// failures remain errors.
 pub(crate) async fn governance_from_oracle(
     ctx: &CliContext,
     oracle_id: &AccountId,
-) -> anyhow::Result<AccountId> {
+) -> anyhow::Result<Option<AccountId>> {
     let owner = ctx
         .client
         .read(owner::GetOwner {
@@ -149,7 +153,9 @@ pub(crate) async fn governance_from_oracle(
         .await
         .with_context(|| format!("read owner.getOwner for oracle {oracle_id}"))?
         .owner;
-    let governance_id = ensure_owner_present(owner, oracle_id)?;
+    let Some(governance_id) = owner else {
+        return Ok(None);
+    };
 
     let governed = ctx
         .client
@@ -161,9 +167,11 @@ pub(crate) async fn governance_from_oracle(
             format!("read proxyOracleGovernance.getProxyOracleId for {governance_id}")
         })?
         .proxy_oracle_id;
-    ensure_governs(oracle_id, &governance_id, &governed)?;
+    if governed != *oracle_id {
+        return Ok(None);
+    }
 
-    Ok(governance_id)
+    Ok(Some(governance_id))
 }
 
 /// Assert `oracle_id` is a proxy oracle, naming the failed step otherwise.
@@ -177,39 +185,22 @@ fn ensure_proxy_oracle(kind: ContractKind, oracle_id: &AccountId) -> anyhow::Res
     );
 }
 
-/// Take a proxy oracle's owner as its governance contract, failing when the
-/// oracle has no owner.
-fn ensure_owner_present(
-    owner: Option<AccountId>,
+/// Require a governance account where the calling operation cannot target an ungoverned oracle.
+fn require_governance(
+    governance_id: Option<AccountId>,
     oracle_id: &AccountId,
 ) -> anyhow::Result<AccountId> {
-    owner.with_context(|| {
+    governance_id.with_context(|| {
         format!(
-            "resolution step 'read oracle owner' failed: proxy oracle {oracle_id} has no owner, \
-             so no governance contract can be resolved"
+            "resolution step 'resolve governance' failed: no governance contract owns proxy \
+             oracle {oracle_id}"
         )
     })
 }
 
-/// Confirm the resolved governance contract governs the resolved oracle, naming
-/// the failed step otherwise.
-fn ensure_governs(
-    oracle_id: &AccountId,
-    governance_id: &AccountId,
-    governed: &AccountId,
-) -> anyhow::Result<()> {
-    if governed == oracle_id {
-        return Ok(());
-    }
-    bail!(
-        "resolution step 'confirm governance' failed: {governance_id} governs {governed}, \
-         not the resolved oracle {oracle_id}"
-    );
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ensure_governs, ensure_owner_present, ensure_proxy_oracle};
+    use super::{ensure_proxy_oracle, require_governance};
     use near_account_id::AccountId;
     use templar_gateway_types::contract::ContractKind;
 
@@ -230,28 +221,15 @@ mod tests {
     }
 
     #[test]
-    fn missing_owner_fails_naming_the_step() {
+    fn missing_governance_fails_naming_the_step() {
         let oracle = account("oracle.testnet");
-        let governance = ensure_owner_present(Some(account("gov.testnet")), &oracle)
+        let governance = require_governance(Some(account("gov.testnet")), &oracle)
             .expect("an owner resolves to the governance account");
         assert_eq!(governance.as_str(), "gov.testnet");
 
-        let error = ensure_owner_present(None, &oracle).expect_err("an unowned oracle must fail");
+        let error = require_governance(None, &oracle).expect_err("an ungoverned oracle must fail");
         let message = error.to_string();
-        assert!(message.contains("read oracle owner"), "{message}");
+        assert!(message.contains("resolve governance"), "{message}");
         assert!(message.contains("oracle.testnet"), "{message}");
-    }
-
-    #[test]
-    fn governance_must_govern_the_resolved_oracle() {
-        let oracle = account("oracle.testnet");
-        let governance = account("gov.testnet");
-        ensure_governs(&oracle, &governance, &oracle).expect("a matching round-trip passes");
-
-        let error = ensure_governs(&oracle, &governance, &account("other.testnet"))
-            .expect_err("governing a different oracle must fail");
-        let message = error.to_string();
-        assert!(message.contains("confirm governance"), "{message}");
-        assert!(message.contains("other.testnet"), "{message}");
     }
 }
