@@ -6,6 +6,7 @@ mod macros;
 pub mod error;
 pub mod operation;
 pub mod primitive;
+pub mod protocol;
 pub mod spec;
 pub mod version;
 
@@ -17,8 +18,8 @@ pub use operation::{
     OperationId, OperationRecord, OperationStatus, StepStatus, TransactionStepRecord,
 };
 pub use primitive::{
-    Base64Bytes, ContractMethodName, CryptoHash, IdempotencyKey, ManagedAccountId, NearGas,
-    NearToken, SignedDelegateActionInput,
+    ActionInput, Base64Bytes, ContractMethodName, CryptoHash, GlobalContractIdentifierInput,
+    IdempotencyKey, ManagedAccountId, NearGas, NearToken, SignedDelegateActionInput,
 };
 pub use spec::{MethodKind, MethodSpec, RpcMethodMeta};
 pub use version::{

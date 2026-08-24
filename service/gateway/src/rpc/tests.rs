@@ -55,7 +55,7 @@ use templar_gateway_store::MemoryStore;
 use templar_gateway_testing::{SandboxHarness, TestController, TEST_FINALITY_POLICY};
 use templar_gateway_types::{
     common::{ContractArgs, WriteRequest},
-    Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
+    ActionInput, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
 };
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
 use templar_proxy_oracle_near_common::price_transformer::{self, PriceTransformer};

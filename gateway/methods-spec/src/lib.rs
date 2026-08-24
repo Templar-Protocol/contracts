@@ -225,6 +225,7 @@ macro_rules! for_each_write_method {
         $callback!($crate::tx::RelaySignedDelegateAction);
         $callback!($crate::tx::DeployContract);
         $callback!($crate::tx::DeployAndInit);
+        $callback!($crate::tx::Batch);
         $callback!($crate::universal_account::Execute);
         $callback!($crate::universal_account::Create);
         $callback!($crate::pyth::UpdatePriceFeeds);
