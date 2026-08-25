@@ -1,4 +1,6 @@
 use async_trait::async_trait;
+use base64::Engine;
+use borsh::BorshDeserialize;
 use near_api::types::{
     account::Account,
     transaction::{actions::AccessKey, result::ExecutionFinalResult},
@@ -19,6 +21,17 @@ pub trait ReadNear: Send + Sync {
     ) -> GatewayResult<T>
     where
         T: DeserializeOwned + Send + Sync + 'static;
+
+    async fn view_function_borsh<T>(
+        &self,
+        contract_id: near_account_id::AccountId,
+        method_name: &str,
+        args: Vec<u8>,
+    ) -> GatewayResult<T>
+    where
+        T: BorshDeserialize + Send + Sync + 'static;
+
+    async fn view_global_contract_code(&self, code_hash: CryptoHash) -> GatewayResult<Vec<u8>>;
 
     async fn view_account(&self, account_id: near_account_id::AccountId) -> GatewayResult<Account>;
 
@@ -54,12 +67,40 @@ impl ReadNear for NearClient {
             .fetch_from(self.network())
             .await
             .map(|response| response.data)
+            .map_err(|error| account_query_error(contract_id, &error))
+    }
+
+    async fn view_function_borsh<T>(
+        &self,
+        contract_id: near_account_id::AccountId,
+        method_name: &str,
+        args: Vec<u8>,
+    ) -> GatewayResult<T>
+    where
+        T: BorshDeserialize + Send + Sync + 'static,
+    {
+        Contract(contract_id.clone())
+            .call_function_raw(method_name, args)
+            .read_only_borsh()
+            .at(self.finality_policy().query_reference())
+            .fetch_from(self.network())
+            .await
+            .map(|response| response.data)
+            .map_err(|error| account_query_error(contract_id, &error))
+    }
+
+    async fn view_global_contract_code(&self, code_hash: CryptoHash) -> GatewayResult<Vec<u8>> {
+        let code = Contract::global_wasm()
+            .by_hash(code_hash)
+            .at(self.finality_policy().query_reference())
+            .fetch_from(self.network())
+            .await
+            .map_err(|error| global_code_query_error(&error))?;
+
+        base64::engine::general_purpose::STANDARD
+            .decode(code.data.code_base64)
             .map_err(|error| {
-                if is_unknown_account(&error) {
-                    GatewayError::AccountNotFound(contract_id)
-                } else {
-                    GatewayError::NearQuery(error.to_string())
-                }
+                GatewayError::NearQuery(format!("invalid global contract code: {error}"))
             })
     }
 
@@ -69,13 +110,7 @@ impl ReadNear for NearClient {
             .at(self.finality_policy().query_reference())
             .fetch_from(self.network())
             .await
-            .map_err(|error| {
-                if is_unknown_account(&error) {
-                    GatewayError::AccountNotFound(account_id)
-                } else {
-                    GatewayError::NearQuery(error.to_string())
-                }
-            })?;
+            .map_err(|error| account_query_error(account_id, &error))?;
         Ok(account.data)
     }
 
@@ -89,13 +124,7 @@ impl ReadNear for NearClient {
             .at(self.finality_policy().query_reference())
             .fetch_from(self.network())
             .await
-            .map_err(|error| {
-                if is_unknown_account(&error) {
-                    GatewayError::AccountNotFound(account_id)
-                } else {
-                    GatewayError::NearQuery(error.to_string())
-                }
-            })?;
+            .map_err(|error| account_query_error(account_id, &error))?;
         Ok(key.data)
     }
 
@@ -112,6 +141,26 @@ impl ReadNear for NearClient {
     }
 }
 
+fn account_query_error<E: std::fmt::Debug + std::fmt::Display>(
+    account_id: near_account_id::AccountId,
+    error: &E,
+) -> GatewayError {
+    if is_unknown_account(error) {
+        GatewayError::AccountNotFound(account_id)
+    } else {
+        GatewayError::NearQuery(error.to_string())
+    }
+}
+
+fn global_code_query_error<E: std::fmt::Debug + std::fmt::Display>(error: &E) -> GatewayError {
+    let message = error.to_string();
+    if is_no_global_contract_code(error) {
+        GatewayError::GlobalContractCodeNotFound(message)
+    } else {
+        GatewayError::NearQuery(message)
+    }
+}
+
 /// Whether a view error means the account does not exist (as opposed to a
 /// transient query failure). The node surfaces this inconsistently — sometimes
 /// as a typed `UnknownAccount` query error, sometimes as a plain message (see
@@ -120,6 +169,11 @@ impl ReadNear for NearClient {
 fn is_unknown_account<E: std::fmt::Debug>(error: &E) -> bool {
     let rendered = format!("{error:?}");
     rendered.contains("UnknownAccount") || rendered.contains("UNKNOWN_ACCOUNT")
+}
+
+fn is_no_global_contract_code<E: std::fmt::Debug>(error: &E) -> bool {
+    let rendered = format!("{error:?}");
+    rendered.contains("NoGlobalContractCode") || rendered.contains("NO_GLOBAL_CONTRACT_CODE")
 }
 
 /// Whether a transaction-status error means the chain has no record of the
@@ -133,7 +187,7 @@ pub(crate) fn is_unknown_transaction<E: std::fmt::Debug>(error: &E) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_unknown_account;
+    use super::{is_no_global_contract_code, is_unknown_account};
 
     // `&str`'s `Debug` renders its contents, standing in for a real error's
     // rendered form without constructing the deeply nested near-api error types.
@@ -149,6 +203,19 @@ mod tests {
         assert!(!is_unknown_account(&"TransportError(connection timed out)"));
         assert!(!is_unknown_account(
             &"ServerError(MethodNotFound { method_name: foo })"
+        ));
+    }
+
+    #[test]
+    fn detects_missing_global_code_in_both_error_forms() {
+        assert!(is_no_global_contract_code(
+            &"ServerError(NoGlobalContractCode)"
+        ));
+        assert!(is_no_global_contract_code(
+            &"handler error: NO_GLOBAL_CONTRACT_CODE"
+        ));
+        assert!(!is_no_global_contract_code(
+            &"TransportError(connection timed out)"
         ));
     }
 

@@ -22,6 +22,7 @@ fn target() -> DeployTarget {
         registry_id: near_account_id::AccountIdRef::new_or_panic("registry.near").to_owned(),
         name: "market".to_owned(),
         version_key: "v1.0.0".to_owned(),
+        skip_abi_check: false,
         full_access_keys: None,
         deposit: NearToken::from_near(1),
     }

@@ -203,7 +203,7 @@
 |---|---|---|---|
 | `registry.addArtifactVersion` | write | `AddArtifactVersion` → `WriteOperationResult` | Add a contract artifact version to a registry. |
 | `registry.addVersion` | write | `AddVersion` → `WriteOperationResult` | Add a deployable version to a registry. |
-| `registry.deploy` | write | `Deploy` → `WriteOperationResult` | Deploy a contract from a registry version, with init args the gateway does not interpret. |
+| `registry.deploy` | write | `Deploy` → `WriteOperationResult` | Deploy a contract from a registry version with JSON init args validated against the target constructor ABI unless `skip_abi_check` is set. |
 | `registry.getDeployment` | read | `GetDeployment` → `GetDeploymentResult` | Get a deployment record from a registry. |
 | `registry.getRegistryEntry` | read | `GetRegistryEntry` → `GetRegistryEntryResult` | Get a name's registry entry, including one merely reserved by an in-flight deploy. |
 | `registry.getVersion` | read | `GetVersion` → `GetVersionResult` | Get a registered version's code hash and whether it can still be deployed. |

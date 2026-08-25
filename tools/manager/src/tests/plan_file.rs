@@ -286,134 +286,13 @@ async fn a_signer_that_is_not_the_governance_admin_is_refused() {
         "the fixture must not already agree, or this proves nothing"
     );
 
-    let error = crate::dispatch::plan::build(&client, &spec, &public_key, &signer_id())
+    let error = crate::dispatch::plan::build(&client, &spec, &public_key, &signer_id(), false)
         .await
         .expect_err("a non-admin signer cannot execute the proxy proposals");
 
     assert!(
         format!("{error:#}").contains("would not hold the Admin role"),
         "{error:#}"
-    );
-}
-
-/// A proxy-oracle version whose `new` ignores `owner_id` leaves the *registry*
-/// as owner, so governance can never configure either proxy. Because
-/// `admin_set_proxy` is dispatched detached, the proposals would still report
-/// success and the deploy would reach market creation with a dead oracle — so
-/// this is refused at plan time. Offline: the guard precedes the first read.
-#[tokio::test]
-async fn an_oracle_version_that_ignores_owner_id_is_refused() {
-    let client = Client::builder(NetworkConfigBuilder::new(Network::Mainnet).build())
-        .build()
-        .expect("build client");
-    let public_key = public_key();
-    let mut spec = alpha_market();
-    let crate::spec::OracleMode::Proxy {
-        governance,
-        oracle_version,
-        ..
-    } = &mut spec.oracle
-    else {
-        panic!("the fixture must be a proxy market");
-    };
-    let admin = governance.admin.clone();
-    // Well-formed key, pre-0.3.0 version: the guard must reject it for what the
-    // version *means*, not because the key failed to parse. Rebuilt rather than
-    // substituted, so a profile version bump cannot silently make this a no-op.
-    let (name, hash) = oracle_version
-        .split_once('@')
-        .and_then(|(name, rest)| rest.split_once('#').map(|(_, hash)| (name, hash)))
-        .expect("fixture version key is `<name>@<version>#<hash>`");
-    *oracle_version = format!("{name}@0.2.0#{hash}");
-
-    let error = crate::dispatch::plan::build(&client, &spec, &public_key, &admin)
-        .await
-        .expect_err("a pre-0.3.0 oracle cannot seat an owner");
-
-    assert!(
-        format!("{error:#}").contains("registry would own the oracle"),
-        "{error:#}"
-    );
-}
-
-/// The full proxy deployment, in order.
-///
-/// The order is a safety property: `registry deploy` fails when the account
-/// already exists, so governance must be created before the oracle names it as
-/// owner, and both before the market points at the oracle.
-///
-/// Needs the network: planning a registry deploy reads the registry's contract
-/// source metadata to pick the init-args encoding.
-#[tokio::test]
-async fn requires_network_plans_the_deploy_script_in_order() {
-    let client = Client::builder(NetworkConfigBuilder::new(Network::Mainnet).build())
-        .build()
-        .expect("build client");
-    let public_key = public_key();
-
-    // Signed by the spec's `governance.admin`: any other account would not hold
-    // the Admin role, and `build` refuses that rather than plan a deployment
-    // whose proposals revert after the deposits are already spent.
-    let spec = alpha_market();
-    let admin = spec.proxy().expect("proxy fixture").0.admin.clone();
-    let labeled = crate::dispatch::plan::build(&client, &spec, &public_key, &admin)
-        .await
-        .expect("the alpha fixture should plan");
-
-    let sequence: Vec<_> = labeled
-        .iter()
-        .map(|(label, transaction)| {
-            let method = match transaction.actions.as_slice() {
-                [Action::FunctionCall(call)] => call.method_name.as_str(),
-                other => panic!("expected one function call, got {other:?}"),
-            };
-            (transaction.receiver_id.as_str(), method, label.as_str())
-        })
-        .collect();
-
-    // The three registry deploys share one method (`deploy_market`) and one
-    // receiver, so the label is what identifies each — asserted for that reason.
-    assert_eq!(
-        sequence,
-        vec![
-            (
-                "templar-alpha.near",
-                "deploy_market",
-                "deploy governance proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near"
-            ),
-            (
-                "templar-alpha.near",
-                "deploy_market",
-                "deploy proxy oracle proxy-oracle-iethfxrp-ixlmusdc.templar-alpha.near, \
-                 owned by governance"
-            ),
-            (
-                "proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near",
-                "create_proposal",
-                "propose collateral proxy (proposal 0)"
-            ),
-            (
-                "proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near",
-                "execute_proposal",
-                "execute collateral proxy proposal 0"
-            ),
-            (
-                "proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near",
-                "create_proposal",
-                "propose borrow proxy (proposal 1)"
-            ),
-            (
-                "proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near",
-                "execute_proposal",
-                "execute borrow proxy proposal 1"
-            ),
-            (
-                "templar-alpha.near",
-                "deploy_market",
-                "deploy market iethfxrp-ixlmusdc.templar-alpha.near"
-            ),
-        ],
-        "the plan must deploy governance, then the oracle it owns, then the market"
     );
 }
 

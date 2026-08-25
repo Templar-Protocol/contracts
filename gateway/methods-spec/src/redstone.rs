@@ -7,10 +7,9 @@ use templar_gateway_types::Base64Bytes;
 
 /// Create a RedStone price adapter from the registry.
 ///
-/// `admin_id` seats the adapter's administration roles at init. Only a version
-/// whose `new` takes one honors it, and the version is not checked here — a
-/// pre-`0.2.0` adapter ignores it and leaves the deploying registry as admin. See
-/// [`RedstoneAdapterVersion::new_requires_admin_id`](templar_gateway_types::version::RedstoneAdapterVersion::new_requires_admin_id).
+/// `admin_id` seats the adapter's administration roles at init. Registry
+/// deployment normally validates the target constructor ABI before it plans the
+/// transaction; `skip_abi_check` disables that protection.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "redstone.create")]
 pub struct Create {

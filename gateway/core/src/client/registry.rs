@@ -2,6 +2,7 @@ use std::{borrow::Borrow, io::ErrorKind};
 
 use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
+use near_sdk::json_types::Base58CryptoHash;
 use templar_common::registry::VersionSource;
 use templar_gateway_types::{
     common::{ContractArgs, Pagination},
@@ -32,6 +33,13 @@ pub struct GetRegistryEntryArgs {
 #[derive(Debug, serde::Serialize)]
 pub struct GetVersionArgs {
     pub version_key: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct GetVersionCodeChunkArgs {
+    pub version_key: String,
+    pub offset: u32,
+    pub len: u32,
 }
 
 #[derive(Debug)]
@@ -74,8 +82,22 @@ impl RegistryClient<'_> {
         pub fn get_deployment(GetDeploymentArgs) -> Option<templar_common::registry::Deployment>;
         pub fn get_registry_entry(GetRegistryEntryArgs) -> Option<templar_common::registry::RegistryEntryView>;
         pub fn get_version(GetVersionArgs) -> Option<templar_common::registry::VersionInfo>;
+        pub fn get_version_code_hash(GetVersionArgs) -> Option<Base58CryptoHash>;
         pub fn list_deployments(Pagination) -> Vec<AccountId>;
         pub fn list_versions(Pagination) -> Vec<String>;
+    }
+
+    pub async fn get_version_code_chunk(
+        &self,
+        args: impl Borrow<GetVersionCodeChunkArgs>,
+    ) -> GatewayResult<Option<Vec<u8>>> {
+        crate::ReadNear::view_function_borsh(
+            self.inner,
+            self.contract_id.clone(),
+            "get_version_code_chunk",
+            serde_json::to_vec(args.borrow())?,
+        )
+        .await
     }
 
     pub fn add_version(

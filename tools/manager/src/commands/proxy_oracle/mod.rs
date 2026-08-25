@@ -8,7 +8,6 @@ mod price_feed_exists;
 mod update_prices;
 mod upgrade;
 
-pub(crate) use create::check_owner_id_is_honored;
 pub use create::Create;
 pub use get_proxy::GetProxy;
 pub use get_proxy_circuit_breaker_set::GetProxyCircuitBreakerSet;
@@ -27,6 +26,7 @@ use templar_common::oracle::pyth::PriceIdentifier;
 #[command(rename_all = "kebab-case")]
 pub enum ProxyOracleNs {
     /// Deploy a proxy oracle from a registry, optionally owned by `--owner-id`.
+    /// `--skip-abi-check` can disable the constructor check for an incompatible target.
     Create(Create),
     /// Administer a proxy oracle through its governance contract.
     #[command(subcommand, visible_alias = "gov")]

@@ -57,6 +57,7 @@ templar-proxy-oracle-near-governance-common.workspace = true
 templar-universal-account.workspace = true
 test-utils.workspace = true
 wiremock.workspace = true
+zstd = "0.13.3"
 
 [lints]
 workspace = true

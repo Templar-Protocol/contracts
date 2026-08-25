@@ -10,7 +10,9 @@ use templar_gateway_core::{
 use templar_gateway_methods_spec::registry;
 use templar_gateway_types::RegistryVersion;
 
-use crate::Dispatch;
+use crate::{
+    contract_abi::validate_constructor_args, registry_wasm::resolve_registry_wasm, Dispatch,
+};
 
 #[async_trait]
 impl<C> DispatchRead<registry::ListDeployments, C> for Dispatch
@@ -212,6 +214,17 @@ pub(crate) async fn plan_create_from_registry<C: HasNearClient>(
         .contract(target.registry_id.clone())
         .cached_version()
         .await?;
+    if !target.skip_abi_check {
+        let wasm = resolve_registry_wasm(
+            ctx,
+            &target.registry_id,
+            registry_version,
+            &target.version_key,
+        )
+        .await?;
+        validate_constructor_args(&wasm, &init_args)?;
+    }
+
     Ok(OperationPlan::single(
         ctx.near_client().registry(target.registry_id).deploy(
             ContractWriteOptions::new(signer_account_id)

@@ -257,7 +257,7 @@ impl InitTest {
     ) -> AccountId {
         let deployer = self.harness.registry_signer_account_id.clone();
         self.harness
-            .registry_deploy(
+            .registry_deploy_without_abi_check(
                 &deployer,
                 &self.market_registry,
                 name,

@@ -38,6 +38,10 @@ pub struct Plan {
     /// Accept a `decimals` override that disagrees with the token's metadata.
     #[arg(long)]
     pub(crate) accept_decimals_mismatch: bool,
+
+    /// Bypass embedded-ABI validation for every registry deployment in this plan.
+    #[arg(long)]
+    pub(crate) skip_abi_check: bool,
 }
 
 /// Send a plan file.
@@ -57,6 +61,10 @@ pub struct Apply {
     /// but fatal at apply is a plan that can be written and never sent.
     #[arg(long = "skip-check", value_name = "CHECK_ID")]
     pub(crate) skip_check: Vec<String>,
+
+    /// Bypass embedded-ABI validation while rebuilding the plan before submission.
+    #[arg(long)]
+    pub(crate) skip_abi_check: bool,
 
     #[command(flatten)]
     pub(crate) signer: SignerArgs,
