@@ -53,6 +53,7 @@ enum ContractArg {
     LstOracle,
     RedstoneAdapter,
     PythLazerAdapter,
+    PatchState,
 }
 
 impl From<ContractArg> for ArtifactId {
@@ -67,6 +68,7 @@ impl From<ContractArg> for ArtifactId {
             ContractArg::LstOracle => Self::LstOracle,
             ContractArg::RedstoneAdapter => Self::RedstoneAdapter,
             ContractArg::PythLazerAdapter => Self::PythLazerAdapter,
+            ContractArg::PatchState => Self::PatchState,
         }
     }
 }
@@ -226,13 +228,7 @@ mod tests {
             .source
     }
 
-    fn source_for_package(value: &str) -> ContractSource {
-        Harness::try_parse_from(["tmplrmgr", "--package", value])
-            .expect("--package value should parse")
-            .source
-    }
-
-    const CONTRACT_VALUES: [(&str, ArtifactId); 9] = [
+    const CONTRACT_VALUES: [(&str, ArtifactId); 10] = [
         ("registry", ArtifactId::Registry),
         ("market", ArtifactId::Market),
         ("vault", ArtifactId::Vault),
@@ -242,6 +238,7 @@ mod tests {
         ("lst-oracle", ArtifactId::LstOracle),
         ("redstone-adapter", ArtifactId::RedstoneAdapter),
         ("pyth-lazer-adapter", ArtifactId::PythLazerAdapter),
+        ("patch-state", ArtifactId::PatchState),
     ];
 
     #[test]
@@ -263,24 +260,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn patch_state_is_available_by_package() {
-        for value in ["patch-state", "templar-patch-state-contract"] {
-            assert_eq!(
-                source_for_package(value).artifact(),
-                Some(ArtifactId::PatchState),
-                "value {value}"
-            );
-        }
-    }
-
     /// Guard: every NEAR contract under `contract/*` must have a `--contract`
     /// value, so a newly-added contract can't silently ship without one.
     #[test]
     fn every_contract_artifact_has_a_value() {
         for id in ArtifactId::ALL {
-            // patch-state is deployed and overwritten inside one transaction.
-            if !id.metadata().source_path.starts_with("contract/") || id == ArtifactId::PatchState {
+            if !id.metadata().source_path.starts_with("contract/") {
                 continue;
             }
             assert!(
