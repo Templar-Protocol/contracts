@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-spec-v0.4.0...templar-gateway-methods-spec-v0.4.1) - 2026-08-25
+
+### Added
+
+- *(gateway)* add tx.batch, a generic multi-action write op (ENG-650) ([#603](https://github.com/Templar-Protocol/contracts/pull/603))
+
 ## [0.4.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-spec-v0.3.0...templar-gateway-methods-spec-v0.4.0) - 2026-08-24
 
 ### Added
