@@ -162,6 +162,7 @@ mod tests {
                 ArtifactId::LstOracle,
                 ArtifactId::RedstoneAdapter,
                 ArtifactId::PythLazerAdapter,
+                ArtifactId::PatchState,
                 ArtifactId::MockFt,
                 ArtifactId::MockMt,
                 ArtifactId::MockOracle,

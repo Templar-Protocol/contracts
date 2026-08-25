@@ -11,6 +11,7 @@ sandbox_full_packages := trim('''
 templar-market-contract
 templar-vault-contract
 templar-registry-contract
+templar-patch-state-contract
 templar-universal-account-contract
 templar-proxy-oracle-near-contract
 templar-proxy-oracle-near-governance-contract

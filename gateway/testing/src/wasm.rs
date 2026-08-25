@@ -67,6 +67,7 @@ wasm_fns! {
     receiver => MockReceiver,
     ref_finance => MockRefFinance,
     pyth_lazer_adapter => PythLazerAdapter,
+    patch_state => PatchState,
     vault => Vault,
 }
 
