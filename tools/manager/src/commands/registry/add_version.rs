@@ -226,20 +226,21 @@ mod tests {
             .source
     }
 
+    const CONTRACT_VALUES: [(&str, ArtifactId); 9] = [
+        ("registry", ArtifactId::Registry),
+        ("market", ArtifactId::Market),
+        ("vault", ArtifactId::Vault),
+        ("universal-account", ArtifactId::UniversalAccount),
+        ("proxy-oracle", ArtifactId::ProxyOracle),
+        ("proxy-oracle-governance", ArtifactId::ProxyGovernance),
+        ("lst-oracle", ArtifactId::LstOracle),
+        ("redstone-adapter", ArtifactId::RedstoneAdapter),
+        ("pyth-lazer-adapter", ArtifactId::PythLazerAdapter),
+    ];
+
     #[test]
     fn each_contract_value_maps_to_its_artifact() {
-        let cases = [
-            ("registry", ArtifactId::Registry),
-            ("market", ArtifactId::Market),
-            ("vault", ArtifactId::Vault),
-            ("universal-account", ArtifactId::UniversalAccount),
-            ("proxy-oracle", ArtifactId::ProxyOracle),
-            ("proxy-oracle-governance", ArtifactId::ProxyGovernance),
-            ("lst-oracle", ArtifactId::LstOracle),
-            ("redstone-adapter", ArtifactId::RedstoneAdapter),
-            ("pyth-lazer-adapter", ArtifactId::PythLazerAdapter),
-        ];
-        for (value, expected) in cases {
+        for (value, expected) in CONTRACT_VALUES {
             assert_eq!(
                 source_for(value).artifact(),
                 Some(expected),
@@ -261,23 +262,15 @@ mod tests {
     #[test]
     fn every_contract_artifact_has_a_value() {
         for id in ArtifactId::ALL {
-            if id.metadata().source_path.starts_with("contract/") {
-                let value = match id {
-                    ArtifactId::Registry => "registry",
-                    ArtifactId::Market => "market",
-                    ArtifactId::Vault => "vault",
-                    ArtifactId::UniversalAccount => "universal-account",
-                    ArtifactId::ProxyOracle => "proxy-oracle",
-                    ArtifactId::ProxyGovernance => "proxy-oracle-governance",
-                    ArtifactId::LstOracle => "lst-oracle",
-                    ArtifactId::RedstoneAdapter => "redstone-adapter",
-                    ArtifactId::PythLazerAdapter => "pyth-lazer-adapter",
-                    other => {
-                        panic!("{other:?} lives under contract/* but has no --contract value")
-                    }
-                };
-                assert_eq!(source_for(value).artifact(), Some(id));
+            // patch-state is deployed and overwritten inside one transaction,
+            // never registered as a version.
+            if !id.metadata().source_path.starts_with("contract/") || id == ArtifactId::PatchState {
+                continue;
             }
+            assert!(
+                CONTRACT_VALUES.iter().any(|&(_, mapped)| mapped == id),
+                "{id:?} lives under contract/* but has no --contract value",
+            );
         }
     }
 

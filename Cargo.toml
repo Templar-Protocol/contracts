@@ -5,6 +5,8 @@ members = [
     "gateway/*",
     "contract/artifacts",
     "contract/market",
+    "contract/patch-state",
+    "contract/patch-state/types",
     "contract/proxy-oracle/governance-kernel",
     "contract/proxy-oracle/kernel",
     "contract/proxy-oracle/near/common",
@@ -107,6 +109,7 @@ near-primitives-core = "0.34.7"
 near-sdk = { version = "5.25", default-features = false, features = ["unstable"] }
 near-sdk-contract-tools = "4.0.0"
 near-sandbox = "0.3.9"
+near-sys = "0.2.8"
 near-token = "0.3.3"
 p256 = "0.13.2"
 primitive-types = { version = "0.14.0", features = ["serde"] }
@@ -153,6 +156,7 @@ templar-gateway-runtime = { path = "./gateway/runtime" }
 templar-gateway-store = { path = "./gateway/store", version = "0.2.1" }
 templar-gateway-testing = { path = "./gateway/testing" }
 templar-gateway-types = { path = "./gateway/types", version = "0.3.0" }
+templar-patch-state-types = { path = "./contract/patch-state/types", version = "0.1.0" }
 templar-primitives = { path = "./primitives", version = "0.1.2" }
 templar-proxy-oracle-governance-kernel = { path = "./contract/proxy-oracle/governance-kernel", version = "0.2.1" }
 templar-proxy-oracle-kernel = { path = "./contract/proxy-oracle/kernel", version = "0.1.2" }

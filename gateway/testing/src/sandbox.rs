@@ -8,7 +8,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use near_api::{types::AccountId, Account, Contract, NetworkConfig, SecretKey, Signer};
+use near_api::{
+    types::{AccountId, CryptoHash},
+    Account, Contract, NetworkConfig, SecretKey, Signer,
+};
 use near_sandbox::{
     config::{
         DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY,
@@ -300,6 +303,17 @@ impl SandboxHarness {
 
     pub async fn ft_wasm(&self) -> Vec<u8> {
         crate::wasm::ft().await.to_vec()
+    }
+    pub async fn deploy_global_contract(&self, code: Vec<u8>) -> Result<CryptoHash> {
+        let hash = CryptoHash::hash(&code);
+        Contract::deploy_global_contract_code(code)
+            .as_hash()
+            .with_signer(self.tenant_root_id.clone(), self.tenant_root_signer.clone())
+            .wait_until(TEST_FINALITY_POLICY.transaction_status())
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+        Ok(hash)
     }
 
     pub async fn deploy_mt(&self, label: &str) -> Result<AccountId> {

@@ -13458,6 +13458,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-patch-state-contract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "borsh 1.6.1",
+ "near-api",
+ "near-sys",
+ "templar-gateway-methods-spec",
+ "templar-gateway-testing",
+ "templar-gateway-types",
+ "templar-patch-state-types",
+ "tokio",
+]
+
+[[package]]
+name = "templar-patch-state-types"
+version = "0.1.0"
+dependencies = [
+ "borsh 1.6.1",
+]
+
+[[package]]
 name = "templar-primitives"
 version = "0.1.2"
 dependencies = [

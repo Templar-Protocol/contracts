@@ -66,6 +66,8 @@ pub enum ArtifactId {
     RedstoneAdapter,
     #[cfg_attr(feature = "clap", value(alias = "templar-pyth-lazer-adapter-contract"))]
     PythLazerAdapter,
+    #[cfg_attr(feature = "clap", value(alias = "templar-patch-state-contract"))]
+    PatchState,
     // -- Mock / test contracts --
     MockFt,
     MockMt,
@@ -76,7 +78,7 @@ pub enum ArtifactId {
 }
 
 impl ArtifactId {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Registry,
         Self::Market,
         Self::Vault,
@@ -86,6 +88,7 @@ impl ArtifactId {
         Self::LstOracle,
         Self::RedstoneAdapter,
         Self::PythLazerAdapter,
+        Self::PatchState,
         Self::MockFt,
         Self::MockMt,
         Self::MockOracle,
@@ -108,6 +111,7 @@ impl ArtifactId {
             Self::LstOracle => &LST_ORACLE_METADATA,
             Self::RedstoneAdapter => &REDSTONE_ADAPTER_METADATA,
             Self::PythLazerAdapter => &PYTH_LAZER_ADAPTER_METADATA,
+            Self::PatchState => &PATCH_STATE_METADATA,
             Self::MockFt => &MOCK_FT_METADATA,
             Self::MockMt => &MOCK_MT_METADATA,
             Self::MockOracle => &MOCK_ORACLE_METADATA,
@@ -338,6 +342,12 @@ static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
     "templar-pyth-lazer-adapter-contract",
     "templar_pyth_lazer_adapter_contract",
     "contract/pyth-lazer/contract"
+);
+static PATCH_STATE_METADATA: ArtifactMetadata = entry!(
+    PatchState,
+    "templar-patch-state-contract",
+    "templar_patch_state_contract",
+    "contract/patch-state"
 );
 
 // Mocks: Tier C in `release-plz.toml`. Tests build them from source.

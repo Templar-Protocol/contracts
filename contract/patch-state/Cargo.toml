@@ -1,0 +1,42 @@
+[package]
+name = "templar-patch-state-contract"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.near.reproducible_build]
+image = "sourcescan/cargo-near:0.17.0-rust-1.86.0"
+image_digest = "sha256:1784ca6310f3496f0048356ce420921c8f5fdf71ee8124d43a2e1ceb1f70db8a"
+# --no-abi: ABI generation needs near-sdk, which this contract does not use.
+# Order is load-bearing: cargo-near matches the first five args against its own
+# default and rejects the build if `--locked` is not the fifth.
+container_build_command = [
+    "cargo",
+    "near",
+    "build",
+    "non-reproducible-wasm",
+    "--locked",
+    "--no-abi",
+]
+
+[dependencies]
+near-sys.workspace = true
+templar-patch-state-types.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+base64.workspace = true
+borsh.workspace = true
+near-api.workspace = true
+templar-gateway-methods-spec.workspace = true
+templar-gateway-testing.workspace = true
+templar-gateway-types.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
