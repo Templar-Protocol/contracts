@@ -400,6 +400,7 @@ async fn init_relayer_app(
             ua_account.as_ref(),
             "--ua-version-key",
             "latest",
+            "--ua-skip-abi-check",
             "--ua-chain-id",
             &chain_id,
             "--ua-pow-difficulty",
