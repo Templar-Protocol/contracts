@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.5.0...templar-manager-v0.5.1) - 2026-08-25
+
+### Added
+
+- *(manager)* gate proxy-oracle upgrades on a deployed-state preflight (ENG-648) ([#601](https://github.com/Templar-Protocol/contracts/pull/601))
+- *(patch-state)* add atomic state-patching contract ([#604](https://github.com/Templar-Protocol/contracts/pull/604))
+
 ## [0.5.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.4.0...templar-manager-v0.5.0) - 2026-08-24
 
 ### Added
