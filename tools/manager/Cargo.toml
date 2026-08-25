@@ -14,6 +14,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 # Decoding `registry.deploy` init args for display (ENG-544).
 base64.workspace = true
+borsh.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 dirs.workspace = true
@@ -39,7 +40,9 @@ serde_json.workspace = true
 # Stable digests: plan/spec hashing must not depend on map iteration order.
 sputnikdao2.workspace = true
 templar-common.workspace = true
-templar-contract-artifacts.workspace = true
+templar-contract-artifacts = { workspace = true, features = ["fetch"] }
+templar-patch-state-types.workspace = true
+sha2.workspace = true
 templar-gateway-client = { workspace = true, features = ["clap"] }
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true

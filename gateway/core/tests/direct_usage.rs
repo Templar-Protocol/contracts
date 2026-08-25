@@ -44,6 +44,18 @@ async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> 
     )
     .await?;
 
+    let near = NearClient::with_finality_policy(network.clone(), TEST_FINALITY_POLICY);
+    assert!(!near
+        .contract(ft_contract_id.clone())
+        .code()
+        .await?
+        .is_empty());
+    assert!(!near
+        .contract(ft_contract_id.clone())
+        .state_with_prefix(Vec::new())
+        .await?
+        .is_empty());
+
     let transaction_signer = NearTransactionSigner::new(
         network.clone(),
         std::collections::HashMap::from([(

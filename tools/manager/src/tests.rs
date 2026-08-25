@@ -13,6 +13,7 @@ mod export;
 mod ft;
 mod market;
 mod oracle;
+mod patch;
 mod plan;
 mod plan_file;
 mod proxy_oracle;
@@ -36,6 +37,7 @@ fn help_lists_all_top_level_commands() {
         "owner",
         "pyth",
         "redstone",
+        "patch",
         "spec",
         "recover-nep141",
         "read",

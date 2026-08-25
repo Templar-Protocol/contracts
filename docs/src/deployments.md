@@ -1,4 +1,4 @@
-# Deploying a market
+# Deployment specs and state patches
 
 A market is described by one spec file and deployed in two commands. There is
 no shell script: the spec is the source of truth, and everything that used to
@@ -144,3 +144,43 @@ typo would otherwise silently suppress nothing. Available on `spec check`,
 interrupted, re-running it skips what completed and continues from the first
 incomplete step. A plan truncated to its completed prefix is refused rather than
 reported complete: the re-derivation runs before the journal is consulted.
+
+## Patching contract storage
+
+`tmplrmgr patch` builds one atomic transaction for a contract whose full-access
+key is still held: deploy the pinned PatchState WASM, apply guarded storage
+operations, then restore the exact local code or global-contract linkage.
+
+```sh
+tmplrmgr patch plan deployments/patches/<account>/<date>-<slug>.toml \
+  --out patch-plan.json --network mainnet \
+  --signer-id <account> --public-key ed25519:…
+tmplrmgr patch apply --plan patch-plan.json \
+  --network mainnet --signer-id <account> --sign-with keychain
+```
+
+Authored `set` and single-key `remove` operations should state `expect`. Prefix
+deletes omit it: planning enumerates the matching keys and adds an expectation
+for every concrete removal. `--allow-unguarded` is an explicit, repeated
+override for an unguarded set or single-key removal.
+
+Keys and values use `utf8`, `hex`, `base64`, `file`, `concat`, `sha256`, `json`,
+or `borsh` byte expressions. `file` is relative to the spec that names it.
+`patch codecs` lists readable Borsh types; types without a JSON deserializer and
+lossy types such as `Decimal` are deliberately absent. `base64` and `file`
+remain the exact-byte escape hatches.
+
+`tools/manager/fixtures/spec/patch/patches/target.near/2026-08-25-syntax.toml`
+is the tested syntax reference. It composes a profile-relative blob, Borsh
+values, hashed collection keys, base64 and hex values, JSON bytes, checks, and
+prefix deletion; its focused test prevents the documented forms from drifting.
+
+Prefix deletes are expanded from chain state while planning. The generated plan
+therefore lists every concrete key and its in-receipt expectation; a prefix too
+large for `view_state` fails planning rather than producing a partial delete.
+The plan refuses code/linkage drift, transactions over 1,572,864 bytes, values
+over 4 MiB, keys over 2,048 bytes, insufficient storage backing, missing full
+access, and patch gas above 300 Tgas.
+
+`patch apply` does not perform local replay or post-patch health checks. Review
+the plan and reported preflight before authorizing it.

@@ -2,7 +2,7 @@ use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
-use templar_gateway_types::{primitive::PublicKey, ContractMethodName, NearToken};
+use templar_gateway_types::{primitive::PublicKey, Base64Bytes, ContractMethodName, NearToken};
 
 /// Get chain state for a NEAR account.
 ///
@@ -22,6 +22,37 @@ pub struct GetResult {
     pub storage_usage: u64,
     pub global_contract_hash: Option<String>,
     pub global_contract_account_id: Option<AccountId>,
+}
+
+/// Fetch the deployed WASM bytes of a locally deployed contract.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "account.getCode", output = GetCodeResult)]
+pub struct GetCode {
+    pub account_id: AccountId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetCodeResult {
+    pub code: Base64Bytes,
+}
+
+/// List contract storage entries whose raw keys begin with `prefix`.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "account.viewState", output = ViewStateResult)]
+pub struct ViewState {
+    pub account_id: AccountId,
+    pub prefix: Base64Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ViewStateResult {
+    pub values: Vec<StateEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StateEntry {
+    pub key: Base64Bytes,
+    pub value: Base64Bytes,
 }
 
 /// Get an access key's nonce and permission scope for an account.

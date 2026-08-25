@@ -4,7 +4,7 @@ use moka::sync::Cache;
 use near_account_id::AccountId;
 use near_contract_standards::contract_metadata::ContractSourceMetadata;
 use serde::de::DeserializeOwned;
-use templar_gateway_types::{contract::ContractKind, Version};
+use templar_gateway_types::{contract::ContractKind, Base64Bytes, Version};
 
 use crate::{
     client::{
@@ -63,6 +63,18 @@ impl ContractClient<'_> {
             args,
         )
         .await
+    }
+
+    pub async fn code(&self) -> GatewayResult<Base64Bytes> {
+        <NearClient as ReadNear>::view_contract_code(self.inner, self.contract_id.clone()).await
+    }
+
+    pub async fn state_with_prefix(
+        &self,
+        prefix: Vec<u8>,
+    ) -> GatewayResult<Vec<(Base64Bytes, Base64Bytes)>> {
+        <NearClient as ReadNear>::view_contract_state(self.inner, self.contract_id.clone(), prefix)
+            .await
     }
 
     pub async fn cached_contract_source_metadata(&self) -> GatewayResult<ContractSourceMetadata> {

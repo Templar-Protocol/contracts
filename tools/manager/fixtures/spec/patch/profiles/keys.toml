@@ -1,0 +1,26 @@
+schema = 1
+account_id = "target.near"
+
+[[check]]
+key.utf8 = "__v"
+expect.borsh = { type = "u32", value = 1 }
+
+[[op]]
+key.concat = [
+  { hex = "00" },
+  { sha256 = { borsh = { type = "AccountId", value = "alice.near" } } },
+]
+expect.borsh = { type = "u32", value = 1 }
+value.file = "blobs/position.borsh"
+
+[[op]]
+remove.base64 = "c3RhbGUta2V5"
+expect.hex = "6f6c64"
+
+[[op]]
+remove_prefix.utf8 = "legacy:"
+
+[[op]]
+key.json = { codec = "json" }
+expect.utf8 = "old-json"
+value.json = { enabled = true, name = "example" }

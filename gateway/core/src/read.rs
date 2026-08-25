@@ -6,6 +6,7 @@ use near_api::types::{
 };
 use near_api::{Account as NearAccountView, Contract, Transaction};
 use serde::de::DeserializeOwned;
+use templar_gateway_types::Base64Bytes;
 
 use crate::{GatewayError, GatewayResult, NearClient};
 
@@ -27,6 +28,17 @@ pub trait ReadNear: Send + Sync {
         account_id: near_account_id::AccountId,
         public_key: PublicKey,
     ) -> GatewayResult<AccessKey>;
+
+    async fn view_contract_code(
+        &self,
+        account_id: near_account_id::AccountId,
+    ) -> GatewayResult<Base64Bytes>;
+
+    async fn view_contract_state(
+        &self,
+        account_id: near_account_id::AccountId,
+        prefix: Vec<u8>,
+    ) -> GatewayResult<Vec<(Base64Bytes, Base64Bytes)>>;
 
     async fn view_transaction_status(
         &self,
@@ -54,13 +66,7 @@ impl ReadNear for NearClient {
             .fetch_from(self.network())
             .await
             .map(|response| response.data)
-            .map_err(|error| {
-                if is_unknown_account(&error) {
-                    GatewayError::AccountNotFound(contract_id)
-                } else {
-                    GatewayError::NearQuery(error.to_string())
-                }
-            })
+            .map_err(|error| account_query_error(contract_id, error))
     }
 
     async fn view_account(&self, account_id: near_account_id::AccountId) -> GatewayResult<Account> {
@@ -69,13 +75,7 @@ impl ReadNear for NearClient {
             .at(self.finality_policy().query_reference())
             .fetch_from(self.network())
             .await
-            .map_err(|error| {
-                if is_unknown_account(&error) {
-                    GatewayError::AccountNotFound(account_id)
-                } else {
-                    GatewayError::NearQuery(error.to_string())
-                }
-            })?;
+            .map_err(|error| account_query_error(account_id.clone(), error))?;
         Ok(account.data)
     }
 
@@ -89,14 +89,47 @@ impl ReadNear for NearClient {
             .at(self.finality_policy().query_reference())
             .fetch_from(self.network())
             .await
-            .map_err(|error| {
-                if is_unknown_account(&error) {
-                    GatewayError::AccountNotFound(account_id)
-                } else {
-                    GatewayError::NearQuery(error.to_string())
-                }
-            })?;
+            .map_err(|error| account_query_error(account_id.clone(), error))?;
         Ok(key.data)
+    }
+
+    async fn view_contract_code(
+        &self,
+        account_id: near_account_id::AccountId,
+    ) -> GatewayResult<Base64Bytes> {
+        Contract(account_id.clone())
+            .wasm()
+            .at(self.finality_policy().query_reference())
+            .fetch_from(self.network())
+            .await
+            .map_err(|error| account_query_error(account_id, error))
+            .and_then(|response| decode_base64(response.data.code_base64, "contract code"))
+    }
+
+    async fn view_contract_state(
+        &self,
+        account_id: near_account_id::AccountId,
+        prefix: Vec<u8>,
+    ) -> GatewayResult<Vec<(Base64Bytes, Base64Bytes)>> {
+        Contract(account_id.clone())
+            .view_storage_with_prefix(&prefix)
+            .at(self.finality_policy().query_reference())
+            .fetch_from(self.network())
+            .await
+            .map_err(|error| account_query_error(account_id, error))
+            .and_then(|response| {
+                response
+                    .data
+                    .values
+                    .into_iter()
+                    .map(|entry| {
+                        Ok((
+                            decode_base64(entry.key.0, "storage key")?,
+                            decode_base64(entry.value.0, "storage value")?,
+                        ))
+                    })
+                    .collect()
+            })
     }
 
     async fn view_transaction_status(
@@ -109,6 +142,22 @@ impl ReadNear for NearClient {
             .fetch_from(self.network())
             .await
             .map_err(|error| GatewayError::NearQuery(error.to_string()))
+    }
+}
+
+fn decode_base64(value: String, what: &str) -> GatewayResult<Base64Bytes> {
+    serde_json::from_value(serde_json::Value::String(value))
+        .map_err(|error| GatewayError::NearQuery(format!("decode {what}: {error}")))
+}
+
+fn account_query_error<E: std::fmt::Debug + std::fmt::Display>(
+    account_id: near_account_id::AccountId,
+    error: E,
+) -> GatewayError {
+    if is_unknown_account(&error) {
+        GatewayError::AccountNotFound(account_id)
+    } else {
+        GatewayError::NearQuery(error.to_string())
     }
 }
 

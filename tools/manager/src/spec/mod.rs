@@ -1,9 +1,7 @@
-//! The declarative market deployment spec: one TOML file in which every value
-//! that must agree is written once, and anything derivable — account ids, price
-//! identifiers, proxy freshness bounds — is derived rather than declared.
+//! Declarative market deployment and storage-patch specs.
 //!
-//! Everything here is offline; building and checking a spec never needs a
-//! network.
+//! Shared types here parse versioned TOML once, derive values rather than
+//! duplicate them, and keep offline validation independent of chain reads.
 
 pub mod amount;
 pub mod check;
@@ -11,6 +9,8 @@ pub mod export;
 pub mod extends;
 pub mod journal;
 pub mod oracle;
+pub mod patch;
+pub mod patch_plan;
 pub mod plan;
 mod serde_util;
 
@@ -434,18 +434,26 @@ fn into_valid<A: AssetClass + PartialOrd>(
         .with_context(|| format!("invalid `{field}`: maximum must not be below minimum"))
 }
 
+pub fn network_for_account(account_id: &AccountId) -> anyhow::Result<Network> {
+    match account_id.as_str().rsplit('.').next() {
+        Some("near") => Ok(Network::Mainnet),
+        Some("testnet") => Ok(Network::Testnet),
+        _ => anyhow::bail!(
+            "cannot tell which network `{account_id}` belongs to: expected a `.near` or `.testnet` account"
+        ),
+    }
+}
+
 impl MarketSpec {
     /// The network this spec targets, derived from the registry rather than
     /// declared: a `network` field would be a second place to be wrong.
     pub fn network(&self) -> anyhow::Result<Network> {
-        match self.registry.as_str().rsplit('.').next() {
-            Some("near") => Ok(Network::Mainnet),
-            Some("testnet") => Ok(Network::Testnet),
-            _ => anyhow::bail!(
-                "cannot tell which network `{}` belongs to: expected a `.near` or `.testnet` registry",
+        network_for_account(&self.registry).with_context(|| {
+            format!(
+                "market registry `{}` must identify a supported network",
                 self.registry
-            ),
-        }
+            )
+        })
     }
 
     /// The governance spec and the two version keys a proxy deployment needs,

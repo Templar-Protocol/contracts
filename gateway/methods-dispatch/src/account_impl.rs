@@ -75,6 +75,37 @@ impl<C: HasNearClient> DispatchRead<account::Get, C> for Dispatch {
 }
 
 #[async_trait]
+impl<C: HasNearClient> DispatchRead<account::GetCode, C> for Dispatch {
+    async fn dispatch(request: account::GetCode, ctx: C) -> GatewayResult<account::GetCodeResult> {
+        let code = ctx
+            .near_client()
+            .contract(request.account_id)
+            .code()
+            .await?;
+        Ok(account::GetCodeResult { code })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<account::ViewState, C> for Dispatch {
+    async fn dispatch(
+        request: account::ViewState,
+        ctx: C,
+    ) -> GatewayResult<account::ViewStateResult> {
+        let state = ctx
+            .near_client()
+            .contract(request.account_id)
+            .state_with_prefix(request.prefix.0)
+            .await?;
+        let values = state
+            .into_iter()
+            .map(|(key, value)| account::StateEntry { key, value })
+            .collect();
+        Ok(account::ViewStateResult { values })
+    }
+}
+
+#[async_trait]
 impl<C: HasNearClient> DispatchRead<account::GetAccessKey, C> for Dispatch {
     async fn dispatch(
         request: account::GetAccessKey,
