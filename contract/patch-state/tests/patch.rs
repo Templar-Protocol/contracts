@@ -85,7 +85,7 @@ async fn patch_batch_restores_market_code_and_applies_storage() -> Result<()> {
         local_market_target(&harness, "patch-target").await?;
     let patch_wasm = wasm::patch_state().await.to_vec();
     assert!(
-        patch_wasm.len() < 16 * 1024,
+        patch_wasm.len() < 10 * 1024,
         "patch WASM is {} bytes",
         patch_wasm.len()
     );
@@ -96,7 +96,13 @@ async fn patch_batch_restores_market_code_and_applies_storage() -> Result<()> {
     );
 
     harness
-        .patch_state(&target.0, [(b"stale".to_vec(), b"before".to_vec())])
+        .patch_state(
+            &target.0,
+            [
+                (b"stale".to_vec(), b"before".to_vec()),
+                (b"hash-guard".to_vec(), b"hash-value".to_vec()),
+            ],
+        )
         .await?;
 
     let result = harness
@@ -112,6 +118,14 @@ async fn patch_batch_restores_market_code_and_applies_storage() -> Result<()> {
                             Op::Expect {
                                 key: b"stale".to_vec(),
                                 value: Some(b"before".to_vec()),
+                            },
+                            Op::Expect {
+                                key: b"missing".to_vec(),
+                                value: None,
+                            },
+                            Op::ExpectHash {
+                                key: b"hash-guard".to_vec(),
+                                sha256: near_api::types::CryptoHash::hash(b"hash-value").0,
                             },
                             Op::Set {
                                 key: b"fresh".to_vec(),
@@ -134,6 +148,10 @@ async fn patch_batch_restores_market_code_and_applies_storage() -> Result<()> {
     assert_eq!(
         storage_value(&harness, &target.0, b"fresh").await?,
         Some(b"after".to_vec())
+    );
+    assert_eq!(
+        storage_value(&harness, &target.0, b"hash-guard").await?,
+        Some(b"hash-value".to_vec())
     );
 
     let gas_burnt = harness.operation_gas_burnt(&result);
@@ -216,12 +234,44 @@ async fn expect_hash_mismatch_reverts_code_and_storage() -> Result<()> {
         )
         .await?;
 
-    assert_failure(&result, "storage hash expectation failed");
+    assert_failure(&result, "storage hash mismatch");
     assert_eq!(harness.code_hash(&target.0).await?, original_code_hash);
     assert_eq!(
         storage_value(&harness, &target.0, b"guard").await?,
         Some(b"actual".to_vec())
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn missing_hash_expectation_reverts_code_and_storage() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let (target, original, original_code_hash) =
+        local_market_target(&harness, "missing-hash").await?;
+
+    let result = harness
+        .try_execute(
+            &target,
+            tx::Batch {
+                receiver_id: target.0.clone(),
+                actions: vec![
+                    deploy(wasm::patch_state().await.to_vec()),
+                    patch_call(&patch_for(
+                        &target.0,
+                        vec![Op::ExpectHash {
+                            key: b"missing".to_vec(),
+                            sha256: [0; 32],
+                        }],
+                    ))?,
+                    deploy(original),
+                ],
+            },
+        )
+        .await?;
+
+    assert_failure(&result, "storage hash key missing");
+    assert_eq!(harness.code_hash(&target.0).await?, original_code_hash);
+    assert_eq!(storage_value(&harness, &target.0, b"missing").await?, None);
     Ok(())
 }
 

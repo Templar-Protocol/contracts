@@ -13478,6 +13478,7 @@ name = "templar-patch-state-types"
 version = "0.1.0"
 dependencies = [
  "borsh 1.6.1",
+ "rstest",
 ]
 
 [[package]]

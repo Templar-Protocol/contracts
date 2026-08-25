@@ -142,6 +142,7 @@ extern crate std;
 mod tests {
     use super::*;
     use alloc::{string::String, vec};
+    use rstest::rstest;
 
     #[test]
     fn round_trips_binary_patch_operations() {
@@ -175,11 +176,29 @@ mod tests {
         assert_eq!(decoded, patch);
     }
 
-    #[test]
-    fn rejects_operation_count_larger_than_the_input() {
-        assert!(matches!(
-            Patch::from_borsh_slice(&[0, 0, 0, 0, 1, 0, 0, 0]),
-            Err(PatchDecodeError::InvalidLength)
-        ));
+    #[rstest]
+    #[case(
+        &[0, 0, 0, 0, 1, 0, 0, 0],
+        PatchDecodeError::InvalidLength
+    )]
+    #[case(&[1, 0, 0, 0], PatchDecodeError::UnexpectedEnd)]
+    #[case(
+        &[1, 0, 0, 0, 255, 0, 0, 0, 0],
+        PatchDecodeError::InvalidString
+    )]
+    #[case(
+        &[0, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0, 0],
+        PatchDecodeError::InvalidVariant
+    )]
+    #[case(
+        &[0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 2],
+        PatchDecodeError::InvalidOption
+    )]
+    #[case(
+        &[0, 0, 0, 0, 0, 0, 0, 0, 1],
+        PatchDecodeError::TrailingBytes
+    )]
+    fn rejects_malformed_borsh(#[case] input: &[u8], #[case] expected: PatchDecodeError) {
+        assert_eq!(Patch::from_borsh_slice(input), Err(expected));
     }
 }

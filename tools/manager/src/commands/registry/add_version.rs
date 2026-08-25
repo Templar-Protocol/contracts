@@ -80,6 +80,9 @@ impl From<ContractArg> for ArtifactId {
 /// default, build it reproducibly (`--no-build` uploads the last `target/near`
 /// build instead); `--wasm` uploads arbitrary bytes and so requires
 /// `--version-key`, as does `--code-hash`, which uploads nothing at all.
+///
+/// `patch-state` is deployed and overwritten within one patch transaction,
+/// never registered as a version.
 #[derive(Args, Debug)]
 #[command(group(
     ArgGroup::new("contract_source")
@@ -126,9 +129,13 @@ impl ContractSource {
             return Ok((bytes, None));
         }
 
-        let package_name = self
-            .artifact()
-            .map(|a| a.metadata().package_name.to_string())
+        let artifact = self.artifact();
+        anyhow::ensure!(
+            artifact != Some(ArtifactId::PatchState),
+            "patch-state cannot be registered as a version"
+        );
+        let package_name = artifact
+            .map(|artifact| artifact.metadata().package_name.to_string())
             .or_else(|| self.package.clone())
             .context("no contract selected")?;
 
@@ -226,6 +233,12 @@ mod tests {
             .source
     }
 
+    fn source_for_package(value: &str) -> ContractSource {
+        Harness::try_parse_from(["tmplrmgr", "--package", value])
+            .expect("--package value should parse")
+            .source
+    }
+
     const CONTRACT_VALUES: [(&str, ArtifactId); 9] = [
         ("registry", ArtifactId::Registry),
         ("market", ArtifactId::Market),
@@ -255,6 +268,19 @@ mod tests {
             source_for("uac").artifact(),
             Some(ArtifactId::UniversalAccount)
         );
+    }
+
+    #[test]
+    fn patch_state_cannot_be_registered_as_a_version() {
+        for value in ["patch-state", "templar-patch-state-contract"] {
+            let error = source_for_package(value)
+                .load()
+                .expect_err("patch-state must not be registered");
+            assert!(
+                error.to_string().contains("cannot be registered"),
+                "unexpected error for {value}: {error:#}"
+            );
+        }
     }
 
     /// Guard: every NEAR contract under `contract/*` must have a `--contract`

@@ -11,11 +11,16 @@ use templar_patch_state_types::{Op, Patch};
 use core::alloc::{GlobalAlloc, Layout};
 
 const INPUT_REGISTER: u64 = 0;
-const PREDECESSOR_ACCOUNT_ID_REGISTER: u64 = 1;
-const CURRENT_ACCOUNT_ID_REGISTER: u64 = 2;
 const STORAGE_VALUE_REGISTER: u64 = 3;
 const HASH_REGISTER: u64 = 4;
 const EVICTED_REGISTER: u64 = 8;
+
+#[derive(Clone, Copy)]
+#[repr(u64)]
+enum AccountIdRegister {
+    Predecessor = 1,
+    Current = 2,
+}
 
 #[cfg(target_arch = "wasm32")]
 const WASM_PAGE_BYTES: usize = 64 * 1024;
@@ -77,7 +82,7 @@ fn panic_utf8(message: &str) -> ! {
     unsafe { near_sys::panic_utf8(message.len() as u64, message.as_ptr() as u64) }
 }
 
-fn register(register_id: u64) -> Option<Vec<u8>> {
+fn read_register(register_id: u64) -> Option<Vec<u8>> {
     let len = unsafe { near_sys::register_len(register_id) };
     if len == u64::MAX {
         return None;
@@ -91,18 +96,18 @@ fn register(register_id: u64) -> Option<Vec<u8>> {
 
 fn input() -> Vec<u8> {
     unsafe { near_sys::input(INPUT_REGISTER) };
-    register(INPUT_REGISTER).unwrap_or_else(|| panic_utf8("missing input"))
+    read_register(INPUT_REGISTER).unwrap_or_else(|| panic_utf8("missing input"))
 }
 
-fn account_id(register_id: u64) -> Vec<u8> {
+fn account_id(account: AccountIdRegister) -> Vec<u8> {
+    let register_id = account as u64;
     unsafe {
-        match register_id {
-            PREDECESSOR_ACCOUNT_ID_REGISTER => near_sys::predecessor_account_id(register_id),
-            CURRENT_ACCOUNT_ID_REGISTER => near_sys::current_account_id(register_id),
-            _ => unreachable!(),
+        match account {
+            AccountIdRegister::Predecessor => near_sys::predecessor_account_id(register_id),
+            AccountIdRegister::Current => near_sys::current_account_id(register_id),
         }
     }
-    register(register_id).unwrap_or_else(|| panic_utf8("missing account id"))
+    read_register(register_id).unwrap_or_else(|| panic_utf8("missing account id"))
 }
 
 fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
@@ -113,8 +118,9 @@ fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
             STORAGE_VALUE_REGISTER,
         )
     };
-    (found != 0)
-        .then(|| register(STORAGE_VALUE_REGISTER).unwrap_or_else(|| panic_utf8("missing value")))
+    (found != 0).then(|| {
+        read_register(STORAGE_VALUE_REGISTER).unwrap_or_else(|| panic_utf8("missing value"))
+    })
 }
 
 fn storage_write(key: &[u8], value: &[u8]) {
@@ -135,7 +141,7 @@ fn storage_remove(key: &[u8]) {
 
 fn sha256(value: &[u8]) -> [u8; 32] {
     unsafe { near_sys::sha256(value.len() as u64, value.as_ptr() as u64, HASH_REGISTER) };
-    register(HASH_REGISTER)
+    read_register(HASH_REGISTER)
         .unwrap_or_else(|| panic_utf8("missing hash"))
         .try_into()
         .unwrap_or_else(|_| panic_utf8("invalid hash length"))
@@ -149,9 +155,9 @@ fn require(condition: bool, message: &str) {
 
 #[no_mangle]
 pub extern "C" fn patch() {
-    let current_account_id = account_id(CURRENT_ACCOUNT_ID_REGISTER);
+    let current_account_id = account_id(AccountIdRegister::Current);
     require(
-        account_id(PREDECESSOR_ACCOUNT_ID_REGISTER) == current_account_id,
+        account_id(AccountIdRegister::Predecessor) == current_account_id,
         "patch must be called by the target account",
     );
 
@@ -172,11 +178,9 @@ pub extern "C" fn patch() {
                 key,
                 sha256: expected,
             } => {
-                let actual = storage_read(&key).map_or_else(
-                    || panic_utf8("storage hash expectation failed"),
-                    |value| sha256(&value),
-                );
-                require(actual == expected, "storage hash expectation failed");
+                let value =
+                    storage_read(&key).unwrap_or_else(|| panic_utf8("storage hash key missing"));
+                require(sha256(&value) == expected, "storage hash mismatch");
             }
         }
     }
