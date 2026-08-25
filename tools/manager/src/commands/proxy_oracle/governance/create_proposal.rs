@@ -23,6 +23,7 @@ use super::{decode_base64, ReflexiveKind, Role};
 use crate::commands::duration::parse_duration;
 use crate::commands::load_json_file;
 use crate::commands::proxy_oracle::parse_price_identifier;
+use crate::commands::proxy_oracle::PreflightArgs;
 use crate::commands::signer::SignerArgs;
 use crate::proxy::load_proxy_file;
 use crate::resolve::GovernanceTarget;
@@ -46,6 +47,8 @@ pub struct CreateProposal {
     #[arg(long, value_enum, default_value = "json")]
     encoding: ProposalEncoding,
     #[command(flatten)]
+    pub(crate) preflight: PreflightArgs,
+    #[command(flatten)]
     pub(crate) signer: SignerArgs,
     #[command(subcommand)]
     operation: ProposalOperation,
@@ -60,6 +63,19 @@ impl CreateProposal {
     /// Whether to wait for maturity and execute after creating.
     pub fn execute_when_ready(&self) -> bool {
         self.execute_when_ready
+    }
+
+    /// Whether this proposal has to be preflighted against the state new oracle code will load.
+    pub fn requires_upgrade_preflight(&self) -> bool {
+        match &self.operation {
+            ProposalOperation::Oracle {
+                op: OracleOp::Upgrade(_),
+            } => true,
+            ProposalOperation::Oracle {
+                op: OracleOp::Call(args),
+            } => args.method == target::method::UPGRADE,
+            ProposalOperation::Oracle { .. } | ProposalOperation::Governance { .. } => false,
+        }
     }
 
     /// When this is an `oracle add-circuit-breaker` proposal with no explicit

@@ -13,6 +13,7 @@ mod preflight;
 mod proposals;
 mod reference;
 mod teardown;
+mod upgrade_preflight;
 mod verify;
 
 use crate::cli::Command;
@@ -154,6 +155,7 @@ async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> 
             let oracle_id = a.target.resolve(&ctx).await?;
             ctx.read(a.into_spec(oracle_id)).await
         }
+        ProxyOracleNs::Preflight(a) => upgrade_preflight::command(ctx, a).await,
         ProxyOracleNs::GetProxyCircuitBreakerSet(a) => {
             let oracle_id = a.target.resolve(&ctx).await?;
             ctx.read(a.into_spec(oracle_id)).await
@@ -164,6 +166,9 @@ async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> 
         }
         ProxyOracleNs::Upgrade(a) => {
             let oracle_id = a.target.resolve(&ctx).await?;
+            if a.preflight.runs(a.signer.print().is_some()) {
+                upgrade_preflight::gate(&ctx, &oracle_id, &a.preflight.skip_check).await?;
+            }
             ctx.write(a.signer.clone(), a.try_into_spec(oracle_id)?)
                 .await
         }
