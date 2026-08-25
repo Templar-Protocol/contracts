@@ -80,9 +80,6 @@ impl From<ContractArg> for ArtifactId {
 /// default, build it reproducibly (`--no-build` uploads the last `target/near`
 /// build instead); `--wasm` uploads arbitrary bytes and so requires
 /// `--version-key`, as does `--code-hash`, which uploads nothing at all.
-///
-/// `patch-state` is deployed and overwritten within one patch transaction,
-/// never registered as a version.
 #[derive(Args, Debug)]
 #[command(group(
     ArgGroup::new("contract_source")
@@ -129,12 +126,8 @@ impl ContractSource {
             return Ok((bytes, None));
         }
 
-        let artifact = self.artifact();
-        anyhow::ensure!(
-            artifact != Some(ArtifactId::PatchState),
-            "patch-state cannot be registered as a version"
-        );
-        let package_name = artifact
+        let package_name = self
+            .artifact()
             .map(|artifact| artifact.metadata().package_name.to_string())
             .or_else(|| self.package.clone())
             .context("no contract selected")?;
@@ -271,14 +264,12 @@ mod tests {
     }
 
     #[test]
-    fn patch_state_cannot_be_registered_as_a_version() {
+    fn patch_state_is_available_by_package() {
         for value in ["patch-state", "templar-patch-state-contract"] {
-            let error = source_for_package(value)
-                .load()
-                .expect_err("patch-state must not be registered");
-            assert!(
-                error.to_string().contains("cannot be registered"),
-                "unexpected error for {value}: {error:#}"
+            assert_eq!(
+                source_for_package(value).artifact(),
+                Some(ArtifactId::PatchState),
+                "value {value}"
             );
         }
     }
@@ -288,8 +279,7 @@ mod tests {
     #[test]
     fn every_contract_artifact_has_a_value() {
         for id in ArtifactId::ALL {
-            // patch-state is deployed and overwritten inside one transaction,
-            // never registered as a version.
+            // patch-state is deployed and overwritten inside one transaction.
             if !id.metadata().source_path.starts_with("contract/") || id == ArtifactId::PatchState {
                 continue;
             }
