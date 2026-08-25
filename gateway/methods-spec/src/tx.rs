@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::{
     common::{ContractArgs, TxExecutionStatus},
-    Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken, SignedDelegateActionInput,
+    ActionInput, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
+    SignedDelegateActionInput,
 };
 
 /// Fetch transaction execution status and result details.
@@ -91,6 +92,20 @@ pub struct RelaySignedDelegateAction {
 pub struct DeployContract {
     pub account_id: AccountId,
     pub code: Base64Bytes,
+}
+
+/// Submit several actions to one receiver in one transaction.
+///
+/// They apply in order and all revert if one fails. Receipts a `FunctionCall`
+/// spawns are separate: their failure leaves the batch applied.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "tx.batch")]
+pub struct Batch {
+    pub receiver_id: AccountId,
+    /// Bounded here as well as when planning, so a schema-driven client cannot
+    /// build a request the method always rejects.
+    #[schemars(length(min = 1, max = 100))]
+    pub actions: Vec<ActionInput>,
 }
 
 /// Deploy contract code and call its init method in one transaction.

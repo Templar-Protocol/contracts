@@ -308,3 +308,74 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
     stack.shutdown().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn tx_batch_applies_every_action_in_one_transaction() -> Result<()> {
+    let stack = TestStack::start().await?;
+
+    let before = stack
+        .controller
+        .request::<account::Get>(&account::Get {
+            account_id: stack.harness.ft_contract_id.clone(),
+        })
+        .await?;
+
+    let batch = stack
+        .controller
+        .request::<tx::Batch>(&WriteRequest {
+            signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+            idempotency_key: None,
+            body: tx::Batch {
+                receiver_id: stack.harness.ft_contract_id.clone(),
+                actions: vec![
+                    ActionInput::Transfer {
+                        deposit: NearToken::from_yoctonear(1),
+                    },
+                    ActionInput::FunctionCall {
+                        method_name: ContractMethodName("set_redemption_rate".to_owned()),
+                        args: ContractArgs::Json(serde_json::json!({
+                            "redemption_rate": NearToken::from_near(3).as_yoctonear().to_string(),
+                        })),
+                        gas: NearGas::from_tgas(100),
+                        deposit: NearToken::from_yoctonear(0),
+                    },
+                ],
+            },
+        })
+        .await?;
+
+    assert_eq!(
+        batch.operation.status,
+        templar_gateway_types::OperationStatus::Succeeded
+    );
+    assert_eq!(
+        batch.operation.steps.len(),
+        1,
+        "a batch must be one transaction, not one per action"
+    );
+
+    let after = stack
+        .controller
+        .request::<account::Get>(&account::Get {
+            account_id: stack.harness.ft_contract_id.clone(),
+        })
+        .await?;
+    assert!(after.amount > before.amount, "the transfer did not land");
+
+    let rate = stack
+        .controller
+        .request::<contract::ViewFunction>(&contract::ViewFunction {
+            contract_id: stack.harness.ft_contract_id.clone(),
+            method_name: ContractMethodName("redemption_rate".to_owned()),
+            args: ContractArgs::Raw(Base64Bytes(Vec::new())),
+        })
+        .await?;
+    assert_eq!(
+        rate.value,
+        serde_json::json!(NearToken::from_near(3).as_yoctonear().to_string()),
+        "the function call did not land"
+    );
+
+    stack.shutdown().await;
+    Ok(())
+}

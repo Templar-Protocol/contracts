@@ -1,6 +1,12 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use near_account_id::AccountId;
-use near_api_types::CryptoHash as NearCryptoHash;
+use near_api_types::{
+    transaction::actions::{
+        Action, DeployContractAction, FunctionCallAction, GlobalContractIdentifier, TransferAction,
+        UseGlobalContractAction,
+    },
+    CryptoHash as NearCryptoHash,
+};
 pub use near_gas::NearGas;
 pub use near_token::NearToken;
 use schemars::{
@@ -10,7 +16,7 @@ use schemars::{
 };
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::macros::transparent_newtype;
+use crate::{common::ContractArgs, macros::transparent_newtype};
 
 transparent_newtype!(
     pub struct ManagedAccountId(AccountId);
@@ -254,6 +260,84 @@ impl JsonSchema for Signature {
                 ..Metadata::default()
             })),
             ..SchemaObject::default()
+        })
+    }
+}
+
+/// Which global contract an account links to. Adjacently tagged like
+/// [`ContractArgs`], not externally tagged as `near_api_types` has it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum GlobalContractIdentifierInput {
+    CodeHash(CryptoHash),
+    AccountId(AccountId),
+}
+
+impl From<GlobalContractIdentifierInput> for GlobalContractIdentifier {
+    fn from(value: GlobalContractIdentifierInput) -> Self {
+        match value {
+            GlobalContractIdentifierInput::CodeHash(hash) => Self::CodeHash(hash.0),
+            GlobalContractIdentifierInput::AccountId(account_id) => Self::AccountId(account_id),
+        }
+    }
+}
+
+/// One action of a batched transaction.
+///
+/// The variants are an allowlist, not a mirror: every other NEAR action is
+/// unrepresentable here rather than rejected at runtime, so a new upstream
+/// variant cannot silently become submittable. Deliberately absent —
+/// `DeleteAccount`, `DeleteKey` and `Stake` are irreversible and want their own
+/// reviewed op; `Delegate` is `tx.relaySignedDelegateAction`; `CreateAccount`,
+/// `AddKey`, `DeployGlobalContract`, `DeterministicStateInit` and the NEP-611
+/// gas-key actions have no caller yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum ActionInput {
+    /// Mirrors `tx.functionCall`, so a call is authored the same way batched or not.
+    FunctionCall {
+        method_name: ContractMethodName,
+        args: ContractArgs,
+        gas: NearGas,
+        deposit: NearToken,
+    },
+    Transfer {
+        deposit: NearToken,
+    },
+    DeployContract {
+        code: Base64Bytes,
+    },
+    UseGlobalContract {
+        contract_identifier: GlobalContractIdentifierInput,
+    },
+}
+
+impl TryFrom<ActionInput> for Action {
+    /// Only [`ContractArgs::Json`] can fail, and only by failing to re-encode.
+    type Error = serde_json::Error;
+
+    fn try_from(action: ActionInput) -> Result<Self, Self::Error> {
+        Ok(match action {
+            ActionInput::FunctionCall {
+                method_name,
+                args,
+                gas,
+                deposit,
+            } => Self::FunctionCall(Box::new(FunctionCallAction {
+                method_name: method_name.0,
+                args: args.try_into_bytes()?,
+                gas,
+                deposit,
+            })),
+            ActionInput::Transfer { deposit } => Self::Transfer(TransferAction { deposit }),
+            ActionInput::DeployContract { code } => {
+                Self::DeployContract(DeployContractAction { code: code.0 })
+            }
+            ActionInput::UseGlobalContract {
+                contract_identifier,
+            } => Self::UseGlobalContract(Box::new(UseGlobalContractAction {
+                contract_identifier: contract_identifier.into(),
+            })),
         })
     }
 }
