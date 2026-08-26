@@ -6,6 +6,9 @@ use templar_gateway_types::{
     common::Pagination, contract::ContractKind, primitive::PublicKey, Base64Bytes, NearToken,
 };
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
 /// List deployments in a registry.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(read = "registry.listDeployments", output = ListDeploymentsResult)]
@@ -113,8 +116,7 @@ pub struct DeployTarget {
     pub registry_id: AccountId,
     pub name: String,
     pub version_key: String,
-    /// Skip embedded-ABI validation for a deployment whose constructor cannot be checked.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub skip_abi_check: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_access_keys: Option<Vec<PublicKey>>,
