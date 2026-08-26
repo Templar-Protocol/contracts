@@ -156,6 +156,17 @@ fn deploy_flattens_its_target_into_the_same_flat_json() {
     );
 }
 
+#[test]
+fn deploy_serializes_explicit_abi_check_opt_out() {
+    let mut target = target();
+    target.skip_abi_check = true;
+
+    let request = Deploy::new(target, Base64Bytes(vec![1, 2, 3]));
+    let value = serde_json::to_value(&request).unwrap();
+
+    assert_eq!(value["skip_abi_check"], json!(true));
+}
+
 /// A method's own init fields sit beside the target's on the wire, so the flat body
 /// one method accepts is the flat body every other one accepts.
 #[test]
