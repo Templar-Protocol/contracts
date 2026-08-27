@@ -66,7 +66,13 @@ pub struct Config {
     )]
     pub near_rpc_url: Url,
 
-    /// API key for the RPC endpoint, sent as an `Authorization` header. May also
+    /// Archival NEAR RPC endpoint, queried when the primary has no record of a
+    /// transaction. Without one, reconciliation cannot tell a transaction that
+    /// never landed from one whose outcome the primary has garbage collected.
+    #[arg(long, env = "NEAR_ARCHIVAL_RPC_URL")]
+    pub near_archival_rpc_url: Option<Url>,
+
+    /// API key for the RPC endpoints, sent as an `Authorization` header. May also
     /// be supplied as an `apiKey` query parameter on `--near-rpc-url`.
     #[arg(long, env = "NEAR_RPC_API_KEY")]
     pub near_rpc_api_key: Option<RedactedString>,

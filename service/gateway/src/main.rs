@@ -25,6 +25,7 @@ async fn main() -> anyhow::Result<()> {
     let store = config.build_store().await?;
     let sources = config.oracle_sources.build(Network::Testnet.hermes_url())?;
     let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
+        .archival_rpc_url(config.near_archival_rpc_url)
         .api_key(
             config
                 .near_rpc_api_key

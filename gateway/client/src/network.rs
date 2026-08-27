@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use near_api::NetworkConfig;
+use near_api::{NetworkConfig, RPCEndpoint};
 use url::Url;
 
 /// Pyth's public Hermes endpoints. A VAA is only accepted by the Pyth receiver whose
@@ -75,7 +75,8 @@ impl fmt::Display for Network {
 /// parameter is extracted from the URL and moved to the header.
 pub struct NetworkConfigBuilder {
     network_name: String,
-    rpc_url: url::Url,
+    rpc_url: Url,
+    archival_rpc_url: Option<Url>,
     api_key: Option<String>,
 }
 
@@ -92,6 +93,7 @@ impl NetworkConfigBuilder {
                 .rpc_url()
                 .parse()
                 .expect("Network::rpc_url must be a valid URL"),
+            archival_rpc_url: None,
             api_key: None,
         }
     }
@@ -99,10 +101,11 @@ impl NetworkConfigBuilder {
     /// Start from an explicit network name and pre-parsed RPC URL, for consumers
     /// that don't select via the [`Network`] enum.
     #[must_use]
-    pub fn from_url(name: impl Into<String>, rpc_url: url::Url) -> Self {
+    pub fn from_url(name: impl Into<String>, rpc_url: Url) -> Self {
         Self {
             network_name: name.into(),
             rpc_url,
+            archival_rpc_url: None,
             api_key: None,
         }
     }
@@ -122,6 +125,16 @@ impl NetworkConfigBuilder {
         Ok(self)
     }
 
+    /// Add an archival RPC endpoint, tried after the primary. Reconciling a
+    /// long-submitted transaction needs one: a regular node garbage collects the
+    /// outcome and then answers `UNKNOWN_TRANSACTION` for a transaction that did
+    /// execute.
+    #[must_use]
+    pub fn archival_rpc_url(mut self, archival_rpc_url: Option<Url>) -> Self {
+        self.archival_rpc_url = archival_rpc_url;
+        self
+    }
+
     /// Set the RPC API key, sent as an `Authorization` header. Takes precedence
     /// over a key embedded in the URL; `None` falls back to that embedded key.
     ///
@@ -135,53 +148,57 @@ impl NetworkConfigBuilder {
         self
     }
 
-    /// Resolve the configuration, moving any API key onto the endpoint header.
+    /// Resolve the configuration, moving any API key onto the endpoint headers.
     #[must_use]
-    pub fn build(mut self) -> NetworkConfig {
-        let embedded_key = self.take_embedded_api_key();
-
-        let mut network = NetworkConfig::from_rpc_url(&self.network_name, self.rpc_url);
-        if let Some(api_key) = self.api_key.or(embedded_key) {
-            network.rpc_endpoints = network
-                .rpc_endpoints
-                .into_iter()
-                .map(|endpoint| endpoint.with_api_key(api_key.clone()))
-                .collect();
-        }
-
+    pub fn build(self) -> NetworkConfig {
+        let mut network = NetworkConfig::from_rpc_url(&self.network_name, self.rpc_url.clone());
+        // Primary first: near_api and the gateway's own reconciliation both walk
+        // this list in order, so the archival node only answers what the primary
+        // could not.
+        network.rpc_endpoints = std::iter::once(self.rpc_url)
+            .chain(self.archival_rpc_url)
+            .map(|url| endpoint(url, self.api_key.as_deref()))
+            .collect();
         network
     }
+}
 
-    /// Remove and return an `apiKey` query parameter from the RPC URL, leaving
-    /// any other query parameters intact.
-    fn take_embedded_api_key(&mut self) -> Option<String> {
-        let mut api_key = None;
-        let remaining: Vec<(String, String)> = self
-            .rpc_url
-            .query_pairs()
-            .filter_map(|(key, value)| {
-                if key == "apiKey" {
-                    api_key = Some(value.into_owned());
-                    None
-                } else {
-                    Some((key.into_owned(), value.into_owned()))
-                }
-            })
-            .collect();
-
-        if api_key.is_some() {
-            if remaining.is_empty() {
-                self.rpc_url.set_query(None);
-            } else {
-                self.rpc_url
-                    .query_pairs_mut()
-                    .clear()
-                    .extend_pairs(remaining);
-            }
-        }
-
-        api_key
+/// Build an endpoint, moving any API key onto its header. An explicitly
+/// configured key takes precedence over one embedded in this URL.
+fn endpoint(mut url: Url, explicit_api_key: Option<&str>) -> RPCEndpoint {
+    let embedded_api_key = take_embedded_api_key(&mut url);
+    let endpoint = RPCEndpoint::new(url);
+    match explicit_api_key.map(str::to_owned).or(embedded_api_key) {
+        Some(api_key) => endpoint.with_api_key(api_key),
+        None => endpoint,
     }
+}
+
+/// Remove and return an `apiKey` query parameter from `rpc_url`, leaving any
+/// other query parameters intact.
+fn take_embedded_api_key(rpc_url: &mut Url) -> Option<String> {
+    let mut api_key = None;
+    let remaining: Vec<(String, String)> = rpc_url
+        .query_pairs()
+        .filter_map(|(key, value)| {
+            if key == "apiKey" {
+                api_key = Some(value.into_owned());
+                None
+            } else {
+                Some((key.into_owned(), value.into_owned()))
+            }
+        })
+        .collect();
+
+    if api_key.is_some() {
+        if remaining.is_empty() {
+            rpc_url.set_query(None);
+        } else {
+            rpc_url.query_pairs_mut().clear().extend_pairs(remaining);
+        }
+    }
+
+    api_key
 }
 
 #[cfg(test)]
@@ -199,6 +216,69 @@ mod tests {
             Network::Testnet.hermes_url().as_str(),
             "https://hermes-beta.pyth.network/"
         );
+    }
+
+    /// Order is the contract: reconciliation walks endpoints in sequence, so the
+    /// archival node must only answer what the primary could not.
+    #[test]
+    fn archival_endpoint_is_appended_after_the_primary() {
+        let network = NetworkConfigBuilder::from_url(
+            "mainnet",
+            "https://rpc.mainnet.fastnear.com/".parse().unwrap(),
+        )
+        .archival_rpc_url(Some(
+            "https://archival.mainnet.fastnear.com/?apiKey=ARCHIVAL"
+                .parse()
+                .unwrap(),
+        ))
+        .build();
+
+        let urls: Vec<&str> = network
+            .rpc_endpoints
+            .iter()
+            .map(|endpoint| endpoint.url.as_str())
+            .collect();
+        assert_eq!(
+            urls,
+            [
+                "https://rpc.mainnet.fastnear.com/",
+                "https://archival.mainnet.fastnear.com/"
+            ]
+        );
+        assert_eq!(
+            network.rpc_endpoints[1].bearer_header.as_deref(),
+            Some("Bearer ARCHIVAL")
+        );
+    }
+
+    /// A key configured for the deployment has to reach the archival endpoint
+    /// too, or a keyed provider answers 401 exactly when reconciliation needs it.
+    #[test]
+    fn explicit_api_key_reaches_the_archival_endpoint() {
+        let network = NetworkConfigBuilder::from_url(
+            "mainnet",
+            "https://rpc.mainnet.fastnear.com/".parse().unwrap(),
+        )
+        .archival_rpc_url(Some(
+            "https://archival.mainnet.fastnear.com/".parse().unwrap(),
+        ))
+        .api_key(Some("SECRET".to_owned()))
+        .build();
+
+        for endpoint in &network.rpc_endpoints {
+            assert_eq!(endpoint.bearer_header.as_deref(), Some("Bearer SECRET"));
+        }
+    }
+
+    #[test]
+    fn no_archival_endpoint_leaves_a_single_endpoint() {
+        let network = NetworkConfigBuilder::from_url(
+            "mainnet",
+            "https://rpc.mainnet.fastnear.com/".parse().unwrap(),
+        )
+        .build();
+
+        assert_eq!(network.rpc_endpoints.len(), 1);
     }
 
     #[test]

@@ -136,9 +136,8 @@ impl PooledSigner {
         lease
     }
 
-    /// Lease one specific key — for resubmitting a transaction already signed
-    /// with it, whose nonce is bound to that key. `None` when the pool does not
-    /// hold the key, and so cannot allocate a nonce on it at all.
+    /// Lease one specific key. `None` when the pool does not hold it, and so
+    /// cannot allocate a nonce on it at all.
     pub async fn lease(&self, public_key: &PublicKey) -> Option<SigningKeyLease> {
         let slot = self.slots().find(|slot| slot.public_key == *public_key)?;
         Some(slot.lease(self.account_id.clone()).await)

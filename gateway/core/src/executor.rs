@@ -18,7 +18,7 @@ use near_api::{
             PrepopulateTransaction, SignedTransaction,
         },
     },
-    PublicKey, SecretKey,
+    SecretKey,
 };
 use std::collections::HashMap;
 
@@ -39,14 +39,6 @@ pub trait SignTransaction: Send + Sync {
         &self,
         signer_account_id: &ManagedAccountId,
     ) -> GatewayResult<SigningKeyLease>;
-
-    /// Lease the specific key a transaction was already signed with, or `None`
-    /// when this process holds no such key.
-    async fn lease_signing_key(
-        &self,
-        signer_account_id: &ManagedAccountId,
-        public_key: &PublicKey,
-    ) -> Option<SigningKeyLease>;
 
     /// Signs with `lease`'s key and allocates that key's nonce, so the caller
     /// must hold `lease` at least until the signed transaction has been
@@ -88,13 +80,23 @@ pub trait ExecuteOperation: Send + Sync {
         signed_transaction: SignedTransaction,
     ) -> GatewayResult<Option<StepOutcome>>;
 
-    /// Look up an already-submitted transaction by hash, returning
-    /// [`GatewayError::TransactionNotFound`] when the chain has no record of it.
+    /// Look up an already-submitted transaction by hash.
     async fn query_transaction(
         &self,
         signer_account_id: &ManagedAccountId,
         tx_hash: CryptoHash,
-    ) -> GatewayResult<StepOutcome>;
+    ) -> GatewayResult<TransactionRecord>;
+}
+
+/// What the chain says about a submitted transaction. A failure to *reach* the
+/// chain must be `Err`, never [`TransactionRecord::NoRecord`]: past a
+/// transaction's validity horizon reconciliation treats `NoRecord` as proof it
+/// never landed, and rejects the step.
+pub enum TransactionRecord {
+    /// The chain reported an outcome for the transaction.
+    Executed(StepOutcome),
+    /// Every endpoint queried agreed the chain has no record of the transaction.
+    NoRecord,
 }
 
 #[derive(Clone)]
@@ -122,6 +124,12 @@ impl NearTransactionSigner {
 #[derive(Clone)]
 pub struct NearOperationExecutor {
     network: NetworkConfig,
+    /// One single-endpoint view of `network` per endpoint, so a status query can
+    /// be addressed to each in turn. Retries are stripped: near_api treats
+    /// `UNKNOWN_TRANSACTION` as retryable and would sleep through its whole
+    /// backoff schedule before the answer could be classified, on every orphan of
+    /// every recovery sweep.
+    status_query_networks: Vec<NetworkConfig>,
     finality_policy: FinalityPolicy,
 }
 
@@ -131,9 +139,44 @@ impl NearOperationExecutor {
     }
 
     pub fn with_finality_policy(network: NetworkConfig, finality_policy: FinalityPolicy) -> Self {
+        let status_query_networks = network
+            .rpc_endpoints
+            .iter()
+            .map(|endpoint| NetworkConfig {
+                rpc_endpoints: vec![endpoint.clone().with_retries(1)],
+                ..network.clone()
+            })
+            .collect();
         Self {
             network,
+            status_query_networks,
             finality_policy,
+        }
+    }
+
+    async fn query_transaction_from(
+        &self,
+        network: &NetworkConfig,
+        signer_account_id: &ManagedAccountId,
+        tx_hash: CryptoHash,
+    ) -> GatewayResult<TransactionRecord> {
+        match RequestBuilder::new(
+            TransactionStatusRpc,
+            TransactionStatusRef {
+                sender_account_id: signer_account_id.0.clone(),
+                tx_hash: tx_hash.0,
+                wait_until: self.finality_policy.transaction_status(),
+            },
+            TransactionStatusHandler,
+        )
+        .fetch_from(network)
+        .await
+        {
+            Ok(result) => Ok(TransactionRecord::Executed(StepOutcome::from_execution(
+                result,
+            ))),
+            Err(error) if is_unknown_transaction(&error) => Ok(TransactionRecord::NoRecord),
+            Err(error) => Err(GatewayError::NearTransaction(error.to_string())),
         }
     }
 }
@@ -164,17 +207,6 @@ impl SignTransaction for NearTransactionSigner {
         signer_account_id: &ManagedAccountId,
     ) -> GatewayResult<SigningKeyLease> {
         Ok(self.signer_for(signer_account_id)?.lease_next().await)
-    }
-
-    async fn lease_signing_key(
-        &self,
-        signer_account_id: &ManagedAccountId,
-        public_key: &PublicKey,
-    ) -> Option<SigningKeyLease> {
-        self.signer_for(signer_account_id)
-            .ok()?
-            .lease(public_key)
-            .await
     }
 
     async fn sign_transaction(
@@ -240,29 +272,29 @@ impl ExecuteOperation for NearOperationExecutor {
         &self,
         signer_account_id: &ManagedAccountId,
         tx_hash: CryptoHash,
-    ) -> GatewayResult<StepOutcome> {
-        RequestBuilder::new(
-            TransactionStatusRpc,
-            TransactionStatusRef {
-                sender_account_id: signer_account_id.0.clone(),
-                tx_hash: tx_hash.0,
-                wait_until: self.finality_policy.transaction_status(),
-            },
-            TransactionStatusHandler,
-        )
-        .fetch_from(&self.network)
-        .await
-        // Classify "the chain has no record of this transaction" at the boundary
-        // (on the raw error) into a typed variant, so reconciliation can tell a
-        // never-landed transaction from a transient query failure.
-        .map_err(|error| {
-            if is_unknown_transaction(&error) {
-                GatewayError::TransactionNotFound
-            } else {
-                GatewayError::NearTransaction(error.to_string())
+    ) -> GatewayResult<TransactionRecord> {
+        // near_api walks the endpoints itself, but collapses the walk into a
+        // single last error — so one endpoint's "no record" can be reported while
+        // an earlier one never answered at all. Walking them here keeps the two
+        // apart: an endpoint that failed to respond outranks another's `NoRecord`.
+        if self.status_query_networks.is_empty() {
+            return Err(GatewayError::NearQuery(
+                "no RPC endpoint available for transaction status".to_owned(),
+            ));
+        }
+
+        let mut unanswered = None;
+        for network in &self.status_query_networks {
+            match self
+                .query_transaction_from(network, signer_account_id, tx_hash)
+                .await
+            {
+                Ok(executed @ TransactionRecord::Executed(_)) => return Ok(executed),
+                Ok(TransactionRecord::NoRecord) => {}
+                Err(error) => unanswered = Some(error),
             }
-        })
-        .map(StepOutcome::from_execution)
+        }
+        unanswered.map_or(Ok(TransactionRecord::NoRecord), Err)
     }
 }
 
@@ -275,4 +307,98 @@ fn null_signer() -> Arc<near_api::Signer> {
         [0; 32],
     )))
     .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use near_api::{NetworkConfig, RPCEndpoint};
+    use templar_gateway_types::{CryptoHash, ManagedAccountId};
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+    use super::{ExecuteOperation, NearOperationExecutor, TransactionRecord};
+    use crate::GatewayError;
+
+    const UNKNOWN_TRANSACTION: &str = r#"{"jsonrpc":"2.0","id":"0","error":{"name":"HANDLER_ERROR","cause":{"name":"UNKNOWN_TRANSACTION"}}}"#;
+    const INTERNAL_ERROR: &str = r#"{"jsonrpc":"2.0","id":"0","error":{"name":"INTERNAL_ERROR","info":{"error_message":"unavailable"}}}"#;
+
+    async fn responding_with(body: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body.to_owned()))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Endpoints are walked in order, so the reply comes from the last one
+    /// consulted rather than the first.
+    fn executor_over(servers: &[&MockServer]) -> NearOperationExecutor {
+        let mut network = NetworkConfig::from_rpc_url("test", servers[0].uri().parse().unwrap());
+        network.rpc_endpoints = servers
+            .iter()
+            .map(|server| RPCEndpoint::new(server.uri().parse().unwrap()))
+            .collect();
+        NearOperationExecutor::new(network)
+    }
+
+    async fn query(executor: &NearOperationExecutor) -> crate::GatewayResult<TransactionRecord> {
+        executor
+            .query_transaction(
+                &ManagedAccountId("signer.near".parse().unwrap()),
+                CryptoHash(near_api::types::CryptoHash::default()),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn every_endpoint_agreeing_on_no_record_is_an_answer() {
+        let primary = responding_with(UNKNOWN_TRANSACTION).await;
+        let archival = responding_with(UNKNOWN_TRANSACTION).await;
+
+        let record = query(&executor_over(&[&primary, &archival])).await.unwrap();
+
+        assert!(matches!(record, TransactionRecord::NoRecord));
+    }
+
+    /// The safety property the horizon rule rests on: an endpoint that failed to
+    /// answer leaves the question open, so its silence must not be reported as
+    /// the chain having no record — that would reject a transaction which may
+    /// well have executed.
+    #[tokio::test]
+    async fn an_unreachable_endpoint_is_an_error_not_an_answer() {
+        let unreachable = responding_with(INTERNAL_ERROR).await;
+        let archival = responding_with(UNKNOWN_TRANSACTION).await;
+
+        let result = query(&executor_over(&[&unreachable, &archival])).await;
+
+        assert!(
+            matches!(result, Err(GatewayError::NearTransaction(_))),
+            "an unanswered endpoint must not resolve to NoRecord"
+        );
+    }
+
+    /// With nothing to ask, there is no answer — reporting `NoRecord` here would
+    /// let reconciliation reject a transaction nobody looked for.
+    #[tokio::test]
+    async fn a_configuration_with_no_endpoints_is_an_error_not_an_answer() {
+        let mut network =
+            NetworkConfig::from_rpc_url("test", "http://127.0.0.1:1".parse().unwrap());
+        network.rpc_endpoints.clear();
+
+        let result = query(&NearOperationExecutor::new(network)).await;
+
+        assert!(
+            matches!(result, Err(GatewayError::NearQuery(_))),
+            "an unasked question must not resolve to NoRecord"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lone_endpoint_reporting_no_record_is_an_answer() {
+        let primary = responding_with(UNKNOWN_TRANSACTION).await;
+
+        let record = query(&executor_over(&[&primary])).await.unwrap();
+
+        assert!(matches!(record, TransactionRecord::NoRecord));
+    }
 }

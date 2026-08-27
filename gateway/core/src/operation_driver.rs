@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use chrono::{TimeDelta, Utc};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_types::{
@@ -11,13 +12,17 @@ use templar_gateway_types::{
     IdempotencyKey, MethodSpec, OperationId,
 };
 
-use crate::operation::SigningTarget;
 use crate::{
     CreateOperationResult, CurrentStep, CurrentStepRef, GatewayError, GatewayResult,
     HasIdempotencyKey, HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation,
     SharedOperationStore, SharedSignTransaction, SigningKeyLease, StoredOperation,
+    TransactionRecord,
 };
 use tokio::sync::{Mutex, OwnedMutexGuard};
+
+/// Twice a NEAR transaction's ~24h block-hash validity, leaving margin for clock
+/// skew between this process and the chain.
+const TRANSACTION_VALIDITY_HORIZON: TimeDelta = TimeDelta::hours(48);
 
 #[derive(Default)]
 struct OperationLocks {
@@ -34,26 +39,6 @@ impl OperationLocks {
                 .clone()
         };
         lock.lock_owned().await
-    }
-}
-
-/// A step's claim on the access key it signs and broadcasts with.
-enum StepLane {
-    /// No step is ready to sign or submit.
-    Idle,
-    /// Exclusive use of the key, held until the step reaches the network.
-    Held(SigningKeyLease),
-    /// The step is bound to a key this process does not hold. Nothing here can
-    /// allocate a nonce on that key, so its stored signature replays unguarded.
-    Unheld,
-}
-
-impl StepLane {
-    fn held(&self) -> Option<&SigningKeyLease> {
-        match self {
-            Self::Held(lease) => Some(lease),
-            Self::Idle | Self::Unheld => None,
-        }
     }
 }
 
@@ -400,12 +385,11 @@ impl OperationDriver {
             .await?
             .unwrap_or(operation);
 
-        let lane = self.lease_step_lane(&operation).await?;
-        if matches!(lane, StepLane::Idle) {
+        let Some(lease) = self.lease_step_lane(&operation).await? else {
             return Ok(operation);
-        }
+        };
 
-        self.prepare_next_step(&mut operation, &lane).await?;
+        self.prepare_next_step(&mut operation, &lease).await?;
 
         if let Some(CurrentStepRef::Prepared(prepared_step)) = operation.current(self.store.clone())
         {
@@ -429,53 +413,34 @@ impl OperationDriver {
     /// which is wider than the invariant needs and caps a key at one write per
     /// finality round-trip. Narrowing that to the broadcast itself needs a
     /// submit path that returns before execution (see `FinalityPolicy`).
-    async fn lease_step_lane(&self, operation: &StoredOperation) -> GatewayResult<StepLane> {
-        Ok(match operation.signing_target() {
-            Some(SigningTarget::Bound {
-                signer_account_id,
-                public_key,
-            }) => {
-                if let Some(lease) = self
-                    .transaction_signer
-                    .lease_signing_key(signer_account_id, &public_key)
-                    .await
-                {
-                    StepLane::Held(lease)
-                } else {
-                    tracing::warn!(
-                        signer_account_id = %signer_account_id.0,
-                        %public_key,
-                        "replaying a prepared step signed with an access key this process no longer holds"
-                    );
-                    StepLane::Unheld
-                }
-            }
-            Some(SigningTarget::Next { signer_account_id }) => StepLane::Held(
-                self.transaction_signer
-                    .lease_next_signing_key(signer_account_id)
-                    .await?,
-            ),
-            None => StepLane::Idle,
-        })
+    async fn lease_step_lane(
+        &self,
+        operation: &StoredOperation,
+    ) -> GatewayResult<Option<SigningKeyLease>> {
+        let Some(signer_account_id) = operation.signing_target() else {
+            return Ok(None);
+        };
+        self.transaction_signer
+            .lease_next_signing_key(signer_account_id)
+            .await
+            .map(Some)
     }
 
-    /// Sign the next step, if there is one and the lane covers it. An `Unheld`
-    /// lane always accompanies an already-signed step, so nothing is skipped by
-    /// declining to sign without one.
+    /// Sign the next step under `lease`, if there is one. A step already signed
+    /// by an earlier run is re-signed rather than replayed — see
+    /// [`StoredOperation::begin_next_preparation`].
     async fn prepare_next_step(
         &self,
         operation: &mut StoredOperation,
-        lane: &StepLane,
+        lease: &SigningKeyLease,
     ) -> GatewayResult<()> {
-        let Some(lease) = lane.held() else {
-            return Ok(());
-        };
-        let Some(pending) = operation.begin_next_preparation(self.store.clone()) else {
+        let Some((pending, transaction)) = operation.begin_next_preparation(self.store.clone())
+        else {
             return Ok(());
         };
         let prepared = self
             .transaction_signer
-            .sign_transaction(lease, pending.transaction().clone())
+            .sign_transaction(lease, transaction)
             .await?;
         pending.finish(prepared).await
     }
@@ -488,12 +453,11 @@ impl OperationDriver {
             return Ok(operation);
         }
 
-        let lane = self.lease_step_lane(&operation).await?;
-        if matches!(lane, StepLane::Idle) {
+        let Some(lease) = self.lease_step_lane(&operation).await? else {
             return Ok(operation);
-        }
+        };
 
-        self.prepare_next_step(&mut operation, &lane).await?;
+        self.prepare_next_step(&mut operation, &lease).await?;
 
         let operation_id = operation.operation_id().clone();
         match operation.current(self.store.clone()) {
@@ -590,62 +554,82 @@ impl OperationDriver {
         ))
     }
 
-    /// Query a submitted step's on-chain fate and record it. The ambiguous case —
-    /// a transaction the chain has no record of — is left submitted because NEAR
-    /// `UNKNOWN_TRANSACTION` is not proof that the transaction never landed.
+    /// Query a submitted step's on-chain fate and record it. A transaction the
+    /// chain has no record of is ambiguous only while it could still land: NEAR
+    /// `UNKNOWN_TRANSACTION` is not proof that it never did, but past
+    /// [`TRANSACTION_VALIDITY_HORIZON`] the transaction can no longer be applied,
+    /// so the same answer becomes proof and the step is rejected.
     async fn reconcile_submitted_step(&self, operation: &mut StoredOperation) {
-        if let Some(CurrentStep::Submitted {
+        let Some(CurrentStep::Submitted {
             transaction,
             tx_hash,
             submitted_at,
-        }) = operation.current_step.take()
+        }) = operation.current_step.clone()
+        else {
+            return;
+        };
+
+        // An arm that does not resolve the step leaves `current_step` untouched,
+        // so staying submitted is what happens by default rather than something a
+        // future arm has to remember to do.
+        match self
+            .operation_executor
+            .query_transaction(&transaction.signer_account_id, tx_hash)
+            .await
         {
-            match self
-                .operation_executor
-                .query_transaction(&transaction.signer_account_id, tx_hash)
-                .await
-            {
-                Ok(step) => {
-                    if step.is_success {
-                        operation.record_success(transaction, tx_hash, step.outcome);
+            Ok(TransactionRecord::Executed(step)) => {
+                if step.is_success {
+                    operation.record_success(transaction, tx_hash, step.outcome);
+                } else {
+                    // Tolerance is decided by the step's own flag, so a
+                    // continue_on_failure step reverting mid-reconcile advances
+                    // rather than blocking — same rule as live execution. A
+                    // tolerated revert is routine (log quietly); only a terminal,
+                    // blocking revert warrants a warning.
+                    if transaction.continue_on_failure {
+                        tracing::debug!(
+                            operation_id = %operation.id.0,
+                            %tx_hash,
+                            "tolerated step reverted during reconciliation; operation advances"
+                        );
                     } else {
-                        // Tolerance is decided by the step's own flag, so a
-                        // continue_on_failure step reverting mid-reconcile advances
-                        // rather than blocking — same rule as live execution. A
-                        // tolerated revert is routine (log quietly); only a terminal,
-                        // blocking revert warrants a warning.
-                        if transaction.continue_on_failure {
-                            tracing::debug!(
-                                operation_id = %operation.id.0,
-                                %tx_hash,
-                                "tolerated step reverted during reconciliation; operation advances"
-                            );
-                        } else {
-                            tracing::warn!(
-                                operation_id = %operation.id.0,
-                                %tx_hash,
-                                "current step transaction reverted"
-                            );
-                        }
-                        operation.record_revert(transaction, tx_hash, step.outcome);
+                        tracing::warn!(
+                            operation_id = %operation.id.0,
+                            %tx_hash,
+                            "current step transaction reverted"
+                        );
                     }
+                    operation.record_revert(transaction, tx_hash, step.outcome);
                 }
-                Err(error) => {
-                    // A transient failure or unknown transaction may still have
-                    // executed, so do NOT reject. Leave it submitted to reconcile
-                    // on a later sweep.
+            }
+            Ok(TransactionRecord::NoRecord) => {
+                let age = Utc::now().signed_duration_since(submitted_at);
+                if age > TRANSACTION_VALIDITY_HORIZON {
                     tracing::warn!(
                         operation_id = %operation.id.0,
                         %tx_hash,
-                        %error,
-                        "leaving submitted gateway transaction for a later reconciliation"
+                        age_hours = age.num_hours(),
+                        "rejecting a submitted transaction the chain has no record of past its validity horizon"
                     );
-                    operation.current_step = Some(CurrentStep::Submitted {
-                        transaction,
-                        tx_hash,
-                        submitted_at,
-                    });
+                    operation.record_rejection(transaction, tx_hash);
+                } else {
+                    tracing::debug!(
+                        operation_id = %operation.id.0,
+                        %tx_hash,
+                        age_hours = age.num_hours(),
+                        "chain has no record of a submitted transaction that could still land"
+                    );
                 }
+            }
+            Err(error) => {
+                // The chain was not reached, so the transaction may yet have
+                // executed. Reconcile again on a later sweep.
+                tracing::warn!(
+                    operation_id = %operation.id.0,
+                    %tx_hash,
+                    %error,
+                    "leaving submitted gateway transaction for a later reconciliation"
+                );
             }
         }
     }
