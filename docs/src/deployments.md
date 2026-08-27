@@ -159,10 +159,12 @@ tmplrmgr patch apply --plan patch-plan.json \
   --network mainnet --signer-id <account> --sign-with keychain
 ```
 
-Authored `set` and single-key `remove` operations should state `expect`. Prefix
-deletes omit it: planning enumerates the matching keys and adds an expectation
-for every concrete removal. `--allow-unguarded` is an explicit, repeated
-override for an unguarded set or single-key removal.
+Authored `set` and single-key `remove` operations should state `expect`. Use
+`expect = "absent"` for a fresh key; it compiles to an in-receipt absence guard
+without making other operations unguarded. Prefix deletes omit it: planning
+enumerates the matching keys and adds an expectation for every concrete removal.
+A prefix that matches no keys is rejected. `--allow-unguarded` is an explicit,
+repeated override for an unguarded set or single-key removal.
 
 Keys and values use `utf8`, `hex`, `base64`, `file`, `concat`, `sha256`, `json`,
 or `borsh` byte expressions. `file` is relative to the spec that names it.
@@ -177,13 +179,15 @@ prefix deletion; its focused test prevents the documented forms from drifting.
 
 Prefix deletes are expanded from chain state while planning. The generated plan
 therefore lists every concrete key and its in-receipt expectation; a prefix too
-large for `view_state` fails planning rather than producing a partial delete.
-The plan re-reads live restore identity, protocol transaction-size and prepaid-gas
-limits, values over 4 MiB, keys over 2,048 bytes, and peak temporary storage.
-
-`patch apply` re-reads absolute `file` references during plan re-derivation.
-The plan and referenced files must remain on the same machine at their original
-paths. Missing, moved, or changed bytes abort re-derivation before send.
+large for `view_state`, or a prefix that matches no keys, fails planning rather
+than producing a partial or silent delete. The plan re-reads live restore identity
+and protocol transaction-size, prepaid-gas, storage-key, and storage-value limits,
+then locally compares key/value lengths against those limits and checks peak
+temporary storage.
+`patch apply` re-reads absolute `file` references during plan re-derivation from
+the canonical source path embedded in the plan. The plan and referenced files
+must remain on the same machine at their original paths. Missing, moved, or
+changed bytes abort re-derivation before send.
 
 This is a privileged authorization checklist:
 

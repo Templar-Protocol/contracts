@@ -63,6 +63,8 @@ async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> 
     let limits = near.chain().protocol_limits().await?;
     assert!(limits.max_transaction_size > 0);
     assert!(limits.max_total_prepaid_gas.as_gas() > 0);
+    assert!(limits.max_length_storage_key > 0);
+    assert!(limits.max_length_storage_value > 0);
 
     let transaction_signer = NearTransactionSigner::new(
         network.clone(),

@@ -225,10 +225,17 @@ impl<'de> Deserialize<'de> for Sha256Digest {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AbsentExpectation {
+    Absent,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Expectation {
     Bytes(ByteExpr),
     Hash { hash: String },
+    Absent(AbsentExpectation),
 }
 
 impl Expectation {
@@ -242,6 +249,7 @@ impl Expectation {
                     .map_err(|error| anyhow::anyhow!("decode expectation hash: {error}"))?;
                 Ok(ResolvedExpectation::Hash(hash))
             }
+            Self::Absent(AbsentExpectation::Absent) => Ok(ResolvedExpectation::Absent),
         }
     }
 }
@@ -250,6 +258,7 @@ impl Expectation {
 pub enum ResolvedExpectation {
     Bytes(Base64Bytes),
     Hash(Sha256Digest),
+    Absent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

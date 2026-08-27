@@ -4,9 +4,10 @@ use near_account_id::AccountId;
 use sha2::{Digest as _, Sha256};
 
 use crate::spec::{
-    patch::{BorshExpr, ByteExpr, PatchSpec, ResolvedOperation, Sha256Digest},
+    patch::{BorshExpr, ByteExpr, PatchSpec, ResolvedExpectation, ResolvedOperation, Sha256Digest},
     patch_plan::RestoreCode,
 };
+use templar_gateway_types::CryptoHash;
 
 fn fixture(path: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("fixtures/spec/patch/{path}"))
@@ -121,7 +122,7 @@ fn checked_in_patch_fixture_covers_supported_toml_syntax() {
                 ResolvedOperation::RemovePrefix { .. } => "remove_prefix",
             })
             .collect::<Vec<_>>(),
-        ["expect", "set", "remove", "remove_prefix", "set"]
+        ["expect", "set", "remove", "remove_prefix", "set", "set"]
     );
     let ResolvedOperation::Set { value, .. } = &resolved.operations[1] else {
         panic!("reference file operation must be a set");
@@ -147,6 +148,11 @@ fn checked_in_patch_fixture_covers_supported_toml_syntax() {
     let error = PatchSpec::load(&fixture("invalid/tagged-expect.toml"))
         .expect_err("remove_prefix expectation must fail");
     assert!(format!("{error:#}").contains("expect"));
+
+    let ResolvedOperation::Set { expected, .. } = &resolved.operations[5] else {
+        panic!("fresh-key operation must be a set");
+    };
+    assert!(matches!(expected, Some(ResolvedExpectation::Absent)));
 }
 
 #[test]
@@ -167,19 +173,15 @@ fn sha256_digest_uses_lowercase_hex() {
 #[test]
 fn restore_code_variants_round_trip_as_tagged_json() {
     let account_id: AccountId = "code.near".parse().unwrap();
-    let digest = Sha256Digest([7; 32]);
+    let hash = CryptoHash::from(near_api::types::CryptoHash([7; 32]));
     let cases = [
         (
-            RestoreCode::Local {
-                code_hash: digest.clone(),
-            },
-            r#"{"mode":"local","code_hash":"0707070707070707070707070707070707070707070707070707070707070707"}"#,
+            RestoreCode::Local { code_hash: hash },
+            r#"{"mode":"local","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"}"#,
         ),
         (
-            RestoreCode::GlobalCodeHash {
-                hash: digest.clone(),
-            },
-            r#"{"mode":"global_code_hash","hash":"0707070707070707070707070707070707070707070707070707070707070707"}"#,
+            RestoreCode::GlobalCodeHash { hash },
+            r#"{"mode":"global_code_hash","hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"}"#,
         ),
         (
             RestoreCode::GlobalAccount { account_id },

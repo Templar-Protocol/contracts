@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 pub struct ProtocolLimits {
     pub max_transaction_size: u64,
     pub max_total_prepaid_gas: NearGas,
+    pub max_length_storage_key: u64,
+    pub max_length_storage_value: u64,
 }
 
 /// Actions one receipt may carry.

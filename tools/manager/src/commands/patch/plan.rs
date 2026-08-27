@@ -8,7 +8,7 @@ use crate::commands::signer::SignerArgs;
 
 #[derive(Args, Debug)]
 pub struct Plan {
-    /// Path to the patch spec.
+    /// Path to the patch spec. Absolute `file` references are re-read at this original path during apply.
     pub(crate) path: PathBuf,
     /// Where to write the plan. Omit to print it.
     #[arg(long, value_name = "PATH")]
@@ -32,8 +32,7 @@ pub struct Apply {
     /// Path to a plan written by `patch plan`.
     #[arg(long, value_name = "PATH")]
     pub(crate) plan: PathBuf,
-    /// Re-read every absolute `file` reference at its original path; missing,
-    /// moved, or changed bytes abort re-derivation before any transaction is sent.
+    /// Ignore one named preflight check re-run at apply time.
     #[arg(long = "skip-check", value_name = "CHECK_ID")]
     pub(crate) skip_check: Vec<String>,
     /// Permit a plan that contains an unguarded mutation.

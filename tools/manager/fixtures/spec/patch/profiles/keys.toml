@@ -28,3 +28,10 @@ op = "set"
 key.json = { codec = "json" }
 expect.utf8 = "old-json"
 value.json = { enabled = true, name = "example" }
+
+
+[[op]]
+op = "set"
+key.utf8 = "fresh-key"
+expect = "absent"
+value.utf8 = "fresh-value"
