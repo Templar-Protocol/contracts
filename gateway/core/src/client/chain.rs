@@ -91,7 +91,13 @@ impl ChainClient<'_> {
                         JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant0 {
                             result,
                             ..
-                        } => return protocol_limits_from_response(result),
+                        } => match protocol_limits_from_response(result) {
+                            Ok(limits) => return Ok(limits),
+                            Err(error) => {
+                                last_error = Some(error.to_string());
+                                continue 'endpoint;
+                            }
+                        },
                         JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant1 {
                             error,
                             ..
@@ -135,14 +141,16 @@ fn protocol_limits_from_response(
 ) -> GatewayResult<ProtocolLimits> {
     response
         .runtime_config
-        .and_then(|runtime| runtime.wasm_config)
-        .and_then(|wasm| wasm.limit_config)
-        .and_then(|limit| {
+        .and_then(|runtime| {
+            let limit = runtime.wasm_config?.limit_config?;
+            let storage = runtime.transaction_costs?.storage_usage_config?;
             Some(ProtocolLimits {
                 max_transaction_size: limit.max_transaction_size?,
                 max_total_prepaid_gas: limit.max_total_prepaid_gas?,
                 max_length_storage_key: limit.max_length_storage_key?,
                 max_length_storage_value: limit.max_length_storage_value?,
+                num_bytes_account: storage.num_bytes_account?,
+                num_extra_bytes_record: storage.num_extra_bytes_record?,
             })
         })
         .ok_or_else(|| {
@@ -159,13 +167,13 @@ mod tests {
     use templar_gateway_types::ProtocolLimits;
     use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
-    const LIMITS_RESPONSE: &str = r#"{"jsonrpc":"2.0","id":"0","result":{"runtime_config":{"wasm_config":{"limit_config":{"max_transaction_size":123,"max_total_prepaid_gas":"456","max_length_storage_key":789,"max_length_storage_value":1011}}}}}"#;
+    const LIMITS_RESPONSE: &str = r#"{"jsonrpc":"2.0","id":"0","result":{"runtime_config":{"transaction_costs":{"storage_usage_config":{"num_bytes_account":100,"num_extra_bytes_record":40}},"wasm_config":{"limit_config":{"max_transaction_size":123,"max_total_prepaid_gas":"456","max_length_storage_key":789,"max_length_storage_value":1011}}}}}"#;
 
     #[test]
     fn extracts_protocol_transaction_limits() {
         let response: near_openapi_client::types::RpcProtocolConfigResponse =
             serde_json::from_str(
-                r#"{"runtime_config":{"wasm_config":{"limit_config":{"max_transaction_size":123,"max_total_prepaid_gas":"456","max_length_storage_key":789,"max_length_storage_value":1011}}}}"#,
+                r#"{"runtime_config":{"transaction_costs":{"storage_usage_config":{"num_bytes_account":100,"num_extra_bytes_record":40}},"wasm_config":{"limit_config":{"max_transaction_size":123,"max_total_prepaid_gas":"456","max_length_storage_key":789,"max_length_storage_value":1011}}}}"#,
             )
             .unwrap();
         assert_eq!(
@@ -175,6 +183,8 @@ mod tests {
                 max_total_prepaid_gas: templar_gateway_types::NearGas::from_gas(456),
                 max_length_storage_key: 789,
                 max_length_storage_value: 1011,
+                num_bytes_account: 100,
+                num_extra_bytes_record: 40,
             }
         );
     }
@@ -221,9 +231,49 @@ mod tests {
                 max_total_prepaid_gas: templar_gateway_types::NearGas::from_gas(456),
                 max_length_storage_key: 789,
                 max_length_storage_value: 1011,
+                num_bytes_account: 100,
+                num_extra_bytes_record: 40,
             }
         );
         assert_eq!(rejected.received_requests().await.unwrap().len(), 1);
+        assert_eq!(successful.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn incomplete_protocol_response_fails_over_to_next_endpoint() {
+        let incomplete = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    r#"{"jsonrpc":"2.0","id":"0","result":{"runtime_config":{}}}"#,
+                ),
+            )
+            .mount(&incomplete)
+            .await;
+        let successful = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(LIMITS_RESPONSE))
+            .mount(&successful)
+            .await;
+
+        let mut network = NetworkConfig::from_rpc_url("test", incomplete.uri().parse().unwrap());
+        network.rpc_endpoints[0] =
+            RPCEndpoint::new(incomplete.uri().parse().unwrap()).with_retries(0);
+        network
+            .rpc_endpoints
+            .push(RPCEndpoint::new(successful.uri().parse().unwrap()).with_retries(0));
+        let client = crate::NearClient::new(network);
+
+        assert_eq!(
+            client
+                .chain()
+                .protocol_limits()
+                .await
+                .unwrap()
+                .max_transaction_size,
+            123
+        );
+        assert_eq!(incomplete.received_requests().await.unwrap().len(), 1);
         assert_eq!(successful.received_requests().await.unwrap().len(), 1);
     }
 

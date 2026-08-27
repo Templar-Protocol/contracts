@@ -1,0 +1,19 @@
+# Dry-run-only state health checks; `patch apply` rejects plans with no operations.
+schema = 3
+account_id = "proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near"
+
+[[check]]
+method_name = "get_stored_state_version"
+expect = 1
+
+[[check]]
+method_name = "needs_migration"
+expect = false
+
+[[check]]
+method_name = "get_proxy"
+args = { id = "5553545259000000000000000000000000000000000000000000000000000000" }
+
+[[check]]
+method_name = "get_proxy"
+args = { id = "5553444300000000000000000000000000000000000000000000000000000000" }

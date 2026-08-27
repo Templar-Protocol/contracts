@@ -21,6 +21,7 @@ templar-relayer
 templar-gateway-testing
 templar-liquidator
 templar-gateway-core
+templar-manager
 ''')
 sandbox_gateway_package := 'templar-gateway-service'
 sandbox_packages := sandbox_full_packages + "\n" + sandbox_gateway_package

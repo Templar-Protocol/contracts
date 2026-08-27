@@ -1383,7 +1383,7 @@ impl SandboxHarness {
         account_id: &AccountId,
         entries: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>,
     ) -> Result<()> {
-        crate::sandbox_ext::patch_data(&self.network, account_id, entries).await
+        templar_sandbox::patch_data(&self.network, account_id, entries).await
     }
 
     /// Liquidate an unhealthy borrow position (`liquidation_amount` of the borrow
@@ -1844,7 +1844,7 @@ impl SandboxHarness {
     pub async fn fast_forward(&self, blocks: u64) -> Result<()> {
         let target = self.latest_block().await?.height + blocks;
 
-        crate::sandbox_ext::fast_forward(&self.network, blocks).await?;
+        templar_sandbox::fast_forward(&self.network, blocks).await?;
 
         let start = std::time::Instant::now();
         loop {

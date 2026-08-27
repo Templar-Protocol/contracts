@@ -1,4 +1,3 @@
-use futures::{stream, StreamExt, TryStreamExt};
 use std::path::Path;
 
 use anyhow::Context as _;
@@ -8,7 +7,7 @@ use near_api::types::{
 };
 use sha2::{Digest as _, Sha256};
 use templar_contract_artifacts::{fetch, ArtifactId};
-use templar_gateway_methods_spec::{account, tx};
+use templar_gateway_methods_spec::tx;
 use templar_gateway_types::{
     common::ContractArgs,
     primitive::{CryptoHash, GlobalContractIdentifierInput},
@@ -22,6 +21,7 @@ use crate::{
         registry::STORAGE_AMOUNT_PER_BYTE,
     },
     context::CliContext,
+    dispatch::patch_state::{fetch_complete_state, RawStateEntry, StateSnapshot},
     report::Reporter,
     spec::{
         check::{gate, Check, Status},
@@ -30,15 +30,26 @@ use crate::{
     },
 };
 
+pub(super) struct BuiltPatch {
+    pub(super) plan: PatchPlan,
+    pub(super) state: StateSnapshot,
+}
+
 const PATCH_WASM_VERSION: &str = "0.1.0";
 const PATCH_GAS: NearGas = NearGas::from_tgas(300);
 const STORAGE_RECORD_OVERHEAD: usize = 40;
-const STATE_READ_CONCURRENCY: usize = 8;
 
 pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !args
+            .skip_check
+            .iter()
+            .any(|id| id == "patch.state_complete" || id == "patch.dry_run"),
+        "patch.state_complete and patch.dry_run are non-skippable"
+    );
     let spec = crate::spec::patch::PatchSpec::load(&args.path)?;
     let mut reporter = ctx.reporter(&args.skip_check);
-    let plan = build(
+    let built = build(
         &ctx,
         &args.path,
         spec,
@@ -52,12 +63,12 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     reporter.ensure_every_skip_matched()?;
     gate(
         reporter.checks(),
-        plan.spec.account_id.as_str(),
+        built.plan.spec.account_id.as_str(),
         "no patch plan was written",
     )?;
     reporter.digest();
 
-    let rendered = serde_json::to_string_pretty(&plan).context("render patch plan")?;
+    let rendered = serde_json::to_string_pretty(&built.plan).context("render patch plan")?;
     match args.out {
         Some(path) => {
             std::fs::write(&path, format!("{rendered}\n"))
@@ -80,6 +91,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         "patch plan schema {} is unsupported; re-run `patch plan`",
         plan.schema
     );
+    ensure_patch_has_operations(&plan)?;
     anyhow::ensure!(
         args.signer.account_id().0 == plan.signer_id,
         "patch plan expects signer `{}`, but apply uses `{}`",
@@ -91,6 +103,13 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     anyhow::ensure!(
         public_key == templar_gateway_types::primitive::PublicKey::from(plan.public_key),
         "patch plan was reviewed for a different signing public key"
+    );
+    anyhow::ensure!(
+        !args
+            .skip_check
+            .iter()
+            .any(|id| id == "patch.dry_run" || id == "patch.state_complete"),
+        "patch.dry_run and patch.state_complete are non-skippable"
     );
     let mut reporter = ctx.reporter(&args.skip_check);
     {
@@ -106,13 +125,17 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         )
         .await?;
         anyhow::ensure!(
-            rederived.batch == plan.batch
-                && rederived.patch_wasm_sha256 == plan.patch_wasm_sha256
-                && rederived.resolved == plan.resolved
-                && rederived.restore == plan.restore,
+            rederived.plan.batch == plan.batch
+                && rederived.plan.patch_wasm_sha256 == plan.patch_wasm_sha256
+                && rederived.plan.target_code_hash == plan.target_code_hash
+                && rederived.plan.state_digest == plan.state_digest
+                && rederived.plan.resolved == plan.resolved
+                && rederived.plan.restore == plan.restore,
             "the patch plan no longer matches its embedded spec and live target; re-run `patch plan`"
         );
     }
+    let dry_run_status = validate_dry_run_stamp(&plan, reporter.checks(), args.no_dry_run)?;
+    reporter.record(Check::new("patch.dry_run", dry_run_status));
     reporter.ensure_every_skip_matched()?;
     gate(
         reporter.checks(),
@@ -134,30 +157,118 @@ fn ensure_patch_signer(
     Ok(())
 }
 
-fn restore_from_account(account: &account::GetResult) -> anyhow::Result<RestoreCode> {
-    if let Some(hash) = account.global_contract_hash.as_deref() {
-        let hash = hash
-            .parse::<near_api::types::CryptoHash>()
-            .context("parse target global contract hash")?;
-        return Ok(RestoreCode::GlobalCodeHash {
-            hash: CryptoHash::from(hash),
+fn ensure_patch_has_operations(plan: &PatchPlan) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !plan.resolved.operations.is_empty(),
+        "patch plan contains no storage operations and cannot be applied"
+    );
+    Ok(())
+}
+
+fn restore_from_state(state: &StateSnapshot) -> anyhow::Result<RestoreCode> {
+    let expected_hash = CryptoHash::from(near_api::types::CryptoHash::hash(&state.code));
+    match &state.contract {
+        near_primitives::account::AccountContract::Local(hash) => {
+            let code_hash = CryptoHash::from(near_api::types::CryptoHash(hash.0));
+            anyhow::ensure!(
+                code_hash == expected_hash,
+                "target local contract hash {code_hash} does not match fetched code {expected_hash}"
+            );
+            Ok(RestoreCode::Local { code_hash })
+        }
+        near_primitives::account::AccountContract::Global(hash) => {
+            let hash = CryptoHash::from(near_api::types::CryptoHash(hash.0));
+            anyhow::ensure!(
+                hash == expected_hash,
+                "target global contract hash {hash} does not match fetched code {expected_hash}"
+            );
+            Ok(RestoreCode::GlobalCodeHash { hash })
+        }
+        near_primitives::account::AccountContract::GlobalByAccount(account_id) => {
+            Ok(RestoreCode::GlobalAccount {
+                account_id: account_id.clone(),
+            })
+        }
+        near_primitives::account::AccountContract::None => {
+            anyhow::bail!("patch target has no deployed contract code to restore")
+        }
+    }
+}
+
+fn validate_dry_run_stamp(
+    plan: &PatchPlan,
+    preflight_checks: &[Check],
+    no_dry_run: bool,
+) -> anyhow::Result<Status> {
+    if no_dry_run {
+        return Ok(Status::Skipped {
+            reason: "--no-dry-run explicitly bypassed sandbox replay".to_owned(),
         });
     }
-    if let Some(account_id) = account.global_contract_account_id.clone() {
-        return Ok(RestoreCode::GlobalAccount { account_id });
+    let Some(stamp) = &plan.dry_run else {
+        return Ok(Status::failed("no completed dry-run stamp is present"));
+    };
+    if stamp.plan_digest != plan.unstamped_digest()? {
+        return Ok(Status::failed(
+            "dry-run stamp does not match the unstamped plan",
+        ));
     }
-
-    anyhow::ensure!(
-        account.code_hash != near_api::types::CryptoHash([0; 32]).to_string(),
-        "patch target has no deployed contract code to restore"
+    if stamp.target_code_hash != plan.target_code_hash {
+        return Ok(Status::failed(
+            "dry-run stamp target code hash does not match the plan",
+        ));
+    }
+    if stamp.state_digest != plan.state_digest {
+        return Ok(Status::failed(
+            "dry-run stamp state digest does not match the plan",
+        ));
+    }
+    let mut expected_ids = preflight_checks
+        .iter()
+        .map(|check| check.id.clone())
+        .collect::<Vec<_>>();
+    expected_ids.extend(
+        plan.spec
+            .view_checks()
+            .enumerate()
+            .map(|(index, _)| format!("patch.view.{index}")),
     );
-    let code_hash = account
-        .code_hash
-        .parse::<near_api::types::CryptoHash>()
-        .context("parse target local code hash")?;
-    Ok(RestoreCode::Local {
-        code_hash: CryptoHash::from(code_hash),
-    })
+    expected_ids.push("patch.dry_run".to_owned());
+    let actual_ids = stamp
+        .checks
+        .iter()
+        .map(|check| check.id.clone())
+        .collect::<Vec<_>>();
+    if actual_ids != expected_ids {
+        return Ok(Status::failed(
+            "dry-run stamp checks do not exactly match the replayed plan checks",
+        ));
+    }
+    if stamp.checks.iter().any(|check| check.status.is_failure()) {
+        return Ok(Status::failed("dry-run stamp contains a failed check"));
+    }
+    let skipped = stamp
+        .checks
+        .iter()
+        .filter(|check| matches!(check.status, Status::Skipped { .. }))
+        .map(|check| check.id.as_str())
+        .collect::<Vec<_>>();
+    match stamp.checks.last() {
+        Some(Check {
+            status: Status::Passed { .. },
+            ..
+        }) if skipped.is_empty() => Ok(Status::passed("completed dry-run stamp matches this plan")),
+        Some(Check {
+            status: Status::Passed { .. },
+            ..
+        }) => Ok(Status::failed(format!(
+            "dry-run stamp skipped {}; re-run `patch dry-run` without --skip-check",
+            skipped.join(", ")
+        ))),
+        _ => Ok(Status::failed(
+            "dry-run stamp does not contain a passed patch.dry_run check",
+        )),
+    }
 }
 fn patch_wasm_digest(bytes: &[u8]) -> Sha256Digest {
     Sha256Digest(Sha256::digest(bytes).into())
@@ -168,7 +279,7 @@ fn patch_wasm_digest(bytes: &[u8]) -> Sha256Digest {
     clippy::too_many_arguments,
     reason = "planning derives one checked atomic transaction from one spec"
 )]
-async fn build(
+pub(super) async fn build(
     ctx: &CliContext,
     source_path: &Path,
     spec: crate::spec::patch::PatchSpec,
@@ -177,7 +288,7 @@ async fn build(
     allow_unguarded: bool,
     expected_restore: Option<&RestoreCode>,
     reporter: &mut Reporter,
-) -> anyhow::Result<PatchPlan> {
+) -> anyhow::Result<BuiltPatch> {
     ensure_patch_signer(&signer_id, &spec.account_id)?;
     let source_path = source_path
         .canonicalize()
@@ -194,20 +305,52 @@ async fn build(
         ),
     ));
 
-    let account = ctx
-        .client
-        .read(account::Get {
-            account_id: spec.account_id.clone(),
-        })
-        .await?;
     let limits = ctx
         .client
         .read(templar_gateway_methods_spec::chain::GetProtocolLimits)
         .await?;
 
-    let resolved = expand_prefixes(ctx, &spec.account_id, spec.resolve(&source_path)?).await?;
+    let source = spec.resolve(&source_path)?;
+    let pinned_block = ctx
+        .final_client()?
+        .read(templar_gateway_methods_spec::chain::GetBlock::default())
+        .await?;
+    let block_hash = pinned_block.hash;
+    let state = fetch_complete_state(
+        ctx.network_config(),
+        &spec.account_id,
+        block_hash.into(),
+        &limits,
+    )
+    .await;
+    let state = match state {
+        Ok(state) => {
+            reporter.record(Check::new(
+                "patch.state_complete",
+                Status::passed(format!(
+                    "complete {} {} storage entries in {} request(s), accounting for {} bytes at {}",
+                    if state.chunked { "after chunking" } else { "in one request" },
+                    state.entries.len(),
+                    state.request_count,
+                    state.storage_usage,
+                    state.block_hash
+                )),
+            ));
+            state
+        }
+        Err(error) => {
+            reporter.record(Check::new(
+                "patch.state_complete",
+                Status::failed(error.to_string()),
+            ));
+            reporter.digest();
+            return Err(error);
+        }
+    };
+    let resolved = expand_prefixes(source, &state)?;
     let (patch, unguarded, longest_key, longest_value, state_increase) =
         compile_patch(&spec.account_id, resolved.clone())?;
+    let target_code_hash = CryptoHash::from(near_api::types::CryptoHash::hash(&state.code));
     let longest_key = u64::try_from(longest_key).context("patch key length exceeds u64")?;
     let longest_value = u64::try_from(longest_value).context("patch value length exceeds u64")?;
     reporter.record(Check::new(
@@ -238,17 +381,20 @@ async fn build(
         ),
     ));
 
-    let access = ctx
-        .client
-        .read(account::GetAccessKey {
-            account_id: spec.account_id.clone(),
-            public_key: public_key.into(),
-        })
-        .await?;
+    let access = state
+        .access_keys
+        .iter()
+        .find(|(key, _)| *key == public_key)
+        .map(|(_, access)| access);
     reporter.record(Check::new(
         "patch.full_access_key",
         status(
-            matches!(access.permission, account::AccessKeyPermission::FullAccess),
+            access.is_some_and(|access| {
+                matches!(
+                    access.permission,
+                    near_api::types::AccessKeyPermission::FullAccess
+                )
+            }),
             "signer key must have full access on the patch target",
         ),
     ));
@@ -258,7 +404,7 @@ async fn build(
         .context("load the pinned PatchState release")?;
     let patch_wasm_sha256 = patch_wasm_digest(&patch_wasm);
     let patch_args = Base64Bytes(borsh::to_vec(&patch).context("encode PatchState arguments")?);
-    let restore = restore_from_account(&account)?;
+    let restore = restore_from_state(&state)?;
     let (restore_action, restored_code_len, restore_hash_status) = match &restore {
         RestoreCode::GlobalCodeHash { hash } => (
             ActionInput::UseGlobalContract {
@@ -275,13 +421,7 @@ async fn build(
             Status::passed("restore preserves the target global code account"),
         ),
         RestoreCode::Local { code_hash } => {
-            let code = ctx
-                .client
-                .read(account::GetCode {
-                    account_id: spec.account_id.clone(),
-                })
-                .await?
-                .code;
+            let code = Base64Bytes(state.code.clone());
             let fetched_hash = CryptoHash::from(near_api::types::CryptoHash::hash(&code.0));
             (
                 ActionInput::DeployContract { code: code.clone() },
@@ -307,14 +447,14 @@ async fn build(
         ),
     ));
     let required_storage = peak_storage_bytes(
-        account.storage_usage,
+        state.storage_usage,
         state_increase,
         patch_wasm.len(),
         restored_code_len,
     )
     .saturating_mul(STORAGE_AMOUNT_PER_BYTE.as_yoctonear());
-    let liquid_storage = account.amount.as_yoctonear();
-    let locked_storage = account.locked.as_yoctonear();
+    let liquid_storage = state.amount.as_yoctonear();
+    let locked_storage = state.locked.as_yoctonear();
     let available_storage = liquid_storage
         .checked_add(locked_storage)
         .context("sum account storage backing")?;
@@ -383,53 +523,56 @@ async fn build(
         ))
     };
     reporter.record(Check::new("patch.code_hash", code_hash_status));
-    Ok(PatchPlan {
-        schema: PATCH_PLAN_SCHEMA_VERSION,
-        tool_version: env!("CARGO_PKG_VERSION").to_owned(),
-        source_path,
-        spec,
-        resolved,
-        signer_id,
-        public_key,
-        patch_wasm_sha256,
-        restore,
-        batch,
-        unguarded,
-        checks: reporter.checks().to_vec(),
+    let state_digest = state.digest()?;
+    Ok(BuiltPatch {
+        plan: PatchPlan {
+            schema: PATCH_PLAN_SCHEMA_VERSION,
+            tool_version: env!("CARGO_PKG_VERSION").to_owned(),
+            source_path,
+            spec,
+            resolved,
+            signer_id,
+            public_key,
+            patch_wasm_sha256,
+            target_code_hash,
+            state_digest,
+            restore,
+            batch,
+            unguarded,
+            checks: reporter.checks().to_vec(),
+            dry_run: None,
+        },
+        state,
     })
 }
-async fn expand_prefixes(
-    ctx: &CliContext,
-    account_id: &near_account_id::AccountId,
+fn expand_prefixes(
     patch: crate::spec::patch::ResolvedPatch,
+    state: &StateSnapshot,
 ) -> anyhow::Result<crate::spec::patch::ResolvedPatch> {
-    let groups = stream::iter(patch.operations.into_iter().map(|operation| async {
-        match operation {
+    let operations = patch
+        .operations
+        .into_iter()
+        .map(|operation| match operation {
             ResolvedOperation::RemovePrefix { prefix } => {
-                let entries = ctx
-                    .client
-                    .read(account::ViewState {
-                        account_id: account_id.clone(),
-                        prefix: prefix.clone(),
-                    })
-                    .await?;
-                expand_prefix_entries(&prefix, entries.values)
+                let entries = state
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.key.starts_with(&prefix.0))
+                    .collect::<Vec<_>>();
+                expand_prefix_entries(&prefix, entries)
             }
             operation => Ok(vec![operation]),
-        }
-    }))
-    .buffered(STATE_READ_CONCURRENCY)
-    .try_collect::<Vec<Vec<ResolvedOperation>>>()
-    .await?
-    .into_iter()
-    .flatten()
-    .collect();
-    Ok(crate::spec::patch::ResolvedPatch { operations: groups })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    Ok(crate::spec::patch::ResolvedPatch { operations })
 }
 
 fn expand_prefix_entries(
     prefix: &Base64Bytes,
-    entries: Vec<account::StateEntry>,
+    entries: Vec<&RawStateEntry>,
 ) -> anyhow::Result<Vec<ResolvedOperation>> {
     anyhow::ensure!(
         !entries.is_empty(),
@@ -439,8 +582,8 @@ fn expand_prefix_entries(
     Ok(entries
         .into_iter()
         .map(|entry| ResolvedOperation::Remove {
-            key: entry.key,
-            expected: Some(ResolvedExpectation::Bytes(entry.value)),
+            key: Base64Bytes(entry.key.clone()),
+            expected: Some(ResolvedExpectation::Bytes(Base64Bytes(entry.value.clone()))),
         })
         .collect())
 }
@@ -616,15 +759,22 @@ fn status(passed: bool, detail: impl Into<String>) -> Status {
 #[cfg(test)]
 mod tests {
     use super::{
-        compile_patch, ensure_patch_signer, expand_prefix_entries, peak_storage_bytes,
-        restore_from_account, restore_identity_matches, restore_mode_matches, set_storage_increase,
-        signed_transaction_wire_size, status, total_prepaid_gas, Op,
+        compile_patch, ensure_patch_has_operations, ensure_patch_signer, expand_prefix_entries,
+        peak_storage_bytes, restore_from_state, restore_identity_matches, restore_mode_matches,
+        set_storage_increase, signed_transaction_wire_size, status, total_prepaid_gas,
+        validate_dry_run_stamp, Op, StateSnapshot,
     };
-    use crate::spec::patch::{ResolvedExpectation, ResolvedOperation, ResolvedPatch, Sha256Digest};
-    use crate::spec::patch_plan::RestoreCode;
+    use crate::spec::check::{Check, Status};
+    use crate::spec::patch::{
+        PatchCheck, PatchSpec, PatchViewCheck, ResolvedExpectation, ResolvedOperation,
+        ResolvedPatch, Sha256Digest,
+    };
+    use crate::spec::patch_plan::{DryRunStamp, PatchPlan, RestoreCode};
+    use crate::spec::plan::WireSha256Digest;
     use near_account_id::AccountId;
     use near_api::{types::transaction::PrepopulateTransaction, SecretKey, Signer};
-    use templar_gateway_methods_spec::{account, tx};
+    use near_primitives::account::AccountContract;
+    use templar_gateway_methods_spec::tx;
     use templar_gateway_types::{
         common::ContractArgs, ActionInput, Base64Bytes, ContractMethodName, CryptoHash, NearGas,
         NearToken,
@@ -811,19 +961,144 @@ mod tests {
     }
 
     #[test]
-    fn codeless_account_cannot_be_restored_as_local_code() {
-        let account = account::GetResult {
+    fn codeless_account_cannot_be_restored() {
+        let state = StateSnapshot {
             amount: NearToken::from_yoctonear(0),
             locked: NearToken::from_yoctonear(0),
-            code_hash: near_api::types::CryptoHash([0; 32]).to_string(),
             storage_usage: 0,
-            global_contract_hash: None,
-            global_contract_account_id: None,
+            contract: AccountContract::None,
+            code: Vec::new(),
+            access_keys: Vec::new(),
+            entries: Vec::new(),
+            block_hash: near_api::types::CryptoHash([0; 32]),
+            chunked: false,
+            request_count: 0,
         };
-        let error = restore_from_account(&account).expect_err("codeless account rejected");
+        let error = restore_from_state(&state).expect_err("codeless account rejected");
         assert_eq!(
             error.to_string(),
             "patch target has no deployed contract code to restore"
         );
+    }
+    fn stamp_plan() -> PatchPlan {
+        let secret: SecretKey =
+            "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q"
+                .parse()
+                .unwrap();
+        PatchPlan {
+            schema: super::PATCH_PLAN_SCHEMA_VERSION,
+            tool_version: "test".to_owned(),
+            source_path: std::path::PathBuf::from("patch.toml"),
+            spec: PatchSpec {
+                schema: 3,
+                extends: Vec::new(),
+                account_id: "target.near".parse().unwrap(),
+                ops: Vec::new(),
+                checks: Vec::new(),
+            },
+            resolved: ResolvedPatch {
+                operations: Vec::new(),
+            },
+            signer_id: "target.near".parse().unwrap(),
+            public_key: secret.public_key(),
+            patch_wasm_sha256: Sha256Digest([0; 32]),
+            target_code_hash: CryptoHash::from(near_api::types::CryptoHash([1; 32])),
+            state_digest: WireSha256Digest([0; 32]),
+            restore: RestoreCode::Local {
+                code_hash: CryptoHash::from(near_api::types::CryptoHash([1; 32])),
+            },
+            batch: batch(),
+            unguarded: false,
+            checks: Vec::new(),
+            dry_run: None,
+        }
+    }
+
+    #[test]
+    fn empty_patch_plan_cannot_be_applied() {
+        let error = ensure_patch_has_operations(&stamp_plan()).expect_err("empty patch rejected");
+        assert_eq!(
+            error.to_string(),
+            "patch plan contains no storage operations and cannot be applied"
+        );
+    }
+
+    #[test]
+    fn dry_run_stamp_is_bound_to_unstamped_plan() {
+        let mut plan = stamp_plan();
+        let digest = plan.unstamped_digest().unwrap();
+        plan.dry_run = Some(DryRunStamp {
+            plan_digest: digest,
+            sandbox_chain_id: "sandbox".to_owned(),
+            target_code_hash: plan.target_code_hash,
+            state_digest: plan.state_digest,
+            checks: vec![Check::new(
+                "patch.dry_run",
+                Status::passed("sandbox batch succeeded"),
+            )],
+        });
+        assert!(!validate_dry_run_stamp(&plan, &[], false)
+            .unwrap()
+            .is_failure());
+        plan.dry_run.as_mut().unwrap().checks.clear();
+        assert!(validate_dry_run_stamp(&plan, &[], false)
+            .unwrap()
+            .is_failure());
+        plan.dry_run.as_mut().unwrap().checks.push(Check::new(
+            "patch.dry_run",
+            Status::passed("sandbox batch succeeded"),
+        ));
+        plan.batch.actions.clear();
+        assert!(validate_dry_run_stamp(&plan, &[], false)
+            .unwrap()
+            .is_failure());
+    }
+
+    #[test]
+    fn dry_run_stamp_rejects_skipped_view_checks() {
+        let mut plan = stamp_plan();
+        plan.spec.checks.push(PatchCheck::View(PatchViewCheck {
+            method_name: "view".to_owned().into(),
+            args: serde_json::Value::Null,
+            expect: None,
+        }));
+        let preflight = vec![Check::new(
+            "patch.network",
+            Status::passed("network matches"),
+        )];
+        plan.dry_run = Some(DryRunStamp {
+            plan_digest: plan.unstamped_digest().unwrap(),
+            sandbox_chain_id: "sandbox".to_owned(),
+            target_code_hash: plan.target_code_hash,
+            state_digest: plan.state_digest,
+            checks: vec![
+                preflight[0].clone(),
+                Check::new(
+                    "patch.view.0",
+                    Status::Skipped {
+                        reason: "operator skipped view".to_owned(),
+                    },
+                ),
+                Check::new("patch.dry_run", Status::passed("sandbox batch succeeded")),
+            ],
+        });
+        let status = validate_dry_run_stamp(&plan, &preflight, false).unwrap();
+        assert!(status.is_failure());
+        assert!(matches!(
+            status,
+            Status::Failed { detail } if detail.contains("patch.view.0")
+        ));
+    }
+
+    #[test]
+    fn apply_requires_valid_dry_run_stamp_or_explicit_override() {
+        let plan = stamp_plan();
+        assert!(validate_dry_run_stamp(&plan, &[], false)
+            .unwrap()
+            .is_failure());
+        assert!(matches!(
+            validate_dry_run_stamp(&plan, &[], true).unwrap(),
+            Status::Skipped { .. }
+        ));
     }
 }
