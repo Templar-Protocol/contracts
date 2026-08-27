@@ -5,10 +5,14 @@ use base64::Engine as _;
 use borsh::BorshSerialize;
 use near_account_id::AccountId;
 use schemars::JsonSchema;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{
+    de::{DeserializeOwned, Error as _},
+    Deserialize, Deserializer, Serialize, Serializer,
+};
 use sha2::{Digest as _, Sha256};
+use templar_gateway_types::Base64Bytes;
 
-pub const PATCH_SCHEMA_VERSION: u32 = 1;
+pub const PATCH_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -25,7 +29,8 @@ pub struct PatchSpec {
 
 impl PatchSpec {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let mut spec: Self = super::extends::load_raw(path, PATCH_SCHEMA_VERSION, "patch plan")?;
+        let mut spec: Self =
+            super::extends::load_raw(path, PATCH_SCHEMA_VERSION, "patch plan", "")?;
         spec.extends.clear();
         Ok(spec)
     }
@@ -35,7 +40,7 @@ impl PatchSpec {
         let mut ops = Vec::with_capacity(self.checks.len() + self.ops.len());
         for check in &self.checks {
             ops.push(ResolvedOperation::Expect {
-                key: check.key.resolve(base)?,
+                key: Base64Bytes(check.key.resolve(base)?),
                 expected: check.expect.resolve(base)?,
             });
         }
@@ -54,58 +59,44 @@ pub struct PatchCheck {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PatchOperation {
-    Set(SetOperation),
-    Remove(RemoveOperation),
-    RemovePrefix(RemovePrefixOperation),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SetOperation {
-    pub key: ByteExpr,
-    pub value: ByteExpr,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expect: Option<Expectation>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RemoveOperation {
-    pub remove: ByteExpr,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expect: Option<Expectation>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RemovePrefixOperation {
-    pub remove_prefix: ByteExpr,
+    Set {
+        key: ByteExpr,
+        value: ByteExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect: Option<Expectation>,
+    },
+    Remove {
+        remove: ByteExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect: Option<Expectation>,
+    },
+    RemovePrefix {
+        remove_prefix: ByteExpr,
+    },
 }
 
 impl PatchOperation {
     fn resolve(&self, base: &Path) -> anyhow::Result<ResolvedOperation> {
         match self {
-            Self::Set(operation) => Ok(ResolvedOperation::Set {
-                key: operation.key.resolve(base)?,
-                value: operation.value.resolve(base)?,
-                expected: operation
-                    .expect
+            Self::Set { key, value, expect } => Ok(ResolvedOperation::Set {
+                key: Base64Bytes(key.resolve(base)?),
+                value: Base64Bytes(value.resolve(base)?),
+                expected: expect
                     .as_ref()
                     .map(|expect| expect.resolve(base))
                     .transpose()?,
             }),
-            Self::Remove(operation) => Ok(ResolvedOperation::Remove {
-                key: operation.remove.resolve(base)?,
-                expected: operation
-                    .expect
+            Self::Remove { remove, expect } => Ok(ResolvedOperation::Remove {
+                key: Base64Bytes(remove.resolve(base)?),
+                expected: expect
                     .as_ref()
                     .map(|expect| expect.resolve(base))
                     .transpose()?,
             }),
-            Self::RemovePrefix(operation) => Ok(ResolvedOperation::RemovePrefix {
-                prefix: operation.remove_prefix.resolve(base)?,
+            Self::RemovePrefix { remove_prefix } => Ok(ResolvedOperation::RemovePrefix {
+                prefix: Base64Bytes(remove_prefix.resolve(base)?),
             }),
         }
     }
@@ -202,6 +193,37 @@ pub fn codec_names() -> impl Iterator<Item = &'static str> {
     CODECS.iter().map(|codec| codec.name)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Sha256Digest(pub [u8; 32]);
+
+impl Serialize for Sha256Digest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for Sha256Digest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        if value.len() != 64 || value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            return Err(D::Error::custom(
+                "SHA-256 digest must be exactly 64 lowercase hex characters",
+            ));
+        }
+        let bytes = hex::decode(&value).map_err(D::Error::custom)?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| D::Error::custom("SHA-256 digest must decode to exactly 32 bytes"))?;
+        Ok(Self(bytes))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Expectation {
@@ -212,12 +234,12 @@ pub enum Expectation {
 impl Expectation {
     fn resolve(&self, base: &Path) -> anyhow::Result<ResolvedExpectation> {
         match self {
-            Self::Bytes(value) => Ok(ResolvedExpectation::Bytes(value.resolve(base)?)),
+            Self::Bytes(value) => Ok(ResolvedExpectation::Bytes(Base64Bytes(
+                value.resolve(base)?,
+            ))),
             Self::Hash { hash } => {
-                let digest = hex::decode(hash).context("decode expectation hash")?;
-                let hash: [u8; 32] = digest
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("expectation hash must be 32 bytes"))?;
+                let hash = Sha256Digest::deserialize(serde_json::Value::String(hash.clone()))
+                    .map_err(|error| anyhow::anyhow!("decode expectation hash: {error}"))?;
                 Ok(ResolvedExpectation::Hash(hash))
             }
         }
@@ -226,8 +248,8 @@ impl Expectation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolvedExpectation {
-    Bytes(Vec<u8>),
-    Hash([u8; 32]),
+    Bytes(Base64Bytes),
+    Hash(Sha256Digest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,19 +260,19 @@ pub struct ResolvedPatch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolvedOperation {
     Expect {
-        key: Vec<u8>,
+        key: Base64Bytes,
         expected: ResolvedExpectation,
     },
     Set {
-        key: Vec<u8>,
-        value: Vec<u8>,
+        key: Base64Bytes,
+        value: Base64Bytes,
         expected: Option<ResolvedExpectation>,
     },
     Remove {
-        key: Vec<u8>,
+        key: Base64Bytes,
         expected: Option<ResolvedExpectation>,
     },
     RemovePrefix {
-        prefix: Vec<u8>,
+        prefix: Base64Bytes,
     },
 }

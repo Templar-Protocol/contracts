@@ -5,10 +5,18 @@ use templar_gateway_methods_spec::tx;
 
 use super::{
     check::Check,
-    patch::{PatchSpec, ResolvedPatch},
+    patch::{PatchSpec, ResolvedPatch, Sha256Digest},
 };
 
-pub const PATCH_PLAN_SCHEMA_VERSION: u32 = 1;
+pub const PATCH_PLAN_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RestoreCode {
+    Local { code_hash: Sha256Digest },
+    GlobalCodeHash { hash: Sha256Digest },
+    GlobalAccount { account_id: AccountId },
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,9 +28,7 @@ pub struct PatchPlan {
     pub signer_id: AccountId,
     pub public_key: PublicKey,
     pub patch_wasm_sha256: String,
-    pub restore_code_hash: String,
-    pub global_contract_hash: Option<String>,
-    pub global_contract_account_id: Option<AccountId>,
+    pub restore: RestoreCode,
     pub batch: tx::Batch,
     pub unguarded: bool,
     pub checks: Vec<Check>,

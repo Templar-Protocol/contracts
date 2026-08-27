@@ -18,6 +18,7 @@ borsh.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 dirs.workspace = true
+futures.workspace = true
 hex.workspace = true
 near-account-id.workspace = true
 # `keystore` backs `--sign-with keychain`. near-api's `ledger` feature is

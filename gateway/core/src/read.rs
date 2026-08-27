@@ -182,7 +182,8 @@ pub(crate) fn is_unknown_transaction<E: std::fmt::Debug>(error: &E) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_unknown_account;
+    use super::{decode_base64, is_unknown_account};
+    use templar_gateway_types::Base64Bytes;
 
     // `&str`'s `Debug` renders its contents, standing in for a real error's
     // rendered form without constructing the deeply nested near-api error types.
@@ -214,5 +215,23 @@ mod tests {
         assert!(!super::is_unknown_transaction(
             &"TransportError(connection timed out)"
         ));
+    }
+
+    #[test]
+    fn decodes_base64_payload() {
+        assert_eq!(
+            decode_base64("a2V5".to_owned(), "payload").unwrap(),
+            Base64Bytes(b"key".to_vec())
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_base64_payload() {
+        let error = decode_base64("not-base64".to_owned(), "payload")
+            .expect_err("malformed payload must fail");
+        assert!(
+            matches!(&error, crate::GatewayError::NearQuery(message) if message.starts_with("decode payload:")),
+            "unexpected error: {error:?}"
+        );
     }
 }

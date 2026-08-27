@@ -1,7 +1,11 @@
+use futures::{stream, StreamExt, TryStreamExt};
 use std::path::Path;
 
 use anyhow::Context as _;
-use near_api::types::NearToken;
+use near_api::types::{
+    transaction::{actions::Action, SignedTransaction, Transaction, TransactionV0},
+    NearToken, PublicKey,
+};
 use templar_contract_artifacts::{fetch, ArtifactId};
 use templar_gateway_methods_spec::{account, tx};
 use templar_gateway_types::{
@@ -20,18 +24,18 @@ use crate::{
     report::Reporter,
     spec::{
         check::{gate, Check, Status},
-        patch::{ResolvedExpectation, ResolvedOperation},
-        patch_plan::{PatchPlan, PATCH_PLAN_SCHEMA_VERSION},
+        patch::{ResolvedExpectation, ResolvedOperation, Sha256Digest},
+        patch_plan::{PatchPlan, RestoreCode, PATCH_PLAN_SCHEMA_VERSION},
         plan::digest,
     },
 };
 
 const PATCH_WASM_VERSION: &str = "0.1.0";
-const MAX_TRANSACTION_SIZE: usize = 1_572_864;
 const MAX_STORAGE_KEY_LENGTH: usize = 2_048;
 const MAX_STORAGE_VALUE_LENGTH: usize = 4 * 1024 * 1024;
 const PATCH_GAS: NearGas = NearGas::from_tgas(300);
 const STORAGE_RECORD_OVERHEAD: usize = 40;
+const STATE_READ_CONCURRENCY: usize = 8;
 
 pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     let spec = crate::spec::patch::PatchSpec::load(&args.path)?;
@@ -43,6 +47,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
         args.signer_id,
         args.public_key,
         args.allow_unguarded,
+        None,
         &mut reporter,
     )
     .await?;
@@ -79,9 +84,9 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     );
     anyhow::ensure!(
         args.signer.account_id().0 == plan.signer_id,
-        "patch plan expects signer `{}`, but apply uses `{:?}`",
+        "patch plan expects signer `{}`, but apply uses `{}`",
         plan.signer_id,
-        args.signer.account_id(),
+        args.signer.account_id().0,
     );
 
     let public_key = args.signer.public_key()?;
@@ -98,13 +103,15 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             plan.signer_id.clone(),
             plan.public_key,
             args.allow_unguarded,
+            Some(&plan.restore),
             &mut reporter,
         )
         .await?;
         anyhow::ensure!(
             rederived.batch == plan.batch
                 && rederived.patch_wasm_sha256 == plan.patch_wasm_sha256
-                && rederived.resolved == plan.resolved,
+                && rederived.resolved == plan.resolved
+                && rederived.restore == plan.restore,
             "the patch plan no longer matches its embedded spec and live target; re-run `patch plan`"
         );
     }
@@ -120,6 +127,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
 
 #[allow(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "planning derives one checked atomic transaction from one spec"
 )]
 async fn build(
@@ -129,6 +137,7 @@ async fn build(
     signer_id: near_account_id::AccountId,
     public_key: near_api::PublicKey,
     allow_unguarded: bool,
+    expected_restore: Option<&RestoreCode>,
     reporter: &mut Reporter,
 ) -> anyhow::Result<PatchPlan> {
     let declared_network = crate::spec::network_for_account(&spec.account_id)?;
@@ -175,21 +184,7 @@ async fn build(
         ),
     ));
 
-    let storage_increase = storage_increase(ctx, &spec.account_id, &patch).await?;
-    let required_storage = u128::from(account.storage_usage)
-        .saturating_add(storage_increase as u128)
-        .saturating_mul(STORAGE_AMOUNT_PER_BYTE.as_yoctonear());
-    reporter.record(Check::new(
-        "patch.storage_balance",
-        status(
-            account.amount.as_yoctonear() >= required_storage,
-            format!(
-                "{storage_increase} additional bytes require final storage backing of \
-                 {required_storage} yoctoNEAR"
-            ),
-        ),
-    ));
-
+    let state_increase = storage_increase(ctx, &spec.account_id, &patch).await?;
     let access = ctx
         .client
         .read(account::GetAccessKey {
@@ -210,45 +205,88 @@ async fn build(
         .context("load the pinned PatchState release")?;
     let patch_wasm_sha256 = digest(&patch_wasm);
     let patch_args = Base64Bytes(borsh::to_vec(&patch).context("encode PatchState arguments")?);
-    let (restore, restore_hash) = if let Some(hash) = account.global_contract_hash.as_deref() {
-        let hash = hash
-            .parse::<near_api::types::CryptoHash>()
-            .context("parse target global contract hash")?;
-        (
-            ActionInput::UseGlobalContract {
-                contract_identifier: GlobalContractIdentifierInput::CodeHash(CryptoHash::from(
-                    hash,
-                )),
-            },
-            Status::passed("restore preserves the target global code hash"),
-        )
-    } else if let Some(account_id) = account.global_contract_account_id.clone() {
-        (
-            ActionInput::UseGlobalContract {
-                contract_identifier: GlobalContractIdentifierInput::AccountId(account_id),
-            },
-            Status::passed("restore preserves the target global code account"),
-        )
-    } else {
-        let code = ctx
-            .client
-            .read(account::GetCode {
-                account_id: spec.account_id.clone(),
-            })
-            .await?
-            .code;
-        let code_hash = near_api::types::CryptoHash::hash(&code.0).to_string();
-        (
-            ActionInput::DeployContract { code },
-            status(
-                code_hash == account.code_hash,
-                format!(
-                    "account.get reports {}, fetched code hashes to {code_hash}",
-                    account.code_hash
+    let (restore, restore_action, restored_code_len, restore_hash_status) =
+        if let Some(hash) = account.global_contract_hash.as_deref() {
+            let hash = hash
+                .parse::<near_api::types::CryptoHash>()
+                .context("parse target global contract hash")?;
+            (
+                RestoreCode::GlobalCodeHash {
+                    hash: Sha256Digest(hash.0),
+                },
+                ActionInput::UseGlobalContract {
+                    contract_identifier: GlobalContractIdentifierInput::CodeHash(CryptoHash::from(
+                        hash,
+                    )),
+                },
+                0,
+                Status::passed("restore preserves the target global code hash"),
+            )
+        } else if let Some(account_id) = account.global_contract_account_id.clone() {
+            (
+                RestoreCode::GlobalAccount {
+                    account_id: account_id.clone(),
+                },
+                ActionInput::UseGlobalContract {
+                    contract_identifier: GlobalContractIdentifierInput::AccountId(account_id),
+                },
+                0,
+                Status::passed("restore preserves the target global code account"),
+            )
+        } else {
+            let code = ctx
+                .client
+                .read(account::GetCode {
+                    account_id: spec.account_id.clone(),
+                })
+                .await?
+                .code;
+            let code_hash = near_api::types::CryptoHash::hash(&code.0);
+            (
+                RestoreCode::Local {
+                    code_hash: Sha256Digest(code_hash.0),
+                },
+                ActionInput::DeployContract { code: code.clone() },
+                code.len(),
+                status(
+                    code_hash.to_string() == account.code_hash,
+                    format!(
+                        "account.get reports {}, fetched code hashes to {code_hash}",
+                        account.code_hash
+                    ),
                 ),
+            )
+        };
+    let restore_mode_ok =
+        expected_restore.is_none_or(|expected| restore_mode_matches(expected, &restore));
+    let restore_identity_ok =
+        expected_restore.is_none_or(|expected| restore_identity_matches(expected, &restore));
+    reporter.record(Check::new(
+        "patch.restore_mode",
+        status(
+            restore_mode_ok,
+            "live restore mode matches the reviewed patch plan",
+        ),
+    ));
+    let required_storage = peak_storage_bytes(
+        account.storage_usage,
+        state_increase,
+        patch_wasm.len(),
+        restored_code_len,
+    )
+    .saturating_mul(STORAGE_AMOUNT_PER_BYTE.as_yoctonear());
+    reporter.record(Check::new(
+        "patch.storage_balance",
+        status(
+            account.amount.as_yoctonear() >= required_storage,
+            format!(
+                "{state_increase} state bytes and {} temporary code bytes require \
+                 {required_storage} yoctoNEAR",
+                patch_wasm.len().saturating_sub(restored_code_len)
             ),
-        )
-    };
+        ),
+    ));
+
     let batch = tx::Batch {
         receiver_id: spec.account_id.clone(),
         actions: vec![
@@ -261,15 +299,34 @@ async fn build(
                 gas: PATCH_GAS,
                 deposit: NearToken::from_yoctonear(0),
             },
-            restore,
+            restore_action,
         ],
     };
-    let encoded = serde_json::to_vec(&batch).context("measure patch batch")?;
+    let limits = ctx
+        .client
+        .read(templar_gateway_methods_spec::chain::GetProtocolLimits)
+        .await?;
+    let prepaid_gas = total_prepaid_gas(&batch)?;
+    reporter.record(Check::new(
+        "patch.gas",
+        status(
+            prepaid_gas <= limits.max_total_prepaid_gas,
+            format!(
+                "{} prepaid gas; live limit is {}",
+                prepaid_gas.as_gas(),
+                limits.max_total_prepaid_gas.as_gas()
+            ),
+        ),
+    ));
+    let wire_size = signed_transaction_wire_size(&signer_id, public_key, &batch)?;
     reporter.record(Check::new(
         "patch.tx_size",
         status(
-            encoded.len() <= MAX_TRANSACTION_SIZE,
-            format!("{} bytes; limit is {MAX_TRANSACTION_SIZE}", encoded.len()),
+            wire_size as u64 <= limits.max_transaction_size,
+            format!(
+                "{wire_size} bytes; live limit is {}",
+                limits.max_transaction_size
+            ),
         ),
     ));
     reporter.record(Check::new(
@@ -280,17 +337,12 @@ async fn build(
         ),
     ));
     reporter.record(Check::new(
-        "patch.restore_mode",
-        Status::passed("restore action preserves the account's local or global code mode"),
-    ));
-    reporter.record(Check::new(
-        "patch.gas",
+        "patch.code_hash",
         status(
-            PATCH_GAS <= NearGas::from_tgas(300),
-            "patch call uses at most 300 Tgas",
+            !restore_hash_status.is_failure() && restore_identity_ok,
+            "live restore identity and fetched local code match the reviewed plan",
         ),
     ));
-    reporter.record(Check::new("patch.code_hash", restore_hash));
 
     Ok(PatchPlan {
         schema: PATCH_PLAN_SCHEMA_VERSION,
@@ -300,9 +352,7 @@ async fn build(
         signer_id,
         public_key,
         patch_wasm_sha256,
-        restore_code_hash: account.code_hash,
-        global_contract_hash: account.global_contract_hash,
-        global_contract_account_id: account.global_contract_account_id,
+        restore,
         batch,
         unguarded,
         checks: reporter.checks().to_vec(),
@@ -313,28 +363,37 @@ async fn expand_prefixes(
     account_id: &near_account_id::AccountId,
     patch: crate::spec::patch::ResolvedPatch,
 ) -> anyhow::Result<crate::spec::patch::ResolvedPatch> {
-    let mut operations = Vec::new();
-    for operation in patch.operations {
+    let groups = stream::iter(patch.operations.into_iter().map(|operation| async {
         match operation {
             ResolvedOperation::RemovePrefix { prefix } => {
                 let entries = ctx
                     .client
                     .read(account::ViewState {
                         account_id: account_id.clone(),
-                        prefix: Base64Bytes(prefix),
+                        prefix,
                     })
                     .await?;
-                operations.extend(entries.values.into_iter().map(|entry| {
-                    ResolvedOperation::Remove {
-                        key: entry.key.0,
-                        expected: Some(ResolvedExpectation::Bytes(entry.value.0)),
-                    }
-                }));
+                Ok::<Vec<ResolvedOperation>, templar_gateway_core::GatewayError>(
+                    entries
+                        .values
+                        .into_iter()
+                        .map(|entry| ResolvedOperation::Remove {
+                            key: entry.key,
+                            expected: Some(ResolvedExpectation::Bytes(entry.value)),
+                        })
+                        .collect(),
+                )
             }
-            operation => operations.push(operation),
+            operation => Ok(vec![operation]),
         }
-    }
-    Ok(crate::spec::patch::ResolvedPatch { operations })
+    }))
+    .buffered(STATE_READ_CONCURRENCY)
+    .try_collect::<Vec<Vec<ResolvedOperation>>>()
+    .await?
+    .into_iter()
+    .flatten()
+    .collect();
+    Ok(crate::spec::patch::ResolvedPatch { operations: groups })
 }
 
 async fn storage_increase(
@@ -342,32 +401,38 @@ async fn storage_increase(
     account_id: &near_account_id::AccountId,
     patch: &Patch,
 ) -> anyhow::Result<usize> {
-    let mut increase = 0usize;
-    for operation in &patch.ops {
+    let increases = stream::iter(patch.ops.iter().filter_map(|operation| {
         let Op::Set { key, value } = operation else {
-            continue;
+            return None;
         };
-        let entries = ctx
-            .client
-            .read(account::ViewState {
-                account_id: account_id.clone(),
-                prefix: Base64Bytes(key.clone()),
+        let key = key.clone();
+        let value = value.clone();
+        Some(async move {
+            let entries = ctx
+                .client
+                .read(account::ViewState {
+                    account_id: account_id.clone(),
+                    prefix: Base64Bytes(key.clone()),
+                })
+                .await?;
+            let previous = entries
+                .values
+                .into_iter()
+                .find(|entry| entry.key.0 == key)
+                .map(|entry| entry.value.0);
+            Ok::<_, templar_gateway_core::GatewayError>(match previous {
+                Some(previous) => value.len().saturating_sub(previous.len()),
+                None => key
+                    .len()
+                    .saturating_add(value.len())
+                    .saturating_add(STORAGE_RECORD_OVERHEAD),
             })
-            .await?;
-        let previous = entries
-            .values
-            .into_iter()
-            .find(|entry| entry.key.0 == *key)
-            .map(|entry| entry.value.0);
-        increase = increase.saturating_add(match previous {
-            Some(previous) => value.len().saturating_sub(previous.len()),
-            None => key
-                .len()
-                .saturating_add(value.len())
-                .saturating_add(STORAGE_RECORD_OVERHEAD),
-        });
-    }
-    Ok(increase)
+        })
+    }))
+    .buffered(STATE_READ_CONCURRENCY)
+    .try_collect::<Vec<usize>>()
+    .await?;
+    Ok(increases.into_iter().fold(0, usize::saturating_add))
 }
 fn compile_patch(
     account_id: &near_account_id::AccountId,
@@ -381,7 +446,7 @@ fn compile_patch(
         match operation {
             ResolvedOperation::Expect { key, expected } => {
                 longest_key = longest_key.max(key.len());
-                ops.push(expect_op(key, expected));
+                ops.push(expect_op(key.0, expected));
             }
             ResolvedOperation::Set {
                 key,
@@ -391,20 +456,23 @@ fn compile_patch(
                 longest_key = longest_key.max(key.len());
                 longest_value = longest_value.max(value.len());
                 if let Some(expected) = expected {
-                    ops.push(expect_op(key.clone(), expected));
+                    ops.push(expect_op(key.0.clone(), expected));
                 } else {
                     unguarded = true;
                 }
-                ops.push(Op::Set { key, value });
+                ops.push(Op::Set {
+                    key: key.0,
+                    value: value.0,
+                });
             }
             ResolvedOperation::Remove { key, expected } => {
                 longest_key = longest_key.max(key.len());
                 if let Some(expected) = expected {
-                    ops.push(expect_op(key.clone(), expected));
+                    ops.push(expect_op(key.0.clone(), expected));
                 } else {
                     unguarded = true;
                 }
-                ops.push(Op::Remove { key });
+                ops.push(Op::Remove { key: key.0 });
             }
             ResolvedOperation::RemovePrefix { .. } => {
                 anyhow::bail!("prefix deletes must be expanded before compiling the patch")
@@ -426,10 +494,79 @@ fn expect_op(key: Vec<u8>, expected: ResolvedExpectation) -> Op {
     match expected {
         ResolvedExpectation::Bytes(value) => Op::Expect {
             key,
-            value: Some(value),
+            value: Some(value.0),
         },
-        ResolvedExpectation::Hash(sha256) => Op::ExpectHash { key, sha256 },
+        ResolvedExpectation::Hash(sha256) => Op::ExpectHash {
+            key,
+            sha256: sha256.0,
+        },
     }
+}
+
+fn restore_mode_matches(expected: &RestoreCode, actual: &RestoreCode) -> bool {
+    std::mem::discriminant(expected) == std::mem::discriminant(actual)
+}
+
+fn restore_identity_matches(expected: &RestoreCode, actual: &RestoreCode) -> bool {
+    expected == actual
+}
+
+fn peak_storage_bytes(
+    storage_usage: u64,
+    state_increase: usize,
+    patch_wasm_len: usize,
+    restored_code_len: usize,
+) -> u128 {
+    u128::from(storage_usage)
+        .saturating_add(state_increase as u128)
+        .saturating_add(patch_wasm_len.saturating_sub(restored_code_len) as u128)
+}
+
+fn total_prepaid_gas(batch: &tx::Batch) -> anyhow::Result<NearGas> {
+    batch
+        .actions
+        .iter()
+        .try_fold(NearGas::from_gas(0), |total, action| {
+            let ActionInput::FunctionCall { gas, .. } = action else {
+                return Ok(total);
+            };
+            total
+                .checked_add(*gas)
+                .context("sum function-call prepaid gas")
+        })
+}
+
+fn signed_transaction_wire_size(
+    signer_id: &near_account_id::AccountId,
+    public_key: PublicKey,
+    batch: &tx::Batch,
+) -> anyhow::Result<usize> {
+    let actions = batch
+        .actions
+        .iter()
+        .cloned()
+        .map(Action::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .context("convert patch actions")?;
+    let signature_len = match public_key {
+        PublicKey::ED25519(_) => 64,
+        PublicKey::SECP256K1(_) => 65,
+    };
+    let signature =
+        near_api::types::Signature::from_parts(public_key.key_type(), &vec![0; signature_len])
+            .context("construct placeholder signature")?;
+
+    let transaction = Transaction::V0(TransactionV0 {
+        signer_id: signer_id.clone(),
+        public_key,
+        nonce: 0,
+        receiver_id: batch.receiver_id.clone(),
+        block_hash: near_api::types::CryptoHash([0; 32]),
+        actions,
+    });
+    borsh::to_vec(&SignedTransaction::new(signature, transaction))
+        .context("encode signed transaction")
+        .map(|bytes| bytes.len())
 }
 
 fn status(passed: bool, detail: impl Into<String>) -> Status {
@@ -437,5 +574,133 @@ fn status(passed: bool, detail: impl Into<String>) -> Status {
         Status::passed(detail)
     } else {
         Status::failed(detail)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::{
+        peak_storage_bytes, restore_identity_matches, restore_mode_matches,
+        signed_transaction_wire_size, status, total_prepaid_gas,
+    };
+    use crate::spec::patch::Sha256Digest;
+    use crate::spec::patch_plan::RestoreCode;
+    use near_account_id::AccountId;
+    use near_api::{types::transaction::PrepopulateTransaction, SecretKey, Signer};
+    use templar_gateway_methods_spec::tx;
+    use templar_gateway_types::{
+        common::ContractArgs, ActionInput, Base64Bytes, ContractMethodName, NearGas, NearToken,
+    };
+
+    fn batch() -> tx::Batch {
+        tx::Batch {
+            receiver_id: "receiver.near".parse().unwrap(),
+            actions: vec![ActionInput::FunctionCall {
+                method_name: ContractMethodName("method".to_owned()),
+                args: ContractArgs::Raw(Base64Bytes(b"args".to_vec())),
+                gas: NearGas::from_tgas(1),
+                deposit: NearToken::from_yoctonear(0),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn signed_wire_size_matches_real_signed_transaction() {
+        let secret: SecretKey =
+            "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q"
+                .parse()
+                .unwrap();
+        let signer = Signer::from_secret_key(secret.clone()).unwrap();
+        let signer_id: AccountId = "signer.near".parse().unwrap();
+        let batch = batch();
+        let actions = batch
+            .actions
+            .iter()
+            .cloned()
+            .map(near_api::types::transaction::actions::Action::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let signed_transaction = signer
+            .sign(
+                PrepopulateTransaction {
+                    signer_id: signer_id.clone(),
+                    receiver_id: batch.receiver_id.clone(),
+                    actions,
+                },
+                secret.public_key(),
+                0,
+                near_api::types::CryptoHash([0; 32]),
+            )
+            .await
+            .unwrap();
+        let size = signed_transaction_wire_size(&signer_id, secret.public_key(), &batch).unwrap();
+        assert_eq!(size, borsh::to_vec(&signed_transaction).unwrap().len());
+        assert!(!status(size <= size, "at limit").is_failure());
+        assert!(status(size.saturating_add(1) <= size, "over limit").is_failure());
+    }
+
+    #[tokio::test]
+    async fn signed_wire_size_matches_real_secp256k1_transaction() {
+        let secret: SecretKey = "secp256k1:11111111111111111111111111111112"
+            .parse()
+            .unwrap();
+        let signer = Signer::from_secret_key(secret.clone()).unwrap();
+        let signer_id: AccountId = "signer.near".parse().unwrap();
+        let batch = batch();
+        let actions = batch
+            .actions
+            .iter()
+            .cloned()
+            .map(near_api::types::transaction::actions::Action::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let signed_transaction = signer
+            .sign(
+                PrepopulateTransaction {
+                    signer_id: signer_id.clone(),
+                    receiver_id: batch.receiver_id.clone(),
+                    actions,
+                },
+                secret.public_key(),
+                0,
+                near_api::types::CryptoHash([0; 32]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            signed_transaction_wire_size(&signer_id, secret.public_key(), &batch).unwrap(),
+            borsh::to_vec(&signed_transaction).unwrap().len()
+        );
+    }
+
+    #[test]
+    fn restore_checks_distinguish_modes_and_identifiers() {
+        let local = RestoreCode::Local {
+            code_hash: Sha256Digest([1; 32]),
+        };
+        let other_local = RestoreCode::Local {
+            code_hash: Sha256Digest([2; 32]),
+        };
+        let global = RestoreCode::GlobalCodeHash {
+            hash: Sha256Digest([1; 32]),
+        };
+        assert!(restore_mode_matches(&local, &other_local));
+        assert!(!restore_identity_matches(&local, &other_local));
+        assert!(!restore_mode_matches(&local, &global));
+        assert!(!restore_identity_matches(&local, &global));
+    }
+
+    #[test]
+    fn total_prepaid_gas_sums_function_calls() {
+        let mut batch = batch();
+        batch.actions.push(batch.actions[0].clone());
+        assert_eq!(total_prepaid_gas(&batch).unwrap(), NearGas::from_tgas(2));
+    }
+
+    #[test]
+    fn peak_storage_counts_temporary_code_delta() {
+        assert_eq!(peak_storage_bytes(100, 10, 30, 20), 120);
+        assert_eq!(peak_storage_bytes(100, 10, 20, 30), 110);
+        assert_eq!(peak_storage_bytes(100, 10, 20, 20), 110);
+        assert_eq!(peak_storage_bytes(100, 10, 20, 0), 130);
     }
 }

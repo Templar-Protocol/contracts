@@ -32,7 +32,8 @@ pub struct Apply {
     /// Path to a plan written by `patch plan`.
     #[arg(long, value_name = "PATH")]
     pub(crate) plan: PathBuf,
-    /// Ignore one named preflight check re-run at apply time.
+    /// Re-read every absolute `file` reference at its original path; missing,
+    /// moved, or changed bytes abort re-derivation before any transaction is sent.
     #[arg(long = "skip-check", value_name = "CHECK_ID")]
     pub(crate) skip_check: Vec<String>,
     /// Permit a plan that contains an unguarded mutation.

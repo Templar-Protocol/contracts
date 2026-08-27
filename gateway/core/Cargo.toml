@@ -18,6 +18,7 @@ near-account-id = { workspace = true, features = ["serde", "schemars"] }
 near-api.workspace = true
 near-contract-standards.workspace = true
 near-openapi-client.workspace = true
+reqwest.workspace = true
 near-sdk = { workspace = true, default-features = false, features = ["non-contract-usage"] }
 serde.workspace = true
 serde_json_canonicalizer.workspace = true

@@ -15,9 +15,14 @@ use toml::Value;
 
 use super::{MarketSpec, RawMarketSpec, SCHEMA_VERSION};
 
-/// Read a market spec, applying profiles and validating every authored key.
 pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
-    let raw: RawMarketSpec = load_raw(path, SCHEMA_VERSION, "market export")?;
+    let raw: RawMarketSpec = load_raw(
+        path,
+        SCHEMA_VERSION,
+        "market export",
+        " Schema 5 made every amount state its unit (`0.04 tokens`, `1 atom`), \
+         so a schema 4 file must be re-authored rather than renumbered.",
+    )?;
     let mut spec = MarketSpec::try_from(raw)
         .with_context(|| format!("invalid market spec {}", path.display()))?;
     spec.extends.clear();
@@ -28,7 +33,12 @@ pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
 ///
 /// The caller owns conversion from the raw file shape into its domain model;
 /// this keeps profile composition and typo detection identical for every spec.
-pub fn load_raw<T>(path: &Path, schema_version: u32, regenerate: &str) -> anyhow::Result<T>
+pub fn load_raw<T>(
+    path: &Path,
+    schema_version: u32,
+    regenerate: &str,
+    migration_note: &str,
+) -> anyhow::Result<T>
 where
     T: DeserializeOwned + Serialize,
 {
@@ -36,12 +46,6 @@ where
     let merged = resolve(path, &mut visiting)?;
 
     if let Some(schema) = merged.get("schema").and_then(toml::Value::as_integer) {
-        let migration_note = if schema_version == SCHEMA_VERSION {
-            " Schema 5 made every amount state its unit (`0.04 tokens`, `1 atom`), \
-             so a schema 4 file must be re-authored rather than renumbered."
-        } else {
-            ""
-        };
         anyhow::ensure!(
             schema == i64::from(schema_version),
             "{} declares schema {schema} but this build understands {schema_version}. \
@@ -170,17 +174,12 @@ fn take_extends(value: &mut Value, declaring_file: &Path) -> anyhow::Result<Vec<
 
 fn absolutize_file_paths(value: &mut Value, declaring_file: &Path) {
     match value {
-        Value::Table(table) if table.len() == 1 => {
+        Value::Table(table) => {
             if let Some(Value::String(path)) = table.get_mut("file") {
                 let base = declaring_file.parent().unwrap_or(Path::new("."));
                 *path = base.join(&*path).to_string_lossy().into_owned();
                 return;
             }
-            for (_, value) in table.iter_mut() {
-                absolutize_file_paths(value, declaring_file);
-            }
-        }
-        Value::Table(table) => {
             for (_, value) in table.iter_mut() {
                 absolutize_file_paths(value, declaring_file);
             }
@@ -259,5 +258,27 @@ mod tests {
         let merged = Value::try_from(&spec).expect("a spec serializes");
 
         ensure_every_key_was_read(&merged, &spec, Path::new("m.toml")).expect("nothing is unread");
+    }
+
+    #[test]
+    fn file_paths_remain_relative_to_their_declaring_spec() {
+        let child = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/spec/patch/path-origin/child/child.toml");
+        let mut visiting = std::collections::BTreeSet::new();
+        let merged = super::resolve(&child, &mut visiting).expect("path fixture resolves");
+        assert_eq!(
+            merged["profile_entry"]["file"].as_str().unwrap(),
+            child
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("profile/same.bin")
+                .to_string_lossy()
+        );
+        assert_eq!(
+            merged["child_entry"]["file"].as_str().unwrap(),
+            child.parent().unwrap().join("same.bin").to_string_lossy()
+        );
     }
 }

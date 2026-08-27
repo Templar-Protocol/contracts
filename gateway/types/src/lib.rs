@@ -7,6 +7,7 @@ pub mod error;
 pub mod operation;
 pub mod primitive;
 pub mod protocol;
+pub use protocol::ProtocolLimits;
 pub mod spec;
 pub mod version;
 

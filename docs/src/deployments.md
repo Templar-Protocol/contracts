@@ -178,9 +178,20 @@ prefix deletion; its focused test prevents the documented forms from drifting.
 Prefix deletes are expanded from chain state while planning. The generated plan
 therefore lists every concrete key and its in-receipt expectation; a prefix too
 large for `view_state` fails planning rather than producing a partial delete.
-The plan refuses code/linkage drift, transactions over 1,572,864 bytes, values
-over 4 MiB, keys over 2,048 bytes, insufficient storage backing, missing full
-access, and patch gas above 300 Tgas.
+The plan re-reads live restore identity, protocol transaction-size and prepaid-gas
+limits, values over 4 MiB, keys over 2,048 bytes, and peak temporary storage.
+
+`patch apply` re-reads absolute `file` references during plan re-derivation.
+The plan and referenced files must remain on the same machine at their original
+paths. Missing, moved, or changed bytes abort re-derivation before send.
+
+This is a privileged authorization checklist:
+
+- Confirm the target account, full-access signer, and plan public key.
+- Inspect the released PatchState 0.1.0 artifact and pinned SHA-256.
+- Confirm the batch receiver, spec target, and PatchState payload account match.
+- Verify the apply-time restore identity and resolved-state re-derivation checks.
+- Authorize only after the complete arbitrary-storage write is understood.
 
 `patch apply` does not perform local replay or post-patch health checks. Review
 the plan and reported preflight before authorizing it.

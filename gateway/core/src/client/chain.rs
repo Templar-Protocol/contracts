@@ -1,9 +1,16 @@
-use near_api::types::transaction::result::ExecutionFinalResult;
-use near_api::types::Reference;
+use near_api::types::{transaction::result::ExecutionFinalResult, Reference};
 use near_api::Chain;
-use templar_gateway_types::{BlockSummary, CryptoHash};
+use near_openapi_client::types::{
+    Finality, JsonRpcRequestForExperimentalProtocolConfig,
+    JsonRpcRequestForExperimentalProtocolConfigMethod,
+    JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError, RpcProtocolConfigRequest,
+    RpcProtocolConfigResponse,
+};
+use templar_gateway_types::{BlockSummary, CryptoHash, ProtocolLimits};
 
 use crate::{client::NearClient, GatewayError, GatewayResult, ReadNear};
+
+const RPC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Clone, Copy)]
 pub struct ChainClient<'a> {
@@ -40,7 +47,65 @@ impl ChainClient<'_> {
             hash: CryptoHash(near_api::CryptoHash(header.hash.0)),
         })
     }
+    // near-api 0.8.6 keeps its custom-RPC retry plumbing private.
+    pub async fn protocol_limits(&self) -> GatewayResult<ProtocolLimits> {
+        let request = JsonRpcRequestForExperimentalProtocolConfig {
+            id: "0".to_owned(),
+            jsonrpc: "2.0".to_owned(),
+            method: JsonRpcRequestForExperimentalProtocolConfigMethod::ExperimentalProtocolConfig,
+            params: RpcProtocolConfigRequest::Finality(Finality::Final),
+        };
+        let mut last_error = None;
 
+        for endpoint in &self.inner.network().rpc_endpoints {
+            let mut headers = reqwest::header::HeaderMap::new();
+            if let Some(value) = &endpoint.bearer_header {
+                let mut header = reqwest::header::HeaderValue::from_str(value)
+                    .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
+                header.set_sensitive(true);
+                headers.insert(reqwest::header::AUTHORIZATION, header.clone());
+                headers.insert(
+                    reqwest::header::HeaderName::from_static("x-api-key"),
+                    header,
+                );
+            }
+            let http = reqwest::ClientBuilder::new()
+                .connect_timeout(RPC_REQUEST_TIMEOUT)
+                .timeout(RPC_REQUEST_TIMEOUT)
+                .default_headers(headers)
+                .build()
+                .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
+            let client = near_openapi_client::Client::new_with_client(
+                endpoint.url.as_str().trim_end_matches('/'),
+                http,
+            );
+
+            for attempt in 0..endpoint.retries {
+                match client.experimental_protocol_config(&request).await {
+                    Ok(response) => {
+                        return match response.into_inner() {
+                            JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant0 {
+                                result,
+                                ..
+                            } => protocol_limits_from_response(result),
+                            JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant1 {
+                                error,
+                                ..
+                            } => Err(GatewayError::NearQuery(error.to_string())),
+                        };
+                    }
+                    Err(error) => {
+                        last_error = Some(error.to_string());
+                        tokio::time::sleep(endpoint.get_sleep_duration(attempt as usize)).await;
+                    }
+                }
+            }
+        }
+
+        Err(GatewayError::NearQuery(last_error.unwrap_or_else(|| {
+            "no RPC endpoints are configured".to_owned()
+        })))
+    }
     pub async fn get_transaction(
         &self,
         tx_hash: near_api::CryptoHash,
@@ -54,5 +119,59 @@ impl ChainClient<'_> {
             wait_until,
         )
         .await
+    }
+}
+
+fn protocol_limits_from_response(
+    response: RpcProtocolConfigResponse,
+) -> GatewayResult<ProtocolLimits> {
+    response
+        .runtime_config
+        .and_then(|runtime| runtime.wasm_config)
+        .and_then(|wasm| wasm.limit_config)
+        .and_then(|limit| {
+            Some(ProtocolLimits {
+                max_transaction_size: limit.max_transaction_size?,
+                max_total_prepaid_gas: limit.max_total_prepaid_gas?,
+            })
+        })
+        .ok_or_else(|| {
+            GatewayError::NearQuery(
+                "protocol config does not include required transaction limits".to_owned(),
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::protocol_limits_from_response;
+    use templar_gateway_types::ProtocolLimits;
+
+    #[test]
+    fn extracts_protocol_transaction_limits() {
+        let response: near_openapi_client::types::RpcProtocolConfigResponse =
+            serde_json::from_str(
+                r#"{"runtime_config":{"wasm_config":{"limit_config":{"max_transaction_size":123,"max_total_prepaid_gas":"456"}}}}"#,
+            )
+            .unwrap();
+        assert_eq!(
+            protocol_limits_from_response(response).unwrap(),
+            ProtocolLimits {
+                max_transaction_size: 123,
+                max_total_prepaid_gas: templar_gateway_types::NearGas::from_gas(456),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_missing_protocol_transaction_limits() {
+        let response: near_openapi_client::types::RpcProtocolConfigResponse =
+            serde_json::from_str(r#"{"runtime_config":{}}"#).unwrap();
+        let error = protocol_limits_from_response(response).expect_err("limits are required");
+        assert!(matches!(
+            &error,
+            crate::GatewayError::NearQuery(message)
+                if message == "protocol config does not include required transaction limits"
+        ));
     }
 }
