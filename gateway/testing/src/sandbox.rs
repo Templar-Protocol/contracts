@@ -1127,14 +1127,6 @@ fn attach_rpc_url() -> Result<Option<String>> {
     Ok(std::env::var("NEAR_SANDBOX_RPC_URL").ok())
 }
 
-/// The high-balance genesis account every harness funds its accounts from.
-///
-/// The default genesis `sandbox` account holds only 10_000 NEAR — a long run
-/// against one shared node exhausts it, because each test locks funds in
-/// accounts that outlive it. This account is seeded with a very large balance so
-/// the shared node never runs dry. It reuses the default genesis keypair, so the
-/// existing genesis signer can sign for it.
-
 /// Create `account_id` as a sub-account of `funder_id`, funded with `balance`
 /// and a full-access key derived from `secret_key`, signed by `funder_signer`.
 ///

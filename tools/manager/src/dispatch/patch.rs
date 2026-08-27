@@ -770,6 +770,7 @@ mod tests {
         ResolvedPatch, Sha256Digest,
     };
     use crate::spec::patch_plan::{DryRunStamp, PatchPlan, RestoreCode};
+    use crate::spec::plan::WireSha256Digest;
     use near_account_id::AccountId;
     use near_api::{types::transaction::PrepopulateTransaction, SecretKey, Signer};
     use near_primitives::account::AccountContract;
@@ -1002,7 +1003,7 @@ mod tests {
             public_key: secret.public_key(),
             patch_wasm_sha256: Sha256Digest([0; 32]),
             target_code_hash: CryptoHash::from(near_api::types::CryptoHash([1; 32])),
-            state_digest: "state".to_owned(),
+            state_digest: WireSha256Digest([0; 32]),
             restore: RestoreCode::Local {
                 code_hash: CryptoHash::from(near_api::types::CryptoHash([1; 32])),
             },
@@ -1030,7 +1031,7 @@ mod tests {
             plan_digest: digest,
             sandbox_chain_id: "sandbox".to_owned(),
             target_code_hash: plan.target_code_hash,
-            state_digest: plan.state_digest.clone(),
+            state_digest: plan.state_digest,
             checks: vec![Check::new(
                 "patch.dry_run",
                 Status::passed("sandbox batch succeeded"),
@@ -1069,7 +1070,7 @@ mod tests {
             plan_digest: plan.unstamped_digest().unwrap(),
             sandbox_chain_id: "sandbox".to_owned(),
             target_code_hash: plan.target_code_hash,
-            state_digest: plan.state_digest.clone(),
+            state_digest: plan.state_digest,
             checks: vec![
                 preflight[0].clone(),
                 Check::new(

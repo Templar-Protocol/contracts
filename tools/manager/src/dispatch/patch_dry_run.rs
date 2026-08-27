@@ -23,6 +23,7 @@ use crate::{
     spec::{
         check::{gate, Check, Status},
         patch_plan::{DryRunStamp, PatchPlan, RestoreCode, PATCH_PLAN_SCHEMA_VERSION},
+        plan::WireSha256Digest,
     },
 };
 
@@ -31,7 +32,7 @@ struct DryRunReport {
     account_id: AccountId,
     sandbox_chain_id: String,
     target_code_hash: templar_gateway_types::CryptoHash,
-    state_digest: String,
+    state_digest: WireSha256Digest,
     transaction: tx::Batch,
     views: Vec<ViewCheckReport>,
     checks: Vec<Check>,
@@ -127,7 +128,7 @@ pub(super) async fn dry_run(ctx: CliContext, args: DryRun) -> Result<()> {
         account_id: plan.spec.account_id.clone(),
         sandbox_chain_id,
         target_code_hash: plan.target_code_hash,
-        state_digest: plan.state_digest.clone(),
+        state_digest: plan.state_digest,
         transaction: plan.batch.clone(),
         views,
         checks: checks.clone(),
@@ -143,7 +144,7 @@ pub(super) async fn dry_run(ctx: CliContext, args: DryRun) -> Result<()> {
         plan_digest: plan.unstamped_digest()?,
         sandbox_chain_id: report.sandbox_chain_id.clone(),
         target_code_hash: plan.target_code_hash,
-        state_digest: plan.state_digest.clone(),
+        state_digest: plan.state_digest,
         checks,
     };
     plan.dry_run = Some(stamp);

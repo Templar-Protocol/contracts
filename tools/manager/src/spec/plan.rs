@@ -11,7 +11,8 @@ use anyhow::Context as _;
 use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
 use near_api::types::NearToken;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest as _, Sha256};
 use templar_gateway_core::{OperationPlan, PlannedTransaction};
 use templar_gateway_types::{primitive::PublicKey, Base64Bytes, ManagedAccountId, NearGas};
 
@@ -257,12 +258,81 @@ impl PlanFile {
 /// changed under a completed step.
 pub const DIGEST_FORMAT: &str = "sha256-wire";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WireSha256Digest(pub [u8; 32]);
+
+impl std::fmt::Display for WireSha256Digest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{DIGEST_FORMAT}:{}", hex::encode(self.0))
+    }
+}
+
+impl Serialize for WireSha256Digest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for WireSha256Digest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let Some(hex) = value.strip_prefix(&format!("{DIGEST_FORMAT}:")) else {
+            return Err(serde::de::Error::custom(format!(
+                "digest must start with `{DIGEST_FORMAT}:`"
+            )));
+        };
+        if hex.len() != 64 || hex.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            return Err(serde::de::Error::custom(
+                "digest must contain exactly 64 lowercase hex characters",
+            ));
+        }
+        let bytes = hex::decode(hex).map_err(serde::de::Error::custom)?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("digest must decode to exactly 32 bytes"))?;
+        Ok(Self(bytes))
+    }
+}
+
 /// `sha256-wire:…` over bytes.
-pub fn digest(bytes: &[u8]) -> String {
-    format!(
-        "{DIGEST_FORMAT}:{}",
-        templar_contract_artifacts::sha256_hex(bytes)
-    )
+#[must_use]
+pub fn digest(bytes: &[u8]) -> WireSha256Digest {
+    WireSha256Digest(Sha256::digest(bytes).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{digest, WireSha256Digest};
+
+    #[test]
+    fn wire_digest_round_trips_only_its_versioned_encoding() {
+        let digest = digest(b"abc");
+        assert_eq!(
+            serde_json::to_string(&digest).unwrap(),
+            r#""sha256-wire:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad""#
+        );
+        assert_eq!(
+            serde_json::from_str::<WireSha256Digest>(
+                r#""sha256-wire:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad""#
+            )
+            .unwrap(),
+            digest
+        );
+        assert!(serde_json::from_str::<WireSha256Digest>(
+            r#""sha256-json:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad""#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<WireSha256Digest>(
+            r#""sha256-wire:BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD""#
+        )
+        .is_err());
+    }
 }
 
 #[cfg(test)]

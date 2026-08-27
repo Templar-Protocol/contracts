@@ -46,7 +46,7 @@ struct SnapshotDigest<'a> {
 }
 
 impl StateSnapshot {
-    pub fn digest(&self) -> Result<String> {
+    pub fn digest(&self) -> Result<crate::spec::plan::WireSha256Digest> {
         let snapshot = SnapshotDigest {
             amount: self.amount.as_yoctonear(),
             locked: self.locked.as_yoctonear(),

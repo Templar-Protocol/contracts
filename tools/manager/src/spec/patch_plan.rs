@@ -9,6 +9,7 @@ use templar_gateway_types::CryptoHash;
 use super::{
     check::Check,
     patch::{PatchSpec, ResolvedPatch, Sha256Digest},
+    plan::WireSha256Digest,
 };
 
 pub const PATCH_PLAN_SCHEMA_VERSION: u32 = 3;
@@ -33,7 +34,7 @@ pub struct PatchPlan {
     pub public_key: PublicKey,
     pub patch_wasm_sha256: Sha256Digest,
     pub target_code_hash: CryptoHash,
-    pub state_digest: String,
+    pub state_digest: WireSha256Digest,
     pub restore: RestoreCode,
     pub batch: tx::Batch,
     pub unguarded: bool,
@@ -42,7 +43,7 @@ pub struct PatchPlan {
     pub dry_run: Option<DryRunStamp>,
 }
 impl PatchPlan {
-    pub fn unstamped_digest(&self) -> anyhow::Result<String> {
+    pub fn unstamped_digest(&self) -> anyhow::Result<WireSha256Digest> {
         let mut plan = self.clone();
         plan.dry_run = None;
         Ok(super::plan::digest(&serde_json::to_vec(&plan)?))
@@ -52,9 +53,9 @@ impl PatchPlan {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DryRunStamp {
-    pub plan_digest: String,
+    pub plan_digest: WireSha256Digest,
     pub sandbox_chain_id: String,
     pub target_code_hash: CryptoHash,
-    pub state_digest: String,
+    pub state_digest: WireSha256Digest,
     pub checks: Vec<Check>,
 }

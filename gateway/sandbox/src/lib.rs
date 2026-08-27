@@ -32,6 +32,8 @@ const STOCK_MAX_BLOCK_MS: u64 = 500;
 const FAST_FORWARD_BLOCK_MS: u64 = (STOCK_MIN_BLOCK_MS + STOCK_MAX_BLOCK_MS) / 2;
 const MIN_BLOCK_MS: u64 = 40;
 
+/// The high-balance genesis account used by sandbox harnesses. It reuses the
+/// default genesis keypair because shared test runs exhaust `sandbox`.
 pub const FUNDER_ACCOUNT_ID: &str = "funder";
 fn build_client(rpc_url: &str, timeout: Duration) -> JsonRpcClient {
     let mut headers = reqwest::header::HeaderMap::new();
