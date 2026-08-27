@@ -26,8 +26,14 @@ templar-manager
 sandbox_gateway_package := 'templar-gateway-service'
 sandbox_packages := sandbox_full_packages + "\n" + sandbox_gateway_package
 sandbox_package_filter := 'package(' + replace(sandbox_full_packages, "\n", ') | package(') + ')'
+# `kind(test)` reaches integration targets only, so a node-backed test written as
+# a unit test inside a lib or bin is routed by its name instead. Scoped to the
+# sandbox packages: elsewhere the name would drop the test from both gates,
+# since the node gate only lists these packages.
+sandbox_name_filter := 'test(/(^|::)requires_sandbox_/)'
+sandbox_unit_filter := '((' + sandbox_package_filter + ') & ' + sandbox_name_filter + ')'
 sandbox_gateway_filter := 'package(' + sandbox_gateway_package + ') & (test(/^rpc::tests::/) | test(/^gateway_service::tests::/))'
-sandbox_filter := '((kind(test) & (' + sandbox_package_filter + ')) | (' + sandbox_gateway_filter + '))'
+sandbox_filter := '((kind(test) & (' + sandbox_package_filter + ')) | ' + sandbox_unit_filter + ' | (' + sandbox_gateway_filter + '))'
 fast_filter := 'not ' + network_filter + ' and not ' + sandbox_filter
 sandbox_test_filter := 'not ' + network_filter + ' and ' + sandbox_filter
 sandbox_test_threads := '4'
