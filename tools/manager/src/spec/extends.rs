@@ -1,8 +1,8 @@
-//! Profile composition for [`super::MarketSpec`]: `extends` merges each listed
-//! file beneath the declaring one, in order, before a single deserialization.
+//! Profile composition for versioned TOML specs.
 //!
-//! Merged as [`toml::Value`] because a profile is a fragment — it does not
-//! satisfy `MarketSpec`'s required fields, so it cannot be deserialized first.
+//! Each file merges its `extends` chain beneath itself before one
+//! deserialization. [`toml::Value`] carries profile fragments that cannot
+//! satisfy a complete spec on their own.
 
 use std::{
     collections::BTreeSet,
@@ -10,57 +10,56 @@ use std::{
 };
 
 use anyhow::Context as _;
+use serde::{de::DeserializeOwned, Serialize};
 use toml::Value;
 
 use super::{MarketSpec, RawMarketSpec, SCHEMA_VERSION};
 
-/// Read `path`, resolve its `extends` chain, and deserialize the result.
 pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
+    let raw: RawMarketSpec = load_raw(
+        path,
+        SCHEMA_VERSION,
+        "market export",
+        " Schema 5 made every amount state its unit (`0.04 tokens`, `1 atom`), \
+         so a schema 4 file must be re-authored rather than renumbered.",
+    )?;
+    let mut spec = MarketSpec::try_from(raw)
+        .with_context(|| format!("invalid market spec {}", path.display()))?;
+    spec.extends.clear();
+    Ok(spec)
+}
+
+/// Read a versioned TOML spec after resolving its `extends` chain.
+///
+/// The caller owns conversion from the raw file shape into its domain model;
+/// this keeps profile composition and typo detection identical for every spec.
+pub fn load_raw<T>(
+    path: &Path,
+    schema_version: u32,
+    regenerate: &str,
+    migration_note: &str,
+) -> anyhow::Result<T>
+where
+    T: DeserializeOwned + Serialize,
+{
     let mut visiting = BTreeSet::new();
     let merged = resolve(path, &mut visiting)?;
 
-    // Read before deserializing. Every struct here is `deny_unknown_fields`, so
-    // a document from a newer build fails on the first field this one does not
-    // know — and the author reads "unknown field `x`" when the real answer is
-    // that their spec is a version this build cannot speak.
     if let Some(schema) = merged.get("schema").and_then(toml::Value::as_integer) {
         anyhow::ensure!(
-            schema == i64::from(SCHEMA_VERSION),
-            "{} declares schema {schema} but this build understands \
-             {SCHEMA_VERSION}. Re-generate it with `market export`, or use a \
-             build that speaks it. Schema 5 made every amount state its unit \
-             (`0.04 tokens`, `1 atom`), so a schema 4 file must be re-authored \
-             rather than renumbered.",
+            schema == i64::from(schema_version),
+            "{} declares schema {schema} but this build understands {schema_version}. \
+             Re-generate it with `{regenerate}`.{migration_note}",
             path.display(),
         );
     }
 
-    // Parsed in two steps, because the two failures are different. The raw shape
-    // is what the file states, so it is what an unread key is measured against;
-    // the conversion below is where a proxy that names no governance stops
-    // being expressible.
-    let raw: RawMarketSpec = merged
+    let raw: T = merged
         .clone()
         .try_into()
-        .with_context(|| format!("invalid market spec {}", path.display()))?;
+        .with_context(|| format!("invalid spec {}", path.display()))?;
     ensure_every_key_was_read(&merged, &raw, path)?;
-
-    let mut spec = MarketSpec::try_from(raw)
-        .with_context(|| format!("invalid market spec {}", path.display()))?;
-
-    // Unreachable via the check above unless `schema` was absent or not an
-    // integer, in which case deserialization has now produced the real value.
-    anyhow::ensure!(
-        spec.schema == SCHEMA_VERSION,
-        "{} declares schema {} but this build understands {SCHEMA_VERSION}",
-        path.display(),
-        spec.schema,
-    );
-
-    // The chain is fully applied; leaving the paths in would imply otherwise to
-    // anything that re-serializes the spec (e.g. `market export`).
-    spec.extends.clear();
-    Ok(spec)
+    Ok(raw)
 }
 
 /// Refuse a document carrying a key the spec did not take.
@@ -69,9 +68,9 @@ pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
 /// types they embed — `AmountRange`, the interest-rate strategies, the fees,
 /// `YieldWeights`. A typo in one of those deserializes to that field's default:
 /// `maximim` leaves a range unbounded and deploys.
-fn ensure_every_key_was_read(
+fn ensure_every_key_was_read<T: Serialize>(
     merged: &Value,
-    raw: &RawMarketSpec,
+    raw: &T,
     path: &Path,
 ) -> anyhow::Result<()> {
     let read = Value::try_from(raw).context("re-serialize the spec to find unread keys")?;
@@ -135,6 +134,7 @@ fn resolve(path: &Path, visiting: &mut BTreeSet<PathBuf>) -> anyhow::Result<Valu
         toml::from_str(&raw).with_context(|| format!("parse {} as TOML", canonical.display()))?;
 
     let parents = take_extends(&mut value, &canonical)?;
+    absolutize_file_paths(&mut value, &canonical);
 
     // Parents merge left to right, then the declaring file wins over all of
     // them — so a market can always override whatever a profile set.
@@ -170,6 +170,27 @@ fn take_extends(value: &mut Value, declaring_file: &Path) -> anyhow::Result<Vec<
                 .context("`extends` entries must be strings")
         })
         .collect()
+}
+
+fn absolutize_file_paths(value: &mut Value, declaring_file: &Path) {
+    match value {
+        Value::Table(table) => {
+            if let Some(Value::String(path)) = table.get_mut("file") {
+                let base = declaring_file.parent().unwrap_or(Path::new("."));
+                *path = base.join(&*path).to_string_lossy().into_owned();
+                return;
+            }
+            for (_, value) in table.iter_mut() {
+                absolutize_file_paths(value, declaring_file);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                absolutize_file_paths(value, declaring_file);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Merge `overlay` into `base`, with `overlay` winning, stopping at `[section]`
@@ -237,5 +258,27 @@ mod tests {
         let merged = Value::try_from(&spec).expect("a spec serializes");
 
         ensure_every_key_was_read(&merged, &spec, Path::new("m.toml")).expect("nothing is unread");
+    }
+
+    #[test]
+    fn file_paths_remain_relative_to_their_declaring_spec() {
+        let child = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/spec/patch/path-origin/child/child.toml");
+        let mut visiting = std::collections::BTreeSet::new();
+        let merged = super::resolve(&child, &mut visiting).expect("path fixture resolves");
+        assert_eq!(
+            merged["profile_entry"]["file"].as_str().unwrap(),
+            child
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("profile/same.bin")
+                .to_string_lossy()
+        );
+        assert_eq!(
+            merged["child_entry"]["file"].as_str().unwrap(),
+            child.parent().unwrap().join("same.bin").to_string_lossy()
+        );
     }
 }

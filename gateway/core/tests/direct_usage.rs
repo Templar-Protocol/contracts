@@ -15,6 +15,10 @@ use templar_gateway_types::{
     ContractMethodName, ManagedAccountId, NearGas,
 };
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the integration test exercises all immediate-read finality paths"
+)]
 #[tokio::test]
 async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> {
     // Share the harness's launch config so this owned node runs the same block
@@ -43,6 +47,24 @@ async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> 
         }),
     )
     .await?;
+
+    let near = NearClient::with_finality_policy(network.clone(), TEST_FINALITY_POLICY);
+    assert!(!near
+        .contract(ft_contract_id.clone())
+        .code()
+        .await?
+        .is_empty());
+    assert!(!near
+        .contract(ft_contract_id.clone())
+        .state_with_prefix(Vec::new())
+        .await?
+        .is_empty());
+
+    let limits = near.chain().protocol_limits().await?;
+    assert!(limits.max_transaction_size > 0);
+    assert!(limits.max_total_prepaid_gas.as_gas() > 0);
+    assert!(limits.max_length_storage_key > 0);
+    assert!(limits.max_length_storage_value > 0);
 
     let transaction_signer = NearTransactionSigner::new(
         network.clone(),

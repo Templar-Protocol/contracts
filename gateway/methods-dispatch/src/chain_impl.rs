@@ -14,3 +14,13 @@ impl<C: HasNearClient> DispatchRead<chain::GetBlock, C> for Dispatch {
         ctx.near_client().chain().block(request.block_hash).await
     }
 }
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<chain::GetProtocolLimits, C> for Dispatch {
+    async fn dispatch(
+        _request: chain::GetProtocolLimits,
+        ctx: C,
+    ) -> GatewayResult<templar_gateway_types::ProtocolLimits> {
+        ctx.near_client().chain().protocol_limits().await
+    }
+}

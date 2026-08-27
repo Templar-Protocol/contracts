@@ -8,8 +8,8 @@ use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
 
 use super::commands::signer::SignerArgs;
 use super::commands::{
-    AccountNs, ContractNs, FtNs, MarketNs, OracleNs, OwnerNs, ProxyOracleNs, PythNs, RecoverNep141,
-    RedstoneNs, RegistryNs, SpecNs, StorageNs,
+    AccountNs, ContractNs, FtNs, MarketNs, OracleNs, OwnerNs, PatchNs, ProxyOracleNs, PythNs,
+    RecoverNep141, RedstoneNs, RegistryNs, SpecNs, StorageNs,
 };
 
 #[derive(Parser, Debug)]
@@ -149,6 +149,11 @@ pub enum Command {
     Redstone {
         #[command(subcommand)]
         command: RedstoneNs,
+    },
+    /// Plan and atomically apply guarded contract-storage patches.
+    Patch {
+        #[command(subcommand)]
+        command: PatchNs,
     },
     /// Recover a NEP-141 balance from the signer to a beneficiary and unregister storage.
     RecoverNep141(RecoverNep141),

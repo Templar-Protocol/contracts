@@ -1,4 +1,4 @@
-# Deploying a market
+# Deployment specs and state patches
 
 A market is described by one spec file and deployed in two commands. There is
 no shell script: the spec is the source of truth, and everything that used to
@@ -144,3 +144,58 @@ typo would otherwise silently suppress nothing. Available on `spec check`,
 interrupted, re-running it skips what completed and continues from the first
 incomplete step. A plan truncated to its completed prefix is refused rather than
 reported complete: the re-derivation runs before the journal is consulted.
+
+## Patching contract storage
+
+`tmplrmgr patch` builds one atomic transaction for a contract whose full-access
+key is still held: deploy the pinned PatchState WASM, apply guarded storage
+operations, then restore the exact local code or global-contract linkage.
+
+```sh
+tmplrmgr patch plan deployments/patches/<account>/<date>-<slug>.toml \
+  --out patch-plan.json --network mainnet \
+  --signer-id <account> --public-key ed25519:…
+tmplrmgr patch apply --plan patch-plan.json \
+  --network mainnet --signer-id <account> --sign-with keychain
+```
+
+Authored `set` and single-key `remove` operations should state `expect`. Use
+`expect = "absent"` for a fresh key; it compiles to an in-receipt absence guard
+without making other operations unguarded. Prefix deletes omit it: planning
+enumerates the matching keys and adds an expectation for every concrete removal.
+A prefix that matches no keys is rejected. `--allow-unguarded` is an explicit,
+repeated override for an unguarded set or single-key removal.
+
+Keys and values use `utf8`, `hex`, `base64`, `file`, `concat`, `sha256`, `json`,
+or `borsh` byte expressions. `file` is relative to the spec that names it.
+`patch codecs` lists readable Borsh types; types without a JSON deserializer and
+lossy types such as `Decimal` are deliberately absent. `base64` and `file`
+remain the exact-byte escape hatches.
+
+`tools/manager/fixtures/spec/patch/patches/target.near/2026-08-25-syntax.toml`
+is the tested syntax reference. It composes a profile-relative blob, Borsh
+values, hashed collection keys, base64 and hex values, JSON bytes, checks, and
+prefix deletion; its focused test prevents the documented forms from drifting.
+
+Prefix deletes are expanded from chain state while planning. The generated plan
+therefore lists every concrete key and its in-receipt expectation; a prefix too
+large for `view_state`, or a prefix that matches no keys, fails planning rather
+than producing a partial or silent delete. The plan re-reads live restore identity
+and protocol transaction-size, prepaid-gas, storage-key, and storage-value limits,
+then locally compares key/value lengths against those limits and checks peak
+temporary storage.
+`patch apply` re-reads absolute `file` references during plan re-derivation from
+the canonical source path embedded in the plan. The plan and referenced files
+must remain on the same machine at their original paths. Missing, moved, or
+changed bytes abort re-derivation before send.
+
+This is a privileged authorization checklist:
+
+- Confirm the target account, full-access signer, and plan public key.
+- Inspect the released PatchState 0.1.0 artifact and pinned SHA-256.
+- Confirm the batch receiver, spec target, and PatchState payload account match.
+- Verify the apply-time restore identity and resolved-state re-derivation checks.
+- Authorize only after the complete arbitrary-storage write is understood.
+
+`patch apply` does not perform local replay or post-patch health checks. Review
+the plan and reported preflight before authorizing it.

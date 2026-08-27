@@ -1,0 +1,5 @@
+schema = 2
+
+[profile_entry]
+file = "same.bin"
+sibling = "profile"

@@ -1,0 +1,6 @@
+schema = 2
+extends = ["../profile/profile.toml"]
+
+[child_entry]
+file = "same.bin"
+sibling = "child"

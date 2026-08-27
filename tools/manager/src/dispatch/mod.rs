@@ -8,6 +8,7 @@ mod aggregate;
 pub(crate) mod export;
 mod funding;
 pub(crate) mod generic;
+mod patch;
 pub(crate) mod plan;
 mod preflight;
 mod proposals;
@@ -24,6 +25,7 @@ use crate::commands::{
     market::MarketNs,
     oracle::OracleNs,
     owner::OwnerNs,
+    patch::PatchNs,
     proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs},
     pyth::PythNs,
     redstone::RedstoneNs,
@@ -64,6 +66,7 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
         Command::Oracle { command } => oracle(ctx, command).await,
         Command::Pyth { command } => pyth(ctx, command).await,
         Command::Redstone { command } => redstone(ctx, command).await,
+        Command::Patch { command } => patch(ctx, command).await,
         Command::Spec { command } => spec(ctx, command).await,
         Command::RecoverNep141(args) => teardown::recover_nep141(ctx, args).await,
         Command::Read(call) => generic::read(ctx, call).await,
@@ -78,6 +81,14 @@ async fn spec(ctx: CliContext, ns: SpecNs) -> anyhow::Result<()> {
     }
 }
 
+async fn patch(ctx: CliContext, ns: PatchNs) -> anyhow::Result<()> {
+    match ns {
+        PatchNs::Plan(args) => patch::plan(ctx, args).await,
+        PatchNs::Apply(args) => patch::apply(ctx, args).await,
+        PatchNs::Codecs => crate::commands::patch::print_codecs(),
+        PatchNs::PrintSchema => crate::commands::patch::print_schema(),
+    }
+}
 async fn account(ctx: CliContext, ns: AccountNs) -> anyhow::Result<()> {
     match ns {
         AccountNs::Get(a) => ctx.read(a.into_spec()).await,

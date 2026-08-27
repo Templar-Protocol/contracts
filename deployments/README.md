@@ -1,10 +1,13 @@
-# Deployment specs
+# Deployment and patch specs
 
-One TOML file per deployed market, grouped by registry:
+Market specs are grouped by registry:
 
 - `alpha/` — markets under `templar-alpha.near`
 - `v1/` — markets under `v1.tmplr.near`
 - `profiles/` — fragments markets share through `extends`
+
+State-patch specs are grouped by target account under
+`patches/<account>/` and named `<date>-<slug>.toml`.
 
 A market states only what is specific to it; everything shared comes from the
 profiles it extends, in order, with the market itself winning over all of them.
