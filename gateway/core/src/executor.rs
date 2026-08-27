@@ -593,6 +593,23 @@ mod tests {
         );
     }
 
+    /// Tolerating unknown fields is the point: this parser exists to read what
+    /// the full one rejected, so refusing a field the full parser did not know
+    /// would defeat it — and would silently disable pending detection the next
+    /// time a node adds one. Both readings leave the step submitted, so the
+    /// tolerance costs no correctness.
+    #[tokio::test]
+    async fn an_unknown_field_beside_a_pending_status_is_still_pending() {
+        let primary = responding_with(
+            r#"{"jsonrpc":"2.0","id":"0","result":{"final_execution_status":"NONE","added_by_a_later_node":1}}"#,
+        )
+        .await;
+
+        let record = query(&executor_over(&[&primary], None)).await.unwrap();
+
+        assert!(matches!(record, TransactionRecord::Pending));
+    }
+
     /// A malformed body is not a pending answer.
     #[tokio::test]
     async fn an_undeserializable_response_is_an_error_not_pending() {
