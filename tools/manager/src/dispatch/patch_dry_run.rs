@@ -68,7 +68,7 @@ pub(super) async fn dry_run(ctx: CliContext, args: DryRun) -> Result<()> {
         plan.spec.clone(),
         plan.signer_id.clone(),
         plan.public_key,
-        plan.unguarded,
+        args.allow_unguarded,
         Some(&plan.restore),
         &mut reporter,
     )

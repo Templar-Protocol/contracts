@@ -91,7 +91,13 @@ impl ChainClient<'_> {
                         JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant0 {
                             result,
                             ..
-                        } => return protocol_limits_from_response(result),
+                        } => match protocol_limits_from_response(result) {
+                            Ok(limits) => return Ok(limits),
+                            Err(error) => {
+                                last_error = Some(error.to_string());
+                                continue 'endpoint;
+                            }
+                        },
                         JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant1 {
                             error,
                             ..
@@ -230,6 +236,44 @@ mod tests {
             }
         );
         assert_eq!(rejected.received_requests().await.unwrap().len(), 1);
+        assert_eq!(successful.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn incomplete_protocol_response_fails_over_to_next_endpoint() {
+        let incomplete = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    r#"{"jsonrpc":"2.0","id":"0","result":{"runtime_config":{}}}"#,
+                ),
+            )
+            .mount(&incomplete)
+            .await;
+        let successful = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(LIMITS_RESPONSE))
+            .mount(&successful)
+            .await;
+
+        let mut network = NetworkConfig::from_rpc_url("test", incomplete.uri().parse().unwrap());
+        network.rpc_endpoints[0] =
+            RPCEndpoint::new(incomplete.uri().parse().unwrap()).with_retries(0);
+        network
+            .rpc_endpoints
+            .push(RPCEndpoint::new(successful.uri().parse().unwrap()).with_retries(0));
+        let client = crate::NearClient::new(network);
+
+        assert_eq!(
+            client
+                .chain()
+                .protocol_limits()
+                .await
+                .unwrap()
+                .max_transaction_size,
+            123
+        );
+        assert_eq!(incomplete.received_requests().await.unwrap().len(), 1);
         assert_eq!(successful.received_requests().await.unwrap().len(), 1);
     }
 

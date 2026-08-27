@@ -1,3 +1,4 @@
+# Dry-run-only state health checks; `patch apply` rejects plans with no operations.
 schema = 3
 account_id = "proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near"
 

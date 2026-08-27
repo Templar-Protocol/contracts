@@ -222,15 +222,22 @@ mod tests {
         let loaded = crate::spec::patch::PatchSpec::load(&spec_path).unwrap();
         let resolved = loaded.resolve(&spec_path).unwrap();
         assert_eq!(loaded.schema, 3);
-        assert_eq!(resolved.operations.len(), 2);
         assert_eq!(
-            resolved.operations[0],
-            crate::spec::patch::ResolvedOperation::Expect {
-                key: templar_gateway_types::Base64Bytes(vec![1]),
-                expected: crate::spec::patch::ResolvedExpectation::Bytes(
-                    templar_gateway_types::Base64Bytes(vec![3])
-                ),
-            }
+            resolved.operations,
+            vec![
+                crate::spec::patch::ResolvedOperation::Expect {
+                    key: templar_gateway_types::Base64Bytes(vec![1]),
+                    expected: crate::spec::patch::ResolvedExpectation::Bytes(
+                        templar_gateway_types::Base64Bytes(vec![3])
+                    ),
+                },
+                crate::spec::patch::ResolvedOperation::Expect {
+                    key: templar_gateway_types::Base64Bytes(vec![2]),
+                    expected: crate::spec::patch::ResolvedExpectation::Bytes(
+                        templar_gateway_types::Base64Bytes(vec![4, 5])
+                    ),
+                },
+            ]
         );
         fs::remove_dir_all(root).unwrap();
     }

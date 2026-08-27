@@ -39,10 +39,11 @@ use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{market_configuration, test_signer::TestSigner, vault_configuration};
 
 use crate::{wasm::PoolInfo, TEST_FINALITY_POLICY};
+pub use templar_sandbox::sandbox_config;
+use templar_sandbox::FUNDER_ACCOUNT_ID;
 
 /// The two token ids the mock NEP-245 contract (`crate::wasm::mt`) pre-creates
 /// in its `new`; a market's MT borrow/collateral asset must reference these.
-pub use templar_sandbox::sandbox_config;
 const MT_BORROW_TOKEN_ID: &str = "mt_borrow";
 const MT_COLLATERAL_TOKEN_ID: &str = "mt_collateral";
 
@@ -1133,7 +1134,6 @@ fn attach_rpc_url() -> Result<Option<String>> {
 /// accounts that outlive it. This account is seeded with a very large balance so
 /// the shared node never runs dry. It reuses the default genesis keypair, so the
 /// existing genesis signer can sign for it.
-pub(crate) const FUNDER_ACCOUNT_ID: &str = "funder";
 
 /// Create `account_id` as a sub-account of `funder_id`, funded with `balance`
 /// and a full-access key derived from `secret_key`, signed by `funder_signer`.

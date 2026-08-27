@@ -7,7 +7,7 @@ use near_primitives::{
     state_record::StateRecord,
 };
 use near_token::NearToken;
-pub(crate) use templar_sandbox::{fast_forward, patch_data, patch_records, wait_until_final};
+use templar_sandbox::{patch_records, wait_until_final};
 
 const ACCOUNT_STORAGE_USAGE: u64 = 182;
 

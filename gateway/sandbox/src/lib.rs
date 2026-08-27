@@ -32,6 +32,7 @@ const STOCK_MAX_BLOCK_MS: u64 = 500;
 const FAST_FORWARD_BLOCK_MS: u64 = (STOCK_MIN_BLOCK_MS + STOCK_MAX_BLOCK_MS) / 2;
 const MIN_BLOCK_MS: u64 = 40;
 
+pub const FUNDER_ACCOUNT_ID: &str = "funder";
 fn build_client(rpc_url: &str, timeout: Duration) -> JsonRpcClient {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
@@ -75,7 +76,8 @@ pub async fn patch_data(
     patch_records(network, records).await
 }
 
-/// Patch raw state records in the sandbox.
+/// State patches are optimistic; call [`wait_until_final`] before signing with a
+/// patched key, because near-api reads signer keys at `Final`.
 pub async fn patch_records(network: &NetworkConfig, records: Vec<StateRecord>) -> Result<()> {
     client(network)
         .call(RpcSandboxPatchStateRequest { records })
@@ -93,7 +95,8 @@ pub async fn fast_forward(network: &NetworkConfig, delta_height: u64) -> Result<
     Ok(())
 }
 
-/// Block until the patched key is visible at final finality.
+/// Wait for a patched key to reach `Final` before using it to sign, with bounded
+/// backoff to avoid amplifying an overloaded sandbox node.
 pub async fn wait_until_final(
     network: &NetworkConfig,
     account_id: &AccountId,
@@ -138,7 +141,7 @@ pub fn sandbox_config() -> SandboxConfig {
             .unwrap_or_else(|error| panic!("sandbox config serializes: {error}")),
         ),
         additional_accounts: vec![GenesisAccount {
-            account_id: "funder"
+            account_id: FUNDER_ACCOUNT_ID
                 .parse()
                 .unwrap_or_else(|error| panic!("funder account id is valid: {error}")),
             public_key: DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY.to_string(),

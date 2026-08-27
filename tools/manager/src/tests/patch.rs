@@ -390,6 +390,7 @@ async fn patch_dry_run_replays_proxy_v0_to_v1() -> Result<()> {
             command: crate::commands::patch::PatchNs::DryRun(crate::commands::patch::DryRun {
                 plan: plan_path.clone(),
                 skip_check: Vec::new(),
+                allow_unguarded: false,
             }),
         },
     };

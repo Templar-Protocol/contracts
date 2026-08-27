@@ -91,6 +91,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         "patch plan schema {} is unsupported; re-run `patch plan`",
         plan.schema
     );
+    ensure_patch_has_operations(&plan)?;
     anyhow::ensure!(
         args.signer.account_id().0 == plan.signer_id,
         "patch plan expects signer `{}`, but apply uses `{}`",
@@ -152,6 +153,14 @@ fn ensure_patch_signer(
     anyhow::ensure!(
         signer_id == target_id,
         "patch signer `{signer_id}` must equal target `{target_id}`"
+    );
+    Ok(())
+}
+
+fn ensure_patch_has_operations(plan: &PatchPlan) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !plan.resolved.operations.is_empty(),
+        "patch plan contains no storage operations and cannot be applied"
     );
     Ok(())
 }
@@ -238,11 +247,24 @@ fn validate_dry_run_stamp(
     if stamp.checks.iter().any(|check| check.status.is_failure()) {
         return Ok(Status::failed("dry-run stamp contains a failed check"));
     }
+    let skipped = stamp
+        .checks
+        .iter()
+        .filter(|check| matches!(check.status, Status::Skipped { .. }))
+        .map(|check| check.id.as_str())
+        .collect::<Vec<_>>();
     match stamp.checks.last() {
         Some(Check {
             status: Status::Passed { .. },
             ..
-        }) => Ok(Status::passed("completed dry-run stamp matches this plan")),
+        }) if skipped.is_empty() => Ok(Status::passed("completed dry-run stamp matches this plan")),
+        Some(Check {
+            status: Status::Passed { .. },
+            ..
+        }) => Ok(Status::failed(format!(
+            "dry-run stamp skipped {}; re-run `patch dry-run` without --skip-check",
+            skipped.join(", ")
+        ))),
         _ => Ok(Status::failed(
             "dry-run stamp does not contain a passed patch.dry_run check",
         )),
@@ -737,14 +759,15 @@ fn status(passed: bool, detail: impl Into<String>) -> Status {
 #[cfg(test)]
 mod tests {
     use super::{
-        compile_patch, ensure_patch_signer, expand_prefix_entries, peak_storage_bytes,
-        restore_from_state, restore_identity_matches, restore_mode_matches, set_storage_increase,
-        signed_transaction_wire_size, status, total_prepaid_gas, validate_dry_run_stamp, Op,
-        StateSnapshot,
+        compile_patch, ensure_patch_has_operations, ensure_patch_signer, expand_prefix_entries,
+        peak_storage_bytes, restore_from_state, restore_identity_matches, restore_mode_matches,
+        set_storage_increase, signed_transaction_wire_size, status, total_prepaid_gas,
+        validate_dry_run_stamp, Op, StateSnapshot,
     };
     use crate::spec::check::{Check, Status};
     use crate::spec::patch::{
-        PatchSpec, ResolvedExpectation, ResolvedOperation, ResolvedPatch, Sha256Digest,
+        PatchCheck, PatchSpec, PatchViewCheck, ResolvedExpectation, ResolvedOperation,
+        ResolvedPatch, Sha256Digest,
     };
     use crate::spec::patch_plan::{DryRunStamp, PatchPlan, RestoreCode};
     use near_account_id::AccountId;
@@ -991,6 +1014,15 @@ mod tests {
     }
 
     #[test]
+    fn empty_patch_plan_cannot_be_applied() {
+        let error = ensure_patch_has_operations(&stamp_plan()).expect_err("empty patch rejected");
+        assert_eq!(
+            error.to_string(),
+            "patch plan contains no storage operations and cannot be applied"
+        );
+    }
+
+    #[test]
     fn dry_run_stamp_is_bound_to_unstamped_plan() {
         let mut plan = stamp_plan();
         let digest = plan.unstamped_digest().unwrap();
@@ -1019,6 +1051,42 @@ mod tests {
         assert!(validate_dry_run_stamp(&plan, &[], false)
             .unwrap()
             .is_failure());
+    }
+
+    #[test]
+    fn dry_run_stamp_rejects_skipped_view_checks() {
+        let mut plan = stamp_plan();
+        plan.spec.checks.push(PatchCheck::View(PatchViewCheck {
+            method_name: "view".to_owned().into(),
+            args: serde_json::Value::Null,
+            expect: None,
+        }));
+        let preflight = vec![Check::new(
+            "patch.network",
+            Status::passed("network matches"),
+        )];
+        plan.dry_run = Some(DryRunStamp {
+            plan_digest: plan.unstamped_digest().unwrap(),
+            sandbox_chain_id: "sandbox".to_owned(),
+            target_code_hash: plan.target_code_hash,
+            state_digest: plan.state_digest.clone(),
+            checks: vec![
+                preflight[0].clone(),
+                Check::new(
+                    "patch.view.0",
+                    Status::Skipped {
+                        reason: "operator skipped view".to_owned(),
+                    },
+                ),
+                Check::new("patch.dry_run", Status::passed("sandbox batch succeeded")),
+            ],
+        });
+        let status = validate_dry_run_stamp(&plan, &preflight, false).unwrap();
+        assert!(status.is_failure());
+        assert!(matches!(
+            status,
+            Status::Failed { detail } if detail.contains("patch.view.0")
+        ));
     }
 
     #[test]

@@ -151,19 +151,20 @@ reported complete: the re-derivation runs before the journal is consulted.
 key is still held: deploy the pinned PatchState WASM, apply guarded storage
 operations, then restore the exact local code or global-contract linkage.
 
-Export the complete, block-pinned state before authoring guards:
+Export complete, block-pinned contract storage before authoring guards:
 
 ```sh
 tmplrmgr patch export <account> --out deployments/patches/<account>/<date>-<slug>.toml \
   --network mainnet
 ```
 
-The export writes schema-3 TOML and a sibling `<stem>.blobs/` directory. Values
-are stored as deterministic files named from the SHA-256 of their raw keys.
-Existing spec or blob paths are never overwritten. A `patch.state_complete`
-check reports whether the trie fit in one request or required widening
-one-byte prefixes; incomplete or conservatively unaccountable state aborts
-without creating output.
+The export writes every contract-storage entry as schema-3 TOML and a sibling
+`<stem>.blobs/` directory. Values are stored as deterministic files named from
+the SHA-256 of their raw keys. Planning separately re-fetches the pinned account
+metadata, access keys, code, and contract linkage. Existing spec or blob paths
+are never overwritten. A `patch.state_complete` check reports whether the trie
+fit in one request or required widening one-byte prefixes; incomplete or
+conservatively unaccountable state aborts without creating output.
 
 Review and build the plan:
 
@@ -188,8 +189,8 @@ transaction, target code hash, every before/after view result, JSON diff, and
 check verdict. Reporter output, progress, diagnostics, and the digest go to
 stderr. Keep stdout dedicated to the report when piping it to review tooling.
 The completed replay is stamped into the same plan only when every replay check
-passes. The stamp binds the plan digest, semantic complete-state digest, sandbox
-chain ID, target code hash, and verdicts.
+passes. The stamp binds the plan digest, semantic complete-state digest, target
+code hash, and verdicts; it records the sandbox chain ID for review context.
 
 Apply only after reviewing both the plan and stamped replay:
 
@@ -215,6 +216,10 @@ preflight checks still run. Prefix deletes are expanded from one verified full
 snapshot and retain an in-receipt expectation for every concrete removal.
 Accounts containing record kinds the accounting reader cannot enumerate are
 rejected rather than silently treated as complete.
+
+The plan is not self-contained: apply re-reads its canonical source spec and
+referenced files at their original paths. Dry-run views are sandbox evidence;
+check the live account separately after apply.
 
 Schema-2 storage-only specs are not accepted. Review the authored operations
 and checks, set `schema = 3`, then rerun `tmplrmgr patch plan`; alternatively,

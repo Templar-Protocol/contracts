@@ -212,16 +212,15 @@ where
     let mut request_count = 0;
 
     while !pending.is_empty() {
-        let responses = stream::iter(pending.into_iter().map(|prefix| async {
-            let result = fetch(prefix.clone()).await;
-            (prefix, result)
-        }))
-        .buffer_unordered(STATE_READ_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await;
-        pending = Vec::new();
+        let mut responses = stream::iter(std::mem::take(&mut pending).into_iter().map(
+            |prefix| async {
+                let result = fetch(prefix.clone()).await;
+                (prefix, result)
+            },
+        ))
+        .buffer_unordered(STATE_READ_CONCURRENCY);
 
-        for (prefix, result) in responses {
+        while let Some((prefix, result)) = responses.next().await {
             request_count += 1;
             match result {
                 Ok(values) => entries.extend(values),
@@ -279,8 +278,8 @@ fn verify_storage_usage(
             _ => u128::from(contract.identifier_storage_usage()),
         };
     for (public_key, access_key) in keys {
-        accounted += u128::try_from(borsh::to_vec(public_key)?.len())?;
-        accounted += u128::try_from(borsh::to_vec(access_key)?.len())?;
+        accounted += u128::try_from(borsh::object_length(public_key)?)?;
+        accounted += u128::try_from(borsh::object_length(access_key)?)?;
         accounted += u128::from(limits.num_extra_bytes_record);
     }
     for entry in entries {
