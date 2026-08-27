@@ -13,11 +13,8 @@ use near_api::{
     Account, Contract, NetworkConfig, SecretKey, Signer,
 };
 use near_sandbox::{
-    config::{
-        DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY,
-        DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY,
-    },
-    GenesisAccount, Sandbox, SandboxConfig,
+    config::{DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY},
+    Sandbox,
 };
 use near_token::NearToken;
 use templar_common::{
@@ -42,6 +39,8 @@ use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{market_configuration, test_signer::TestSigner, vault_configuration};
 
 use crate::{wasm::PoolInfo, TEST_FINALITY_POLICY};
+pub use templar_sandbox::sandbox_config;
+use templar_sandbox::FUNDER_ACCOUNT_ID;
 
 /// The two token ids the mock NEP-245 contract (`crate::wasm::mt`) pre-creates
 /// in its `new`; a market's MT borrow/collateral asset must reference these.
@@ -1126,95 +1125,6 @@ fn attach_rpc_url() -> Result<Option<String>> {
         }
     }
     Ok(std::env::var("NEAR_SANDBOX_RPC_URL").ok())
-}
-
-/// The high-balance genesis account every harness funds its accounts from.
-///
-/// The default genesis `sandbox` account holds only 10_000 NEAR — a long run
-/// against one shared node exhausts it, because each test locks funds in
-/// accounts that outlive it. This account is seeded with a very large balance so
-/// the shared node never runs dry. It reuses the default genesis keypair, so the
-/// existing genesis signer can sign for it.
-pub(crate) const FUNDER_ACCOUNT_ID: &str = "funder";
-
-/// `neard init --fast` block production delays, which every measurement of the
-/// stock configuration was taken against.
-const STOCK_MIN_BLOCK_MS: u64 = 120;
-const STOCK_MAX_BLOCK_MS: u64 = 500;
-
-/// Simulated time `sandbox_fast_forward` credits per block: nearcore's
-/// `Client::sandbox_delta_time` advances the chain clock by
-/// `delta_height × avg(min_block_production_delay, max_block_production_delay)`.
-/// Every `fast_forward`-driven test was written against the stock average, so it
-/// is held fixed while the real cadence changes.
-const FAST_FORWARD_BLOCK_MS: u64 = (STOCK_MIN_BLOCK_MS + STOCK_MAX_BLOCK_MS) / 2;
-
-/// Real block cadence. A sandbox is a single validator, so it approves its own
-/// blocks immediately and produces the next one as soon as this delay elapses —
-/// which makes it the floor under every node-backed test (a transaction awaited
-/// at optimistic finality costs two blocks, a wait for final costs three).
-const MIN_BLOCK_MS: u64 = 40;
-
-/// Block cadence for launched nodes as `(min, max)` production delays in
-/// milliseconds.
-///
-/// `min` is the real cadence (above); `NEAR_SANDBOX_BLOCK_MS` overrides it so a
-/// constrained runner can be tuned without a code change. `max` is the timeout
-/// for waiting on approvals from *other* validators — there are none, so it
-/// never fires and costs no wall-clock time. It is derived to hold the average,
-/// and hence [`FAST_FORWARD_BLOCK_MS`], fixed: lowering the real cadence must not
-/// quietly shorten what a `fast_forward(N)` simulates.
-fn block_delays_ms() -> (u64, u64) {
-    let min = match std::env::var("NEAR_SANDBOX_BLOCK_MS") {
-        // A malformed override must fail loudly, not silently fall back to the
-        // fast default: CI pins this precisely because the fast cadence is
-        // unreliable on a contended runner, so a typo'd value quietly restoring
-        // it would resurface as flaky finality errors rather than a config error.
-        Ok(value) => value
-            .trim()
-            .parse::<u64>()
-            .unwrap_or_else(|_| {
-                panic!(
-                    "NEAR_SANDBOX_BLOCK_MS must be a whole number of milliseconds, got `{value}`"
-                )
-            })
-            .clamp(1, FAST_FORWARD_BLOCK_MS),
-        Err(_) => MIN_BLOCK_MS,
-    };
-    (min, 2 * FAST_FORWARD_BLOCK_MS - min)
-}
-
-/// Sandbox launch config shared by owned mode ([`SandboxHarness::start_owned`]) and the out-of-band
-/// host (`bin/sandbox-host.rs`), so both nodes seed the `FUNDER_ACCOUNT_ID`
-/// account identically and run the same block cadence.
-#[must_use]
-pub fn sandbox_config() -> SandboxConfig {
-    let (min_block_ms, max_block_ms) = block_delays_ms();
-    SandboxConfig {
-        additional_config: Some(serde_json::json!({
-            "consensus": {
-                "min_block_production_delay": duration_json(min_block_ms),
-                "max_block_production_delay": duration_json(max_block_ms),
-            }
-        })),
-        additional_accounts: vec![GenesisAccount {
-            account_id: FUNDER_ACCOUNT_ID
-                .parse()
-                .expect("funder account id is valid"),
-            public_key: DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY.to_string(),
-            private_key: DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.to_string(),
-            balance: NearToken::from_near(100_000_000),
-        }],
-        ..SandboxConfig::default()
-    }
-}
-
-/// A `neard` config duration, which is serialized as seconds plus nanoseconds.
-fn duration_json(ms: u64) -> serde_json::Value {
-    serde_json::json!({
-        "secs": ms / 1_000,
-        "nanos": (ms % 1_000) * 1_000_000,
-    })
 }
 
 /// Create `account_id` as a sub-account of `funder_id`, funded with `balance`

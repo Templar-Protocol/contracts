@@ -9,6 +9,9 @@ pub(crate) mod export;
 mod funding;
 pub(crate) mod generic;
 mod patch;
+mod patch_dry_run;
+mod patch_export;
+mod patch_state;
 pub(crate) mod plan;
 mod preflight;
 mod proposals;
@@ -84,7 +87,9 @@ async fn spec(ctx: CliContext, ns: SpecNs) -> anyhow::Result<()> {
 async fn patch(ctx: CliContext, ns: PatchNs) -> anyhow::Result<()> {
     match ns {
         PatchNs::Plan(args) => patch::plan(ctx, args).await,
+        PatchNs::DryRun(args) => patch_dry_run::dry_run(ctx, args).await,
         PatchNs::Apply(args) => patch::apply(ctx, args).await,
+        PatchNs::Export(args) => patch_export::export(ctx, args).await,
         PatchNs::Codecs => crate::commands::patch::print_codecs(),
         PatchNs::PrintSchema => crate::commands::patch::print_schema(),
     }

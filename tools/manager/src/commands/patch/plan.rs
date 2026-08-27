@@ -38,6 +38,9 @@ pub struct Apply {
     /// Permit a plan that contains an unguarded mutation.
     #[arg(long)]
     pub(crate) allow_unguarded: bool,
+    /// Bypass the required completed dry-run stamp.
+    #[arg(long)]
+    pub(crate) no_dry_run: bool,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,
 }

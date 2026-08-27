@@ -47,6 +47,15 @@ impl CliContext {
     pub(crate) const fn network(&self) -> Network {
         self.selected_network
     }
+    pub(crate) fn network_config(&self) -> &NetworkConfig {
+        &self.network
+    }
+    pub(crate) fn final_client(&self) -> anyhow::Result<Client> {
+        Client::builder(self.network.clone())
+            .finality_policy(templar_gateway_core::FinalityPolicy::Final)
+            .build()
+            .context("build final-state gateway client")
+    }
 
     /// A reporter for this run's human output, carrying the ids to suppress.
     pub(crate) fn reporter(&self, skip: &[String]) -> crate::report::Reporter {

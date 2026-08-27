@@ -1,64 +1,15 @@
-//! Sandbox-only JSON-RPC that neither the gateway nor near-api wraps:
-//! `sandbox_patch_state` (used to mint test accounts far more cheaply than a real
-//! `CreateAccount` transaction) and `sandbox_fast_forward`. All raw-RPC access is
-//! confined to this module.
-
-use std::time::Duration;
+//! Sandbox account-minting policy built on the reusable raw sandbox primitives.
 
 use anyhow::{Context, Result};
 use near_api::{types::AccountId, NetworkConfig, SecretKey};
-use near_jsonrpc_client::{
-    methods::{
-        query::RpcQueryRequest, sandbox_fast_forward::RpcSandboxFastForwardRequest,
-        sandbox_patch_state::RpcSandboxPatchStateRequest, status::RpcStatusRequest,
-    },
-    JsonRpcClient,
-};
 use near_primitives::{
     account::{AccessKey, Account as ChainAccount, AccountContract},
     state_record::StateRecord,
-    types::{BlockReference, Finality, StoreKey, StoreValue},
-    views::QueryRequest,
 };
 use near_token::NearToken;
+use templar_sandbox::{patch_records, wait_until_final};
 
-/// Storage bytes for an account holding one ed25519 full-access key:
-/// `num_bytes_account` 100 + borsh public key 33 + borsh `AccessKey` 9 +
-/// `num_extra_bytes_record` 40.
 const ACCOUNT_STORAGE_USAGE: u64 = 182;
-
-const RPC_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// A JSON-RPC client for `rpc_url` carrying `timeout` — `connect`'s default sets
-/// none — with the content-type header the node needs (it answers 415 without
-/// it).
-fn build_client(rpc_url: &str, timeout: Duration) -> JsonRpcClient {
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        reqwest::header::HeaderValue::from_static("application/json"),
-    );
-    let http = reqwest::Client::builder()
-        .timeout(timeout)
-        .default_headers(headers)
-        .build()
-        .expect("reqwest client builds");
-    JsonRpcClient::with(http).connect(rpc_url)
-}
-
-fn client(network: &NetworkConfig) -> JsonRpcClient {
-    build_client(network.rpc_endpoints[0].url.as_str(), RPC_TIMEOUT)
-}
-
-/// Whether the sandbox node at `rpc_url` answers a `status` query within
-/// `timeout`. A short `timeout` lets the out-of-band host's supervisor notice a
-/// hung node promptly, unlike `RPC_TIMEOUT`.
-pub async fn node_is_serving(rpc_url: &str, timeout: Duration) -> bool {
-    build_client(rpc_url, timeout)
-        .call(RpcStatusRequest)
-        .await
-        .is_ok()
-}
 
 /// Mint each account with its balance and a full-access key over `secret_key` by
 /// writing state records directly — no blocks spent producing them, and no
@@ -109,89 +60,4 @@ pub(crate) async fn create_accounts(
         Some((account_id, _)) => wait_until_final(network, account_id, &public_key).await,
         None => Ok(()),
     }
-}
-
-/// Patch raw contract storage entries (key/value byte pairs) on `account_id`.
-pub(crate) async fn patch_data(
-    network: &NetworkConfig,
-    account_id: &AccountId,
-    entries: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>,
-) -> Result<()> {
-    let records = entries
-        .into_iter()
-        .map(|(key, value)| StateRecord::Data {
-            account_id: account_id.clone(),
-            data_key: StoreKey::from(key),
-            value: StoreValue::from(value),
-        })
-        .collect();
-    patch_records(network, records).await
-}
-
-async fn patch_records(network: &NetworkConfig, records: Vec<StateRecord>) -> Result<()> {
-    client(network)
-        .call(RpcSandboxPatchStateRequest { records })
-        .await
-        .context("sandbox_patch_state failed")?;
-    Ok(())
-}
-
-/// Advance the sandbox chain by `delta_height` blocks.
-pub(crate) async fn fast_forward(network: &NetworkConfig, delta_height: u64) -> Result<()> {
-    client(network)
-        .call(RpcSandboxFastForwardRequest { delta_height })
-        .await
-        .context("sandbox_fast_forward failed")?;
-    Ok(())
-}
-
-/// How long a patched key gets to reach `Final`.
-///
-/// Finality is a couple of blocks on an idle node, but this has to hold on a
-/// CPU-starved CI runner where several nodes compete for a core and block
-/// production stretches far past its target. Erring long costs nothing on a
-/// healthy node — the wait ends as soon as the key is visible — while erring
-/// short turns load into a spurious, confusing test failure.
-const FINALITY_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Poll backoff bounds. Starts tight so an idle node is not slowed down, then
-/// backs off: a flat fast poll from every test process piles RPC load onto the
-/// very node that is already struggling.
-const FINALITY_POLL_MIN: Duration = Duration::from_millis(25);
-const FINALITY_POLL_MAX: Duration = Duration::from_millis(500);
-
-/// Block until the patched key is visible at `Final`.
-///
-/// A patch lands at optimistic finality, but near-api's signer reads the nonce at
-/// a hardcoded `Final`, which lags ~2 blocks — so without this the account's first
-/// transaction fails with "access key ... does not exist".
-async fn wait_until_final(
-    network: &NetworkConfig,
-    account_id: &AccountId,
-    public_key: &near_crypto::PublicKey,
-) -> Result<()> {
-    let client = client(network);
-    let request = RpcQueryRequest {
-        block_reference: BlockReference::Finality(Finality::Final),
-        request: QueryRequest::ViewAccessKey {
-            account_id: account_id.clone(),
-            public_key: public_key.clone(),
-        },
-    };
-    // Every error retries: not-yet-final, node backpressure and transport blips all
-    // clear on a later block.
-    tokio::time::timeout(FINALITY_TIMEOUT, async {
-        let mut backoff = FINALITY_POLL_MIN;
-        while client.call(&request).await.is_err() {
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(FINALITY_POLL_MAX);
-        }
-    })
-    .await
-    .with_context(|| {
-        format!(
-            "patched account {account_id} never reached final finality within \
-             {FINALITY_TIMEOUT:?} — the sandbox node is likely overloaded or down"
-        )
-    })
 }

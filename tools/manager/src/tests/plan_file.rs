@@ -387,7 +387,7 @@ mod journal {
         let journal = Journal {
             entries: vec![entry(
                 99,
-                crate::spec::plan::digest(b"a step of some other plan"),
+                crate::spec::plan::digest(b"a step of some other plan").to_string(),
             )],
         };
 

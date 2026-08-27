@@ -64,7 +64,7 @@ pub fn executable_digest(step: &super::plan::PlanStep) -> anyhow::Result<String>
         bytes.extend_from_slice(&call.deposit.as_yoctonear().to_le_bytes());
         bytes.extend_from_slice(&call.args.to_bytes()?);
     }
-    Ok(super::plan::digest(&bytes))
+    Ok(super::plan::digest(&bytes).to_string())
 }
 
 impl Journal {

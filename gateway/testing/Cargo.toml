@@ -13,7 +13,6 @@ base64.workspace = true
 futures.workspace = true
 near-api.workspace = true
 near-crypto.workspace = true
-near-jsonrpc-client = { workspace = true, features = ["sandbox"] }
 near-primitives.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-sandbox.workspace = true
@@ -31,6 +30,7 @@ templar-contract-artifacts = { workspace = true, features = [
     "fetch",
 ] }
 templar-gateway-client.workspace = true
+templar-sandbox.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true
 templar-gateway-methods-spec.workspace = true

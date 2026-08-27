@@ -1,0 +1,80 @@
+schema = 3
+account_id = "proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near"
+
+[[op]]
+op = "set"
+key.hex = "00695553444300000000000000000000000000000000000000000000000000000000"
+expect = "absent"
+value.file = "2026-08-27-proxy-oracle-v0-to-v1.blobs/f2721ab3c63bbbb0e33cd45464c26922e567dd55ab5b3563fb0b823ca8d6bc21.bin"
+
+[[op]]
+op = "set"
+key.hex = "00695553545259000000000000000000000000000000000000000000000000000000"
+expect = "absent"
+value.file = "2026-08-27-proxy-oracle-v0-to-v1.blobs/d8e5ee948e4bc221e9dd38788d831508b687be20fcd231aabecc8a270317ea4c.bin"
+
+[[op]]
+op = "set"
+key.hex = "006b0000000000000000"
+expect = "absent"
+value.file = "2026-08-27-proxy-oracle-v0-to-v1.blobs/a1648ad410c0e317fda8cea886cd96a7bd775b1c0383bb203137ba8f380f447d.bin"
+
+[[op]]
+op = "set"
+key.hex = "006b0100000000000000"
+expect = "absent"
+value.file = "2026-08-27-proxy-oracle-v0-to-v1.blobs/309fac319ff1edfe688f090c20cdfbfeb716ad5760a7434a5a074ad176ecb1a1.bin"
+
+[[op]]
+op = "set"
+key.hex = "00760000000000000000"
+expect = "absent"
+value.file = "2026-08-27-proxy-oracle-v0-to-v1.blobs/8a4ded8a1642eff6941bbdacaa23ed30d26ce441fae8801bea62594df417fe77.bin"
+
+[[op]]
+op = "set"
+key.hex = "00760100000000000000"
+expect = "absent"
+value.file = "2026-08-27-proxy-oracle-v0-to-v1.blobs/006f3b15ad885511e1501abb2caffefa19a7b6db78b2e813f992d74aba0649e3.bin"
+
+[[op]]
+op = "set"
+key.hex = "01760000000000000000"
+expect.hex = "0001005847f80d0000000100e40b540200000001010000000100000000011e00000072656473746f6e652d616461707465722e76312e746d706c722e6e65617205000000555354525901000000"
+value.file = "2026-08-27-proxy-oracle-v0-to-v1.blobs/fe2939afc4f11be292ffe503bd80778cc5485881d4b14560028fa59881bc0f33.bin"
+
+[[op]]
+op = "set"
+key.hex = "01760100000000000000"
+expect.hex = "0001005847f80d0000000100e40b540200000001010000000200000000011e00000072656473746f6e652d616461707465722e76312e746d706c722e6e656172040000005553444301000000000010000000707974682d6f7261636c652e6e656172eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a01000000"
+value.file = "2026-08-27-proxy-oracle-v0-to-v1.blobs/1df99394944541c34604ccf1a5802920120e1232e20f85956dcaf72f706a6c7e.bin"
+
+[[op]]
+op = "set"
+key.hex = "5354415445"
+expect.hex = "0400000000000000000000000000000002000000007602000000006d020000000169020000000000000002000000016b0200000000000000020000000176"
+value.file = "2026-08-27-proxy-oracle-v0-to-v1.blobs/ff70929b82eabc3a753a2069ae04d99cb53ba62ccb889648781b8df5d3d13938.bin"
+
+[[op]]
+op = "set"
+key.hex = "5f5f76"
+expect = "absent"
+value.file = "2026-08-27-proxy-oracle-v0-to-v1.blobs/1a010a2df3256cb49ccc9494bd04e39ea53073da2f7fb04deaa74d8796c9c43d.bin"
+
+[[check]]
+method_name = "get_stored_state_version"
+expect = 1
+
+[[check]]
+method_name = "needs_migration"
+expect = false
+
+[[check]]
+method_name = "get_proxy"
+args = { id = "5553545259000000000000000000000000000000000000000000000000000000" }
+expect = { aggregator = { MedianLow = { sources = [{ source = { Request = { RedStone = { oracle_id = "redstone-adapter.v1.tmplr.near", price_id = "USTRY" } } }, weight = 1 }], min_sources = 1 } }, freshness_filter = { max_age_ns = "60000000000", max_clock_drift_ns = "10000000000" } }
+
+[[check]]
+method_name = "get_proxy"
+args = { id = "5553444300000000000000000000000000000000000000000000000000000000" }
+expect = { aggregator = { MedianLow = { sources = [{ source = { Request = { RedStone = { oracle_id = "redstone-adapter.v1.tmplr.near", price_id = "USDC" } } }, weight = 1 }, { source = { Request = { Pyth = { oracle_id = "pyth-oracle.near", price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a" } } }, weight = 1 }], min_sources = 1 } }, freshness_filter = { max_age_ns = "60000000000", max_clock_drift_ns = "10000000000" } }

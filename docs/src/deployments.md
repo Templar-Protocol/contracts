@@ -151,51 +151,92 @@ reported complete: the re-derivation runs before the journal is consulted.
 key is still held: deploy the pinned PatchState WASM, apply guarded storage
 operations, then restore the exact local code or global-contract linkage.
 
+Export complete, block-pinned contract storage before authoring guards:
+
+```sh
+tmplrmgr patch export <account> --out deployments/patches/<account>/<date>-<slug>.toml \
+  --network mainnet
+```
+
+The export writes every contract-storage entry as schema-3 TOML and a sibling
+`<stem>.blobs/` directory. Values are stored as deterministic files named from
+the SHA-256 of their raw keys. Planning separately re-fetches the pinned account
+metadata, access keys, code, and contract linkage. Existing spec or blob paths
+are never overwritten. A `patch.state_complete` check reports whether the trie
+fit in one request or required widening one-byte prefixes; incomplete or
+conservatively unaccountable state aborts without creating output.
+
+Review and build the plan:
+
 ```sh
 tmplrmgr patch plan deployments/patches/<account>/<date>-<slug>.toml \
   --out patch-plan.json --network mainnet \
   --signer-id <account> --public-key ed25519:…
+tmplrmgr patch dry-run --plan patch-plan.json --network mainnet
+```
+
+`patch dry-run` reconstructs the target under its literal account ID in a fresh
+sandbox, installs the fetched code and complete state, and executes the exact
+reviewed `tx.batch`. Each view `[[check]]` is called before and after. An
+`expect` compares only the after JSON; a check without `expect` passes after a
+successful call and still reports its observed value. Before failures and
+before/after differences are diagnostic; after failures and expectation
+mismatches fail the check. JSON Patch diffs are present when both calls return
+JSON.
+
+The dry-run prints one machine-readable JSON report on stdout, including the
+transaction, target code hash, every before/after view result, JSON diff, and
+check verdict. Reporter output, progress, diagnostics, and the digest go to
+stderr. Keep stdout dedicated to the report when piping it to review tooling.
+The completed replay is stamped into the same plan when no replay check fails.
+An apply-valid stamp requires every replay check to be non-skipped and passed;
+apply rejects stamps with skipped checks. The stamp binds the plan digest,
+semantic complete-state digest, target code hash, and verdicts; it records the
+sandbox chain ID for review context.
+
+Apply only after reviewing both the plan and stamped replay:
+
+```sh
 tmplrmgr patch apply --plan patch-plan.json \
   --network mainnet --signer-id <account> --sign-with keychain
 ```
 
+Apply re-derives the spec, live code/linkage, complete-state digest, and batch;
+state drift invalidates the plan. Without an explicit override it refuses a
+missing, stale, digest-mismatched, or failed `patch.dry_run` stamp.
+`--skip-check patch.dry_run` and `--skip-check patch.state_complete` are
+rejected. If local replay is unavailable and the operator accepts that risk,
+use the dedicated override:
+
+```sh
+tmplrmgr patch apply --plan patch-plan.json --no-dry-run \
+  --network mainnet --signer-id <account> --sign-with keychain
+```
+
+`--no-dry-run` records `patch.dry_run` as explicitly skipped; all other
+preflight checks still run. Prefix deletes are expanded from one verified full
+snapshot and retain an in-receipt expectation for every concrete removal.
+Accounts containing record kinds the accounting reader cannot enumerate are
+rejected rather than silently treated as complete.
+
+The plan is not self-contained: apply re-reads its canonical source spec and
+referenced files at their original paths. Dry-run views are sandbox evidence;
+check the live account separately after apply.
+
+Schema-2 storage-only specs are not accepted. Review the authored operations
+and checks, set `schema = 3`, then rerun `tmplrmgr patch plan`; alternatively,
+export a fresh schema-3 spec with the command above.
+
 Authored `set` and single-key `remove` operations should state `expect`. Use
-`expect = "absent"` for a fresh key; it compiles to an in-receipt absence guard
-without making other operations unguarded. Prefix deletes omit it: planning
-enumerates the matching keys and adds an expectation for every concrete removal.
-A prefix that matches no keys is rejected. `--allow-unguarded` is an explicit,
-repeated override for an unguarded set or single-key removal.
-
+`expect = "absent"` for a fresh key; it compiles to an in-receipt absence guard.
 Keys and values use `utf8`, `hex`, `base64`, `file`, `concat`, `sha256`, `json`,
-or `borsh` byte expressions. `file` is relative to the spec that names it.
-`patch codecs` lists readable Borsh types; types without a JSON deserializer and
-lossy types such as `Decimal` are deliberately absent. `base64` and `file`
-remain the exact-byte escape hatches.
-
-`tools/manager/fixtures/spec/patch/patches/target.near/2026-08-25-syntax.toml`
-is the tested syntax reference. It composes a profile-relative blob, Borsh
-values, hashed collection keys, base64 and hex values, JSON bytes, checks, and
-prefix deletion; its focused test prevents the documented forms from drifting.
-
-Prefix deletes are expanded from chain state while planning. The generated plan
-therefore lists every concrete key and its in-receipt expectation; a prefix too
-large for `view_state`, or a prefix that matches no keys, fails planning rather
-than producing a partial or silent delete. The plan re-reads live restore identity
-and protocol transaction-size, prepaid-gas, storage-key, and storage-value limits,
-then locally compares key/value lengths against those limits and checks peak
-temporary storage.
-`patch apply` re-reads absolute `file` references during plan re-derivation from
-the canonical source path embedded in the plan. The plan and referenced files
-must remain on the same machine at their original paths. Missing, moved, or
-changed bytes abort re-derivation before send.
+or `borsh` byte expressions. `file` is relative to the declaring spec.
 
 This is a privileged authorization checklist:
 
 - Confirm the target account, full-access signer, and plan public key.
 - Inspect the released PatchState 0.1.0 artifact and pinned SHA-256.
 - Confirm the batch receiver, spec target, and PatchState payload account match.
-- Verify the apply-time restore identity and resolved-state re-derivation checks.
+- Inspect all view before/after values and diffs, including no-expect checks.
+- Verify the apply-time stamp binding and resolved-state re-derivation checks.
 - Authorize only after the complete arbitrary-storage write is understood.
-
-`patch apply` does not perform local replay or post-patch health checks. Review
-the plan and reported preflight before authorizing it.
