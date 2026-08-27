@@ -41,8 +41,11 @@ pub enum BuildContractError {
     BuildFailed,
 
     /// The `cargo near build` command exited with a non-zero status.
-    #[error("cargo near build failed with status: {status}")]
-    BuildStatus { status: std::process::ExitStatus },
+    #[error("cargo near build failed with status: {status}\n{stderr}")]
+    BuildStatus {
+        status: std::process::ExitStatus,
+        stderr: String,
+    },
 
     /// Failed to spawn or wait on the build process.
     #[error("Failed to execute cargo near build: {0}")]
@@ -170,12 +173,21 @@ pub fn build_artifact(
         .cloned()
         .ok_or_else(|| BuildContractError::PackageNotFound(package_name.to_string()))?;
 
-    let status = build_command(workspace_dir, package.manifest_path.as_str(), reproducible)
-        .status()
+    let mut child = build_command(workspace_dir, package.manifest_path.as_str(), reproducible)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(BuildContractError::Io)?;
+    let captured = child.stderr.take().map_or_else(
+        || Ok(Vec::new()),
+        |pipe| tee_to_stderr(pipe).map_err(BuildContractError::Io),
+    )?;
+    let status = child.wait().map_err(BuildContractError::Io)?;
 
     if !status.success() {
-        return Err(BuildContractError::BuildStatus { status });
+        return Err(BuildContractError::BuildStatus {
+            status,
+            stderr: tail_lines(&String::from_utf8_lossy(&captured), STDERR_TAIL_LINES),
+        });
     }
 
     let target_name = resolve_target_name(&package);
@@ -209,6 +221,41 @@ fn configure_build_process_group(command: &mut std::process::Command) {
 
 #[cfg(all(feature = "clap", not(unix)))]
 fn configure_build_process_group(_command: &mut std::process::Command) {}
+
+/// How much of a failed build's stderr the error carries. The full stream is
+/// already on the terminal; this is the tail that names the cause.
+const STDERR_TAIL_LINES: usize = 20;
+
+/// Forward `pipe` to this process's stderr as it arrives, returning what passed
+/// through. Streaming matters: a reproducible build runs for minutes.
+fn tee_to_stderr(pipe: std::process::ChildStderr) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read as _, Write as _};
+
+    let mut pipe = std::io::BufReader::new(pipe);
+    let mut sink = std::io::stderr().lock();
+    let mut captured = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = pipe.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        sink.write_all(&buffer[..read])?;
+        captured.extend_from_slice(&buffer[..read]);
+    }
+    sink.flush()?;
+    Ok(captured)
+}
+
+fn tail_lines(text: &str, lines: usize) -> String {
+    let mut tail: Vec<_> = text
+        .trim_end()
+        .rsplit_terminator('\n')
+        .take(lines)
+        .collect();
+    tail.reverse();
+    tail.join("\n")
+}
 
 fn build_command(
     workspace_dir: &Path,
@@ -258,5 +305,12 @@ mod tests {
         let path = Path::new("/ws").join(artifact.manifest_path());
 
         assert_eq!(path, Path::new("/ws/mock/ft/Cargo.toml"));
+    }
+
+    #[test]
+    fn stderr_tail_keeps_the_last_lines_in_order() {
+        assert_eq!(tail_lines("a\nb\nc\n", 2), "b\nc");
+        assert_eq!(tail_lines("a\nb", 5), "a\nb");
+        assert_eq!(tail_lines("", 5), "");
     }
 }
