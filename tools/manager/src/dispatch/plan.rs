@@ -156,6 +156,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     ensure_matches_spec(&file, &expected, &remaining)?;
 
     if remaining.is_empty() {
+        ensure_proxy_configuration_completed(&ctx, &file).await?;
         eprintln!("Every step in this plan has already been applied.");
         return Ok(());
     }
@@ -390,11 +391,10 @@ async fn ensure_feeds_are_configured(ctx: &CliContext, spec: &MarketSpec) -> any
             .with_context(|| format!("read the {side} proxy back from `{oracle_id}`"))?;
         anyhow::ensure!(
             deployed == intended,
-            "`{oracle_id}` does not serve the {side} feed this plan configured. \
+            "`{oracle_id}` does not serve the {side} feed this plan requires. \
              The proposal reported success because `admin_set_proxy` is dispatched \
-             detached; creating the market now would put it live against an oracle \
-             that cannot price it. Re-run the proposal by hand with \
-             `proxy-oracle governance create-proposal --execute-when-ready`."
+             detached. Re-run the proposal by hand with `proxy-oracle governance \
+             create-proposal --execute-when-ready`."
         );
     }
     Ok(())
@@ -518,12 +518,11 @@ pub(crate) async fn build(
             stop_after == DeploymentStage::Market,
             "a direct-oracle market has no proxy deployment stage; use `--stop-after market`"
         );
-        let full_access_keys = Some(vec![public_key.clone()]);
         return market_steps(
             client,
             signer_id,
             spec,
-            full_access_keys,
+            public_key,
             market_configuration(spec)?,
             skip_abi_check,
         )
@@ -599,7 +598,7 @@ pub(crate) async fn build(
             client,
             signer_id,
             spec,
-            Some(vec![public_key.clone()]),
+            public_key,
             market_configuration(spec)?,
             skip_abi_check,
         )
@@ -638,7 +637,7 @@ async fn market_steps(
     client: &Client,
     signer_id: &AccountId,
     spec: &MarketSpec,
-    full_access_keys: Option<Vec<PublicKey>>,
+    public_key: &PublicKey,
     configuration: templar_common::market::MarketConfiguration,
     skip_abi_check: bool,
 ) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
@@ -652,7 +651,7 @@ async fn market_steps(
                 name: spec.name.clone(),
                 version_key: spec.market_version.clone(),
                 skip_abi_check,
-                full_access_keys,
+                full_access_keys: Some(vec![public_key.clone()]),
                 deposit: MARKET_DEPOSIT,
             },
             configuration,

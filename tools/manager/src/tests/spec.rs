@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use rstest::rstest;
 use serde_json::Value;
-use templar_common::market::MarketConfiguration;
+use templar_common::market::{MarketConfiguration, PriceOracleConfiguration};
 
 use crate::spec::plan::testing::alpha_market;
 use crate::spec::{
@@ -665,38 +665,52 @@ fn migrated_specs_reproduce_their_deployed_configurations(
             .time_chunk_configuration
             .clone_from(&deployed.time_chunk_configuration);
 
-        if suite == "v1" && PENDING_PROXY_ORACLE_MIGRATIONS.contains(&name) {
+        if let Some(expected_proxy_oracle_id) = expected_proxy_oracle_id {
+            let PriceOracleConfiguration {
+                account_id: derived_account_id,
+                collateral_asset_price_id: derived_collateral_price_id,
+                collateral_asset_decimals: derived_collateral_decimals,
+                borrow_asset_price_id: derived_borrow_price_id,
+                borrow_asset_decimals: derived_borrow_decimals,
+                price_maximum_age_s: derived_price_maximum_age,
+            } = &derived.price_oracle_configuration;
+            let PriceOracleConfiguration {
+                account_id: deployed_account_id,
+                collateral_asset_price_id: _,
+                collateral_asset_decimals: deployed_collateral_decimals,
+                borrow_asset_price_id: _,
+                borrow_asset_decimals: deployed_borrow_decimals,
+                price_maximum_age_s: deployed_price_maximum_age,
+            } = &deployed.price_oracle_configuration;
+
             assert_eq!(
-                deployed.price_oracle_configuration.account_id.as_str(),
+                deployed_account_id.as_str(),
                 "pyth-oracle.near",
                 "migration fixture for `{name}` must capture the direct oracle"
             );
             assert_eq!(
-                derived.price_oracle_configuration.account_id,
-                expected_proxy_oracle_id.expect("pending proxy oracle migration"),
+                derived_account_id, &expected_proxy_oracle_id,
                 "spec `{name}` must derive its proxy oracle account"
             );
             assert_eq!(
-                derived.price_oracle_configuration.collateral_asset_price_id,
-                COLLATERAL_PRICE_ID
+                derived_collateral_price_id, &COLLATERAL_PRICE_ID,
+                "spec `{name}` must use the proxy collateral price identifier"
             );
             assert_eq!(
-                derived.price_oracle_configuration.borrow_asset_price_id,
-                BORROW_PRICE_ID
+                derived_collateral_decimals, deployed_collateral_decimals,
+                "spec `{name}` derives different collateral price decimals"
             );
             assert_eq!(
-                derived.price_oracle_configuration.collateral_asset_decimals,
-                deployed
-                    .price_oracle_configuration
-                    .collateral_asset_decimals
+                derived_borrow_price_id, &BORROW_PRICE_ID,
+                "spec `{name}` must use the proxy borrow price identifier"
             );
             assert_eq!(
-                derived.price_oracle_configuration.borrow_asset_decimals,
-                deployed.price_oracle_configuration.borrow_asset_decimals
+                derived_borrow_decimals, deployed_borrow_decimals,
+                "spec `{name}` derives different borrow price decimals"
             );
             assert_eq!(
-                derived.price_oracle_configuration.price_maximum_age_s,
-                deployed.price_oracle_configuration.price_maximum_age_s
+                derived_price_maximum_age, deployed_price_maximum_age,
+                "spec `{name}` derives a different maximum price age"
             );
             derived
                 .price_oracle_configuration
