@@ -107,7 +107,7 @@ async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> 
         assert_eq!(plan.steps[0].actions.len(), 1);
 
         let operation_executor =
-            NearOperationExecutor::with_finality_policy(network.clone(), finality_policy);
+            NearOperationExecutor::with_finality_policy(network.clone(), None, finality_policy);
         let lease = transaction_signer
             .lease_next_signing_key(&signer_account_id)
             .await?;

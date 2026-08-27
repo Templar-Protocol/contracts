@@ -6,7 +6,7 @@ mod rpc;
 use crate::rpc::attach_gateway;
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
-use templar_gateway_client::{Network, NetworkConfigBuilder};
+use templar_gateway_client::Network;
 use templar_gateway_core::GatewayContext;
 use templar_gateway_oracle_updates_dispatch::GatewayContextBuilderOracleExt;
 use tokio::signal;
@@ -24,14 +24,7 @@ async fn main() -> anyhow::Result<()> {
     let signers = config.build_signers()?;
     let store = config.build_store().await?;
     let sources = config.oracle_sources.build(Network::Testnet.hermes_url())?;
-    let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
-        .api_key(
-            config
-                .near_rpc_api_key
-                .as_ref()
-                .map(|k| k.as_ref().to_owned()),
-        )
-        .build();
+    let (network, archival_network) = config.build_networks()?;
     let context = GatewayContext::builder(network)
         .with_pyth_source(sources.pyth_hermes_url)
         .with_redstone_source(&sources.redstone_node_path)
@@ -41,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Pyth Lazer payload source enabled");
 
-    let service = GatewayService::spawn(context, signers, store).await?;
+    let service = GatewayService::spawn(context, signers, store, archival_network).await?;
 
     let server = ServerBuilder::default().build(config.listen_addr).await?;
     let local_addr = server.local_addr()?;

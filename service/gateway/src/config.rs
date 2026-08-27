@@ -7,11 +7,28 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
+use near_api::NetworkConfig;
+use templar_gateway_client::NetworkConfigBuilder;
 use templar_gateway_core::{PooledSigner, RedactedString, SharedOperationStore};
 use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
 use templar_gateway_store::{MemoryStore, PostgresStore};
 use templar_gateway_types::ManagedAccountId;
 use url::Url;
+
+/// The URLs a network will actually request. Any embedded `apiKey` has already
+/// been moved to the header by the builder, and HTTP requests never send a
+/// fragment, so two URLs differing only in those reach the same node.
+fn request_targets(network: &NetworkConfig) -> Vec<Url> {
+    network
+        .rpc_endpoints
+        .iter()
+        .map(|endpoint| {
+            let mut url = endpoint.url.clone();
+            url.set_fragment(None);
+            url
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedSignerConfig {
@@ -66,7 +83,16 @@ pub struct Config {
     )]
     pub near_rpc_url: Url,
 
-    /// API key for the RPC endpoint, sent as an `Authorization` header. May also
+    /// Archival NEAR RPC endpoint, queried when the primary has no record of a
+    /// transaction. Must retain full history: pointing this at another primary
+    /// re-creates the very ambiguity it exists to settle, since a garbage
+    /// collected outcome is reported exactly like one that never existed.
+    /// Without an archival endpoint, reconciliation leaves such a transaction in
+    /// flight rather than terminally rejecting it.
+    #[arg(long, env = "NEAR_ARCHIVAL_RPC_URL")]
+    pub near_archival_rpc_url: Option<Url>,
+
+    /// API key for the RPC endpoints, sent as an `Authorization` header. May also
     /// be supplied as an `apiKey` query parameter on `--near-rpc-url`.
     #[arg(long, env = "NEAR_RPC_API_KEY")]
     pub near_rpc_api_key: Option<RedactedString>,
@@ -107,6 +133,63 @@ impl Config {
         }
 
         Ok(signers)
+    }
+
+    /// Resolve the primary and archival NEAR networks.
+    ///
+    /// The archival endpoint is a separate config rather than a second entry on
+    /// the primary's, so near_api does not fail over to it for every RPC the
+    /// gateway makes.
+    ///
+    /// # Errors
+    /// Rejects the two configurations that are wrong on their face: an API key
+    /// paired with a plaintext endpoint, which would send the key in cleartext;
+    /// and an archival URL equal to the primary, which cannot corroborate what
+    /// the primary has garbage collected.
+    pub fn build_networks(&self) -> Result<(NetworkConfig, Option<NetworkConfig>)> {
+        let api_key = self
+            .near_rpc_api_key
+            .as_ref()
+            .map(|key| key.as_ref().to_owned());
+        let build = |name: &str, rpc_url: Url| {
+            NetworkConfigBuilder::from_url(name, rpc_url)
+                .api_key(api_key.clone())
+                .build()
+        };
+
+        let network = build("gateway", self.near_rpc_url.clone());
+        let archival_network = self
+            .near_archival_rpc_url
+            .clone()
+            .map(|rpc_url| build("gateway-archival", rpc_url));
+
+        // Validate the endpoints as they will be requested rather than the URLs
+        // as written: the builder moves an embedded `apiKey` onto the header, so
+        // only the built form shows what actually travels, and where.
+        for (flag, network) in [
+            ("--near-rpc-url", Some(&network)),
+            ("--near-archival-rpc-url", archival_network.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(flag, network)| network.map(|network| (flag, network)))
+        {
+            if network.rpc_endpoints.iter().any(|endpoint| {
+                endpoint.bearer_header.is_some() && endpoint.url.scheme() != "https"
+            }) {
+                // Deliberately without the URL: it may carry the key it is being
+                // rejected for exposing.
+                bail!("{flag} carries an API key and must use https://, or the key travels in cleartext");
+            }
+        }
+
+        if archival_network
+            .as_ref()
+            .is_some_and(|archival| request_targets(archival) == request_targets(&network))
+        {
+            bail!("--near-archival-rpc-url must differ from --near-rpc-url: an archival endpoint exists to answer what the primary has garbage collected");
+        }
+
+        Ok((network, archival_network))
     }
 
     pub async fn build_store(&self) -> Result<SharedOperationStore> {
@@ -197,6 +280,99 @@ mod tests {
             Ok(_) => {}
             Err(error) => panic!("memory-backed default store should build: {error}"),
         }
+    }
+
+    #[rstest]
+    #[case::plain_http_without_key(&["--near-rpc-url", "http://localhost:3030"], Ok(()))]
+    #[case::https_with_key(
+        &["--near-rpc-url", "https://rpc.example.com", "--near-rpc-api-key", "SECRET"],
+        Ok(())
+    )]
+    #[case::plain_http_with_explicit_key(
+        &["--near-rpc-url", "http://rpc.example.com", "--near-rpc-api-key", "SECRET"],
+        Err("must use https://")
+    )]
+    #[case::plain_http_with_embedded_key(
+        &["--near-rpc-url", "http://rpc.example.com/?apiKey=SECRET"],
+        Err("must use https://")
+    )]
+    #[case::plain_http_archival_with_key(
+        &[
+            "--near-rpc-url", "https://rpc.example.com",
+            "--near-archival-rpc-url", "http://archival.example.com",
+            "--near-rpc-api-key", "SECRET",
+        ],
+        Err("must use https://")
+    )]
+    #[case::archival_differs_only_by_fragment(
+        &[
+            "--near-rpc-url", "https://rpc.example.com/",
+            "--near-archival-rpc-url", "https://rpc.example.com/#archival",
+        ],
+        Err("must differ from --near-rpc-url")
+    )]
+    #[case::archival_differs_only_by_api_key(
+        &[
+            "--near-rpc-url", "https://rpc.example.com/",
+            "--near-archival-rpc-url", "https://rpc.example.com/?apiKey=SECRET",
+        ],
+        Err("must differ from --near-rpc-url")
+    )]
+    #[case::archival_same_as_primary(
+        &[
+            "--near-rpc-url", "https://rpc.example.com/",
+            "--near-archival-rpc-url", "https://rpc.example.com/",
+        ],
+        Err("must differ from --near-rpc-url")
+    )]
+    #[case::distinct_archival(
+        &[
+            "--near-rpc-url", "https://rpc.example.com/",
+            "--near-archival-rpc-url", "https://archival.example.com/",
+        ],
+        Ok(())
+    )]
+    fn network_config_validation(#[case] extra_args: &[&str], #[case] expected: Result<(), &str>) {
+        let mut args = vec!["templar-gateway-service"];
+        args.extend_from_slice(extra_args);
+        let config = Config::try_parse_from(args).expect("config should parse");
+
+        match (expected, config.build_networks()) {
+            (Ok(()), Ok(_)) => {}
+            (Ok(()), Err(error)) => panic!("valid network config should build: {error}"),
+            (Err(expected_msg), Err(error)) => {
+                assert!(
+                    error.to_string().contains(expected_msg),
+                    "expected {expected_msg:?}, got {error}"
+                );
+            }
+            (Err(expected_msg), Ok(_)) => {
+                panic!("invalid network config should fail with {expected_msg:?}")
+            }
+        }
+    }
+
+    /// The rejection exists to stop a key travelling in cleartext, so the
+    /// rejection must not print it either.
+    #[test]
+    fn insecure_endpoint_error_excludes_the_api_key() {
+        let config = Config::try_parse_from([
+            "templar-gateway-service",
+            "--near-rpc-url",
+            "http://rpc.example.com/?apiKey=SUPERSECRET",
+        ])
+        .expect("config should parse");
+
+        let error = config
+            .build_networks()
+            .expect_err("plaintext endpoint carrying a key must be rejected")
+            .to_string();
+
+        assert!(
+            !error.contains("SUPERSECRET"),
+            "error leaked the key: {error}"
+        );
+        assert!(error.contains("--near-rpc-url"));
     }
 
     #[rstest]

@@ -116,6 +116,7 @@ impl TestStack {
             context.clone(),
             harness.gateway_signers(),
             Arc::new(MemoryStore::new()),
+            None,
         )
         .await?;
 

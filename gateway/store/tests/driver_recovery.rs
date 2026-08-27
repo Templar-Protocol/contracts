@@ -26,8 +26,8 @@ use rstest::rstest;
 use templar_gateway_core::{
     CompletedStep, CreateOperationResult, CurrentStep, ExecuteOperation, GatewayError,
     GatewayResult, OperationDriver, OperationPlan, OperationStore, PlannedTransaction,
-    PooledSigner, PreparedTransactionResult, SignTransaction, SigningKeyLease, StepOutcome,
-    StoredOperation, SucceededStep,
+    PooledSigner, PreparedTransactionResult, SharedOperationStore, SignTransaction,
+    SigningKeyLease, StepOutcome, StoredOperation, SucceededStep, TransactionRecord,
 };
 use templar_gateway_store::MemoryStore;
 use templar_gateway_types::{
@@ -90,10 +90,16 @@ fn fresh_submitted_step() -> CurrentStep {
     submitted_step_at(Utc::now())
 }
 
-/// A step submitted long ago. `UNKNOWN_TRANSACTION` is still not proof that it
-/// never landed, so this remains recoverable rather than rejected.
+/// A step submitted long ago but still inside the validity horizon, where
+/// `UNKNOWN_TRANSACTION` is not yet proof that it never landed.
 fn aged_submitted_step() -> CurrentStep {
     submitted_step_at(Utc::now() - TimeDelta::seconds(600))
+}
+
+/// A step submitted past the validity horizon, where the transaction can no
+/// longer be applied and the chain having no record of it becomes proof.
+fn expired_submitted_step() -> CurrentStep {
+    submitted_step_at(Utc::now() - TimeDelta::hours(49))
 }
 
 /// A planned operation with a single pending step and no remaining or succeeded steps.
@@ -104,6 +110,12 @@ fn step_op(step: CurrentStep) -> StoredOperation {
 /// An unknown transaction may still have landed, so its step is left submitted.
 fn is_submitted(step: Option<&CurrentStep>) -> bool {
     matches!(step, Some(CurrentStep::Submitted { .. }))
+}
+
+/// Past the horizon the transaction can never land, so its step is terminal and
+/// carries no outcome — releasing the charge.
+fn is_rejected(step: Option<&CurrentStep>) -> bool {
+    matches!(step, Some(CurrentStep::Rejected { .. }))
 }
 
 fn pool_secret_key(index: u8) -> SecretKey {
@@ -164,14 +176,6 @@ impl SignTransaction for FakeSigner {
         Ok(self.pool.lease_next().await)
     }
 
-    async fn lease_signing_key(
-        &self,
-        _signer_account_id: &ManagedAccountId,
-        public_key: &PublicKey,
-    ) -> Option<SigningKeyLease> {
-        self.pool.lease(public_key).await
-    }
-
     async fn sign_transaction(
         &self,
         lease: &SigningKeyLease,
@@ -197,7 +201,7 @@ impl SignTransaction for FakeSigner {
 #[derive(Default)]
 struct FakeExecutor {
     submits: Mutex<VecDeque<GatewayResult<Option<StepOutcome>>>>,
-    queries: Mutex<VecDeque<GatewayResult<StepOutcome>>>,
+    queries: Mutex<VecDeque<GatewayResult<TransactionRecord>>>,
 }
 
 #[derive(Default)]
@@ -254,11 +258,11 @@ impl ExecuteOperation for ProbeExecutor {
         &self,
         _signer: &ManagedAccountId,
         _tx_hash: CryptoHash,
-    ) -> GatewayResult<StepOutcome> {
+    ) -> GatewayResult<TransactionRecord> {
         self.probe.enter_query();
         sleep(self.query_delay).await;
         self.probe.exit_query();
-        Ok(step_outcome(true))
+        Ok(TransactionRecord::Executed(step_outcome(true)))
     }
 }
 
@@ -344,7 +348,7 @@ impl ExecuteOperation for BroadcastExecutor {
         &self,
         _signer: &ManagedAccountId,
         _tx_hash: CryptoHash,
-    ) -> GatewayResult<StepOutcome> {
+    ) -> GatewayResult<TransactionRecord> {
         panic!("unexpected query_transaction")
     }
 }
@@ -352,7 +356,7 @@ impl ExecuteOperation for BroadcastExecutor {
 impl FakeExecutor {
     fn new(
         submits: Vec<GatewayResult<Option<StepOutcome>>>,
-        queries: Vec<GatewayResult<StepOutcome>>,
+        queries: Vec<GatewayResult<TransactionRecord>>,
     ) -> Self {
         Self {
             submits: Mutex::new(submits.into()),
@@ -378,7 +382,7 @@ impl ExecuteOperation for FakeExecutor {
         &self,
         _signer: &ManagedAccountId,
         _tx_hash: CryptoHash,
-    ) -> GatewayResult<StepOutcome> {
+    ) -> GatewayResult<TransactionRecord> {
         self.queries
             .lock()
             .unwrap()
@@ -551,7 +555,10 @@ async fn reconcile_resolves_submitted_step(
 ) {
     let store = Arc::new(MemoryStore::new());
     let key = seed_keyed(&store, "sub", step_op(fresh_submitted_step())).await;
-    let executor = FakeExecutor::new(vec![], vec![Ok(step_outcome(is_success))]);
+    let executor = FakeExecutor::new(
+        vec![],
+        vec![Ok(TransactionRecord::Executed(step_outcome(is_success)))],
+    );
 
     let record = driver(store.clone(), executor)
         .reconcile_operation(&key)
@@ -569,21 +576,24 @@ async fn reconcile_resolves_submitted_step(
     }
 }
 
-/// Reconciling an unknown (chain-has-no-record) submitted transaction leaves it
-/// submitted regardless of age: NEAR `UNKNOWN_TRANSACTION` is not proof that it
-/// never landed, so the ambiguity must remain recoverable.
+/// A transaction an archival node confirms it has no record of stays submitted
+/// while it could still land, because `UNKNOWN_TRANSACTION` is not proof that it
+/// never did. Past the validity horizon the transaction can no longer be applied, so
+/// the same answer becomes proof and the step is rejected rather than re-queried
+/// forever.
 #[rstest]
 #[case::fresh(fresh_submitted_step(), OperationStatus::InProgress, is_submitted)]
 #[case::aged(aged_submitted_step(), OperationStatus::InProgress, is_submitted)]
+#[case::expired(expired_submitted_step(), OperationStatus::Failed, is_rejected)]
 #[tokio::test]
-async fn reconcile_keeps_unknown_submitted_transaction_recoverable(
+async fn reconcile_rejects_an_unrecorded_transaction_only_past_the_horizon(
     #[case] step: CurrentStep,
     #[case] expected_status: OperationStatus,
     #[case] expected_step: fn(Option<&CurrentStep>) -> bool,
 ) {
     let store = Arc::new(MemoryStore::new());
     let key = seed_keyed(&store, "sub", step_op(step)).await;
-    let executor = FakeExecutor::new(vec![], vec![Err(GatewayError::TransactionNotFound)]);
+    let executor = FakeExecutor::new(vec![], vec![Ok(TransactionRecord::NoRecord)]);
 
     let record = driver(store.clone(), executor)
         .reconcile_operation(&key)
@@ -593,6 +603,100 @@ async fn reconcile_keeps_unknown_submitted_transaction_recoverable(
     assert_eq!(record.status, expected_status);
     let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
     assert!(expected_step(op.current_step.as_ref()));
+}
+
+/// A preparation abandoned part-way — a signing failure, an early return — must
+/// leave the operation exactly as it was. A step held in neither `current_step`
+/// nor `remaining_steps` would be silently dropped from the plan.
+#[rstest]
+#[case::re_signing_a_prepared_step(step_op(CurrentStep::Prepared {
+    transaction: sample_transaction(),
+    signed_transaction: Box::new(dummy_signed_transaction(pool_public_key(0), 42)),
+    tx_hash: CryptoHash(NearCryptoHash::default()),
+}))]
+#[case::signing_a_queued_step(stored(true, None, vec![sample_transaction()], vec![]))]
+#[tokio::test]
+async fn an_abandoned_preparation_leaves_the_plan_intact(#[case] mut op: StoredOperation) {
+    let store: SharedOperationStore = Arc::new(MemoryStore::new());
+    let queued_before = op.remaining_steps.len();
+    // The variant, not just occupancy: swapping `Prepared` for another step is
+    // exactly the silent corruption this guards against.
+    let prepared_before = matches!(op.current_step, Some(CurrentStep::Prepared { .. }));
+
+    drop(op.begin_next_preparation(store));
+
+    assert_eq!(op.remaining_steps.len(), queued_before);
+    assert_eq!(
+        matches!(op.current_step, Some(CurrentStep::Prepared { .. })),
+        prepared_before
+    );
+}
+
+/// Age alone must not reject. Without an archival node confirming it, a missing
+/// transaction is indistinguishable from one whose outcome the primary garbage
+/// collected — and that one may well have executed.
+#[tokio::test]
+async fn an_unconfirmed_missing_transaction_is_never_rejected() {
+    let store = Arc::new(MemoryStore::new());
+    let key = seed_keyed(&store, "unconfirmed", step_op(expired_submitted_step())).await;
+    let executor = FakeExecutor::new(vec![], vec![Ok(TransactionRecord::Unconfirmed)]);
+
+    let record = driver(store.clone(), executor)
+        .reconcile_operation(&key)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(record.status, OperationStatus::InProgress);
+    let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
+    assert!(is_submitted(op.current_step.as_ref()));
+}
+
+/// Rejection is terminal: a later sweep must not query the chain again, which is
+/// what stops orphans accumulating work on every restart. The executor is given
+/// a single canned answer, so a second query panics.
+#[tokio::test]
+async fn a_rejected_step_is_not_requeried_on_a_later_pass() {
+    let store = Arc::new(MemoryStore::new());
+    let key = seed_keyed(&store, "expired", step_op(expired_submitted_step())).await;
+    let driver = driver(
+        store.clone(),
+        FakeExecutor::new(vec![], vec![Ok(TransactionRecord::NoRecord)]),
+    );
+
+    driver.reconcile_operation(&key).await.unwrap().unwrap();
+    let record = driver.reconcile_operation(&key).await.unwrap().unwrap();
+
+    assert_eq!(record.status, OperationStatus::Failed);
+    let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
+    assert!(is_rejected(op.current_step.as_ref()));
+}
+
+/// Startup recovery over a store of nothing but past-horizon orphans completes
+/// clean and leaves nothing incomplete — the prod backlog this rule exists for.
+#[tokio::test]
+async fn startup_recovery_clears_a_backlog_of_expired_orphans() {
+    let store = Arc::new(MemoryStore::new());
+    for index in 0..3 {
+        let mut op = step_op(expired_submitted_step());
+        op.id = OperationId(format!("orphan-{index}"));
+        store.save_operation(op).await.unwrap();
+    }
+    let executor = FakeExecutor::new(
+        vec![],
+        vec![
+            Ok(TransactionRecord::NoRecord),
+            Ok(TransactionRecord::NoRecord),
+            Ok(TransactionRecord::NoRecord),
+        ],
+    );
+
+    driver(store.clone(), executor)
+        .resume_incomplete_operations()
+        .await
+        .unwrap();
+
+    assert!(store.list_incomplete_operations().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -619,13 +723,13 @@ async fn transient_query_error_leaves_step_submitted() {
     ));
 }
 
-/// Startup recovery is self-sufficient, but an unknown submitted step remains
-/// recoverable regardless of age because `UNKNOWN_TRANSACTION` is ambiguous.
+/// Startup recovery applies the same horizon rule as an on-demand reconcile.
 #[rstest]
 #[case::fresh(fresh_submitted_step(), is_submitted)]
 #[case::aged(aged_submitted_step(), is_submitted)]
+#[case::expired(expired_submitted_step(), is_rejected)]
 #[tokio::test]
-async fn startup_recovery_leaves_unknown_submitted_step_recoverable(
+async fn startup_recovery_rejects_an_unrecorded_step_only_past_the_horizon(
     #[case] step: CurrentStep,
     #[case] expected_step: fn(Option<&CurrentStep>) -> bool,
 ) {
@@ -633,7 +737,7 @@ async fn startup_recovery_leaves_unknown_submitted_step_recoverable(
     let mut op = step_op(step);
     op.id = OperationId("op".to_owned());
     store.save_operation(op.clone()).await.unwrap();
-    let executor = FakeExecutor::new(vec![], vec![Err(GatewayError::TransactionNotFound)]);
+    let executor = FakeExecutor::new(vec![], vec![Ok(TransactionRecord::NoRecord)]);
 
     driver(store.clone(), executor)
         .resume_incomplete_operations()
@@ -745,7 +849,7 @@ async fn reconcile_continues_remaining_steps_after_a_submitted_step_lands() {
     // query: step 1 landed; submit: step 2 is driven.
     let executor = FakeExecutor::new(
         vec![Ok(Some(step_outcome(true)))],
-        vec![Ok(step_outcome(true))],
+        vec![Ok(TransactionRecord::Executed(step_outcome(true)))],
     );
 
     let record = driver(store.clone(), executor)
@@ -941,15 +1045,12 @@ async fn pooled_keys_broadcast_in_parallel() {
     }
 }
 
-/// A step signed in an earlier pass carries a nonce bound to the key that signed
-/// it, so resubmission takes *that* key. Leasing a fresh one would let a new
-/// allocation — reading an on-chain nonce this step has not yet advanced — pick
-/// the same nonce.
-/// Holding that key's lane first is what proves the point: the key and nonce in
-/// the assertions come from the stored signature, so they hold even for a driver
-/// that broadcasts without taking a lane at all.
+/// A step signed in an earlier pass is re-signed, so it neither carries the old
+/// nonce to the network nor waits on the key that produced it. Holding that key's
+/// lane for the whole test proves the second half: an implementation that bound
+/// itself to the signing key would block here instead of finishing.
 #[tokio::test]
-async fn prepared_step_resubmits_under_the_key_that_signed_it() {
+async fn prepared_step_is_re_signed_without_waiting_on_its_original_key() {
     let store = Arc::new(MemoryStore::new());
     let log = Arc::new(BroadcastLog::default());
     let signer = Arc::new(FakeSigner::with_keys(2));
@@ -975,43 +1076,25 @@ async fn prepared_step_resubmits_under_the_key_that_signed_it() {
     );
     store.save_operation(op.clone()).await.unwrap();
 
-    let held = signer.pool.lease(&signing_key).await.expect("a pooled key");
-    let mut replay = tokio::spawn({
-        let driver = driver.clone();
-        async move { driver.execute_remaining_steps(op).await }
-    });
-
-    assert!(
-        timeout(Duration::from_millis(50), &mut replay)
-            .await
-            .is_err(),
-        "resubmission must wait for the lane of the key that signed the step"
-    );
-    assert_eq!(log.broadcasts(), 0);
-
-    drop(held);
-    let result = timeout(Duration::from_secs(5), replay)
+    let _held = signer.pool.lease(&signing_key).await.expect("a pooled key");
+    let result = timeout(Duration::from_secs(5), driver.execute_remaining_steps(op))
         .await
-        .expect("resubmission must proceed once the lane frees")
-        .unwrap()
+        .expect("re-signing must not wait on the original key's lane")
         .unwrap();
 
     assert_eq!(result.status(), OperationStatus::Succeeded);
-    assert_eq!(log.nonces_for(signing_key), vec![42]);
+    assert_eq!(log.nonces_for(pool_public_key(0)), vec![1]);
     assert!(
-        log.nonces_for(pool_public_key(0)).is_empty(),
-        "must not resign the step on a different key"
+        log.nonces_for(signing_key).is_empty(),
+        "the stored nonce must never reach the network"
     );
 }
 
-/// A key rotated out of the configuration since the step was signed leaves the
-/// stored signature valid on chain, and no lane here can allocate a nonce on
-/// that key — so recovery replays it rather than failing startup, and without
-/// taking a lane it does not need. Holding the pool's only lane for the
-/// duration proves the second half: an implementation that leased before
-/// replaying would block here instead of finishing.
+/// A step signed with a key the pool no longer holds is re-signed on a current
+/// one: nothing can allocate a nonce on a retired key, so replaying its stored
+/// signature would strand the step.
 #[tokio::test]
-async fn prepared_step_replays_under_a_key_the_pool_no_longer_holds() {
+async fn prepared_step_signed_with_a_retired_key_is_re_signed_on_a_current_one() {
     let store = Arc::new(MemoryStore::new());
     let log = Arc::new(BroadcastLog::default());
     let signer = Arc::new(FakeSigner::with_keys(1));
@@ -1023,7 +1106,6 @@ async fn prepared_step_replays_under_a_key_the_pool_no_longer_holds() {
             broadcast_delay: Duration::ZERO,
         }),
     );
-    let _lane = signer.pool.lease_next().await;
 
     let retired_key = pool_public_key(7);
     let op = stored(
@@ -1040,9 +1122,13 @@ async fn prepared_step_replays_under_a_key_the_pool_no_longer_holds() {
 
     let result = timeout(Duration::from_secs(5), driver.execute_remaining_steps(op))
         .await
-        .expect("replay must not wait on a lane")
+        .expect("a retired signing key must not strand the step")
         .unwrap();
 
     assert_eq!(result.status(), OperationStatus::Succeeded);
-    assert_eq!(log.nonces_for(retired_key), vec![42]);
+    assert_eq!(log.nonces_for(pool_public_key(0)), vec![1]);
+    assert!(
+        log.nonces_for(retired_key).is_empty(),
+        "the retired key's stored signature must never reach the network"
+    );
 }

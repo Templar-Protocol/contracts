@@ -59,6 +59,7 @@ use templar_gateway_types::{
 /// idempotency/replay (an in-process [`MemoryStore`] by default).
 pub struct ClientBuilder {
     network: NetworkConfig,
+    archival_network: Option<NetworkConfig>,
     signers: HashMap<ManagedAccountId, PooledSigner>,
     store: SharedOperationStore,
     finality_policy: FinalityPolicy,
@@ -99,6 +100,18 @@ impl ClientBuilder {
         self
     }
 
+    /// Set the archival RPC endpoint reconciliation consults when the primary
+    /// has no record of a transaction. A primary node garbage collects outcomes,
+    /// so without an endpoint that retains history a transaction which did
+    /// execute is indistinguishable from one that never did — and its operation
+    /// stays in flight rather than settling. Must point at a genuinely archival
+    /// node.
+    #[must_use]
+    pub fn archival_network(mut self, archival_network: Option<NetworkConfig>) -> Self {
+        self.archival_network = archival_network;
+        self
+    }
+
     /// Set the transaction-wait and state-query policy. Defaults to
     /// [`FinalityPolicy::Executed`].
     #[must_use]
@@ -121,8 +134,11 @@ impl ClientBuilder {
         ));
         let signer_account_ids = self.signers.keys().cloned().collect();
         let signer = NearTransactionSigner::new(self.network.clone(), self.signers);
-        let executor =
-            NearOperationExecutor::with_finality_policy(self.network, self.finality_policy);
+        let executor = NearOperationExecutor::with_finality_policy(
+            self.network,
+            self.archival_network,
+            self.finality_policy,
+        );
         let driver = OperationDriver::new(self.store, Arc::new(signer), Arc::new(executor));
         Ok((context, driver, signer_account_ids))
     }
@@ -176,6 +192,7 @@ impl Client {
     pub fn builder(network: NetworkConfig) -> ClientBuilder {
         ClientBuilder {
             network,
+            archival_network: None,
             signers: HashMap::new(),
             store: Arc::new(MemoryStore::new()),
             finality_policy: FinalityPolicy::default(),

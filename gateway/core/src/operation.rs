@@ -3,7 +3,7 @@ use std::{collections::VecDeque, sync::Arc};
 use chrono::{DateTime, Utc};
 use near_api::types::{
     transaction::{actions::Action, SignedTransaction},
-    AccountId, PublicKey,
+    AccountId,
 };
 use serde::{Deserialize, Serialize};
 use templar_gateway_types::{
@@ -183,11 +183,16 @@ pub struct StoredOperation {
 
 pub type SharedOperationStore = Arc<dyn OperationStore>;
 
+/// The right to install a freshly signed step. Holds no transaction: ownership
+/// passes to the caller to sign, and the operation is not touched until
+/// [`PendingPreparation::finish`].
 #[must_use]
 pub struct PendingPreparation<'a> {
     operation: &'a mut StoredOperation,
     store: SharedOperationStore,
-    transaction: PlannedTransaction,
+    /// Whether the step is still queued in `remaining_steps` and so must be
+    /// dequeued on completion, rather than already occupying the cursor.
+    queued: bool,
 }
 
 #[must_use]
@@ -211,19 +216,6 @@ pub enum CurrentStepRef<'a> {
     Prepared(Box<PreparedCurrentStep<'a>>),
     Submitted(Box<SubmittedCurrentStep<'a>>),
     Failed,
-}
-
-/// Which access key the next step needs.
-pub(crate) enum SigningTarget<'a> {
-    /// Signed in an earlier pass, so its nonce is bound to this key.
-    Bound {
-        signer_account_id: &'a ManagedAccountId,
-        public_key: PublicKey,
-    },
-    /// Not signed yet, so any of the account's keys will do.
-    Next {
-        signer_account_id: &'a ManagedAccountId,
-    },
 }
 
 impl StoredOperation {
@@ -324,50 +316,65 @@ impl StoredOperation {
         }
     }
 
+    /// Record `transaction` as having failed without a recorded on-chain
+    /// execution. Unlike a revert, this is unconditionally terminal:
+    /// [`CompletedStep`] has no rejected variant, so a rejection cannot be
+    /// tolerated by [`PlannedTransaction::continue_on_failure`]. Carrying no
+    /// [`ExecutionOutcome`] is what releases the step's charge.
+    pub fn record_rejection(&mut self, transaction: PlannedTransaction, tx_hash: CryptoHash) {
+        self.current_step = Some(CurrentStep::Rejected {
+            transaction,
+            tx_hash,
+        });
+    }
+
+    /// Take the next step's transaction to be signed, replacing the signature of
+    /// one already `Prepared` rather than reusing it. Nothing moves until
+    /// [`PendingPreparation::finish`].
+    ///
+    /// A stored signature is bound to a block hash NEAR only accepts for ~24h,
+    /// after which resubmitting it yields `Expired` forever. This is the sole
+    /// route to a submittable [`PreparedCurrentStep`], which is what makes a
+    /// stale signature unreachable rather than merely discouraged. Dropping it
+    /// cannot double-submit: [`PreparedCurrentStep::submit`] records `Submitted`
+    /// *before* broadcasting, so a persisted `Prepared` step never reached the
+    /// network.
     #[must_use]
     pub fn begin_next_preparation(
         &mut self,
         store: SharedOperationStore,
-    ) -> Option<PendingPreparation<'_>> {
-        if self.current_step.is_some() {
-            return None;
-        }
+    ) -> Option<(PendingPreparation<'_>, PlannedTransaction)> {
+        let transaction = self.next_transaction()?.clone();
+        let queued = self.current_step.is_none();
 
-        let transaction = self.remaining_steps.pop_front()?;
-
-        Some(PendingPreparation {
-            operation: self,
-            store,
+        Some((
+            PendingPreparation {
+                operation: self,
+                store,
+                queued,
+            },
             transaction,
-        })
+        ))
     }
 
-    /// The access key the next step must sign or resubmit with, or `None` when
-    /// no step is ready for either. Lives beside the step cursor so it cannot
-    /// disagree with [`begin_next_preparation`](Self::begin_next_preparation)
-    /// about which step is next.
-    pub(crate) fn signing_target(&self) -> Option<SigningTarget<'_>> {
+    /// The next step to sign, wherever it currently sits. Single source of truth
+    /// for [`begin_next_preparation`](Self::begin_next_preparation) and
+    /// [`signing_target`](Self::signing_target), so they cannot disagree.
+    fn next_transaction(&self) -> Option<&PlannedTransaction> {
         match &self.current_step {
-            Some(CurrentStep::Prepared {
-                transaction,
-                signed_transaction,
-                ..
-            }) => Some(SigningTarget::Bound {
-                signer_account_id: &transaction.signer_account_id,
-                public_key: signed_transaction.transaction.public_key(),
-            }),
-            Some(
-                CurrentStep::Submitted { .. }
-                | CurrentStep::Reverted { .. }
-                | CurrentStep::Rejected { .. },
-            ) => None,
-            None => self
-                .remaining_steps
-                .front()
-                .map(|transaction| SigningTarget::Next {
-                    signer_account_id: &transaction.signer_account_id,
-                }),
+            Some(CurrentStep::Prepared { transaction, .. }) => Some(transaction),
+            Some(_) => None,
+            None => self.remaining_steps.front(),
         }
+    }
+
+    /// The account the next step must sign under, or `None` when no step is
+    /// ready to sign. Any of that account's keys will do: every step named here
+    /// is signed afresh, so none is bound to the key that signed an earlier
+    /// attempt.
+    pub(crate) fn signing_target(&self) -> Option<&ManagedAccountId> {
+        self.next_transaction()
+            .map(|transaction| &transaction.signer_account_id)
     }
 
     #[must_use]
@@ -462,11 +469,13 @@ impl StoredOperation {
 }
 
 impl PendingPreparation<'_> {
-    pub fn transaction(&self) -> &PlannedTransaction {
-        &self.transaction
-    }
-
+    /// Install the signature and advance the cursor onto the step, together. A
+    /// preparation abandoned before this — a signing failure, an early return —
+    /// leaves the operation exactly as it was found.
     pub async fn finish(self, prepared: PreparedTransactionResult) -> GatewayResult<()> {
+        if self.queued {
+            self.operation.remaining_steps.pop_front();
+        }
         self.operation.current_step = Some(CurrentStep::Prepared {
             transaction: prepared.transaction,
             signed_transaction: Box::new(prepared.signed_transaction),
