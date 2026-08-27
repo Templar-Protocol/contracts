@@ -8,9 +8,8 @@ use near_api::types::{Reference, TxExecutionStatus};
 /// return a pending transaction result that the operation driver cannot persist
 /// as a completed step.
 ///
-/// This does not govern reconciliation, which looks up an already-submitted
-/// transaction and has a well-defined answer for "not finished yet" — leave the
-/// step submitted. It asks without waiting; see `RECONCILIATION_WAIT_UNTIL`.
+/// Reconciliation does not use it to wait: it asks what the chain has now, and
+/// applies this as the bar an answer must meet to count as an outcome.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum FinalityPolicy {
     /// Wait until the transaction is included in a finalized block and all
@@ -36,14 +35,12 @@ impl FinalityPolicy {
         }
     }
 
-    /// Whether `progress` meets this policy's bar.
-    ///
-    /// Spelled out rather than compared: nearcore's levels are not a ladder —
-    /// `ExecutedOptimistic` has execution without finality and `IncludedFinal`
-    /// finality without execution — so `TxExecutionStatus`'s derived `Ord`,
-    /// which follows declaration order, does not mean what it appears to.
+    /// Whether `progress` meets this policy's bar. Spelled out rather than
+    /// compared: the levels are not a ladder — `ExecutedOptimistic` has execution
+    /// without finality and `IncludedFinal` finality without execution — so
+    /// `TxExecutionStatus`'s derived `Ord` does not mean what it appears to.
     #[must_use]
-    pub fn is_satisfied_by(self, progress: &TxExecutionStatus) -> bool {
+    pub const fn is_satisfied_by(self, progress: TxExecutionStatus) -> bool {
         match self {
             Self::ExecutedOptimistic => matches!(
                 progress,
@@ -93,75 +90,39 @@ mod tests {
         assert!(matches!(policy.query_reference(), Reference::Final));
     }
 
-    /// All 18 pairings, because the levels are not a ladder. `ExecutedOptimistic`
-    /// has execution without finality and `IncludedFinal` finality without
-    /// execution — neither satisfies the other, and `TxExecutionStatus`'s derived
-    /// `Ord` (declaration order) would get both wrong.
+    /// Every level against every policy, since the levels are not a ladder.
     #[rstest]
-    #[case::optimistic_accepts_itself(
+    #[case(
         FinalityPolicy::ExecutedOptimistic,
-        TxExecutionStatus::ExecutedOptimistic,
-        true
+        &[
+            TxExecutionStatus::ExecutedOptimistic,
+            TxExecutionStatus::Executed,
+            TxExecutionStatus::Final,
+        ]
     )]
-    #[case::optimistic_accepts_higher(
-        FinalityPolicy::ExecutedOptimistic,
-        TxExecutionStatus::Final,
-        true
-    )]
-    #[case::optimistic_rejects_included_final(
-        FinalityPolicy::ExecutedOptimistic,
-        TxExecutionStatus::IncludedFinal,
-        false
-    )]
-    #[case::optimistic_rejects_included(
-        FinalityPolicy::ExecutedOptimistic,
-        TxExecutionStatus::Included,
-        false
-    )]
-    #[case::optimistic_rejects_none(
-        FinalityPolicy::ExecutedOptimistic,
-        TxExecutionStatus::None,
-        false
-    )]
-    #[case::executed_accepts_itself(FinalityPolicy::Executed, TxExecutionStatus::Executed, true)]
-    #[case::executed_accepts_final(FinalityPolicy::Executed, TxExecutionStatus::Final, true)]
-    #[case::executed_rejects_optimistic(
+    #[case(
         FinalityPolicy::Executed,
-        TxExecutionStatus::ExecutedOptimistic,
-        false
+        &[TxExecutionStatus::Executed, TxExecutionStatus::Final]
     )]
-    #[case::executed_rejects_included_final(
-        FinalityPolicy::Executed,
-        TxExecutionStatus::IncludedFinal,
-        false
-    )]
-    #[case::final_accepts_only_final(FinalityPolicy::Final, TxExecutionStatus::Final, true)]
-    #[case::final_rejects_executed(FinalityPolicy::Final, TxExecutionStatus::Executed, false)]
-    #[case::final_rejects_optimistic(
-        FinalityPolicy::Final,
-        TxExecutionStatus::ExecutedOptimistic,
-        false
-    )]
-    #[case::optimistic_accepts_executed(
-        FinalityPolicy::ExecutedOptimistic,
-        TxExecutionStatus::Executed,
-        true
-    )]
-    #[case::executed_rejects_included(FinalityPolicy::Executed, TxExecutionStatus::Included, false)]
-    #[case::executed_rejects_none(FinalityPolicy::Executed, TxExecutionStatus::None, false)]
-    #[case::final_rejects_included_final(
-        FinalityPolicy::Final,
-        TxExecutionStatus::IncludedFinal,
-        false
-    )]
-    #[case::final_rejects_included(FinalityPolicy::Final, TxExecutionStatus::Included, false)]
-    #[case::final_rejects_none(FinalityPolicy::Final, TxExecutionStatus::None, false)]
+    #[case(FinalityPolicy::Final, &[TxExecutionStatus::Final])]
     fn policy_is_satisfied_only_by_a_level_that_meets_it(
         #[case] policy: FinalityPolicy,
-        #[case] progress: TxExecutionStatus,
-        #[case] expected: bool,
+        #[case] accepted: &[TxExecutionStatus],
     ) {
-        assert_eq!(policy.is_satisfied_by(&progress), expected);
+        for level in [
+            TxExecutionStatus::None,
+            TxExecutionStatus::Included,
+            TxExecutionStatus::ExecutedOptimistic,
+            TxExecutionStatus::IncludedFinal,
+            TxExecutionStatus::Executed,
+            TxExecutionStatus::Final,
+        ] {
+            assert_eq!(
+                policy.is_satisfied_by(level),
+                accepted.contains(&level),
+                "{policy:?} against {level:?}"
+            );
+        }
     }
 
     #[test]

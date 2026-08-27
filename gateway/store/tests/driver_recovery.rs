@@ -632,16 +632,22 @@ async fn an_abandoned_preparation_leaves_the_plan_intact(#[case] mut op: StoredO
     );
 }
 
-/// A transaction the chain holds but has not finished must never be recorded as
-/// an outcome — doing so writes a terminal verdict for a step still in flight.
+/// An answer that does not settle the step leaves it submitted and records
+/// nothing: the chain is still executing the transaction, or no retention-complete
+/// node has confirmed it missing. Age does not override either — the `expired`
+/// cases are past the horizon.
 #[rstest]
-#[case::fresh(fresh_submitted_step())]
-#[case::expired(expired_submitted_step())]
+#[case::pending_fresh(TransactionRecord::Pending, fresh_submitted_step())]
+#[case::pending_expired(TransactionRecord::Pending, expired_submitted_step())]
+#[case::unconfirmed_expired(TransactionRecord::Unconfirmed, expired_submitted_step())]
 #[tokio::test]
-async fn a_pending_transaction_is_never_recorded_as_an_outcome(#[case] step: CurrentStep) {
+async fn an_unsettled_answer_leaves_the_step_submitted(
+    #[case] answer: TransactionRecord,
+    #[case] step: CurrentStep,
+) {
     let store = Arc::new(MemoryStore::new());
-    let key = seed_keyed(&store, "pending", step_op(step)).await;
-    let executor = FakeExecutor::new(vec![], vec![Ok(TransactionRecord::Pending)]);
+    let key = seed_keyed(&store, "unsettled", step_op(step)).await;
+    let executor = FakeExecutor::new(vec![], vec![Ok(answer)]);
 
     let record = driver(store.clone(), executor)
         .reconcile_operation(&key)
@@ -649,34 +655,13 @@ async fn a_pending_transaction_is_never_recorded_as_an_outcome(#[case] step: Cur
         .unwrap()
         .unwrap();
 
-    // Past the horizon too: holding the transaction outranks its age.
     assert_eq!(record.status, OperationStatus::InProgress);
     let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
     assert!(is_submitted(op.current_step.as_ref()));
     assert!(
         op.completed_steps.is_empty(),
-        "a pending step must not advance the cursor"
+        "an unsettled step must not advance the cursor"
     );
-}
-
-/// Age alone must not reject. Without an archival node confirming it, a missing
-/// transaction is indistinguishable from one whose outcome the primary garbage
-/// collected — and that one may well have executed.
-#[tokio::test]
-async fn an_unconfirmed_missing_transaction_is_never_rejected() {
-    let store = Arc::new(MemoryStore::new());
-    let key = seed_keyed(&store, "unconfirmed", step_op(expired_submitted_step())).await;
-    let executor = FakeExecutor::new(vec![], vec![Ok(TransactionRecord::Unconfirmed)]);
-
-    let record = driver(store.clone(), executor)
-        .reconcile_operation(&key)
-        .await
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(record.status, OperationStatus::InProgress);
-    let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
-    assert!(is_submitted(op.current_step.as_ref()));
 }
 
 /// Rejection is terminal: a later sweep must not query the chain again, which is

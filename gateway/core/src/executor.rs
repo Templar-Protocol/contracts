@@ -1,29 +1,23 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use near_api::NetworkConfig;
 use near_api::{
     advanced::{
+        to_final_execution_outcome,
         tx_rpc::{TransactionStatusRef, TransactionStatusRpc},
-        ExecuteSignedTransaction, RequestBuilder, TransactionableOrSigned,
+        ExecuteSignedTransaction, RequestBuilder, ResponseHandler, TransactionableOrSigned,
     },
-    Signer,
-};
-use near_api::{
+    errors::{QueryError, RetryError, SendRequestError},
     types::{
         crypto::secret_key::ED25519SecretKey,
         transaction::{
             result::{ExecutionFinalResult, TransactionResult},
             PrepopulateTransaction, SignedTransaction,
         },
+        TxExecutionStatus,
     },
-    SecretKey,
+    NetworkConfig, SecretKey, Signer,
 };
-use std::collections::HashMap;
-
-use near_api::advanced::{to_final_execution_outcome, ResponseHandler};
-use near_api::errors::{QueryError, RetryError, SendRequestError};
-use near_api::types::TxExecutionStatus;
 use near_openapi_client::types::{RpcTransactionError, RpcTransactionResponse};
 use templar_gateway_types::{operation::ExecutionOutcome, CryptoHash, ManagedAccountId};
 
@@ -32,11 +26,9 @@ use crate::{
     PreparedTransactionResult, SigningKeyLease,
 };
 
-/// Reconciliation asks what the chain has *now*. Any waiting level makes the node
-/// poll a transaction it has never seen until a ~30s handler timeout and answer
-/// `TIMEOUT_ERROR`, so `UNKNOWN_TRANSACTION` never comes back and a step the
-/// chain has no record of can never be settled. A finished transaction returns
-/// its outcome at this level too, so the wait buys nothing after the fact.
+/// Any waiting level makes a node poll a transaction it has never seen until a
+/// ~30s timeout, so `UNKNOWN_TRANSACTION` never comes back and a step the chain
+/// has no record of can never settle.
 const RECONCILIATION_WAIT_UNTIL: TxExecutionStatus = TxExecutionStatus::None;
 
 pub type SharedExecuteOperation = Arc<dyn ExecuteOperation>;
@@ -111,14 +103,11 @@ pub enum TransactionRecord {
     /// nothing: a primary node discards outcomes it no longer needs, and reports
     /// a transaction that did execute exactly as it reports one that never did.
     Unconfirmed,
-    /// The chain holds the transaction and has not finished it. It has an outcome
-    /// coming, so reconciliation waits for a later sweep rather than recording
-    /// one now.
+    /// The chain holds the transaction and has not finished it.
     Pending,
 }
 
-/// What a single node says. Whether "no record" is evidence of anything depends
-/// on whether that node retains history, which is the caller's to judge.
+/// What a single node says, before the walk decides what it proves.
 enum NodeAnswer {
     Executed(StepOutcome),
     Pending,
@@ -207,20 +196,15 @@ impl NearOperationExecutor {
                 tx_hash: tx_hash.0,
                 wait_until: RECONCILIATION_WAIT_UNTIL,
             },
-            TransactionProgressHandler,
+            TransactionProgressHandler(self.finality_policy),
         )
         .fetch_from(network)
         .await
         {
-            // The bar is the same one the submit path waits for. The outcome's
-            // own `status` will not do: it is the result of the first leaf
-            // receipt, so it resolves while sibling receipts may still be
-            // running, and recording it would write a terminal verdict over a
-            // truncated set of receipts.
-            Ok((progress, _)) if !self.finality_policy.is_satisfied_by(&progress) => {
-                Ok(NodeAnswer::Pending)
+            Ok(TransactionResult::Pending { .. }) => Ok(NodeAnswer::Pending),
+            Ok(TransactionResult::Full(result)) => {
+                Ok(NodeAnswer::Executed(StepOutcome::from_execution(*result)))
             }
-            Ok((_, result)) => Ok(NodeAnswer::Executed(StepOutcome::from_execution(result))),
             Err(error) if is_unknown_transaction(&error) => Ok(NodeAnswer::NoRecord),
             Err(error) if is_minimal_pending_response(&error) => Ok(NodeAnswer::Pending),
             Err(error) => Err(GatewayError::NearTransaction(error.to_string())),
@@ -338,8 +322,6 @@ impl ExecuteOperation for NearOperationExecutor {
                 Ok(NodeAnswer::Executed(outcome)) => {
                     return Ok(TransactionRecord::Executed(outcome))
                 }
-                // Holding the transaction settles it whoever says so — retention
-                // is only in question for a node that has *no* record.
                 Ok(NodeAnswer::Pending) => return Ok(TransactionRecord::Pending),
                 Ok(NodeAnswer::NoRecord) => {}
                 Err(error) => unanswered = Some(error),
@@ -366,14 +348,14 @@ impl ExecuteOperation for NearOperationExecutor {
     }
 }
 
-/// Keeps `final_execution_status` beside the outcome. near_api's own
-/// `TransactionStatusHandler` discards it, and it is the only field that says
-/// whether every non-refund receipt has executed — the outcome's own `status` is
-/// the result of the first leaf receipt.
-struct TransactionProgressHandler;
+/// Applies the completeness bar near_api's own `TransactionStatusHandler` cannot:
+/// it discards `final_execution_status`, and the outcome's own `status` is the
+/// result of the first leaf receipt, so it resolves while sibling receipts may
+/// still be running.
+struct TransactionProgressHandler(FinalityPolicy);
 
 impl ResponseHandler for TransactionProgressHandler {
-    type Response = (TxExecutionStatus, ExecutionFinalResult);
+    type Response = TransactionResult;
     type Query = TransactionStatusRpc;
 
     fn process_response(
@@ -393,9 +375,25 @@ impl ResponseHandler for TransactionProgressHandler {
             ..
         }) = &response;
         let progress = *final_execution_status;
-        let outcome = ExecutionFinalResult::try_from(to_final_execution_outcome(response))
-            .map_err(|error| QueryError::ConversionError(Box::new(error)))?;
-        Ok((progress, outcome))
+        if !self.0.is_satisfied_by(progress) {
+            return Ok(TransactionResult::Pending { status: progress });
+        }
+        ExecutionFinalResult::try_from(to_final_execution_outcome(response))
+            .map(|outcome| TransactionResult::Full(Box::new(outcome)))
+            .map_err(|error| QueryError::ConversionError(Box::new(error)))
+    }
+}
+
+/// The request a failed query actually made it to, if it reached one.
+fn failed_request(
+    error: &QueryError<RpcTransactionError>,
+) -> Option<&SendRequestError<RpcTransactionError>> {
+    let QueryError::QueryError(retry) = error else {
+        return None;
+    };
+    match retry.as_ref() {
+        RetryError::RetriesExhausted(request) | RetryError::Critical(request) => Some(request),
+        _ => None,
     }
 }
 
@@ -405,42 +403,23 @@ impl ResponseHandler for TransactionProgressHandler {
 /// response body — progenitor formats it into the transport error — so a body
 /// that merely mentions the marker, a contract panic or a log line, would read
 /// as the chain's own answer, and past the validity horizon that is terminal.
-/// `RpcTransactionError`'s other variants carry free-form text for the same
-/// reason, so not even a variant that parsed may be matched by rendering.
 fn is_unknown_transaction(error: &QueryError<RpcTransactionError>) -> bool {
-    let QueryError::QueryError(retry) = error else {
-        return false;
-    };
-    let (RetryError::RetriesExhausted(request) | RetryError::Critical(request)) = retry.as_ref()
-    else {
-        return false;
-    };
-    let SendRequestError::ServerError(server_error) = request else {
-        return false;
-    };
-    matches!(server_error, RpcTransactionError::UnknownTransaction { .. })
+    matches!(
+        failed_request(error),
+        Some(SendRequestError::ServerError(
+            RpcTransactionError::UnknownTransaction { .. }
+        ))
+    )
 }
 
-/// Whether this error is really the RPC's minimal "not finished yet" answer.
-///
-/// At a non-waiting `wait_until` the node replies with `final_execution_status`
-/// alone, which the openapi client cannot deserialize into a full response and
-/// surfaces as a transport error. near_api recognises this on its submit path
-/// (`send.rs`) but not on the status-query path, so reconciliation has to.
-/// Requiring the body to parse as that exact shape, carrying a status that is
-/// not yet executed, keeps a genuinely malformed payload an error.
-fn is_minimal_pending_response<E: std::fmt::Debug + Send + Sync>(error: &QueryError<E>) -> bool {
-    let QueryError::QueryError(retry) = error else {
-        return false;
-    };
-    let (RetryError::RetriesExhausted(request) | RetryError::Critical(request)) = retry.as_ref()
-    else {
-        return false;
-    };
-    let SendRequestError::TransportError(near_openapi_client::Error::InvalidResponsePayload(
+/// Whether this error is really the RPC's minimal "not finished yet" answer,
+/// which the openapi client cannot deserialize and reports as a transport error.
+/// Requiring that exact shape keeps a genuinely malformed payload an error.
+fn is_minimal_pending_response(error: &QueryError<RpcTransactionError>) -> bool {
+    let Some(SendRequestError::TransportError(near_openapi_client::Error::InvalidResponsePayload(
         body,
         _,
-    )) = request
+    ))) = failed_request(error)
     else {
         return false;
     };
@@ -491,10 +470,9 @@ fn null_signer() -> Arc<near_api::Signer> {
 #[cfg(test)]
 mod tests {
     use near_api::{NetworkConfig, RPCEndpoint};
+    use rstest::rstest;
     use templar_gateway_types::{CryptoHash, ManagedAccountId};
     use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
-
-    use rstest::rstest;
 
     use super::{ExecuteOperation, NearOperationExecutor, TransactionRecord};
     use crate::GatewayError;
@@ -551,27 +529,18 @@ mod tests {
         r#"{"jsonrpc":"2.0","id":"0","result":{"final_execution_status":"NONE"}}"#;
 
     /// A real mainnet `tx` response at `wait_until: NONE`, captured verbatim
-    /// apart from a shortened action and an emptied receipt list, with the
-    /// progress level left open. Its `status` is `SuccessValue` in every case, so
-    /// only `final_execution_status` separates a finished transaction from one
-    /// whose sibling receipts are still running.
-    const RESPONSE_BEFORE_PROGRESS: &str =
-        r#"{"jsonrpc":"2.0","id":"0","result":{"final_execution_status":"#;
-    const RESPONSE_AFTER_PROGRESS: &str = r#","receipts_outcome":[],"status":{"SuccessValue":""},"transaction":{"actions":[{"Transfer":{"deposit":"1"}}],"hash":"6F3YyM29ajJxENmkyyAYWBQaTtKEJgXjwYVttj74sSSL","nonce":141511583287573,"priority_fee":0,"public_key":"ed25519:GtnhHo73ydoHuRwUykqphBUyPKiZeafdvs1TSg1R8fb6","receiver_id":"coin.abound.near","signature":"ed25519:3FPX3BmPTkfBELwhdxP6dx5kxo1AaxsbVB2yM7RPHsgbBMoZtc8MeiFiFoKp419pcRSjpknkt3Hi2nHwFkfX3XYa","signer_id":"coin.abound.near"},"transaction_outcome":{"block_hash":"HdQKF3DYpN6mwmadHXGDfgpuhGh9XzVyYg5pFBhBGati","id":"6F3YyM29ajJxENmkyyAYWBQaTtKEJgXjwYVttj74sSSL","outcome":{"executor_id":"coin.abound.near","gas_burnt":308231666918,"logs":[],"metadata":{"gas_profile":null,"version":1},"receipt_ids":[],"status":{"SuccessReceiptId":"5D5b4RBt1okZkhXLu7vhFKs7kK2y3g8UBkQYoptmMJo8"},"tokens_burnt":"30823166691800000000"},"proof":[]}}}"#;
+    /// apart from a shortened action and an emptied receipt list. Its `status` is
+    /// `SuccessValue` whatever progress level is substituted, so only
+    /// `final_execution_status` separates a finished transaction from one whose
+    /// sibling receipts are still running.
+    const RESPONSE_TEMPLATE: &str = r#"{"jsonrpc":"2.0","id":"0","result":{"final_execution_status":"{progress}","receipts_outcome":[],"status":{"SuccessValue":""},"transaction":{"actions":[{"Transfer":{"deposit":"1"}}],"hash":"6F3YyM29ajJxENmkyyAYWBQaTtKEJgXjwYVttj74sSSL","nonce":141511583287573,"priority_fee":0,"public_key":"ed25519:GtnhHo73ydoHuRwUykqphBUyPKiZeafdvs1TSg1R8fb6","receiver_id":"coin.abound.near","signature":"ed25519:3FPX3BmPTkfBELwhdxP6dx5kxo1AaxsbVB2yM7RPHsgbBMoZtc8MeiFiFoKp419pcRSjpknkt3Hi2nHwFkfX3XYa","signer_id":"coin.abound.near"},"transaction_outcome":{"block_hash":"HdQKF3DYpN6mwmadHXGDfgpuhGh9XzVyYg5pFBhBGati","id":"6F3YyM29ajJxENmkyyAYWBQaTtKEJgXjwYVttj74sSSL","outcome":{"executor_id":"coin.abound.near","gas_burnt":308231666918,"logs":[],"metadata":{"gas_profile":null,"version":1},"receipt_ids":[],"status":{"SuccessReceiptId":"5D5b4RBt1okZkhXLu7vhFKs7kK2y3g8UBkQYoptmMJo8"},"tokens_burnt":"30823166691800000000"},"proof":[]}}}"#;
 
     fn full_response(progress: &str) -> String {
-        [
-            RESPONSE_BEFORE_PROGRESS,
-            "\"",
-            progress,
-            "\"",
-            RESPONSE_AFTER_PROGRESS,
-        ]
-        .concat()
+        RESPONSE_TEMPLATE.replace("{progress}", progress)
     }
 
-    /// The gate Fix 1 rests on: a first-leaf `SuccessValue` is not an outcome
-    /// until the level the submit path waits for is reached.
+    /// A first-leaf `SuccessValue` is not an outcome until the level the submit
+    /// path waits for is reached.
     #[rstest]
     #[case::not_yet_executed("INCLUDED", false)]
     #[case::executed_but_not_final("EXECUTED_OPTIMISTIC", false)]
@@ -595,10 +564,7 @@ mod tests {
         );
     }
 
-    /// A transaction still executing must never be reported as an outcome:
-    /// `is_success` reads the outcome's own `status`, which is the result of the
-    /// first leaf receipt, so recording one would write a terminal verdict while
-    /// sibling receipts are still running.
+    /// A transaction still executing must never be reported as an outcome.
     #[tokio::test]
     async fn a_transaction_still_executing_is_pending_not_an_outcome() {
         let primary = responding_with(MINIMAL_PENDING).await;
