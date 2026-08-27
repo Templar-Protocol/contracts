@@ -9,6 +9,8 @@ description = "Core actor, operation, and execution-outcome model for the Templa
 
 [dependencies]
 actix.workspace = true
+borsh.workspace = true
+base64.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 futures.workspace = true

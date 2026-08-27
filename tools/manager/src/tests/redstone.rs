@@ -5,9 +5,7 @@ use super::CREDS;
 use crate::cli::{Cli, Command};
 use crate::commands::RedstoneNs;
 
-/// An adapter version whose `new` requires `admin_id`, and one whose `new` does not.
 const VERSION_WITH_ADMIN: &str = "templar-redstone-adapter-contract@0.2.0#abc";
-const VERSION_WITHOUT_ADMIN: &str = "templar-redstone-adapter-contract@0.1.0#abc";
 
 #[test]
 fn write_prices_decodes_base64_payload() {
@@ -213,14 +211,15 @@ fn create_requires_an_admin_id() {
     );
 }
 
-/// The version guard still fires on the typed path: a pre-0.2.0 `new` ignores an
-/// `admin_id` it does not declare, leaving the registry as admin.
 #[test]
-fn create_rejects_version_without_required_admin_id() {
-    let error = create(VERSION_WITHOUT_ADMIN, &["--preset", "prod"])
-        .expect_err("an optional-admin adapter must be refused");
+fn create_carries_the_abi_check_opt_out() {
+    let spec = create(
+        "templar-redstone-adapter-contract@unreadable",
+        &["--preset", "prod", "--skip-abi-check"],
+    )
+    .expect("the explicit opt-out must not parse the version key");
 
-    assert!(error.to_string().contains("Deploy >= 0.2.0"));
+    assert!(spec.target.skip_abi_check);
 }
 
 #[rstest::rstest]

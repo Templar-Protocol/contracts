@@ -1246,10 +1246,9 @@ impl SandboxHarness {
         .await
     }
 
-    /// Deploy a contract from a registry version. The deployed contract lives at
-    /// the sub-account `{name}.{registry_id}`.
+    /// Deploy a contract from a registry version with ABI validation disabled.
     #[allow(clippy::too_many_arguments)]
-    pub async fn registry_deploy(
+    pub async fn registry_deploy_without_abi_check(
         &self,
         caller: &ManagedAccountId,
         registry_id: &AccountId,
@@ -1268,6 +1267,7 @@ impl SandboxHarness {
                     version_key: version_key.to_owned(),
                     full_access_keys,
                     deposit,
+                    skip_abi_check: true,
                 },
                 init_args: Base64Bytes(init_args),
             },

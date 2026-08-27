@@ -1,5 +1,6 @@
 mod account_impl;
 mod chain_impl;
+mod contract_abi;
 mod contract_impl;
 mod ft_impl;
 mod intents_impl;
@@ -15,6 +16,7 @@ mod pyth_impl;
 mod redstone_impl;
 mod ref_finance_impl;
 mod registry_impl;
+mod registry_wasm;
 mod storage_impl;
 #[cfg(test)]
 mod test_ctx;

@@ -169,6 +169,13 @@ pub struct UniversalAccount {
     /// Version key of the universal account contract to deploy from the registry.
     #[arg(id = "ua-version-key", long = "ua-version-key", env = "UA_VERSION_KEY")]
     pub version_key: String,
+    /// Bypass embedded-ABI validation when deploying universal accounts from the registry.
+    #[arg(
+        id = "ua-skip-abi-check",
+        long = "ua-skip-abi-check",
+        env = "UA_SKIP_ABI_CHECK"
+    )]
+    pub skip_abi_check: bool,
 }
 
 impl UniversalAccount {

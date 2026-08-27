@@ -19,6 +19,9 @@ pub struct DeployTargetArgs {
     /// contract has version-gated init args can check it before deploying.
     #[arg(long, value_name = "KEY")]
     pub(crate) version_key: String,
+    /// Bypass embedded-ABI validation when the target constructor cannot be checked.
+    #[arg(long)]
+    skip_abi_check: bool,
     #[command(flatten)]
     full_access_keys: FullAccessKeyArgs,
     /// Deposit funding the new account's storage and balance.
@@ -39,6 +42,7 @@ impl DeployTargetArgs {
             registry_id: self.registry_id,
             name: self.name,
             version_key: self.version_key,
+            skip_abi_check: self.skip_abi_check,
             full_access_keys: Some(full_access_keys),
             deposit: self.deposit,
         })

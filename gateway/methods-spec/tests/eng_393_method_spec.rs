@@ -22,6 +22,7 @@ fn target() -> DeployTarget {
         registry_id: near_account_id::AccountIdRef::new_or_panic("registry.near").to_owned(),
         name: "market".to_owned(),
         version_key: "v1.0.0".to_owned(),
+        skip_abi_check: false,
         full_access_keys: None,
         deposit: NearToken::from_near(1),
     }
@@ -153,6 +154,17 @@ fn deploy_flattens_its_target_into_the_same_flat_json() {
         serde_json::from_value::<Deploy>(serde_json::to_value(&request).unwrap()).unwrap(),
         request,
     );
+}
+
+#[test]
+fn deploy_serializes_explicit_abi_check_opt_out() {
+    let mut target = target();
+    target.skip_abi_check = true;
+
+    let request = Deploy::new(target, Base64Bytes(vec![1, 2, 3]));
+    let value = serde_json::to_value(&request).unwrap();
+
+    assert_eq!(value["skip_abi_check"], json!(true));
 }
 
 /// A method's own init fields sit beside the target's on the wire, so the flat body

@@ -76,8 +76,16 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     gate(&mut reporter, spec.market_id()?.as_str())?;
 
     let public_key = PublicKey::from(args.public_key);
-    let steps =
-        PlanFile::steps_from(build(&ctx.client, &spec, &public_key, &args.signer_id).await?)?;
+    let steps = PlanFile::steps_from(
+        build(
+            &ctx.client,
+            &spec,
+            &public_key,
+            &args.signer_id,
+            args.skip_abi_check,
+        )
+        .await?,
+    )?;
 
     // After the steps exist, because it reads them; before the plan is written,
     // because a signer that cannot pay is a reason not to write one.
@@ -122,8 +130,16 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // What the spec derives right now. Re-derived rather than inspected: a plan
     // is a record of this derivation, so anything an edit could break is caught
     // by one comparison instead of a guard per property.
-    let expected =
-        PlanFile::steps_from(build(&ctx.client, &file.spec, &file.public_key, &credential).await?)?;
+    let expected = PlanFile::steps_from(
+        build(
+            &ctx.client,
+            &file.spec,
+            &file.public_key,
+            &credential,
+            args.skip_abi_check,
+        )
+        .await?,
+    )?;
 
     // Reconciled before anything else that reads the steps: if the journal and
     // the plan disagree, nothing below is meaningful.
@@ -449,6 +465,7 @@ pub(crate) async fn build(
     spec: &MarketSpec,
     public_key: &PublicKey,
     signer_id: &AccountId,
+    skip_abi_check: bool,
 ) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
     // A plan is a fixed list of transactions; it cannot encode "wait". With a
     // non-zero TTL the two proxy proposals are not executable when they are
@@ -517,8 +534,11 @@ pub(crate) async fn build(
             spec,
             public_key,
             governance,
-            oracle_version,
-            governance_version,
+            ProxyDeploymentOptions {
+                oracle_version,
+                governance_version,
+                skip_abi_check,
+            },
         )
         .await?;
 
@@ -563,6 +583,7 @@ pub(crate) async fn build(
                     registry_id: spec.registry.clone(),
                     name: spec.name.clone(),
                     version_key: spec.market_version.clone(),
+                    skip_abi_check,
                     full_access_keys,
                     deposit: MARKET_DEPOSIT,
                 },
@@ -575,6 +596,12 @@ pub(crate) async fn build(
     Ok(steps)
 }
 
+struct ProxyDeploymentOptions<'a> {
+    oracle_version: &'a str,
+    governance_version: &'a str,
+    skip_abi_check: bool,
+}
+
 /// The governance contract, then the oracle it owns: the oracle names its
 /// governance as `owner_id` at init, so governance must exist first.
 async fn oracle_stack(
@@ -583,20 +610,11 @@ async fn oracle_stack(
     spec: &MarketSpec,
     public_key: &PublicKey,
     governance: &GovernanceSpec,
-    oracle_version: &str,
-    governance_version: &str,
+    options: ProxyDeploymentOptions<'_>,
 ) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
     let full_access_keys = Some(vec![public_key.clone()]);
     let governance_id = spec.governance_id()?;
     let oracle_id = spec.oracle_id()?;
-
-    // Constructing the gateway request directly bypasses the guard
-    // `proxy-oracle create` applies, so it is applied here too: a pre-0.3.0
-    // `new` ignores `owner_id`, leaving the registry as owner. Governance then
-    // cannot configure either proxy — and because `admin_set_proxy` is
-    // dispatched detached, the proposals still *report* success and the deploy
-    // reaches market creation with an unconfigured oracle.
-    crate::commands::proxy_oracle::check_owner_id_is_honored(oracle_version, &governance_id)?;
 
     let mut steps = step(
         client,
@@ -606,7 +624,8 @@ async fn oracle_stack(
             target: registry::DeployTarget {
                 registry_id: spec.registry.clone(),
                 name: crate::spec::governance_name(&spec.name),
-                version_key: governance_version.to_owned(),
+                version_key: options.governance_version.to_owned(),
+                skip_abi_check: options.skip_abi_check,
                 full_access_keys: full_access_keys.clone(),
                 deposit: GOVERNANCE_DEPOSIT,
             },
@@ -629,7 +648,8 @@ async fn oracle_stack(
                 target: registry::DeployTarget {
                     registry_id: spec.registry.clone(),
                     name: crate::spec::oracle_name(&spec.name),
-                    version_key: oracle_version.to_owned(),
+                    version_key: options.oracle_version.to_owned(),
+                    skip_abi_check: options.skip_abi_check,
                     full_access_keys,
                     deposit: ORACLE_DEPOSIT,
                 },

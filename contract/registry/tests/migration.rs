@@ -84,7 +84,7 @@ async fn populate(harness: &SandboxHarness, registry_id: &AccountId) -> Result<P
         YieldWeights::new_with_supply_weight(1),
     );
     harness
-        .registry_deploy(
+        .registry_deploy_without_abi_check(
             &deployer,
             registry_id,
             "market",

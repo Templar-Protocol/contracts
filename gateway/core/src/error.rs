@@ -10,12 +10,16 @@ pub enum GatewayError {
     HttpRequest(String),
     #[error("near query failed: {0}")]
     NearQuery(String),
+    #[error("global contract code not found: {0}")]
+    GlobalContractCodeNotFound(String),
     #[error("account not found: {0}")]
     AccountNotFound(near_account_id::AccountId),
     #[error("unsupported signer account: {0}")]
     UnsupportedSignerAccount(String),
     #[error("request precondition failed: {0}")]
     RequestPreconditionFailed(String),
+    #[error("internal gateway error: {0}")]
+    Internal(String),
     #[error("invalid signer key: {0}")]
     InvalidSignerKey(String),
     #[error("near transaction failed: {0}")]

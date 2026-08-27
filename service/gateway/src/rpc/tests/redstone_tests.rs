@@ -131,6 +131,7 @@ async fn redstone_create_deploys_a_configured_adapter() -> Result<()> {
                     version_key: "redstone@0.2.0".to_owned(),
                     full_access_keys: None,
                     deposit: NearToken::from_near(10),
+                    skip_abi_check: true,
                 },
                 config: expected.clone(),
                 admin_id: stack.harness.beneficiary_account_id.clone(),

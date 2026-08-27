@@ -85,7 +85,7 @@ async fn deploy_from_registry(#[future(awt)] harness: SandboxHarness) -> Result<
         let args = args.clone();
         async move {
             harness
-                .registry_deploy(
+                .registry_deploy_without_abi_check(
                     &registry.deployer,
                     &registry.id,
                     name,
@@ -118,7 +118,7 @@ async fn deploy_with_access_key(#[future(awt)] harness: SandboxHarness) -> Resul
     let key = PublicKey::from(TEST_PUBLIC_KEY.parse::<near_api::types::PublicKey>()?);
 
     harness
-        .registry_deploy(
+        .registry_deploy_without_abi_check(
             &registry.deployer,
             &registry.id,
             "market",
@@ -191,7 +191,7 @@ async fn deploy_from_a_version_registered_by_code_hash(
     );
 
     harness
-        .registry_deploy(
+        .registry_deploy_without_abi_check(
             &registry.deployer,
             &registry.id,
             "by-hash",
@@ -279,7 +279,7 @@ async fn market_id_collision(#[future(awt)] harness: SandboxHarness) -> Result<(
     let args = init_args(&registry.configuration)?;
 
     harness
-        .registry_deploy(
+        .registry_deploy_without_abi_check(
             &registry.deployer,
             &registry.id,
             "market",
@@ -291,7 +291,7 @@ async fn market_id_collision(#[future(awt)] harness: SandboxHarness) -> Result<(
         .await?;
     // Re-deploying the same name collides.
     let result = harness
-        .registry_deploy(
+        .registry_deploy_without_abi_check(
             &registry.deployer,
             &registry.id,
             "market",

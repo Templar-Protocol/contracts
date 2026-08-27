@@ -117,6 +117,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
                     version_key: "ua@1.0.0".to_owned(),
                     full_access_keys: None,
                     deposit: NearToken::from_near(20),
+                    skip_abi_check: true,
                 },
                 key: signer.id(),
                 chain_id: templar_common::SU128::from(NEAR_TESTNET_CHAIN_ID),

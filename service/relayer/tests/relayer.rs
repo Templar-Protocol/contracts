@@ -257,7 +257,7 @@ impl InitTest {
     ) -> AccountId {
         let deployer = self.harness.registry_signer_account_id.clone();
         self.harness
-            .registry_deploy(
+            .registry_deploy_without_abi_check(
                 &deployer,
                 &self.market_registry,
                 name,
@@ -400,6 +400,7 @@ async fn init_relayer_app(
             ua_account.as_ref(),
             "--ua-version-key",
             "latest",
+            "--ua-skip-abi-check",
             "--ua-chain-id",
             &chain_id,
             "--ua-pow-difficulty",
