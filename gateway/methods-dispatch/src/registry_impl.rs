@@ -207,7 +207,7 @@ pub(crate) async fn plan_create_from_registry<C: HasNearClient>(
     ctx: &C,
     signer_account_id: templar_gateway_types::ManagedAccountId,
     target: registry::DeployTarget,
-    init_args: Vec<u8>,
+    mut init_args: Vec<u8>,
 ) -> GatewayResult<OperationPlan> {
     let registry_version = ctx
         .near_client()
@@ -222,7 +222,7 @@ pub(crate) async fn plan_create_from_registry<C: HasNearClient>(
             &target.version_key,
         )
         .await?;
-        validate_constructor_args(&wasm, &init_args)?;
+        init_args = validate_constructor_args(wasm, init_args).await?;
     }
 
     Ok(OperationPlan::single(

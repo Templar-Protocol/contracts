@@ -13242,6 +13242,7 @@ dependencies = [
  "near-account-id",
  "near-api",
  "near-contract-standards",
+ "rstest",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",

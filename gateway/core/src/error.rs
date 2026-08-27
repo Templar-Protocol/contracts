@@ -18,6 +18,8 @@ pub enum GatewayError {
     UnsupportedSignerAccount(String),
     #[error("request precondition failed: {0}")]
     RequestPreconditionFailed(String),
+    #[error("internal gateway error: {0}")]
+    Internal(String),
     #[error("invalid signer key: {0}")]
     InvalidSignerKey(String),
     #[error("near transaction failed: {0}")]

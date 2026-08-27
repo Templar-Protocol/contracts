@@ -231,20 +231,20 @@ async fn add_version_accepts_every_source_and_each_one_deploys() -> Result<()> {
 fn wasm_with_no_arg_constructor_abi() -> Vec<u8> {
     let abi = r#"{"schema_version":"0.4.0","metadata":{},"body":{"functions":[{"name":"new","kind":"call","modifiers":["init"],"params":{"serialization_type":"json","args":[]}}],"root_schema":{"definitions":{}}}}"#;
     let compressed = zstd::stream::encode_all(abi.as_bytes(), 0).expect("compress ABI");
-    let mut section = vec![1, 0, 0x41, 0, 0x0b];
+    let mut data = vec![1, 0, 0x41, 0, 0x0b];
     push_uleb(
-        &mut section,
-        u32::try_from(compressed.len()).expect("compressed ABI fits Wasm section length"),
+        &mut data,
+        u32::try_from(compressed.len()).expect("compressed ABI fits Wasm data segment length"),
     );
-    section.extend(compressed);
+    data.extend(compressed);
 
     let mut wasm = b"\0asm\x01\0\0\0".to_vec();
-    wasm.push(11);
-    push_uleb(
-        &mut wasm,
-        u32::try_from(section.len()).expect("Wasm section fits Wasm section length"),
-    );
-    wasm.extend(section);
+    push_section(&mut wasm, 1, &[1, 0x60, 0, 0]);
+    push_section(&mut wasm, 3, &[1, 0]);
+    push_section(&mut wasm, 5, &[1, 0, 1]);
+    push_section(&mut wasm, 7, &[1, 3, b'n', b'e', b'w', 0, 0]);
+    push_section(&mut wasm, 10, &[1, 2, 0, 0x0b]);
+    push_section(&mut wasm, 11, &data);
     wasm
 }
 
@@ -279,28 +279,38 @@ fn push_uleb(bytes: &mut Vec<u8>, mut value: u32) {
         }
     }
 }
+fn push_section(wasm: &mut Vec<u8>, id: u8, payload: &[u8]) {
+    wasm.push(id);
+    push_uleb(
+        wasm,
+        u32::try_from(payload.len()).expect("Wasm section payload fits u32"),
+    );
+    wasm.extend(payload);
+}
 
 #[tokio::test]
-async fn stored_and_global_versions_reject_invalid_constructor_args() -> Result<()> {
+async fn stored_and_global_versions_validate_constructor_args() -> Result<()> {
     let stack = TestStack::start().await?;
     let registry_id = stack.harness.deploy_registry().await?;
     let wasm = wasm_with_no_arg_constructor_abi();
     let versions = [
         (
-            "uncatalogued@1.0.0",
-            "invalid-init",
+            "stored@1.0.0",
+            "invalid-stored",
+            "valid-stored",
             VersionSource::Stored(wasm.clone().into()),
             NearToken::from_yoctonear(1),
         ),
         (
             "global@1.0.0",
-            "invalid-global-init",
+            "invalid-global",
+            "valid-global",
             VersionSource::PublishGlobal(wasm.clone().into()),
             templar_gateway_testing::publish_deposit_for(wasm.len()),
         ),
     ];
 
-    for (version_key, name, source, deposit) in versions {
+    for (version_key, invalid_name, valid_name, source, deposit) in versions {
         stack
             .harness
             .registry_add_version(
@@ -320,7 +330,7 @@ async fn stored_and_global_versions_reject_invalid_constructor_args() -> Result<
                 body: registry::Deploy {
                     target: registry::DeployTarget {
                         registry_id: registry_id.clone(),
-                        name: name.to_owned(),
+                        name: invalid_name.to_owned(),
                         version_key: version_key.to_owned(),
                         skip_abi_check: false,
                         full_access_keys: None,
@@ -332,16 +342,50 @@ async fn stored_and_global_versions_reject_invalid_constructor_args() -> Result<
             .await
             .expect_err("constructor ABI must reject arguments before deployment");
         assert!(format!("{error}").contains("do not match"));
+
+        let deploy = stack
+            .controller
+            .request::<registry::Deploy>(&WriteRequest {
+                signer_account_id: stack.harness.registry_signer_account_id.clone(),
+                idempotency_key: None,
+                body: registry::Deploy {
+                    target: registry::DeployTarget {
+                        registry_id: registry_id.clone(),
+                        name: valid_name.to_owned(),
+                        version_key: version_key.to_owned(),
+                        skip_abi_check: false,
+                        full_access_keys: None,
+                        deposit: NearToken::from_near(6),
+                    },
+                    init_args: Base64Bytes(Vec::new()),
+                },
+            })
+            .await?;
+        assert_eq!(deploy.operation.status, OperationStatus::Succeeded);
+
+        let account_id: AccountId = format!("{valid_name}.{registry_id}").parse()?;
+        let deployment = stack
+            .controller
+            .request::<registry::GetDeployment>(&registry::GetDeployment {
+                registry_id: registry_id.clone(),
+                account_id,
+            })
+            .await?;
+        assert!(deployment.deployment.is_some());
     }
 
     let deployments = stack
         .controller
         .request::<registry::ListDeployments>(&registry::ListDeployments {
-            registry_id,
+            registry_id: registry_id.clone(),
             args: Pagination::default(),
         })
         .await?;
-    assert!(deployments.account_ids.is_empty());
+    let expected = vec![
+        format!("valid-stored.{registry_id}").parse::<AccountId>()?,
+        format!("valid-global.{registry_id}").parse::<AccountId>()?,
+    ];
+    assert_eq!(deployments.account_ids, expected);
 
     stack.shutdown().await;
     Ok(())
