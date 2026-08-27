@@ -188,9 +188,11 @@ The dry-run prints one machine-readable JSON report on stdout, including the
 transaction, target code hash, every before/after view result, JSON diff, and
 check verdict. Reporter output, progress, diagnostics, and the digest go to
 stderr. Keep stdout dedicated to the report when piping it to review tooling.
-The completed replay is stamped into the same plan only when every replay check
-passes. The stamp binds the plan digest, semantic complete-state digest, target
-code hash, and verdicts; it records the sandbox chain ID for review context.
+The completed replay is stamped into the same plan when no replay check fails.
+An apply-valid stamp requires every replay check to be non-skipped and passed;
+apply rejects stamps with skipped checks. The stamp binds the plan digest,
+semantic complete-state digest, target code hash, and verdicts; it records the
+sandbox chain ID for review context.
 
 Apply only after reviewing both the plan and stamped replay:
 
