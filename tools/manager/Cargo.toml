@@ -26,6 +26,12 @@ near-account-id.workspace = true
 # cargo unifies features across a workspace build — every crate here and in CI
 # would inherit that system dependency. Nothing needs Ledger signing today.
 near-api = { workspace = true, features = ["keystore"] }
+near-crypto.workspace = true
+near-primitives.workspace = true
+near-sandbox.workspace = true
+near-token.workspace = true
+json-patch.workspace = true
+templar-sandbox.workspace = true
 # Native binary linking the proxy-oracle contract crates (`Operation`/`Proxy`/
 # `Source`): on non-wasm, `near_sdk::env::abort` references the `panic` host
 # import, which only near-sdk's `unit-testing` mock defines. `unit-testing` is
@@ -65,6 +71,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
+templar-gateway-testing.workspace = true
 
 [lints]
 workspace = true

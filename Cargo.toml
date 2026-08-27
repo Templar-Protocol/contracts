@@ -86,6 +86,7 @@ hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
 indexmap = "2"
 itertools = "0.14.0"
+json-patch = "4.1.0"
 jsonrpsee = "0.26.0"
 k256 = "0.13.4"
 libfuzzer-sys = "0.4"
@@ -153,6 +154,7 @@ templar-gateway-methods-spec = { path = "./gateway/methods-spec", version = "0.4
 templar-gateway-oracle-updates-dispatch = { path = "./gateway/oracle-updates-dispatch" }
 templar-gateway-oracle-updates-spec = { path = "./gateway/oracle-updates-spec" }
 templar-gateway-runtime = { path = "./gateway/runtime" }
+templar-sandbox = { path = "./gateway/sandbox", version = "0.1.0" }
 templar-gateway-store = { path = "./gateway/store", version = "0.2.2" }
 templar-gateway-testing = { path = "./gateway/testing" }
 templar-gateway-types = { path = "./gateway/types", version = "0.3.1" }

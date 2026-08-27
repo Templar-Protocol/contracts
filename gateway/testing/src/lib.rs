@@ -12,11 +12,11 @@ pub use ops::{failed_receipts, publish_deposit_for, DeployedMarket, DeployedVaul
 pub use sandbox::{
     sandbox_config, test_pooled_signer, test_secret_key, test_signer, SandboxHarness,
 };
-pub use sandbox_ext::node_is_serving;
 /// Re-exported so tests can name a historical release for [`wasm::released`]
 /// without taking their own dependency on the artifacts catalog.
 pub use templar_contract_artifacts::ArtifactId;
 pub use templar_gateway_types::ManagedAccountId;
+pub use templar_sandbox::node_is_serving;
 pub use test_utils::test_signer::TestSigner;
 
 /// Sandbox transactions wait only for complete optimistic execution, and all

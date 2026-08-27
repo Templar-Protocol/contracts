@@ -12,7 +12,7 @@ use serde::{
 use sha2::{Digest as _, Sha256};
 use templar_gateway_types::Base64Bytes;
 
-pub const PATCH_SCHEMA_VERSION: u32 = 2;
+pub const PATCH_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -29,20 +29,34 @@ pub struct PatchSpec {
 
 impl PatchSpec {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let mut spec: Self =
-            super::extends::load_raw(path, PATCH_SCHEMA_VERSION, "patch plan", "")?;
+        let mut spec: Self = super::extends::load_raw(
+            path,
+            PATCH_SCHEMA_VERSION,
+            "tmplrmgr patch export <target-account> --out <new-schema-3-path>",
+            "Schema 3 adds optional view checks; schema-2 storage checks and operations retain \
+             their meaning. Review the authored patch, set `schema = 3`, then rerun \
+             `tmplrmgr patch plan`.",
+        )?;
         spec.extends.clear();
         Ok(spec)
+    }
+    pub fn view_checks(&self) -> impl Iterator<Item = &PatchViewCheck> {
+        self.checks.iter().filter_map(|check| match check {
+            PatchCheck::View(check) => Some(check),
+            PatchCheck::Storage(_) => None,
+        })
     }
 
     pub fn resolve(&self, source_path: &Path) -> anyhow::Result<ResolvedPatch> {
         let base = source_path.parent().unwrap_or_else(|| Path::new("."));
         let mut ops = Vec::with_capacity(self.checks.len() + self.ops.len());
         for check in &self.checks {
-            ops.push(ResolvedOperation::Expect {
-                key: Base64Bytes(check.key.resolve(base)?),
-                expected: check.expect.resolve(base)?,
-            });
+            if let PatchCheck::Storage(check) = check {
+                ops.push(ResolvedOperation::Expect {
+                    key: Base64Bytes(check.key.resolve(base)?),
+                    expected: check.expect.resolve(base)?,
+                });
+            }
         }
         for operation in &self.ops {
             ops.push(operation.resolve(base)?);
@@ -52,12 +66,30 @@ impl PatchSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum PatchCheck {
+    Storage(PatchStorageCheck),
+    View(PatchViewCheck),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct PatchCheck {
+pub struct PatchStorageCheck {
     pub key: ByteExpr,
     pub expect: Expectation,
 }
-
+fn default_json_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatchViewCheck {
+    pub method_name: templar_gateway_types::ContractMethodName,
+    #[serde(default = "default_json_object")]
+    pub args: serde_json::Value,
+    #[serde(default)]
+    pub expect: Option<serde_json::Value>,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PatchOperation {

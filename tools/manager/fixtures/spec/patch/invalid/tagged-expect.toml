@@ -1,4 +1,4 @@
-schema = 2
+schema = 3
 account_id = "target.near"
 
 [[op]]

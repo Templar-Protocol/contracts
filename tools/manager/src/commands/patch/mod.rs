@@ -1,5 +1,9 @@
+mod dry_run;
+mod export;
 mod plan;
 
+pub use dry_run::DryRun;
+pub use export::Export;
 pub use plan::{Apply, Plan};
 
 use clap::Subcommand;
@@ -9,6 +13,10 @@ use clap::Subcommand;
 pub enum PatchNs {
     /// Resolve a patch spec into a reviewable atomic transaction.
     Plan(Plan),
+    /// Replay a patch plan in a fresh local sandbox.
+    DryRun(DryRun),
+    /// Export complete account state into a guarded patch spec.
+    Export(Export),
     /// Re-derive and submit a patch plan.
     Apply(Apply),
     /// List the readable types accepted by `borsh` byte expressions.

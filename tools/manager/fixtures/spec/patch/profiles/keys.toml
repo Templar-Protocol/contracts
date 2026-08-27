@@ -1,4 +1,4 @@
-schema = 2
+schema = 3
 account_id = "target.near"
 
 [[check]]
@@ -35,3 +35,7 @@ op = "set"
 key.utf8 = "fresh-key"
 expect = "absent"
 value.utf8 = "fresh-value"
+
+[[check]]
+method_name = "get_status"
+args = { probe = true }
