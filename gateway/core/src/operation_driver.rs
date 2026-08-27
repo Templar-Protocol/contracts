@@ -20,8 +20,10 @@ use crate::{
 };
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-/// Twice a NEAR transaction's ~24h block-hash validity, leaving margin for clock
-/// skew between this process and the chain.
+/// Twice a NEAR transaction's ~24h block-hash validity. Expiry is really counted
+/// in blocks from the referenced block, so wall-clock is a proxy: the doubling
+/// absorbs block-time variance but not a multi-day halt, where a transaction
+/// older than this can still be valid (ENG-675).
 const TRANSACTION_VALIDITY_HORIZON: TimeDelta = TimeDelta::hours(48);
 
 #[derive(Default)]
@@ -620,6 +622,14 @@ impl OperationDriver {
                         "chain has no record of a submitted transaction that could still land"
                     );
                 }
+            }
+            Ok(TransactionRecord::Unconfirmed) => {
+                tracing::warn!(
+                    operation_id = %operation.id.0,
+                    %tx_hash,
+                    "no archival endpoint to confirm the chain has no record of this transaction; \
+                     leaving it submitted"
+                );
             }
             Err(error) => {
                 // The chain was not reached, so the transaction may yet have

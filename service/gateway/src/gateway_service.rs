@@ -1,6 +1,7 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use actix::Addr;
+use near_api::NetworkConfig;
 use templar_gateway_core::{
     DispatchRead, GatewayContext, GatewayResult, HasNearClient, NearOperationExecutor,
     NearTransactionSigner, OperationDriver, PlanWrite, PooledSigner, SharedOperationStore,
@@ -31,10 +32,15 @@ impl<ContextType> GatewayService<ContextType>
 where
     ContextType: HasNearClient + Clone + Send + std::marker::Unpin + 'static,
 {
+    /// `archival_network` is what lets reconciliation terminally reject a
+    /// transaction the chain has no record of: without a retention-complete node
+    /// to confirm it, a primary answering `UNKNOWN_TRANSACTION` may simply have
+    /// garbage collected the outcome of a transaction that did execute.
     pub async fn spawn(
         context: ContextType,
         signers: HashMap<ManagedAccountId, PooledSigner>,
         store: SharedOperationStore,
+        archival_network: Option<NetworkConfig>,
     ) -> GatewayResult<Self> {
         let signer_count = signers.len();
 
@@ -42,7 +48,8 @@ where
         let finality_policy = near.finality_policy();
         let signer = NearTransactionSigner::new(near.network().clone(), signers);
         let executor =
-            NearOperationExecutor::with_finality_policy(near.network().clone(), finality_policy);
+            NearOperationExecutor::with_finality_policy(near.network().clone(), finality_policy)
+                .with_archival_network(archival_network);
         let driver = OperationDriver::new(store, Arc::new(signer), Arc::new(executor));
 
         let (runtime, read) = spawn_runtime(context.clone())?;
@@ -184,6 +191,7 @@ mod tests {
             context,
             gateway_signers,
             Arc::new(templar_gateway_store::MemoryStore::new()),
+            None,
         )
         .await?;
 

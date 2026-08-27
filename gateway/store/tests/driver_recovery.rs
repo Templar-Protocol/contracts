@@ -576,9 +576,9 @@ async fn reconcile_resolves_submitted_step(
     }
 }
 
-/// A submitted transaction the chain has no record of stays submitted while it
-/// could still land, because `UNKNOWN_TRANSACTION` is not proof that it never
-/// did. Past the validity horizon the transaction can no longer be applied, so
+/// A transaction an archival node confirms it has no record of stays submitted
+/// while it could still land, because `UNKNOWN_TRANSACTION` is not proof that it
+/// never did. Past the validity horizon the transaction can no longer be applied, so
 /// the same answer becomes proof and the step is rejected rather than re-queried
 /// forever.
 #[rstest]
@@ -625,6 +625,26 @@ async fn an_abandoned_preparation_leaves_the_plan_intact(#[case] mut op: StoredO
 
     assert_eq!(op.remaining_steps.len(), queued_before);
     assert_eq!(op.current_step.is_some(), current_before);
+}
+
+/// Age alone must not reject. Without an archival node confirming it, a missing
+/// transaction is indistinguishable from one whose outcome the primary garbage
+/// collected — and that one may well have executed.
+#[tokio::test]
+async fn an_unconfirmed_missing_transaction_is_never_rejected() {
+    let store = Arc::new(MemoryStore::new());
+    let key = seed_keyed(&store, "unconfirmed", step_op(expired_submitted_step())).await;
+    let executor = FakeExecutor::new(vec![], vec![Ok(TransactionRecord::Unconfirmed)]);
+
+    let record = driver(store.clone(), executor)
+        .reconcile_operation(&key)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(record.status, OperationStatus::InProgress);
+    let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
+    assert!(is_submitted(op.current_step.as_ref()));
 }
 
 /// Rejection is terminal: a later sweep must not query the chain again, which is

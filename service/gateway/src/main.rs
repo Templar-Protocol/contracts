@@ -24,15 +24,20 @@ async fn main() -> anyhow::Result<()> {
     let signers = config.build_signers()?;
     let store = config.build_store().await?;
     let sources = config.oracle_sources.build(Network::Testnet.hermes_url())?;
+    let api_key = config
+        .near_rpc_api_key
+        .as_ref()
+        .map(|k| k.as_ref().to_owned());
     let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
-        .archival_rpc_url(config.near_archival_rpc_url)
-        .api_key(
-            config
-                .near_rpc_api_key
-                .as_ref()
-                .map(|k| k.as_ref().to_owned()),
-        )
+        .api_key(api_key.clone())
         .build();
+    // A separate config, not an extra endpoint on the primary: near_api would
+    // otherwise fail over to the archival node for every RPC the gateway makes.
+    let archival_network = config.near_archival_rpc_url.map(|rpc_url| {
+        NetworkConfigBuilder::from_url("gateway-archival", rpc_url)
+            .api_key(api_key.clone())
+            .build()
+    });
     let context = GatewayContext::builder(network)
         .with_pyth_source(sources.pyth_hermes_url)
         .with_redstone_source(&sources.redstone_node_path)
@@ -42,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Pyth Lazer payload source enabled");
 
-    let service = GatewayService::spawn(context, signers, store).await?;
+    let service = GatewayService::spawn(context, signers, store, archival_network).await?;
 
     let server = ServerBuilder::default().build(config.listen_addr).await?;
     let local_addr = server.local_addr()?;
