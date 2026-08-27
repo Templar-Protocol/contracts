@@ -78,7 +78,7 @@ impl StoredCodeAssembler {
             .checked_sub(self.offset)
             .ok_or_else(invalid)?;
         if chunk_len == 0
-            || chunk_len > requested_len
+            || chunk_len != requested_len
             || requested_len > remaining
             || self
                 .offset
@@ -334,11 +334,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_empty_oversized_and_overrun_chunks_without_progress() {
+    fn rejects_missing_empty_partial_oversized_and_overrun_chunks_without_progress() {
         let mut assembler = StoredCodeAssembler::new(stored_len(3));
         for (requested_len, chunk) in [
             (3, None),
             (3, Some(Vec::new())),
+            (3, Some(vec![1])),
             (2, Some(vec![1, 2, 3])),
             (4, Some(vec![1, 2, 3])),
         ] {
