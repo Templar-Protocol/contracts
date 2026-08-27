@@ -88,27 +88,6 @@ fn update_red_stone_collects_repeated_feed_ids() {
     assert_eq!(spec.feed_ids, vec!["BTC".into(), "ETH".into()]);
 }
 
-#[test]
-fn update_red_stone_requires_a_feed_id() {
-    let error = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "oracle",
-            "update-red-stone",
-            "--oracle-id",
-            "redstone.testnet",
-        ]
-        .into_iter()
-        .chain(CREDS),
-    )
-    .expect_err("oracle update-red-stone should require a feed id");
-
-    assert_eq!(
-        error.kind(),
-        clap::error::ErrorKind::MissingRequiredArgument
-    );
-}
-
 /// A repeated `--price-id` would otherwise resolve the same dependencies twice.
 #[test]
 fn update_prices_deduplicates_repeated_price_ids() {
@@ -193,20 +172,26 @@ fn update_pyth_deduplicates_repeated_price_ids() {
     );
 }
 
-#[test]
-fn update_pyth_requires_a_price_id() {
+/// Each update takes its feed/price ids as a repeated required flag, so omitting them
+/// entirely is a parse error rather than a silent empty request.
+#[rstest]
+#[case::update_pyth(&["update-pyth", "--oracle-id", "pyth.testnet"])]
+#[case::update_red_stone(&["update-red-stone", "--oracle-id", "redstone.testnet"])]
+#[case::update_lazer(&[
+    "update-lazer",
+    "--oracle-id",
+    "lazer.testnet",
+    "--pyth-lazer-api-key",
+    "secret-token",
+])]
+fn oracle_updates_require_an_id(#[case] subcommand: &[&str]) {
     let error = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "oracle",
-            "update-pyth",
-            "--oracle-id",
-            "pyth.testnet",
-        ]
-        .into_iter()
-        .chain(CREDS),
+        ["tmplrmgr", "oracle"]
+            .into_iter()
+            .chain(subcommand.iter().copied())
+            .chain(CREDS),
     )
-    .expect_err("oracle update-pyth should require a price id");
+    .expect_err("an oracle update with no ids should fail to parse");
 
     assert_eq!(
         error.kind(),
@@ -270,7 +255,7 @@ fn lazer_args(pyth_lazer_api_key: Option<RedactedString>) -> LazerSourceArgs {
 }
 
 #[test]
-fn update_lazer_maps_its_args_to_the_spec() {
+fn update_lazer_collects_repeated_feed_ids() {
     let cli = Cli::try_parse_from(
         [
             "tmplrmgr",
@@ -280,6 +265,8 @@ fn update_lazer_maps_its_args_to_the_spec() {
             "lazer.testnet",
             "--feed-id",
             "7",
+            "--feed-id",
+            "8",
             "--pyth-lazer-api-key",
             "secret-token",
         ]
@@ -297,5 +284,5 @@ fn update_lazer_maps_its_args_to_the_spec() {
 
     let spec = cmd.into_spec();
     assert_eq!(spec.oracle_id.as_str(), "lazer.testnet");
-    assert_eq!(spec.feed_id, 7);
+    assert_eq!(spec.feed_ids, vec![7, 8]);
 }
