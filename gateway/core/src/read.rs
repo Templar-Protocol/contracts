@@ -231,15 +231,6 @@ fn is_no_global_contract_code<E: std::fmt::Debug>(error: &E) -> bool {
     rendered.contains("NoGlobalContractCode") || rendered.contains("NO_GLOBAL_CONTRACT_CODE")
 }
 
-/// Whether a transaction-status error means the chain has no record of the
-/// transaction (`UnknownTransaction`), as opposed to a transient/transport
-/// failure or a still-pending `TimeoutError`. Matched on the rendered error for
-/// the same reason as [`is_unknown_account`].
-pub(crate) fn is_unknown_transaction<E: std::fmt::Debug>(error: &E) -> bool {
-    let rendered = format!("{error:?}");
-    rendered.contains("UnknownTransaction") || rendered.contains("UNKNOWN_TRANSACTION")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{decode_base64, is_no_global_contract_code, is_unknown_account};
@@ -271,21 +262,6 @@ mod tests {
             &"handler error: NO_GLOBAL_CONTRACT_CODE"
         ));
         assert!(!is_no_global_contract_code(
-            &"TransportError(connection timed out)"
-        ));
-    }
-
-    #[test]
-    fn detects_unknown_transaction_but_not_transient_errors() {
-        assert!(super::is_unknown_transaction(
-            &"ServerError(UnknownTransaction { requested_transaction_hash: 11..11 })"
-        ));
-        assert!(super::is_unknown_transaction(
-            &"handler error: UNKNOWN_TRANSACTION"
-        ));
-        // A still-pending or unreachable transaction must NOT look terminal.
-        assert!(!super::is_unknown_transaction(&"ServerError(TimeoutError)"));
-        assert!(!super::is_unknown_transaction(
             &"TransportError(connection timed out)"
         ));
     }
