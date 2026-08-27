@@ -132,8 +132,8 @@ pub struct NearOperationExecutor {
     /// missing transaction can never be confirmed missing — see
     /// [`TransactionRecord::Unconfirmed`].
     archival_status_network: Option<NetworkConfig>,
-    /// One single-endpoint, single-attempt view of `network` per endpoint, so a
-    /// status query can be addressed to each in turn.
+    /// One single-endpoint view of `network` per endpoint, so a status query can
+    /// be addressed to each in turn.
     status_query_networks: Vec<NetworkConfig>,
     finality_policy: FinalityPolicy,
 }
@@ -156,32 +156,18 @@ impl NearOperationExecutor {
         let status_query_networks = network
             .rpc_endpoints
             .iter()
-            .map(|endpoint| NetworkConfig {
-                rpc_endpoints: vec![endpoint.clone().with_retries(1)],
-                ..network.clone()
+            .map(|endpoint| {
+                single_attempt(NetworkConfig {
+                    rpc_endpoints: vec![endpoint.clone()],
+                    ..network.clone()
+                })
             })
             .collect();
         Self {
             network,
             status_query_networks,
-            archival_status_network: archival_network
-                .as_ref()
-                .map(|network| Self::status_query(network)),
+            archival_status_network: archival_network.map(single_attempt),
             finality_policy,
-        }
-    }
-
-    /// A single-attempt view of `network`. near_api treats `UNKNOWN_TRANSACTION`
-    /// as retryable and would sleep through its whole backoff schedule before the
-    /// answer could be classified, on every orphan of every recovery sweep.
-    fn status_query(network: &NetworkConfig) -> NetworkConfig {
-        NetworkConfig {
-            rpc_endpoints: network
-                .rpc_endpoints
-                .iter()
-                .map(|endpoint| endpoint.clone().with_retries(1))
-                .collect(),
-            ..network.clone()
         }
     }
 
@@ -343,6 +329,19 @@ impl ExecuteOperation for NearOperationExecutor {
             },
         )
     }
+}
+
+/// A view of `network` that tries each endpoint once. near_api treats
+/// `UNKNOWN_TRANSACTION` as retryable and would otherwise sleep through its whole
+/// backoff schedule before the answer could be classified — on every orphan of
+/// every recovery sweep.
+fn single_attempt(mut network: NetworkConfig) -> NetworkConfig {
+    network.rpc_endpoints = network
+        .rpc_endpoints
+        .into_iter()
+        .map(|endpoint| endpoint.with_retries(1))
+        .collect();
+    network
 }
 
 #[allow(

@@ -15,10 +15,19 @@ use templar_gateway_store::{MemoryStore, PostgresStore};
 use templar_gateway_types::ManagedAccountId;
 use url::Url;
 
-/// Whether this endpoint would be sent an API key, explicitly configured or
-/// carried in the URL's own `apiKey` query parameter.
-fn carries_api_key(rpc_url: &Url, explicit_api_key: bool) -> bool {
-    explicit_api_key || rpc_url.query_pairs().any(|(key, _)| key == "apiKey")
+/// The URLs a network will actually request. Any embedded `apiKey` has already
+/// been moved to the header by the builder, and HTTP requests never send a
+/// fragment, so two URLs differing only in those reach the same node.
+fn request_targets(network: &NetworkConfig) -> Vec<Url> {
+    network
+        .rpc_endpoints
+        .iter()
+        .map(|endpoint| {
+            let mut url = endpoint.url.clone();
+            url.set_fragment(None);
+            url
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,36 +151,43 @@ impl Config {
             .near_rpc_api_key
             .as_ref()
             .map(|key| key.as_ref().to_owned());
+        let build = |name: &str, rpc_url: Url| {
+            NetworkConfigBuilder::from_url(name, rpc_url)
+                .api_key(api_key.clone())
+                .build()
+        };
 
-        for rpc_url in [
-            Some(&self.near_rpc_url),
-            self.near_archival_rpc_url.as_ref(),
+        let network = build("gateway", self.near_rpc_url.clone());
+        let archival_network = self
+            .near_archival_rpc_url
+            .clone()
+            .map(|rpc_url| build("gateway-archival", rpc_url));
+
+        // Validate the endpoints as they will be requested rather than the URLs
+        // as written: the builder moves an embedded `apiKey` onto the header, so
+        // only the built form shows what actually travels, and where.
+        for (flag, network) in [
+            ("--near-rpc-url", Some(&network)),
+            ("--near-archival-rpc-url", archival_network.as_ref()),
         ]
         .into_iter()
-        .flatten()
+        .filter_map(|(flag, network)| network.map(|network| (flag, network)))
         {
-            if carries_api_key(rpc_url, api_key.is_some()) && rpc_url.scheme() != "https" {
-                bail!(
-                    "RPC endpoint {} carries an API key and must use https://, or the key travels in cleartext",
-                    rpc_url
-                );
+            if network.rpc_endpoints.iter().any(|endpoint| {
+                endpoint.bearer_header.is_some() && endpoint.url.scheme() != "https"
+            }) {
+                // Deliberately without the URL: it may carry the key it is being
+                // rejected for exposing.
+                bail!("{flag} carries an API key and must use https://, or the key travels in cleartext");
             }
         }
 
-        if self.near_archival_rpc_url.as_ref() == Some(&self.near_rpc_url) {
-            bail!(
-                "--near-archival-rpc-url must differ from --near-rpc-url: an archival endpoint exists to answer what the primary has garbage collected"
-            );
+        if archival_network
+            .as_ref()
+            .is_some_and(|archival| request_targets(archival) == request_targets(&network))
+        {
+            bail!("--near-archival-rpc-url must differ from --near-rpc-url: an archival endpoint exists to answer what the primary has garbage collected");
         }
-
-        let network = NetworkConfigBuilder::from_url("gateway", self.near_rpc_url.clone())
-            .api_key(api_key.clone())
-            .build();
-        let archival_network = self.near_archival_rpc_url.clone().map(|rpc_url| {
-            NetworkConfigBuilder::from_url("gateway-archival", rpc_url)
-                .api_key(api_key.clone())
-                .build()
-        });
 
         Ok((network, archival_network))
     }
@@ -288,6 +304,20 @@ mod tests {
         ],
         Err("must use https://")
     )]
+    #[case::archival_differs_only_by_fragment(
+        &[
+            "--near-rpc-url", "https://rpc.example.com/",
+            "--near-archival-rpc-url", "https://rpc.example.com/#archival",
+        ],
+        Err("must differ from --near-rpc-url")
+    )]
+    #[case::archival_differs_only_by_api_key(
+        &[
+            "--near-rpc-url", "https://rpc.example.com/",
+            "--near-archival-rpc-url", "https://rpc.example.com/?apiKey=SECRET",
+        ],
+        Err("must differ from --near-rpc-url")
+    )]
     #[case::archival_same_as_primary(
         &[
             "--near-rpc-url", "https://rpc.example.com/",
@@ -320,6 +350,29 @@ mod tests {
                 panic!("invalid network config should fail with {expected_msg:?}")
             }
         }
+    }
+
+    /// The rejection exists to stop a key travelling in cleartext, so the
+    /// rejection must not print it either.
+    #[test]
+    fn insecure_endpoint_error_excludes_the_api_key() {
+        let config = Config::try_parse_from([
+            "templar-gateway-service",
+            "--near-rpc-url",
+            "http://rpc.example.com/?apiKey=SUPERSECRET",
+        ])
+        .expect("config should parse");
+
+        let error = config
+            .build_networks()
+            .expect_err("plaintext endpoint carrying a key must be rejected")
+            .to_string();
+
+        assert!(
+            !error.contains("SUPERSECRET"),
+            "error leaked the key: {error}"
+        );
+        assert!(error.contains("--near-rpc-url"));
     }
 
     #[rstest]
