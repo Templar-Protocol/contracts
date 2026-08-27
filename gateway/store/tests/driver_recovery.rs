@@ -619,12 +619,17 @@ async fn reconcile_rejects_an_unrecorded_transaction_only_past_the_horizon(
 async fn an_abandoned_preparation_leaves_the_plan_intact(#[case] mut op: StoredOperation) {
     let store: SharedOperationStore = Arc::new(MemoryStore::new());
     let queued_before = op.remaining_steps.len();
-    let current_before = op.current_step.is_some();
+    // The variant, not just occupancy: swapping `Prepared` for another step is
+    // exactly the silent corruption this guards against.
+    let prepared_before = matches!(op.current_step, Some(CurrentStep::Prepared { .. }));
 
     drop(op.begin_next_preparation(store));
 
     assert_eq!(op.remaining_steps.len(), queued_before);
-    assert_eq!(op.current_step.is_some(), current_before);
+    assert_eq!(
+        matches!(op.current_step, Some(CurrentStep::Prepared { .. })),
+        prepared_before
+    );
 }
 
 /// Age alone must not reject. Without an archival node confirming it, a missing

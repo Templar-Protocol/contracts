@@ -129,7 +129,8 @@ impl NearTransactionSigner {
 pub struct NearOperationExecutor {
     network: NetworkConfig,
     /// Retention-complete view of the chain, when one is configured. Absent, a
-    /// missing transaction can never be confirmed missing.
+    /// missing transaction can never be confirmed missing — see
+    /// [`TransactionRecord::Unconfirmed`].
     archival_status_network: Option<NetworkConfig>,
     /// One single-endpoint, single-attempt view of `network` per endpoint, so a
     /// status query can be addressed to each in turn.
@@ -138,11 +139,20 @@ pub struct NearOperationExecutor {
 }
 
 impl NearOperationExecutor {
-    pub fn new(network: NetworkConfig) -> Self {
-        Self::with_finality_policy(network, FinalityPolicy::default())
+    pub fn new(network: NetworkConfig, archival_network: Option<NetworkConfig>) -> Self {
+        Self::with_finality_policy(network, archival_network, FinalityPolicy::default())
     }
 
-    pub fn with_finality_policy(network: NetworkConfig, finality_policy: FinalityPolicy) -> Self {
+    /// `archival_network` is required rather than opt-in: it is what lets
+    /// reconciliation terminally reject a transaction the chain has no record of,
+    /// so a consumer that never considers it silently loses that — and its
+    /// operations stay in flight forever. `None` is a deliberate choice to do
+    /// without, not an oversight the type permits.
+    pub fn with_finality_policy(
+        network: NetworkConfig,
+        archival_network: Option<NetworkConfig>,
+        finality_policy: FinalityPolicy,
+    ) -> Self {
         let status_query_networks = network
             .rpc_endpoints
             .iter()
@@ -154,18 +164,11 @@ impl NearOperationExecutor {
         Self {
             network,
             status_query_networks,
-            archival_status_network: None,
+            archival_status_network: archival_network
+                .as_ref()
+                .map(|network| Self::status_query(network)),
             finality_policy,
         }
-    }
-
-    /// Supply the archival endpoint reconciliation consults when the primary has
-    /// no record of a transaction. Without it, a missing transaction resolves to
-    /// [`TransactionRecord::Unconfirmed`] and its step is never rejected.
-    #[must_use]
-    pub fn with_archival_network(mut self, archival_network: Option<NetworkConfig>) -> Self {
-        self.archival_status_network = archival_network.map(|network| Self::status_query(&network));
-        self
     }
 
     /// A single-attempt view of `network`. near_api treats `UNKNOWN_TRANSACTION`
@@ -390,8 +393,10 @@ mod tests {
                 .collect();
             network
         };
-        NearOperationExecutor::new(network_over(servers.to_vec()))
-            .with_archival_network(archival.map(|server| network_over(vec![server])))
+        NearOperationExecutor::new(
+            network_over(servers.to_vec()),
+            archival.map(|server| network_over(vec![server])),
+        )
     }
 
     async fn query(executor: &NearOperationExecutor) -> crate::GatewayResult<TransactionRecord> {
@@ -460,7 +465,7 @@ mod tests {
             NetworkConfig::from_rpc_url("test", "http://127.0.0.1:1".parse().unwrap());
         network.rpc_endpoints.clear();
 
-        let result = query(&NearOperationExecutor::new(network)).await;
+        let result = query(&NearOperationExecutor::new(network, None)).await;
 
         assert!(
             matches!(result, Err(GatewayError::NearQuery(_))),

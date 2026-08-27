@@ -47,9 +47,11 @@ where
         let near = context.near_client();
         let finality_policy = near.finality_policy();
         let signer = NearTransactionSigner::new(near.network().clone(), signers);
-        let executor =
-            NearOperationExecutor::with_finality_policy(near.network().clone(), finality_policy)
-                .with_archival_network(archival_network);
+        let executor = NearOperationExecutor::with_finality_policy(
+            near.network().clone(),
+            archival_network,
+            finality_policy,
+        );
         let driver = OperationDriver::new(store, Arc::new(signer), Arc::new(executor));
 
         let (runtime, read) = spawn_runtime(context.clone())?;

@@ -6,7 +6,7 @@ mod rpc;
 use crate::rpc::attach_gateway;
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
-use templar_gateway_client::{Network, NetworkConfigBuilder};
+use templar_gateway_client::Network;
 use templar_gateway_core::GatewayContext;
 use templar_gateway_oracle_updates_dispatch::GatewayContextBuilderOracleExt;
 use tokio::signal;
@@ -24,20 +24,7 @@ async fn main() -> anyhow::Result<()> {
     let signers = config.build_signers()?;
     let store = config.build_store().await?;
     let sources = config.oracle_sources.build(Network::Testnet.hermes_url())?;
-    let api_key = config
-        .near_rpc_api_key
-        .as_ref()
-        .map(|k| k.as_ref().to_owned());
-    let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
-        .api_key(api_key.clone())
-        .build();
-    // A separate config, not an extra endpoint on the primary: near_api would
-    // otherwise fail over to the archival node for every RPC the gateway makes.
-    let archival_network = config.near_archival_rpc_url.map(|rpc_url| {
-        NetworkConfigBuilder::from_url("gateway-archival", rpc_url)
-            .api_key(api_key.clone())
-            .build()
-    });
+    let (network, archival_network) = config.build_networks()?;
     let context = GatewayContext::builder(network)
         .with_pyth_source(sources.pyth_hermes_url)
         .with_redstone_source(&sources.redstone_node_path)
