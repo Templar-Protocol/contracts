@@ -107,7 +107,19 @@ pub enum TransactionRecord {
     Pending,
 }
 
-/// What a single node says, before the walk decides what it proves.
+/// What one set of nodes says, once their answers are reduced.
+enum Consensus {
+    Executed(StepOutcome),
+    Pending,
+    /// Every node answered, and none had a record.
+    NoRecord,
+    /// A node failed to answer, so absence proves nothing.
+    Unanswered(GatewayError),
+    /// There were no nodes to ask.
+    Unasked,
+}
+
+/// What a single node says, before the reduction decides what it proves.
 enum NodeAnswer {
     Executed(StepOutcome),
     Pending,
@@ -139,12 +151,12 @@ impl NearTransactionSigner {
 #[derive(Clone)]
 pub struct NearOperationExecutor {
     network: NetworkConfig,
-    /// Retention-complete view of the chain, when one is configured. Absent, a
-    /// missing transaction can never be confirmed missing — see
-    /// [`TransactionRecord::Unconfirmed`].
-    archival_status_network: Option<NetworkConfig>,
-    /// One single-endpoint view of `network` per endpoint, so a status query can
-    /// be addressed to each in turn.
+    /// Retention-complete views of the chain, split the same way. Empty when none
+    /// is configured, and then a missing transaction can never be confirmed
+    /// missing — see [`TransactionRecord::Unconfirmed`].
+    archival_status_networks: Vec<NetworkConfig>,
+    /// One single-endpoint view per endpoint, so a status query can be addressed
+    /// to each in turn and every node's answer survives.
     status_query_networks: Vec<NetworkConfig>,
     finality_policy: FinalityPolicy,
 }
@@ -164,21 +176,41 @@ impl NearOperationExecutor {
         archival_network: Option<NetworkConfig>,
         finality_policy: FinalityPolicy,
     ) -> Self {
-        let status_query_networks = network
-            .rpc_endpoints
-            .iter()
-            .map(|endpoint| {
-                single_attempt(NetworkConfig {
-                    rpc_endpoints: vec![endpoint.clone()],
-                    ..network.clone()
-                })
-            })
-            .collect();
         Self {
+            status_query_networks: status_query_networks(&network),
+            archival_status_networks: archival_network
+                .map_or_else(Vec::new, |network| status_query_networks(&network)),
             network,
-            status_query_networks,
-            archival_status_network: archival_network.map(single_attempt),
             finality_policy,
+        }
+    }
+
+    /// Ask each node in turn and reduce their answers. A node that holds the
+    /// transaction settles the question; absence counts only once every node
+    /// agrees, and a node that failed to answer leaves it open.
+    async fn poll(
+        &self,
+        networks: &[NetworkConfig],
+        signer_account_id: &ManagedAccountId,
+        tx_hash: CryptoHash,
+    ) -> Consensus {
+        let mut unanswered = None;
+        let mut answered = false;
+        for network in networks {
+            match self
+                .node_answer_from(network, signer_account_id, tx_hash)
+                .await
+            {
+                Ok(NodeAnswer::Executed(outcome)) => return Consensus::Executed(outcome),
+                Ok(NodeAnswer::Pending) => return Consensus::Pending,
+                Ok(NodeAnswer::NoRecord) => answered = true,
+                Err(error) => unanswered = Some(error),
+            }
+        }
+        match (unanswered, answered) {
+            (Some(error), _) => Consensus::Unanswered(error),
+            (None, true) => Consensus::NoRecord,
+            (None, false) => Consensus::Unasked,
         }
     }
 
@@ -304,47 +336,38 @@ impl ExecuteOperation for NearOperationExecutor {
         signer_account_id: &ManagedAccountId,
         tx_hash: CryptoHash,
     ) -> GatewayResult<TransactionRecord> {
-        // near_api walks the endpoints itself but collapses the walk into a single
-        // last error, losing which node said what. Walking them here keeps the
-        // primaries' answers separate from the archival one that can settle them.
         if self.status_query_networks.is_empty() {
             return Err(GatewayError::NearQuery(
                 "no RPC endpoint available for transaction status".to_owned(),
             ));
         }
 
-        let mut unanswered = None;
-        for network in &self.status_query_networks {
-            match self
-                .node_answer_from(network, signer_account_id, tx_hash)
-                .await
-            {
-                Ok(NodeAnswer::Executed(outcome)) => {
-                    return Ok(TransactionRecord::Executed(outcome))
-                }
-                Ok(NodeAnswer::Pending) => return Ok(TransactionRecord::Pending),
-                Ok(NodeAnswer::NoRecord) => {}
-                Err(error) => unanswered = Some(error),
-            }
-        }
-
-        let Some(archival) = &self.archival_status_network else {
-            return unanswered.map_or(Ok(TransactionRecord::Unconfirmed), Err);
+        let unanswered_primary = match self
+            .poll(&self.status_query_networks, signer_account_id, tx_hash)
+            .await
+        {
+            Consensus::Executed(outcome) => return Ok(TransactionRecord::Executed(outcome)),
+            Consensus::Pending => return Ok(TransactionRecord::Pending),
+            Consensus::Unanswered(error) => Some(error),
+            Consensus::NoRecord | Consensus::Unasked => None,
         };
 
-        // The only construction of `NoRecord`, reachable only from the archival
-        // branch — which is what keeps a primary node's garbage collection from
-        // being mistaken for proof that a transaction never executed.
-        Ok(
-            match self
-                .node_answer_from(archival, signer_account_id, tx_hash)
-                .await?
-            {
-                NodeAnswer::Executed(outcome) => TransactionRecord::Executed(outcome),
-                NodeAnswer::Pending => TransactionRecord::Pending,
-                NodeAnswer::NoRecord => TransactionRecord::NoRecord,
-            },
-        )
+        match self
+            .poll(&self.archival_status_networks, signer_account_id, tx_hash)
+            .await
+        {
+            Consensus::Executed(outcome) => Ok(TransactionRecord::Executed(outcome)),
+            Consensus::Pending => Ok(TransactionRecord::Pending),
+            // The only construction of `NoRecord`, reachable only once every
+            // retention-complete node agrees — which keeps a primary node's
+            // garbage collection from being mistaken for proof that a transaction
+            // never executed.
+            Consensus::NoRecord => Ok(TransactionRecord::NoRecord),
+            Consensus::Unanswered(error) => Err(error),
+            Consensus::Unasked => {
+                unanswered_primary.map_or(Ok(TransactionRecord::Unconfirmed), Err)
+            }
+        }
     }
 }
 
@@ -443,17 +466,22 @@ struct MinimalTransactionResult {
     final_execution_status: TxExecutionStatus,
 }
 
-/// A view of `network` that tries each endpoint once. near_api treats
+/// One single-endpoint view of `network` per endpoint, each tried once.
+///
+/// Splitting is what keeps every node's answer: near_api walks a multi-endpoint
+/// config itself and reports only the last error, which would let one node's "no
+/// record" bury another's "still executing". Retries go too — near_api treats
 /// `UNKNOWN_TRANSACTION` as retryable and would otherwise sleep through its whole
-/// backoff schedule before the answer could be classified — on every orphan of
-/// every recovery sweep.
-fn single_attempt(mut network: NetworkConfig) -> NetworkConfig {
-    network.rpc_endpoints = network
-        .rpc_endpoints
-        .into_iter()
-        .map(|endpoint| endpoint.with_retries(1))
-        .collect();
+/// backoff schedule before the answer could be classified.
+fn status_query_networks(network: &NetworkConfig) -> Vec<NetworkConfig> {
     network
+        .rpc_endpoints
+        .iter()
+        .map(|endpoint| NetworkConfig {
+            rpc_endpoints: vec![endpoint.clone().with_retries(1)],
+            ..network.clone()
+        })
+        .collect()
 }
 
 #[allow(
@@ -480,6 +508,10 @@ mod tests {
     /// As a node actually answers for a hash it has no record of — the typed
     /// error carries the requested hash.
     const UNKNOWN_TRANSACTION: &str = r#"{"jsonrpc":"2.0","id":"0","error":{"name":"HANDLER_ERROR","cause":{"name":"UNKNOWN_TRANSACTION","info":{"requested_transaction_hash":"11111111111111111111111111111111"}}}}"#;
+    /// A well-formed typed error near_api treats as retryable, so it walks on to
+    /// the next endpoint instead of stopping — the case where an answer could be
+    /// lost.
+    const TIMEOUT_ERROR: &str = r#"{"jsonrpc":"2.0","id":"0","error":{"name":"HANDLER_ERROR","cause":{"name":"TIMEOUT_ERROR"}}}"#;
     const INTERNAL_ERROR: &str = r#"{"jsonrpc":"2.0","id":"0","error":{"name":"INTERNAL_ERROR","info":{"error_message":"unavailable"}}}"#;
 
     async fn responding_with(body: &str) -> MockServer {
@@ -493,6 +525,24 @@ mod tests {
 
     async fn requests_to(server: &MockServer) -> usize {
         server.received_requests().await.unwrap_or_default().len()
+    }
+
+    fn executor_over_many(
+        servers: &[&MockServer],
+        archival: &[&MockServer],
+    ) -> NearOperationExecutor {
+        let network_over = |urls: &[&MockServer]| {
+            let mut network = NetworkConfig::from_rpc_url("test", urls[0].uri().parse().unwrap());
+            network.rpc_endpoints = urls
+                .iter()
+                .map(|server| RPCEndpoint::new(server.uri().parse().unwrap()))
+                .collect();
+            network
+        };
+        NearOperationExecutor::new(
+            network_over(servers),
+            (!archival.is_empty()).then(|| network_over(archival)),
+        )
     }
 
     fn executor_over(
@@ -608,6 +658,49 @@ mod tests {
         let record = query(&executor_over(&[&primary], None)).await.unwrap();
 
         assert!(matches!(record, TransactionRecord::Pending));
+    }
+
+    /// A pending answer from any archival endpoint must survive the walk, in
+    /// either order, rather than being lost to a later endpoint's "no record".
+    #[rstest]
+    #[case::pending_first(&[MINIMAL_PENDING, UNKNOWN_TRANSACTION])]
+    #[case::unknown_first(&[UNKNOWN_TRANSACTION, MINIMAL_PENDING])]
+    #[tokio::test]
+    async fn an_archival_pending_answer_outranks_another_endpoints_no_record(
+        #[case] archival_bodies: &[&str],
+    ) {
+        let primary = responding_with(UNKNOWN_TRANSACTION).await;
+        let mut archival = Vec::new();
+        for body in archival_bodies {
+            archival.push(responding_with(body).await);
+        }
+        let archival_refs: Vec<&MockServer> = archival.iter().collect();
+
+        let record = query(&executor_over_many(&[&primary], &archival_refs))
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(record, TransactionRecord::Pending),
+            "an archival node holding the transaction must not be overruled"
+        );
+    }
+
+    /// An archival node that failed to answer keeps the question open, even when
+    /// another reports no record: absence is only evidence once every
+    /// retention-complete node agrees.
+    #[tokio::test]
+    async fn one_silent_archival_endpoint_blocks_a_no_record_verdict() {
+        let primary = responding_with(UNKNOWN_TRANSACTION).await;
+        let unreachable = responding_with(TIMEOUT_ERROR).await;
+        let archival = responding_with(UNKNOWN_TRANSACTION).await;
+
+        let result = query(&executor_over_many(&[&primary], &[&unreachable, &archival])).await;
+
+        assert!(
+            matches!(result, Err(GatewayError::NearTransaction(_))),
+            "an archival endpoint that did not answer must not resolve to NoRecord"
+        );
     }
 
     /// A malformed body is not a pending answer.
