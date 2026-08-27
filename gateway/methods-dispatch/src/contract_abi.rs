@@ -126,7 +126,7 @@ fn zstd_offsets(data: &[u8]) -> impl Iterator<Item = usize> + '_ {
 }
 
 fn decompress(compressed: &[u8]) -> std::io::Result<Vec<u8>> {
-    let zstd_decoder = zstd::stream::read::Decoder::new(Cursor::new(compressed))?;
+    let zstd_decoder = zstd::stream::read::Decoder::new(Cursor::new(compressed))?.single_frame();
     let mut decoded = Vec::new();
     zstd_decoder
         .take(MAX_ABI_BYTES + 1)
@@ -291,6 +291,15 @@ mod tests {
         let wasm = wasm_with_abi(&valid_abi("[]"));
 
         validate(&wasm, b"").expect("empty arguments are the empty JSON object");
+    }
+    #[test]
+    fn accepts_embedded_abi_before_trailing_segment_data() {
+        let mut data =
+            zstd::stream::encode_all(valid_abi("[]").as_bytes(), 0).expect("compress ABI");
+        data.extend(b"unrelated trailing Wasm data");
+
+        validate(&wasm_with_data(&data), br"{}")
+            .expect("trailing data after embedded ABI is ignored");
     }
 
     #[test]
