@@ -160,15 +160,15 @@ fn upgrade_reads_local_wasm_and_carries_the_migration() {
     );
 }
 
-const V0_3_0: &str = "templar-proxy-oracle-near-contract@0.3.0#ab";
+const OWNER_AWARE_VERSION_KEY: &str = "owner-aware-test-alias";
 
-/// `--owner-id` reaches the gateway spec as a typed account id, not a JSON string
-/// interpolated by the caller.
+/// `--owner-id` and its opaque registry key reach the gateway spec unchanged.
 #[test]
-fn create_carries_owner_id_into_the_gateway_spec() {
-    let spec = oracle_create(V0_3_0, Some("gov.testnet")).expect("into spec");
+fn create_carries_owner_id_without_inferring_constructor_from_version_key() {
+    let spec = oracle_create(OWNER_AWARE_VERSION_KEY, Some("gov.testnet")).expect("into spec");
 
     assert_eq!(spec.target.name, "proxy-oracle-btc");
+    assert_eq!(spec.target.version_key, OWNER_AWARE_VERSION_KEY);
     assert_eq!(spec.owner_id, Some("gov.testnet".parse().unwrap()));
 
     let json = serde_json::to_value(&spec).unwrap();

@@ -3,12 +3,13 @@
 //!
 //! The artifact layer is exercised offline against locally built transactions.
 //! `build` itself is *not* offline — planning a registry deploy reads the
-//! registry's source metadata — so the one test that calls it is named
-//! `requires_network_*` and is excluded from both the fast and sandbox gates.
+//! registry's source metadata — so the network-dependent tests are named
+//! `requires_network_*` and excluded from both the fast and sandbox gates.
 
 use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
 use near_api::types::NearToken;
+use templar_common::Nanoseconds;
 use templar_gateway_client::{Client, Network, NetworkConfigBuilder};
 use templar_gateway_core::{OperationPlan, PlannedTransaction};
 use templar_gateway_types::NearGas;
@@ -17,10 +18,10 @@ use crate::spec::{
     check::{Check, Status},
     plan::{
         testing::{alpha_market, public_key},
-        PlanArgs, PlanFile,
+        DeploymentStage, PlanArgs, PlanFile,
     },
 };
-
+use crate::spec::{OracleMode, BORROW_PRICE_ID, COLLATERAL_PRICE_ID};
 fn signer_id() -> AccountId {
     "operator.near".parse().expect("valid account")
 }
@@ -134,8 +135,8 @@ fn the_plan_shape_is_pinned_to_its_version() {
     assert_eq!(
         (crate::spec::plan::PLAN_SCHEMA_VERSION, fingerprint.as_str()),
         (
-            1,
-            "30a5d5da5cdc96957423df293f23d87c7d75a6026f74bc856996cd3bdf70268b"
+            2,
+            "25391b8db980bcab36c9133335144b6a0f859a783f615618d1bad6e01bbf3285"
         ),
         "the plan artifact's shape changed. Update this pin — and once the tool \
          has shipped, bump PLAN_SCHEMA_VERSION with it, so a plan written by \
@@ -270,6 +271,33 @@ fn a_non_function_call_action_is_refused() {
     );
 }
 
+/// Direct-oracle specs cannot produce an empty prefix for a proxy boundary.
+#[tokio::test]
+async fn direct_oracle_specs_reject_proxy_stage_boundaries() {
+    let client = Client::builder(NetworkConfigBuilder::new(Network::Testnet).build())
+        .build()
+        .expect("build client");
+    let public_key = public_key();
+    let mut spec = alpha_market();
+    spec.oracle = OracleMode::Direct {
+        account_id: "pyth-oracle.near".parse().unwrap(),
+    };
+    spec.collateral.price_id = Some(COLLATERAL_PRICE_ID);
+    spec.borrow.price_id = Some(BORROW_PRICE_ID);
+
+    let error = crate::dispatch::plan::build(
+        &client,
+        &spec,
+        &public_key,
+        &signer_id(),
+        false,
+        DeploymentStage::Governance,
+    )
+    .await
+    .expect_err("direct markets have no proxy stages");
+    assert!(format!("{error:#}").contains("no proxy deployment stage"));
+}
+
 /// Planning for an account that will not hold the Admin role must fail before
 /// anything is planned, not after 8.5 NEAR of deploys have succeeded and every
 /// proposal reverts. Offline: the guard runs before the first read.
@@ -286,9 +314,16 @@ async fn a_signer_that_is_not_the_governance_admin_is_refused() {
         "the fixture must not already agree, or this proves nothing"
     );
 
-    let error = crate::dispatch::plan::build(&client, &spec, &public_key, &signer_id(), false)
-        .await
-        .expect_err("a non-admin signer cannot execute the proxy proposals");
+    let error = crate::dispatch::plan::build(
+        &client,
+        &spec,
+        &public_key,
+        &signer_id(),
+        false,
+        DeploymentStage::Market,
+    )
+    .await
+    .expect_err("a non-admin signer cannot execute the proxy proposals");
 
     assert!(
         format!("{error:#}").contains("would not hold the Admin role"),
@@ -296,6 +331,191 @@ async fn a_signer_that_is_not_the_governance_admin_is_refused() {
     );
 }
 
+#[tokio::test]
+async fn proxy_configuration_rejects_nonzero_ttl() {
+    let client = Client::builder(NetworkConfigBuilder::new(Network::Testnet).build())
+        .build()
+        .expect("build client");
+    let public_key = public_key();
+    let mut spec = alpha_market();
+    let crate::spec::OracleMode::Proxy { governance, .. } = &mut spec.oracle else {
+        panic!("the fixture must be a proxy market");
+    };
+    governance.ttl_default = Nanoseconds::from_secs(1);
+
+    let error = crate::dispatch::plan::build(
+        &client,
+        &spec,
+        &public_key,
+        &signer_id(),
+        true,
+        DeploymentStage::ProxyConfiguration,
+    )
+    .await
+    .expect_err("a proxy configuration plan cannot wait");
+
+    assert!(
+        format!("{error:#}").contains("a plan cannot wait"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn requires_network_proposal_free_stages_allow_deferred_constraints() {
+    let client = Client::builder(NetworkConfigBuilder::new(Network::Mainnet).build())
+        .build()
+        .expect("build client");
+    let public_key = public_key();
+    let mut spec = alpha_market();
+    let crate::spec::OracleMode::Proxy { governance, .. } = &mut spec.oracle else {
+        panic!("the fixture must be a proxy market");
+    };
+    governance.ttl_default = Nanoseconds::from_secs(1);
+
+    for (stage, length) in [
+        (DeploymentStage::Governance, 1),
+        (DeploymentStage::ProxyOracle, 2),
+    ] {
+        let steps =
+            crate::dispatch::plan::build(&client, &spec, &public_key, &signer_id(), true, stage)
+                .await
+                .expect("deployment-only stages do not require proposal constraints");
+        assert_eq!(steps.len(), length, "{stage:?} must emit its prefix");
+    }
+}
+
+#[tokio::test]
+async fn requires_network_governance_stage_does_not_resolve_proxy_version() {
+    let client = Client::builder(NetworkConfigBuilder::new(Network::Mainnet).build())
+        .build()
+        .expect("build client");
+    let public_key = public_key();
+    let mut spec = alpha_market();
+    let crate::spec::OracleMode::Proxy { oracle_version, .. } = &mut spec.oracle else {
+        panic!("the fixture must be a proxy market");
+    };
+    *oracle_version =
+        "missing-proxy@999.0.0#abababababababababababababababababababababababababababababababab"
+            .to_owned();
+    let admin = spec.proxy().expect("proxy fixture").0.admin.clone();
+
+    let steps = crate::dispatch::plan::build(
+        &client,
+        &spec,
+        &public_key,
+        &admin,
+        false,
+        DeploymentStage::Governance,
+    )
+    .await
+    .expect("governance planning must not resolve the later proxy version");
+
+    assert_eq!(steps.len(), 1);
+    assert!(steps[0].0.starts_with("deploy governance "));
+}
+
+/// The full proxy deployment, in order.
+///
+/// The order is a safety property: `registry deploy` fails when the account
+/// already exists, so governance must be created before the oracle names it as
+/// owner, and both before the market points at the oracle.
+///
+/// Needs the network: planning a registry deploy reads the registry's contract
+/// source metadata to pick the init-args encoding.
+#[tokio::test]
+async fn requires_network_plans_the_deploy_script_in_order() {
+    let client = Client::builder(NetworkConfigBuilder::new(Network::Mainnet).build())
+        .build()
+        .expect("build client");
+    let public_key = public_key();
+
+    // Signed by the spec's `governance.admin`: any other account would not hold
+    // the Admin role, and `build` refuses that rather than plan a deployment
+    // whose proposals revert after the deposits are already spent.
+    let spec = alpha_market();
+    let admin = spec.proxy().expect("proxy fixture").0.admin.clone();
+    let labeled = crate::dispatch::plan::build(
+        &client,
+        &spec,
+        &public_key,
+        &admin,
+        true,
+        DeploymentStage::Market,
+    )
+    .await
+    .expect("the alpha fixture should plan");
+
+    let sequence: Vec<_> = labeled
+        .iter()
+        .map(|(label, transaction)| {
+            let method = match transaction.actions.as_slice() {
+                [Action::FunctionCall(call)] => call.method_name.as_str(),
+                other => panic!("expected one function call, got {other:?}"),
+            };
+            (transaction.receiver_id.as_str(), method, label.as_str())
+        })
+        .collect();
+
+    // The three registry deploys share one method (`deploy_market`) and one
+    // receiver, so the label is what identifies each — asserted for that reason.
+    assert_eq!(
+        sequence,
+        vec![
+            (
+                "templar-alpha.near",
+                "deploy_market",
+                "deploy governance proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near"
+            ),
+            (
+                "templar-alpha.near",
+                "deploy_market",
+                "deploy proxy oracle proxy-oracle-iethfxrp-ixlmusdc.templar-alpha.near, \
+                 owned by governance"
+            ),
+            (
+                "proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near",
+                "create_proposal",
+                "propose collateral proxy (proposal 0)"
+            ),
+            (
+                "proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near",
+                "execute_proposal",
+                "execute collateral proxy proposal 0"
+            ),
+            (
+                "proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near",
+                "create_proposal",
+                "propose borrow proxy (proposal 1)"
+            ),
+            (
+                "proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near",
+                "execute_proposal",
+                "execute borrow proxy proposal 1"
+            ),
+            (
+                "templar-alpha.near",
+                "deploy_market",
+                "deploy market iethfxrp-ixlmusdc.templar-alpha.near"
+            ),
+        ],
+        "the plan must deploy governance, then the oracle it owns, then the market"
+    );
+
+    for (stage, length) in [
+        (DeploymentStage::Governance, 1),
+        (DeploymentStage::ProxyOracle, 2),
+        (DeploymentStage::ProxyConfiguration, 6),
+    ] {
+        let staged = crate::dispatch::plan::build(&client, &spec, &public_key, &admin, true, stage)
+            .await
+            .expect("the proxy prefix should plan");
+        assert_eq!(
+            staged,
+            labeled[..length],
+            "{stage:?} must retain the full plan's dependency-ordered prefix"
+        );
+    }
+}
 /// Journal reconciliation (ENG-546). All offline: the journal keys on the plan's
 /// own per-step digests, so nothing here needs a chain.
 mod journal {

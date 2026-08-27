@@ -1,0 +1,11 @@
+[collateral]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB5y5yhcUCbDKaCx4zNjEHQbwLAdvwucCecVzC5Ub7uNKEb"
+symbol = "DEJTRSY"
+reference = { unlisted = { reason = "no CoinGecko listing for this tokenized treasury fund" } }
+decimals = 18
+aggregator = "median_low"
+min_sources = 1
+# { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 1800, weight = 8 }
+sources = [
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "deJTRSY/FUNDAMENTAL/USD", weight = 1 },
+]

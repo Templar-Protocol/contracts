@@ -39,3 +39,8 @@ value.utf8 = "fresh-value"
 [[check]]
 method_name = "get_status"
 args = { probe = true }
+[[op]]
+op = "set"
+key.utf8 = "STATE"
+expect.hash = "abababababababababababababababababababababababababababababababab"
+value.file = "blobs/position.borsh"

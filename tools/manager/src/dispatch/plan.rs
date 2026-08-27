@@ -31,7 +31,7 @@ use crate::report::Reporter;
 use crate::spec::journal::{self, Journal};
 use crate::spec::{
     check::{Check, Status},
-    plan::{PlanFile, PLAN_SCHEMA_VERSION},
+    plan::{DeploymentStage, PlanFile, PLAN_SCHEMA_VERSION},
     GovernanceSpec, MarketSpec, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
 };
 
@@ -64,11 +64,10 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     .await?;
     // Plan-time only, deliberately not in `run_all`: `spec check` validates a
     // spec, which stays valid after its market is deployed, while planning a
-    // deployment needs its three target accounts free. `registry deploy` fails
-    // on an occupied account, so a collision on the *market* — the last step —
-    // would otherwise be discovered only after governance and the oracle were
-    // deployed and both proposals executed.
-    targets_available(&ctx, &spec, &mut reporter).await?;
+    // deployment needs its emitted target accounts free. `registry deploy` fails
+    // on an occupied account, so a collision on a later target would otherwise
+    // be discovered after earlier deployment stages had spent their deposits.
+    targets_available(&ctx, &spec, args.stop_after, &mut reporter).await?;
 
     // Gated before `build`, which has hard bails of its own: letting it run
     // first would replace a full check report with a single unrelated error.
@@ -83,6 +82,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
             &public_key,
             &args.signer_id,
             args.skip_abi_check,
+            args.stop_after,
         )
         .await?,
     )?;
@@ -94,7 +94,13 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     gate(&mut reporter, spec.market_id()?.as_str())?;
     reporter.digest();
 
-    let file = PlanFile::from_steps(spec, public_key, reporter.into_checks(), steps);
+    let file = PlanFile::from_steps(
+        spec,
+        args.stop_after,
+        public_key,
+        reporter.into_checks(),
+        steps,
+    );
 
     let rendered = serde_json::to_string_pretty(&file).context("render the plan")?;
     match &args.out {
@@ -137,6 +143,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             &file.public_key,
             &credential,
             args.skip_abi_check,
+            file.stop_after,
         )
         .await?,
     )?;
@@ -146,11 +153,12 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     let journal_path = journal::path_for(&args.plan);
     let journal = Journal::load(&journal_path)?;
     let remaining = journal.remaining(&file)?;
-
-    // Before the early return: a plan truncated to exactly its completed prefix
-    // leaves nothing outstanding, and would otherwise report success for having
-    // deployed part of a market.
     ensure_matches_spec(&file, &expected, &remaining)?;
+
+    if remaining.is_empty() {
+        eprintln!("Every step in this plan has already been applied.");
+        return Ok(());
+    }
 
     if remaining.len() < file.steps.len() {
         eprintln!(
@@ -159,10 +167,6 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             file.steps.len(),
             journal_path.display(),
         );
-    }
-    if remaining.is_empty() {
-        eprintln!("Every step in this plan has already been applied.");
-        return Ok(());
     }
 
     // Against the remaining steps only — a resume must not demand the deposits
@@ -226,8 +230,6 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         ))?;
     }
 
-    // Again, immediately before sending: the prompt above has no time limit, and
-    // the check is only worth what it is worth at the moment of the send.
     ensure_targets_free(&ctx, &file.spec.registry, &targets).await?;
 
     send(
@@ -239,7 +241,8 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         journal,
         &journal_path,
     )
-    .await
+    .await?;
+    ensure_proxy_configuration_completed(&ctx, &file).await
 }
 
 /// Send the outstanding steps, journalling each as it lands.
@@ -397,6 +400,16 @@ async fn ensure_feeds_are_configured(ctx: &CliContext, spec: &MarketSpec) -> any
     Ok(())
 }
 
+async fn ensure_proxy_configuration_completed(
+    ctx: &CliContext,
+    file: &PlanFile,
+) -> anyhow::Result<()> {
+    if !file.spec.oracle.is_direct() && file.stop_after >= DeploymentStage::ProxyConfiguration {
+        ensure_feeds_are_configured(ctx, &file.spec).await?;
+    }
+    Ok(())
+}
+
 /// Refuse a plan somebody else is meant to send.
 ///
 /// Ahead of the re-derivation, which takes the credential as an input: a
@@ -460,47 +473,144 @@ pub(crate) fn ensure_matches_spec(
 
 /// The deployment, in order. Governance first, because it must own the oracle
 /// before any feed can be configured; see [`ensure_steps_are_ordered`].
+#[allow(
+    clippy::too_many_lines,
+    reason = "stage prefixes share one ordered builder"
+)]
 pub(crate) async fn build(
     client: &Client,
     spec: &MarketSpec,
     public_key: &PublicKey,
     signer_id: &AccountId,
     skip_abi_check: bool,
+    stop_after: DeploymentStage,
 ) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
-    // A plan is a fixed list of transactions; it cannot encode "wait". With a
-    // non-zero TTL the two proxy proposals are not executable when they are
-    // created, and the alternative — emitting the creates and dropping the
-    // executes — would deploy a market pointing at an unconfigured oracle.
-    if let Some((governance, _, _)) = spec.proxy() {
-        anyhow::ensure!(
-            governance.ttl_default == Nanoseconds::from_ns(0),
-            "`governance.ttl_default` is {}ns, so the proxy proposals would not be \
-             executable when created, and a plan cannot wait. Deploy with \
-             `ttl_default = \"0s\"` and raise the TTL afterwards with a `set-action-ttl` \
-             proposal, or run the proposals by hand with `proxy-oracle governance \
-             execute-proposal --when-ready`.",
-            governance.ttl_default.as_ns(),
-        );
+    // A proposal-inclusive plan is a fixed list of transactions; it cannot
+    // encode "wait". With a non-zero TTL the two proxy proposals are not
+    // executable when they are created, and the alternative — emitting the
+    // creates and dropping the executes — would deploy a market pointing at an
+    // unconfigured oracle.
+    if stop_after >= DeploymentStage::ProxyConfiguration {
+        if let Some((governance, _, _)) = spec.proxy() {
+            anyhow::ensure!(
+                governance.ttl_default == Nanoseconds::from_ns(0),
+                "`governance.ttl_default` is {}ns, so the proxy proposals would not be \
+                 executable when created, and a plan cannot wait. Deploy with \
+                 `ttl_default = \"0s\"` and raise the TTL afterwards with a `set-action-ttl` \
+                 proposal, or run the proposals by hand with `proxy-oracle governance \
+                 execute-proposal --when-ready`.",
+                governance.ttl_default.as_ns(),
+            );
 
-        // The proposals are created and executed by `signer_id`, but only
-        // `governance.admin` is granted the Admin role at init. Mismatched, the two
-        // registry deploys succeed and every proposal reverts — 10.5 NEAR spent on
-        // exactly the orphaned half-deployment this tool exists to prevent.
-        // The retired shell deploy made this unrepresentable: it passed the
-        // signer as the admin.
+            anyhow::ensure!(
+                &governance.admin == signer_id,
+                "`governance.admin` is `{}` but this plan is signed by `{signer_id}`, \
+                 which would not hold the Admin role. Every proxy proposal would revert \
+                 after the governance and oracle deploys had already spent their \
+                 deposits. Set them to the same account.",
+                governance.admin,
+            );
+        }
+    }
+
+    let Some((governance, oracle_version, governance_version)) = spec.proxy() else {
         anyhow::ensure!(
-            &governance.admin == signer_id,
-            "`governance.admin` is `{}` but this plan is signed by `{signer_id}`, \
-             which would not hold the Admin role. Every proxy proposal would revert \
-             after the governance and oracle deploys had already spent their \
-             deposits. Set them to the same account.",
-            governance.admin,
+            stop_after == DeploymentStage::Market,
+            "a direct-oracle market has no proxy deployment stage; use `--stop-after market`"
         );
+        let full_access_keys = Some(vec![public_key.clone()]);
+        return market_steps(
+            client,
+            signer_id,
+            spec,
+            full_access_keys,
+            market_configuration(spec)?,
+            skip_abi_check,
+        )
+        .await;
+    };
+
+    let mut steps = governance_steps(
+        client,
+        signer_id,
+        spec,
+        public_key,
+        governance,
+        governance_version,
+        skip_abi_check,
+    )
+    .await?;
+    if stop_after == DeploymentStage::Governance {
+        return Ok(steps);
+    }
+
+    steps.extend(
+        proxy_oracle_steps(
+            client,
+            signer_id,
+            spec,
+            public_key,
+            oracle_version,
+            skip_abi_check,
+        )
+        .await?,
+    );
+    if stop_after == DeploymentStage::ProxyOracle {
+        return Ok(steps);
     }
 
     let price_maximum_age = spec.market.price_maximum_age;
-    let full_access_keys = Some(vec![public_key.clone()]);
 
+    // Proposal ids start at zero because this plan creates the governance
+    // contract they run against. Both sides project to the same
+    // `Proxy<Source>`, so one loop covers them.
+    let governance_id = spec.governance_id()?;
+    for feed in [
+        Feed {
+            side: "collateral",
+            price_id: COLLATERAL_PRICE_ID,
+            proposal_id: 0,
+            proxy: spec.collateral.clone().into_proxy(price_maximum_age),
+        },
+        Feed {
+            side: "borrow",
+            price_id: BORROW_PRICE_ID,
+            proposal_id: 1,
+            proxy: spec.borrow.clone().into_proxy(price_maximum_age),
+        },
+    ] {
+        steps.extend(
+            set_proxy(
+                client,
+                signer_id,
+                governance_id.clone(),
+                feed,
+                governance.ttl_default,
+            )
+            .await?,
+        );
+    }
+    if stop_after == DeploymentStage::ProxyConfiguration {
+        return Ok(steps);
+    }
+
+    steps.extend(
+        market_steps(
+            client,
+            signer_id,
+            spec,
+            Some(vec![public_key.clone()]),
+            market_configuration(spec)?,
+            skip_abi_check,
+        )
+        .await?,
+    );
+    Ok(steps)
+}
+
+fn market_configuration(
+    spec: &MarketSpec,
+) -> anyhow::Result<templar_common::market::MarketConfiguration> {
     // Resolved by the preflight; the caller refuses before reaching here if a
     // decimals check failed. Guessing would mis-scale every price.
     let (Some(collateral_decimals), Some(borrow_decimals)) =
@@ -522,101 +632,51 @@ pub(crate) async fn build(
         .validate()
         .map_err(|error| anyhow::anyhow!("{error}"))
         .context("the market contract would reject this configuration at init")?;
-
-    // A direct market reads an oracle that already exists, so a deployment
-    // creates only the market: no governance to seat, no proxy to own, no
-    // proposals to configure.
-    let mut steps = Vec::new();
-    if let Some((governance, oracle_version, governance_version)) = spec.proxy() {
-        steps = oracle_stack(
-            client,
-            signer_id,
-            spec,
-            public_key,
-            governance,
-            ProxyDeploymentOptions {
-                oracle_version,
-                governance_version,
-                skip_abi_check,
-            },
-        )
-        .await?;
-
-        // Proposal ids start at zero because this plan creates the governance
-        // contract they run against. Both sides project to the same
-        // `Proxy<Source>`, so one loop covers them.
-        let governance_id = spec.governance_id()?;
-        for feed in [
-            Feed {
-                side: "collateral",
-                price_id: COLLATERAL_PRICE_ID,
-                proposal_id: 0,
-                proxy: spec.collateral.clone().into_proxy(price_maximum_age),
-            },
-            Feed {
-                side: "borrow",
-                price_id: BORROW_PRICE_ID,
-                proposal_id: 1,
-                proxy: spec.borrow.clone().into_proxy(price_maximum_age),
-            },
-        ] {
-            steps.extend(
-                set_proxy(
-                    client,
-                    signer_id,
-                    governance_id.clone(),
-                    feed,
-                    governance.ttl_default,
-                )
-                .await?,
-            );
-        }
-    }
-
-    steps.extend(
-        step(
-            client,
-            signer_id,
-            &format!("deploy market {}", spec.market_id()?),
-            market::Create {
-                target: registry::DeployTarget {
-                    registry_id: spec.registry.clone(),
-                    name: spec.name.clone(),
-                    version_key: spec.market_version.clone(),
-                    skip_abi_check,
-                    full_access_keys,
-                    deposit: MARKET_DEPOSIT,
-                },
-                configuration,
-            },
-        )
-        .await?,
-    );
-
-    Ok(steps)
+    Ok(configuration)
 }
-
-struct ProxyDeploymentOptions<'a> {
-    oracle_version: &'a str,
-    governance_version: &'a str,
+async fn market_steps(
+    client: &Client,
+    signer_id: &AccountId,
+    spec: &MarketSpec,
+    full_access_keys: Option<Vec<PublicKey>>,
+    configuration: templar_common::market::MarketConfiguration,
     skip_abi_check: bool,
+) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
+    step(
+        client,
+        signer_id,
+        &format!("deploy market {}", spec.market_id()?),
+        market::Create {
+            target: registry::DeployTarget {
+                registry_id: spec.registry.clone(),
+                name: spec.name.clone(),
+                version_key: spec.market_version.clone(),
+                skip_abi_check,
+                full_access_keys,
+                deposit: MARKET_DEPOSIT,
+            },
+            configuration,
+        },
+    )
+    .await
 }
 
-/// The governance contract, then the oracle it owns: the oracle names its
-/// governance as `owner_id` at init, so governance must exist first.
-async fn oracle_stack(
+/// The governance contract; the later oracle deployment is intentionally not
+/// resolved until the caller crosses the governance stage boundary.
+async fn governance_steps(
     client: &Client,
     signer_id: &AccountId,
     spec: &MarketSpec,
     public_key: &PublicKey,
     governance: &GovernanceSpec,
-    options: ProxyDeploymentOptions<'_>,
+    governance_version: &str,
+    skip_abi_check: bool,
 ) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
     let full_access_keys = Some(vec![public_key.clone()]);
     let governance_id = spec.governance_id()?;
     let oracle_id = spec.oracle_id()?;
 
-    let mut steps = step(
+    step(
         client,
         signer_id,
         &format!("deploy governance {governance_id}"),
@@ -624,44 +684,52 @@ async fn oracle_stack(
             target: registry::DeployTarget {
                 registry_id: spec.registry.clone(),
                 name: crate::spec::governance_name(&spec.name),
-                version_key: options.governance_version.to_owned(),
-                skip_abi_check: options.skip_abi_check,
-                full_access_keys: full_access_keys.clone(),
+                version_key: governance_version.to_owned(),
+                skip_abi_check,
+                full_access_keys,
                 deposit: GOVERNANCE_DEPOSIT,
             },
-            proxy_oracle_id: oracle_id.clone(),
+            proxy_oracle_id: oracle_id,
             admin_id: governance.admin.clone(),
-            // One TTL for every reflexive bucket and for the target default, which
-            // is what a spec's single `ttl_default` means. A deployment needing
-            // per-method timelocks raises them afterwards by proposal.
             policy: GovernancePolicy::uniform(governance.ttl_default)
                 .context("build the governance policy from `ttl_default`")?,
         },
     )
-    .await?;
-    steps.extend(
-        step(
-            client,
-            signer_id,
-            &format!("deploy proxy oracle {oracle_id}, owned by governance"),
-            proxy_oracle::Create {
-                target: registry::DeployTarget {
-                    registry_id: spec.registry.clone(),
-                    name: crate::spec::oracle_name(&spec.name),
-                    version_key: options.oracle_version.to_owned(),
-                    skip_abi_check: options.skip_abi_check,
-                    full_access_keys,
-                    deposit: ORACLE_DEPOSIT,
-                },
-                owner_id: Some(governance_id),
-            },
-        )
-        .await?,
-    );
-    Ok(steps)
+    .await
 }
 
-/// One side's feed, as a proposal to configure it.
+/// The proxy oracle deployment, after governance exists to own it.
+async fn proxy_oracle_steps(
+    client: &Client,
+    signer_id: &AccountId,
+    spec: &MarketSpec,
+    public_key: &PublicKey,
+    oracle_version: &str,
+    skip_abi_check: bool,
+) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
+    let full_access_keys = Some(vec![public_key.clone()]);
+    let governance_id = spec.governance_id()?;
+    let oracle_id = spec.oracle_id()?;
+
+    step(
+        client,
+        signer_id,
+        &format!("deploy proxy oracle {oracle_id}, owned by governance"),
+        proxy_oracle::Create {
+            target: registry::DeployTarget {
+                registry_id: spec.registry.clone(),
+                name: crate::spec::oracle_name(&spec.name),
+                version_key: oracle_version.to_owned(),
+                skip_abi_check,
+                full_access_keys,
+                deposit: ORACLE_DEPOSIT,
+            },
+            owner_id: Some(governance_id),
+        },
+    )
+    .await
+}
+
 struct Feed {
     side: &'static str,
     price_id: PriceIdentifier,
@@ -934,8 +1002,50 @@ fn claimed_reason(
     }
 }
 
-/// The same question `targets_available` asks at plan time, re-asked at the
-/// moment of the send: a target free then can be claimed while a plan is read.
+/// Every account this deployment stage creates must be free.
+async fn targets_available(
+    ctx: &CliContext,
+    spec: &MarketSpec,
+    stop_after: DeploymentStage,
+    reporter: &mut Reporter,
+) -> anyhow::Result<()> {
+    reporter.phase("accounts this deploy would create");
+    let targets = match spec.proxy() {
+        Some(_) => {
+            let mut targets = vec![spec.governance_id()?];
+            if stop_after >= DeploymentStage::ProxyOracle {
+                targets.push(spec.oracle_id()?);
+            }
+            if stop_after == DeploymentStage::Market {
+                targets.push(spec.market_id()?);
+            }
+            targets
+        }
+        None => vec![spec.market_id()?],
+    };
+
+    for account_id in targets {
+        let label = if account_id == spec.market_id()? {
+            "market"
+        } else if spec.own_proxy_id()?.as_ref() == Some(&account_id) {
+            "oracle"
+        } else if spec.proxy().is_some() && account_id == spec.governance_id()? {
+            "governance"
+        } else {
+            anyhow::bail!("the generated plan creates unexpected account `{account_id}`")
+        };
+        let status = match target_conflict(ctx, &spec.registry, &account_id).await {
+            Ok(None) => Status::passed(format!("`{account_id}` is free")),
+            Ok(Some(conflict)) => {
+                Status::failed(format!("{conflict}; the {label} deploy would fail"))
+            }
+            Err(error) => Status::failed(format!("{error:#}")),
+        };
+        reporter.record(Check::new(format!("deployment.available.{label}"), status));
+    }
+    Ok(())
+}
+
 async fn ensure_targets_free(
     ctx: &CliContext,
     registry_id: &AccountId,
@@ -951,39 +1061,6 @@ async fn ensure_targets_free(
          tear the existing deployment down.",
         conflicts.join("; "),
     );
-    Ok(())
-}
-
-/// Every account this deployment creates must be free.
-async fn targets_available(
-    ctx: &CliContext,
-    spec: &MarketSpec,
-    reporter: &mut Reporter,
-) -> anyhow::Result<()> {
-    // Only what this deployment creates. A direct market creates just itself,
-    // and reporting the derived proxy names as "free" would tell an operator
-    // this deploy is about to make accounts it never touches.
-    let targets = if spec.oracle.is_direct() {
-        vec![("market", spec.market_id()?)]
-    } else {
-        vec![
-            ("governance", spec.governance_id()?),
-            ("oracle", spec.oracle_id()?),
-            ("market", spec.market_id()?),
-        ]
-    };
-
-    reporter.phase("accounts this deploy would create");
-    for (label, account_id) in targets {
-        let status = match target_conflict(ctx, &spec.registry, &account_id).await {
-            Ok(None) => Status::passed(format!("`{account_id}` is free")),
-            Ok(Some(conflict)) => {
-                Status::failed(format!("{conflict}; the {label} deploy would fail"))
-            }
-            Err(error) => Status::failed(format!("{error:#}")),
-        };
-        reporter.record(Check::new(format!("deployment.available.{label}"), status));
-    }
     Ok(())
 }
 
@@ -1146,7 +1223,7 @@ mod tests {
     use super::{ensure_compatible, Network, PLAN_SCHEMA_VERSION};
     use super::{GOVERNANCE_DEPOSIT, MARKET_DEPOSIT, ORACLE_DEPOSIT};
     use crate::spec::plan::testing::{alpha_market, public_key};
-    use crate::spec::plan::{PlanArgs, PlanFile, PlanFunctionCall, PlanStep};
+    use crate::spec::plan::{DeploymentStage, PlanArgs, PlanFile, PlanFunctionCall, PlanStep};
     use rstest::rstest;
     use templar_contract_artifacts::ArtifactId;
 
@@ -1155,6 +1232,7 @@ mod tests {
             schema,
             tool_version: "0.1.0".to_owned(),
             spec: alpha_market(),
+            stop_after: DeploymentStage::Market,
             public_key: public_key(),
             checks: Vec::new(),
             steps: Vec::new(),

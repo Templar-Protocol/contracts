@@ -593,9 +593,18 @@ fn sources_check_catches_an_unsatisfiable_minimum() {
 /// Driven by the recordings, so a spec with no recording is exercised by no test
 /// at all. Counts are asserted so an empty directory fails rather than passing
 /// vacuously.
+const PENDING_PROXY_ORACLE_MIGRATIONS: &[&str] = &[
+    "ibtc-iethusdc-1",
+    "ixlm-ixlmpyusd",
+    "ixlmdejaaa-ixlmusdc",
+    "ixlmdejtrsy-ixlmusdc",
+    "ixlmsolvbtc-ixlmusdc",
+];
+
 #[rstest]
 #[case("alpha", "templar-alpha.near", 18)]
 #[case("v1", "v1.tmplr.near", 27)]
+
 fn migrated_specs_reproduce_their_deployed_configurations(
     #[case] suite: &str,
     #[case] registry: &str,
@@ -636,6 +645,11 @@ fn migrated_specs_reproduce_their_deployed_configurations(
             spec.collateral.decimals.expect("collateral decimals"),
             spec.borrow.decimals.expect("borrow decimals"),
         );
+        let expected_proxy_oracle_id = (suite == "v1"
+            && PENDING_PROXY_ORACLE_MIGRATIONS.contains(&name))
+        .then(|| spec.oracle_id())
+        .transpose()
+        .expect("derive proxy oracle account");
         let mut derived = spec
             .into_market_configuration(i32::from(collateral), i32::from(borrow))
             .unwrap_or_else(|e| panic!("convert {name}: {e:#}"));
@@ -651,6 +665,43 @@ fn migrated_specs_reproduce_their_deployed_configurations(
             .time_chunk_configuration
             .clone_from(&deployed.time_chunk_configuration);
 
+        if suite == "v1" && PENDING_PROXY_ORACLE_MIGRATIONS.contains(&name) {
+            assert_eq!(
+                deployed.price_oracle_configuration.account_id.as_str(),
+                "pyth-oracle.near",
+                "migration fixture for `{name}` must capture the direct oracle"
+            );
+            assert_eq!(
+                derived.price_oracle_configuration.account_id,
+                expected_proxy_oracle_id.expect("pending proxy oracle migration"),
+                "spec `{name}` must derive its proxy oracle account"
+            );
+            assert_eq!(
+                derived.price_oracle_configuration.collateral_asset_price_id,
+                COLLATERAL_PRICE_ID
+            );
+            assert_eq!(
+                derived.price_oracle_configuration.borrow_asset_price_id,
+                BORROW_PRICE_ID
+            );
+            assert_eq!(
+                derived.price_oracle_configuration.collateral_asset_decimals,
+                deployed
+                    .price_oracle_configuration
+                    .collateral_asset_decimals
+            );
+            assert_eq!(
+                derived.price_oracle_configuration.borrow_asset_decimals,
+                deployed.price_oracle_configuration.borrow_asset_decimals
+            );
+            assert_eq!(
+                derived.price_oracle_configuration.price_maximum_age_s,
+                deployed.price_oracle_configuration.price_maximum_age_s
+            );
+            derived
+                .price_oracle_configuration
+                .clone_from(&deployed.price_oracle_configuration);
+        }
         assert_eq!(
             derived, deployed,
             "spec `{name}` differs from what is deployed"

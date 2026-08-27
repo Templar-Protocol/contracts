@@ -8,6 +8,7 @@
 //! `plan` showed.
 
 use anyhow::Context as _;
+use clap::ValueEnum;
 use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
 use near_api::types::NearToken;
@@ -25,7 +26,24 @@ use super::check::Check;
 /// left a developer's machine, so a bump would distinguish shapes that exist
 /// nowhere. `the_plan_shape_is_pinned_to_its_version` fails when the shape
 /// changes, which is the point at which that stops being true.
-pub const PLAN_SCHEMA_VERSION: u32 = 1;
+pub const PLAN_SCHEMA_VERSION: u32 = 2;
+
+/// The terminal semantic stage included in a deployment plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[value(rename_all = "kebab-case")]
+pub enum DeploymentStage {
+    Governance,
+    ProxyOracle,
+    ProxyConfiguration,
+    Market,
+}
+
+impl Default for DeploymentStage {
+    fn default() -> Self {
+        Self::Market
+    }
+}
 
 /// A function call's arguments, in whichever form a human can actually read.
 /// Not `ContractArgs`, whose `{"encoding": …, "value": …}` buries them.
@@ -191,6 +209,8 @@ pub struct PlanFile {
     /// The network is derived from its registry, so it is not stated twice.
     /// Re-derivation must not depend on files beside the plan.
     pub spec: super::MarketSpec,
+    /// The last complete semantic stage authorized by this plan.
+    pub stop_after: DeploymentStage,
     /// The key the deploys grant full access to. An input to `build`, so it is
     /// recorded rather than re-supplied at apply time.
     pub public_key: PublicKey,
@@ -209,6 +229,7 @@ impl PlanFile {
     ) -> anyhow::Result<Self> {
         Ok(Self::from_steps(
             spec,
+            DeploymentStage::Market,
             public_key,
             checks,
             Self::steps_from(steps)?,
@@ -227,6 +248,7 @@ impl PlanFile {
 
     pub fn from_steps(
         spec: super::MarketSpec,
+        stop_after: DeploymentStage,
         public_key: PublicKey,
         checks: Vec<Check>,
         steps: Vec<PlanStep>,
@@ -235,6 +257,7 @@ impl PlanFile {
             schema: PLAN_SCHEMA_VERSION,
             tool_version: env!("CARGO_PKG_VERSION").to_owned(),
             spec,
+            stop_after,
             public_key,
             checks,
             steps,

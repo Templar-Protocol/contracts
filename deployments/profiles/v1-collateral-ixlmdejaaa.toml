@@ -1,0 +1,11 @@
+[collateral]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB66Lr9d7WU1sDna78SqG5x1ZraFjkpPdiYXjHFRnZJUhuV"
+symbol = "DEJAAA"
+reference = { coin_gecko = { id = "defi-janus-henderson-anemoy-aaa-clo-fund" } }
+decimals = 18
+aggregator = "median_low"
+min_sources = 1
+# { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 1799, weight = 8 }
+sources = [
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "deJAAA/FUNDAMENTAL/USD", weight = 1 },
+]
