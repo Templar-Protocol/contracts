@@ -105,20 +105,24 @@ pub struct AddVersion {
 /// stay at the top level of the wire JSON.
 ///
 /// A contract this codebase models gets its own `<namespace>.create` declaring only
-/// its init fields beside this, dispatched through `plan_create_from_registry`. One
-/// it does not model goes through [`Deploy`] with opaque `init_args`.
+/// its init fields beside this, dispatched through `plan_create_from_registry`.
+/// Unmodeled contracts use [`Deploy`]; its JSON init args are validated against the
+/// target constructor ABI unless `skip_abi_check` is set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DeployTarget {
     pub registry_id: AccountId,
     pub name: String,
     pub version_key: String,
+    /// Skip embedded-ABI validation for a deployment whose constructor cannot be checked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_abi_check: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_access_keys: Option<Vec<PublicKey>>,
     pub deposit: NearToken,
 }
 
-/// Deploy a contract from a registry version, with init args the gateway does not
-/// interpret.
+/// Deploy a contract from a registry version with JSON init args validated against
+/// the target constructor ABI unless `skip_abi_check` is set.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "registry.deploy")]
 pub struct Deploy {

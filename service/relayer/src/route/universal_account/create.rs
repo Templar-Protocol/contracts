@@ -336,6 +336,7 @@ pub async fn create(
                     version_key: app.args.ua.version_key.clone(),
                     full_access_keys: None,
                     deposit: NearToken::from_yoctonear(0),
+                    skip_abi_check: app.args.ua.skip_abi_check,
                 },
                 Base64Bytes(init_args),
             ),

@@ -465,6 +465,7 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
                     version_key: "market@1.0.0".to_owned(),
                     full_access_keys: None,
                     deposit: NearToken::from_near(20),
+                    skip_abi_check: true,
                 },
                 configuration: configuration.clone(),
             },

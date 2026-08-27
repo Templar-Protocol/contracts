@@ -9,9 +9,8 @@ use templar_proxy_oracle_near_common::input::Source;
 /// Create a proxy oracle from the registry.
 ///
 /// `owner_id` seats the owner at init; omitting it leaves the registry as owner.
-/// Only a version whose `new` accepts one honors it, and the version is not
-/// checked here — see
-/// [`ProxyOracleVersion::new_accepts_owner_id`](templar_gateway_types::version::ProxyOracleVersion::new_accepts_owner_id).
+/// Constructor ABI validation normally rejects a target that cannot honor it.
+/// `skip_abi_check` disables that protection and can leave the registry as owner.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "proxyOracle.create")]
 pub struct Create {

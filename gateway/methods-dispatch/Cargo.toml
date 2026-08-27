@@ -9,6 +9,13 @@ description = "NEAR dispatch implementations for Templar gateway method specific
 
 [dependencies]
 async-trait.workspace = true
+jsonschema = { version = "0.51.0", default-features = false }
+near-abi = "0.4.4"
+sha2.workspace = true
+templar-contract-artifacts = { workspace = true, features = ["fetch"] }
+wasmparser = { version = "0.244.0", default-features = false, features = ["std"] }
+tokio = { workspace = true, features = ["rt"] }
+zstd = "0.13.3"
 borsh.workspace = true
 near-account-id = { workspace = true, features = ["serde", "schemars"] }
 near-api.workspace = true
@@ -28,6 +35,7 @@ templar-universal-account.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+rstest.workspace = true
 
 [lints]
 workspace = true

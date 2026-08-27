@@ -494,6 +494,7 @@ async fn governance_create_deploys_an_initialized_contract() -> Result<()> {
                     version_key: "gov@0.2.0".to_owned(),
                     full_access_keys: None,
                     deposit: NearToken::from_near(10),
+                    skip_abi_check: true,
                 },
                 proxy_oracle_id: oracle_id.clone(),
                 admin_id: admin_id.clone(),
