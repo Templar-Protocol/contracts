@@ -1,18 +1,15 @@
-use std::{fmt::Debug, future::Future};
+use std::fmt::Debug;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use base64::Engine as _;
-use futures::{stream, StreamExt};
 use near_api::{
     types::{account::ContractState, AccountId, CryptoHash, Reference},
     Account, Contract, NetworkConfig,
 };
 use near_primitives::{account::AccountContract, hash::CryptoHash as ChainCryptoHash};
 use near_token::NearToken;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use templar_gateway_types::ProtocolLimits;
-
-const STATE_READ_CONCURRENCY: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RawStateEntry {
@@ -168,84 +165,108 @@ async fn fetch_code(
         .context("decode contract code")
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the cursor RPC wire types and their single pagination loop share one request boundary"
+)]
 async fn fetch_entries(
     network: &NetworkConfig,
     account_id: &AccountId,
     block_hash: CryptoHash,
-    max_key_length: u64,
+    _: u64,
 ) -> Result<(Vec<RawStateEntry>, bool, usize)> {
-    let reader = |prefix: Vec<u8>| async move {
-        let state = Contract(account_id.clone())
-            .view_storage_with_prefix(&prefix)
-            .at(Reference::AtBlockHash(block_hash))
-            .fetch_from(network)
-            .await
-            .map_err(|error| format!("{error:?}"))?;
-        ensure_block(state.block_hash, block_hash, "state").map_err(|error| error.to_string())?;
-        state
-            .data
-            .values
-            .into_iter()
-            .map(|entry| {
-                Ok(RawStateEntry {
-                    key: base64::engine::general_purpose::STANDARD.decode(entry.key.0)?,
-                    value: base64::engine::general_purpose::STANDARD.decode(entry.value.0)?,
-                })
-            })
-            .collect::<std::result::Result<Vec<_>, base64::DecodeError>>()
-            .map_err(|error| error.to_string())
-    };
-    collect_prefixes(max_key_length, reader).await
-}
-
-async fn collect_prefixes<F, Fut>(
-    max_key_length: u64,
-    fetch: F,
-) -> Result<(Vec<RawStateEntry>, bool, usize)>
-where
-    F: Fn(Vec<u8>) -> Fut,
-    Fut: Future<Output = Result<Vec<RawStateEntry>, String>>,
-{
-    let mut pending = vec![Vec::new()];
-    let mut entries = Vec::new();
-    let mut chunked = false;
-    let mut request_count = 0;
-
-    while !pending.is_empty() {
-        let mut responses = stream::iter(std::mem::take(&mut pending).into_iter().map(
-            |prefix| async {
-                let result = fetch(prefix.clone()).await;
-                (prefix, result)
-            },
-        ))
-        .buffer_unordered(STATE_READ_CONCURRENCY);
-
-        while let Some((prefix, result)) = responses.next().await {
-            request_count += 1;
-            match result {
-                Ok(values) => entries.extend(values),
-                Err(error) if error.contains("TooLargeContractState") => {
-                    chunked = true;
-                    ensure!(
-                        (prefix.len() as u64) < max_key_length,
-                        "storage prefix reached max key length {max_key_length}"
-                    );
-                    for byte in u8::MIN..=u8::MAX {
-                        let mut child = prefix.clone();
-                        child.push(byte);
-                        pending.push(child);
-                    }
-                }
-                Err(error) => {
-                    return Err(anyhow::anyhow!(
-                        "fetch storage prefix {}: {error}",
-                        base64::engine::general_purpose::STANDARD.encode(prefix)
-                    ));
-                }
-            }
-        }
+    #[derive(Serialize)]
+    struct Request<'a> {
+        jsonrpc: &'static str,
+        id: &'static str,
+        method: &'static str,
+        params: Params<'a>,
+    }
+    #[derive(Serialize)]
+    struct Params<'a> {
+        request_type: &'static str,
+        account_id: &'a AccountId,
+        prefix_base64: &'static str,
+        block_id: CryptoHash,
+        limit: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        after_key_base64: Option<&'a str>,
+    }
+    #[derive(Deserialize)]
+    struct Response {
+        result: Option<Page>,
+        error: Option<serde_json::Value>,
+    }
+    #[derive(Deserialize)]
+    struct Page {
+        values: Vec<Entry>,
+        last_key: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Entry {
+        key: String,
+        value: String,
     }
 
+    let endpoint = network
+        .rpc_endpoints
+        .first()
+        .context("network has no RPC endpoint")?;
+    let client = reqwest::Client::new();
+    let mut entries = Vec::new();
+    let mut after_key = None;
+    let mut request_count = 0;
+    loop {
+        let response: Response = client
+            .post(endpoint.url.clone())
+            .json(&Request {
+                jsonrpc: "2.0",
+                id: "patch-state",
+                method: "query",
+                params: Params {
+                    request_type: "view_state",
+                    account_id,
+                    prefix_base64: "",
+                    block_id: block_hash,
+                    limit: 100,
+                    after_key_base64: after_key.as_deref(),
+                },
+            })
+            .send()
+            .await
+            .context("request contract storage")?
+            .error_for_status()
+            .context("contract storage RPC returned an HTTP error")?
+            .json()
+            .await
+            .context("decode contract storage RPC response")?;
+        request_count += 1;
+        if let Some(error) = response.error {
+            bail!("contract storage RPC failed: {error}");
+        }
+        let page = response
+            .result
+            .context("contract storage RPC omitted result")?;
+        entries.extend(
+            page.values
+                .into_iter()
+                .map(|entry| {
+                    Ok(RawStateEntry {
+                        key: base64::engine::general_purpose::STANDARD.decode(entry.key)?,
+                        value: base64::engine::general_purpose::STANDARD.decode(entry.value)?,
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, base64::DecodeError>>()?,
+        );
+        let Some(next_key) = page.last_key else {
+            break;
+        };
+        ensure!(
+            after_key.as_deref() != Some(next_key.as_str()),
+            "contract storage cursor did not advance"
+        );
+        after_key = Some(next_key);
+    }
     entries.sort_unstable_by(|left, right| left.key.cmp(&right.key));
     for pair in entries.windows(2) {
         ensure!(
@@ -253,7 +274,7 @@ where
             "duplicate storage key in state response"
         );
     }
-    Ok((entries, chunked, request_count))
+    Ok((entries, false, request_count))
 }
 
 fn ensure_block(actual: CryptoHash, expected: CryptoHash, source: &str) -> Result<()> {
@@ -363,30 +384,4 @@ mod tests {
         refetched.entries[0].value.push(10);
         assert_ne!(digest, refetched.digest().unwrap());
     }
-}
-
-#[tokio::test]
-async fn state_chunker_recovers_oversized_prefixes_without_partial_results() {
-    let reader = |prefix: Vec<u8>| async move {
-        if prefix.is_empty() || prefix == [0] {
-            Err("TooLargeContractState".to_owned())
-        } else if prefix == [1] {
-            Ok(vec![RawStateEntry {
-                key: vec![1],
-                value: vec![2],
-            }])
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let (entries, chunked, requests) = collect_prefixes(2, reader).await.unwrap();
-    assert!(chunked);
-    assert_eq!(
-        entries,
-        vec![RawStateEntry {
-            key: vec![1],
-            value: vec![2],
-        }]
-    );
-    assert_eq!(requests, 513);
 }
