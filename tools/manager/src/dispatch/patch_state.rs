@@ -1,10 +1,10 @@
-use std::fmt::Debug;
+use std::time::Duration;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::Engine as _;
 use near_api::{
     types::{account::ContractState, AccountId, CryptoHash, Reference},
-    Account, Contract, NetworkConfig,
+    Account, Contract, NetworkConfig, RPCEndpoint,
 };
 use near_primitives::{account::AccountContract, hash::CryptoHash as ChainCryptoHash};
 use near_token::NearToken;
@@ -27,7 +27,6 @@ pub struct StateSnapshot {
     pub access_keys: Vec<(near_api::types::PublicKey, near_api::types::AccessKey)>,
     pub entries: Vec<RawStateEntry>,
     pub block_hash: CryptoHash,
-    pub chunked: bool,
     pub request_count: usize,
 }
 
@@ -90,13 +89,7 @@ pub async fn fetch_complete_state(
         .data
         .sort_by(|(left, _), (right, _)| left.cmp(right));
 
-    let (entries, chunked, request_count) = fetch_entries(
-        network,
-        account_id,
-        block_hash,
-        limits.max_length_storage_key,
-    )
-    .await?;
+    let (entries, request_count) = fetch_entries(network, account_id, block_hash).await?;
     verify_storage_usage(
         account.data.storage_usage,
         &contract,
@@ -115,7 +108,6 @@ pub async fn fetch_complete_state(
         access_keys: access_keys.data,
         entries,
         block_hash,
-        chunked,
         request_count,
     })
 }
@@ -165,6 +157,109 @@ async fn fetch_code(
         .context("decode contract code")
 }
 
+#[derive(Serialize)]
+struct StateQueryRequest<'a> {
+    jsonrpc: &'static str,
+    id: &'static str,
+    method: &'static str,
+    params: StateQueryParams<'a>,
+}
+
+#[derive(Serialize)]
+struct StateQueryParams<'a> {
+    request_type: &'static str,
+    account_id: &'a AccountId,
+    prefix_base64: &'static str,
+    block_id: CryptoHash,
+    limit: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after_key_base64: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct StateQueryResponse {
+    result: Option<StateQueryPage>,
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct StateQueryPage {
+    values: Vec<StateQueryEntry>,
+    last_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StateQueryEntry {
+    key: String,
+    value: String,
+}
+
+fn rpc_client(endpoint: &RPCEndpoint) -> Result<reqwest::Client> {
+    let timeout = Duration::from_secs(15);
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(timeout)
+        .timeout(timeout);
+    if let Some(bearer_header) = &endpoint.bearer_header {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let mut header = bearer_header
+            .parse::<reqwest::header::HeaderValue>()
+            .context("invalid RPC API key header")?;
+        header.set_sensitive(true);
+        headers.insert(reqwest::header::AUTHORIZATION, header.clone());
+        headers.insert(
+            reqwest::header::HeaderName::from_static("x-api-key"),
+            header,
+        );
+        builder = builder.default_headers(headers);
+    }
+    builder.build().context("build contract storage RPC client")
+}
+
+async fn fetch_state_page(
+    network: &NetworkConfig,
+    request: &StateQueryRequest<'_>,
+) -> Result<(StateQueryPage, usize)> {
+    let mut last_error = None;
+    let mut request_count = 0;
+    for endpoint in &network.rpc_endpoints {
+        let client = rpc_client(endpoint)?;
+        let attempts = usize::from(endpoint.retries).max(1);
+        for attempt in 0..attempts {
+            request_count += 1;
+            let response = async {
+                let response: StateQueryResponse = client
+                    .post(endpoint.url.clone())
+                    .json(request)
+                    .send()
+                    .await
+                    .context("request contract storage")?
+                    .error_for_status()
+                    .context("contract storage RPC returned an HTTP error")?
+                    .json()
+                    .await
+                    .context("decode contract storage RPC response")?;
+                if let Some(error) = response.error {
+                    bail!("contract storage RPC failed: {error}");
+                }
+                response
+                    .result
+                    .context("contract storage RPC omitted result")
+            }
+            .await;
+            match response {
+                Ok(page) => return Ok((page, request_count)),
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt + 1 < attempts {
+                        tokio::time::sleep(endpoint.get_sleep_duration(attempt)).await;
+                    }
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("network has no RPC endpoint")))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the cursor RPC wire types and their single pagination loop share one request boundary"
@@ -173,57 +268,18 @@ async fn fetch_entries(
     network: &NetworkConfig,
     account_id: &AccountId,
     block_hash: CryptoHash,
-    _: u64,
-) -> Result<(Vec<RawStateEntry>, bool, usize)> {
-    #[derive(Serialize)]
-    struct Request<'a> {
-        jsonrpc: &'static str,
-        id: &'static str,
-        method: &'static str,
-        params: Params<'a>,
-    }
-    #[derive(Serialize)]
-    struct Params<'a> {
-        request_type: &'static str,
-        account_id: &'a AccountId,
-        prefix_base64: &'static str,
-        block_id: CryptoHash,
-        limit: u32,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        after_key_base64: Option<&'a str>,
-    }
-    #[derive(Deserialize)]
-    struct Response {
-        result: Option<Page>,
-        error: Option<serde_json::Value>,
-    }
-    #[derive(Deserialize)]
-    struct Page {
-        values: Vec<Entry>,
-        last_key: Option<String>,
-    }
-    #[derive(Deserialize)]
-    struct Entry {
-        key: String,
-        value: String,
-    }
-
-    let endpoint = network
-        .rpc_endpoints
-        .first()
-        .context("network has no RPC endpoint")?;
-    let client = reqwest::Client::new();
+) -> Result<(Vec<RawStateEntry>, usize)> {
     let mut entries = Vec::new();
     let mut after_key = None;
     let mut request_count = 0;
     loop {
-        let response: Response = client
-            .post(endpoint.url.clone())
-            .json(&Request {
+        let (page, page_request_count) = fetch_state_page(
+            network,
+            &StateQueryRequest {
                 jsonrpc: "2.0",
                 id: "patch-state",
                 method: "query",
-                params: Params {
+                params: StateQueryParams {
                     request_type: "view_state",
                     account_id,
                     prefix_base64: "",
@@ -231,22 +287,10 @@ async fn fetch_entries(
                     limit: 100,
                     after_key_base64: after_key.as_deref(),
                 },
-            })
-            .send()
-            .await
-            .context("request contract storage")?
-            .error_for_status()
-            .context("contract storage RPC returned an HTTP error")?
-            .json()
-            .await
-            .context("decode contract storage RPC response")?;
-        request_count += 1;
-        if let Some(error) = response.error {
-            bail!("contract storage RPC failed: {error}");
-        }
-        let page = response
-            .result
-            .context("contract storage RPC omitted result")?;
+            },
+        )
+        .await?;
+        request_count += page_request_count;
         entries.extend(
             page.values
                 .into_iter()
@@ -274,7 +318,7 @@ async fn fetch_entries(
             "duplicate storage key in state response"
         );
     }
-    Ok((entries, false, request_count))
+    Ok((entries, request_count))
 }
 
 fn ensure_block(actual: CryptoHash, expected: CryptoHash, source: &str) -> Result<()> {
@@ -372,16 +416,95 @@ mod tests {
                 value: vec![7],
             }],
             block_hash: CryptoHash([8; 32]),
-            chunked: false,
             request_count: 1,
         };
         let digest = snapshot.digest().unwrap();
         let mut refetched = snapshot.clone();
         refetched.block_hash = CryptoHash([9; 32]);
-        refetched.chunked = true;
         refetched.request_count = 2;
         assert_eq!(digest, refetched.digest().unwrap());
         refetched.entries[0].value.push(10);
         assert_ne!(digest, refetched.digest().unwrap());
+    }
+
+    #[tokio::test]
+    async fn state_cursor_retries_fails_over_and_preserves_endpoint_headers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = r#"{"result":{"values":[{"key":"AQ==","value":"Ag=="}],"last_key":null}}"#;
+        let responses = [
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_owned(),
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_owned(),
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            ),
+        ];
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = vec![0; 4096];
+                let count = stream.read(&mut bytes).await.unwrap();
+                requests.push(String::from_utf8(bytes[..count].to_vec()).unwrap());
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        let mut network =
+            NetworkConfig::from_rpc_url("test", format!("http://{address}").parse().unwrap());
+        let url = network.rpc_endpoints[0].url.clone();
+        network.rpc_endpoints = vec![
+            RPCEndpoint::new(url.clone()).with_retries(2),
+            RPCEndpoint::new(url)
+                .with_api_key("secret".to_owned())
+                .with_retries(1),
+        ];
+
+        let account_id = "account.near".parse().unwrap();
+        let (page, request_count) = fetch_state_page(
+            &network,
+            &StateQueryRequest {
+                jsonrpc: "2.0",
+                id: "test",
+                method: "query",
+                params: StateQueryParams {
+                    request_type: "view_state",
+                    account_id: &account_id,
+                    prefix_base64: "",
+                    block_id: CryptoHash([0; 32]),
+                    limit: 100,
+                    after_key_base64: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(request_count, 3);
+        assert_eq!(page.values.len(), 1);
+        let requests = server.await.unwrap();
+        assert!(
+            !requests[0].to_ascii_lowercase().contains("authorization:"),
+            "first endpoint unexpectedly sent authorization"
+        );
+        assert!(
+            requests[2]
+                .to_ascii_lowercase()
+                .contains("authorization: bearer secret"),
+            "failover endpoint omitted authorization"
+        );
+        assert!(
+            requests[2]
+                .to_ascii_lowercase()
+                .contains("x-api-key: bearer secret"),
+            "failover endpoint omitted API key"
+        );
     }
 }

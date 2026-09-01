@@ -42,8 +42,7 @@ pub(super) async fn export(ctx: CliContext, args: Export) -> Result<()> {
             reporter.record(Check::new(
                 "patch.state_complete",
                 Status::passed(format!(
-                    "complete {} {} storage entries in {} request(s), accounting for {} bytes at {}",
-                    if state.chunked { "after chunking" } else { "in one request" },
+                    "complete {} storage entries in {} request(s), accounting for {} bytes at {}",
                     state.entries.len(),
                     state.request_count,
                     state.storage_usage,
@@ -207,7 +206,6 @@ mod tests {
                 },
             ],
             block_hash: near_api::types::CryptoHash([0; 32]),
-            chunked: false,
             request_count: 1,
         };
         write_export(
