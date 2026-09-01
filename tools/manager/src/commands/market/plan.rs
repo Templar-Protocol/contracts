@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::commands::signer::SignerArgs;
+use crate::{commands::signer::SignerArgs, spec::plan::DeploymentStage};
 use clap::Args;
 use near_account_id::AccountId;
 use near_api::PublicKey as CliPublicKey;
@@ -26,6 +26,12 @@ pub struct Plan {
     /// Public key granted full access on each account the deploy creates.
     #[arg(long, value_name = "PUBLIC_KEY")]
     pub(crate) public_key: CliPublicKey,
+
+    /// Stop after this complete dependency-ordered deployment stage. Each plan
+    /// is a fresh cumulative prefix; do not apply separate stage plans in
+    /// sequence. Resume an interrupted deployment with the same plan file.
+    #[arg(long, value_enum, default_value_t = DeploymentStage::Market)]
+    pub(crate) stop_after: DeploymentStage,
 
     /// Ignore a named check. Every other check still runs, and every derived
     /// value is still derived — this suppresses one verdict, not the preflight.

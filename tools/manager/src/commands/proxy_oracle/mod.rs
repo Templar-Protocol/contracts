@@ -26,7 +26,7 @@ use templar_common::oracle::pyth::PriceIdentifier;
 #[command(rename_all = "kebab-case")]
 pub enum ProxyOracleNs {
     /// Deploy a proxy oracle from a registry, optionally owned by `--owner-id`.
-    /// `--skip-abi-check` can disable the constructor check for an incompatible target.
+    /// `--owner-id` seats the owner at init, so governance can configure it immediately.
     Create(Create),
     /// Administer a proxy oracle through its governance contract.
     #[command(subcommand, visible_alias = "gov")]

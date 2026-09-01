@@ -1,19 +1,18 @@
-extends = ["../profiles/v1.toml"]
+extends = [
+    "../profiles/v1.toml",
+    "../profiles/v1-collateral-ibtc.toml",
+    "../profiles/v1-borrow-iethusdc.toml",
+]
 
 name = "ibtc-iethusdc-1"
 
-# Reads an oracle it does not deploy, so this market creates only itself.
-[oracle.direct]
-account_id = "pyth-oracle.near"
 
 [collateral]
 asset = "nep245:intents.near:nep141:btc.omft.near"
-price_id = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
 decimals = 8
 
 [borrow]
 asset = "nep245:intents.near:nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near"
-price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a"
 decimals = 6
 
 [market]

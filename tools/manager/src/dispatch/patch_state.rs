@@ -1,18 +1,15 @@
-use std::{fmt::Debug, future::Future};
+use std::time::Duration;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use base64::Engine as _;
-use futures::{stream, StreamExt};
 use near_api::{
     types::{account::ContractState, AccountId, CryptoHash, Reference},
-    Account, Contract, NetworkConfig,
+    Account, Contract, NetworkConfig, RPCEndpoint,
 };
 use near_primitives::{account::AccountContract, hash::CryptoHash as ChainCryptoHash};
 use near_token::NearToken;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use templar_gateway_types::ProtocolLimits;
-
-const STATE_READ_CONCURRENCY: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RawStateEntry {
@@ -30,7 +27,6 @@ pub struct StateSnapshot {
     pub access_keys: Vec<(near_api::types::PublicKey, near_api::types::AccessKey)>,
     pub entries: Vec<RawStateEntry>,
     pub block_hash: CryptoHash,
-    pub chunked: bool,
     pub request_count: usize,
 }
 
@@ -93,13 +89,7 @@ pub async fn fetch_complete_state(
         .data
         .sort_by(|(left, _), (right, _)| left.cmp(right));
 
-    let (entries, chunked, request_count) = fetch_entries(
-        network,
-        account_id,
-        block_hash,
-        limits.max_length_storage_key,
-    )
-    .await?;
+    let (entries, request_count) = fetch_entries(network, account_id, block_hash).await?;
     verify_storage_usage(
         account.data.storage_usage,
         &contract,
@@ -118,7 +108,6 @@ pub async fn fetch_complete_state(
         access_keys: access_keys.data,
         entries,
         block_hash,
-        chunked,
         request_count,
     })
 }
@@ -168,84 +157,162 @@ async fn fetch_code(
         .context("decode contract code")
 }
 
-async fn fetch_entries(
-    network: &NetworkConfig,
-    account_id: &AccountId,
-    block_hash: CryptoHash,
-    max_key_length: u64,
-) -> Result<(Vec<RawStateEntry>, bool, usize)> {
-    let reader = |prefix: Vec<u8>| async move {
-        let state = Contract(account_id.clone())
-            .view_storage_with_prefix(&prefix)
-            .at(Reference::AtBlockHash(block_hash))
-            .fetch_from(network)
-            .await
-            .map_err(|error| format!("{error:?}"))?;
-        ensure_block(state.block_hash, block_hash, "state").map_err(|error| error.to_string())?;
-        state
-            .data
-            .values
-            .into_iter()
-            .map(|entry| {
-                Ok(RawStateEntry {
-                    key: base64::engine::general_purpose::STANDARD.decode(entry.key.0)?,
-                    value: base64::engine::general_purpose::STANDARD.decode(entry.value.0)?,
-                })
-            })
-            .collect::<std::result::Result<Vec<_>, base64::DecodeError>>()
-            .map_err(|error| error.to_string())
-    };
-    collect_prefixes(max_key_length, reader).await
+#[derive(Serialize)]
+struct StateQueryRequest<'a> {
+    jsonrpc: &'static str,
+    id: &'static str,
+    method: &'static str,
+    params: StateQueryParams<'a>,
 }
 
-async fn collect_prefixes<F, Fut>(
-    max_key_length: u64,
-    fetch: F,
-) -> Result<(Vec<RawStateEntry>, bool, usize)>
-where
-    F: Fn(Vec<u8>) -> Fut,
-    Fut: Future<Output = Result<Vec<RawStateEntry>, String>>,
-{
-    let mut pending = vec![Vec::new()];
-    let mut entries = Vec::new();
-    let mut chunked = false;
+#[derive(Serialize)]
+struct StateQueryParams<'a> {
+    request_type: &'static str,
+    account_id: &'a AccountId,
+    prefix_base64: &'static str,
+    block_id: CryptoHash,
+    limit: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after_key_base64: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct StateQueryResponse {
+    result: Option<StateQueryPage>,
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct StateQueryPage {
+    block_hash: CryptoHash,
+    values: Vec<StateQueryEntry>,
+    last_key: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StateQueryEntry {
+    key: String,
+    value: String,
+}
+
+fn rpc_client(endpoint: &RPCEndpoint) -> Result<reqwest::Client> {
+    let timeout = Duration::from_secs(15);
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(timeout)
+        .timeout(timeout);
+    if let Some(bearer_header) = &endpoint.bearer_header {
+        let mut headers = reqwest::header::HeaderMap::new();
+        let mut header = bearer_header
+            .parse::<reqwest::header::HeaderValue>()
+            .context("invalid RPC API key header")?;
+        header.set_sensitive(true);
+        headers.insert(reqwest::header::AUTHORIZATION, header.clone());
+        headers.insert(
+            reqwest::header::HeaderName::from_static("x-api-key"),
+            header,
+        );
+        builder = builder.default_headers(headers);
+    }
+    builder.build().context("build contract storage RPC client")
+}
+
+async fn fetch_state_page(
+    network: &NetworkConfig,
+    request: &StateQueryRequest<'_>,
+) -> Result<(StateQueryPage, usize)> {
+    let mut last_error = None;
     let mut request_count = 0;
-
-    while !pending.is_empty() {
-        let mut responses = stream::iter(std::mem::take(&mut pending).into_iter().map(
-            |prefix| async {
-                let result = fetch(prefix.clone()).await;
-                (prefix, result)
-            },
-        ))
-        .buffer_unordered(STATE_READ_CONCURRENCY);
-
-        while let Some((prefix, result)) = responses.next().await {
+    for endpoint in &network.rpc_endpoints {
+        let client = rpc_client(endpoint)?;
+        let attempts = usize::from(endpoint.retries).max(1);
+        for attempt in 0..attempts {
             request_count += 1;
-            match result {
-                Ok(values) => entries.extend(values),
-                Err(error) if error.contains("TooLargeContractState") => {
-                    chunked = true;
-                    ensure!(
-                        (prefix.len() as u64) < max_key_length,
-                        "storage prefix reached max key length {max_key_length}"
-                    );
-                    for byte in u8::MIN..=u8::MAX {
-                        let mut child = prefix.clone();
-                        child.push(byte);
-                        pending.push(child);
-                    }
+            let response = async {
+                let response: StateQueryResponse = client
+                    .post(endpoint.url.clone())
+                    .json(request)
+                    .send()
+                    .await
+                    .context("request contract storage")?
+                    .error_for_status()
+                    .context("contract storage RPC returned an HTTP error")?
+                    .json()
+                    .await
+                    .context("decode contract storage RPC response")?;
+                if let Some(error) = response.error {
+                    bail!("contract storage RPC failed: {error}");
                 }
+                response
+                    .result
+                    .context("contract storage RPC omitted result")
+            }
+            .await;
+            match response {
+                Ok(page) => return Ok((page, request_count)),
                 Err(error) => {
-                    return Err(anyhow::anyhow!(
-                        "fetch storage prefix {}: {error}",
-                        base64::engine::general_purpose::STANDARD.encode(prefix)
-                    ));
+                    last_error = Some(error);
+                    if attempt + 1 < attempts {
+                        tokio::time::sleep(endpoint.get_sleep_duration(attempt)).await;
+                    }
                 }
             }
         }
     }
+    Err(last_error.unwrap_or_else(|| anyhow!("network has no RPC endpoint")))
+}
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the cursor RPC wire types and their single pagination loop share one request boundary"
+)]
+async fn fetch_entries(
+    network: &NetworkConfig,
+    account_id: &AccountId,
+    block_hash: CryptoHash,
+) -> Result<(Vec<RawStateEntry>, usize)> {
+    let mut entries = Vec::new();
+    let mut after_key = None;
+    let mut request_count = 0;
+    loop {
+        let (page, page_request_count) = fetch_state_page(
+            network,
+            &StateQueryRequest {
+                jsonrpc: "2.0",
+                id: "patch-state",
+                method: "query",
+                params: StateQueryParams {
+                    request_type: "view_state",
+                    account_id,
+                    prefix_base64: "",
+                    block_id: block_hash,
+                    limit: 100,
+                    after_key_base64: after_key.as_deref(),
+                },
+            },
+        )
+        .await?;
+        ensure_block(page.block_hash, block_hash, "contract storage")?;
+        request_count += page_request_count;
+        entries.extend(
+            page.values
+                .into_iter()
+                .map(|entry| {
+                    Ok(RawStateEntry {
+                        key: base64::engine::general_purpose::STANDARD.decode(entry.key)?,
+                        value: base64::engine::general_purpose::STANDARD.decode(entry.value)?,
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, base64::DecodeError>>()?,
+        );
+        let Some(next_key) = page.last_key else {
+            break;
+        };
+        ensure!(
+            after_key.as_deref() != Some(next_key.as_str()),
+            "contract storage cursor did not advance"
+        );
+        after_key = Some(next_key);
+    }
     entries.sort_unstable_by(|left, right| left.key.cmp(&right.key));
     for pair in entries.windows(2) {
         ensure!(
@@ -253,7 +320,7 @@ where
             "duplicate storage key in state response"
         );
     }
-    Ok((entries, chunked, request_count))
+    Ok((entries, request_count))
 }
 
 fn ensure_block(actual: CryptoHash, expected: CryptoHash, source: &str) -> Result<()> {
@@ -351,42 +418,209 @@ mod tests {
                 value: vec![7],
             }],
             block_hash: CryptoHash([8; 32]),
-            chunked: false,
             request_count: 1,
         };
         let digest = snapshot.digest().unwrap();
         let mut refetched = snapshot.clone();
         refetched.block_hash = CryptoHash([9; 32]);
-        refetched.chunked = true;
         refetched.request_count = 2;
         assert_eq!(digest, refetched.digest().unwrap());
         refetched.entries[0].value.push(10);
         assert_ne!(digest, refetched.digest().unwrap());
     }
-}
 
-#[tokio::test]
-async fn state_chunker_recovers_oversized_prefixes_without_partial_results() {
-    let reader = |prefix: Vec<u8>| async move {
-        if prefix.is_empty() || prefix == [0] {
-            Err("TooLargeContractState".to_owned())
-        } else if prefix == [1] {
-            Ok(vec![RawStateEntry {
-                key: vec![1],
-                value: vec![2],
-            }])
-        } else {
-            Ok(Vec::new())
-        }
-    };
-    let (entries, chunked, requests) = collect_prefixes(2, reader).await.unwrap();
-    assert!(chunked);
-    assert_eq!(
-        entries,
-        vec![RawStateEntry {
-            key: vec![1],
-            value: vec![2],
-        }]
-    );
-    assert_eq!(requests, 513);
+    fn http_response(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    async fn start_server(
+        responses: Vec<String>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = vec![0; 4096];
+                let count = stream.read(&mut bytes).await.unwrap();
+                requests.push(String::from_utf8(bytes[..count].to_vec()).unwrap());
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        (address, server)
+    }
+
+    fn test_network(address: std::net::SocketAddr) -> NetworkConfig {
+        NetworkConfig::from_rpc_url("test", format!("http://{address}").parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn state_cursor_retries_fails_over_and_preserves_endpoint_headers() {
+        let body = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"AQ==","value":"Ag=="}],"last_key":null}}"#;
+        let (address, server) = start_server(vec![
+            http_response("429 Too Many Requests", ""),
+            http_response("500 Internal Server Error", ""),
+            http_response("200 OK", body),
+        ])
+        .await;
+        let mut network = test_network(address);
+        let url = network.rpc_endpoints[0].url.clone();
+        network.rpc_endpoints = vec![
+            RPCEndpoint::new(url.clone()).with_retries(2),
+            RPCEndpoint::new(url)
+                .with_api_key("secret".to_owned())
+                .with_retries(1),
+        ];
+
+        let account_id = "account.near".parse().unwrap();
+        let (page, request_count) = fetch_state_page(
+            &network,
+            &StateQueryRequest {
+                jsonrpc: "2.0",
+                id: "test",
+                method: "query",
+                params: StateQueryParams {
+                    request_type: "view_state",
+                    account_id: &account_id,
+                    prefix_base64: "",
+                    block_id: CryptoHash([0; 32]),
+                    limit: 100,
+                    after_key_base64: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(request_count, 3);
+        assert_eq!(page.values.len(), 1);
+        let requests = server.await.unwrap();
+        assert!(
+            !requests[0].to_ascii_lowercase().contains("authorization:"),
+            "first endpoint unexpectedly sent authorization"
+        );
+        assert!(
+            requests[2]
+                .to_ascii_lowercase()
+                .contains("authorization: bearer secret"),
+            "failover endpoint omitted authorization"
+        );
+        assert!(
+            requests[2]
+                .to_ascii_lowercase()
+                .contains("x-api-key: bearer secret"),
+            "failover endpoint omitted API key"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_cursor_merges_pages_and_sends_continuation_key() {
+        let first_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"AQ==","value":"Ag=="}],"last_key":"AQ=="}}"#;
+        let second_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"Aw==","value":"BA=="}],"last_key":null}}"#;
+        let (address, server) = start_server(vec![
+            http_response("200 OK", first_page),
+            http_response("200 OK", second_page),
+        ])
+        .await;
+        let network = test_network(address);
+        let account_id = "account.near".parse().unwrap();
+
+        let (entries, request_count) = fetch_entries(&network, &account_id, CryptoHash([0; 32]))
+            .await
+            .unwrap();
+
+        assert_eq!(request_count, 2);
+        assert_eq!(
+            entries,
+            vec![
+                RawStateEntry {
+                    key: vec![1],
+                    value: vec![2],
+                },
+                RawStateEntry {
+                    key: vec![3],
+                    value: vec![4],
+                },
+            ]
+        );
+        let requests = server.await.unwrap();
+        assert!(
+            !requests[0].contains("\"after_key_base64\""),
+            "first page unexpectedly continued a cursor"
+        );
+        assert!(
+            requests[1].contains(r#""after_key_base64":"AQ==""#),
+            "second page omitted the previous cursor"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_cursor_rejects_wrong_page_block() {
+        let page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[],"last_key":null}}"#;
+        let (address, server) = start_server(vec![http_response("200 OK", page)]).await;
+        let network = test_network(address);
+        let account_id = "account.near".parse().unwrap();
+
+        let error = fetch_entries(&network, &account_id, CryptoHash([1; 32]))
+            .await
+            .expect_err("wrong page block must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("contract storage response is pinned"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn state_cursor_rejects_stalled_cursor() {
+        let first_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"AQ==","value":"Ag=="}],"last_key":"AQ=="}}"#;
+        let stalled_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"Aw==","value":"BA=="}],"last_key":"AQ=="}}"#;
+        let (address, server) = start_server(vec![
+            http_response("200 OK", first_page),
+            http_response("200 OK", stalled_page),
+        ])
+        .await;
+        let network = test_network(address);
+        let account_id = "account.near".parse().unwrap();
+
+        let error = fetch_entries(&network, &account_id, CryptoHash([0; 32]))
+            .await
+            .expect_err("stalled cursor must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("contract storage cursor did not advance"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn state_cursor_rejects_duplicate_keys_across_pages() {
+        let first_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"AQ==","value":"Ag=="}],"last_key":"AQ=="}}"#;
+        let second_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"AQ==","value":"Aw=="}],"last_key":null}}"#;
+        let (address, server) = start_server(vec![
+            http_response("200 OK", first_page),
+            http_response("200 OK", second_page),
+        ])
+        .await;
+        let network = test_network(address);
+        let account_id = "account.near".parse().unwrap();
+
+        let error = fetch_entries(&network, &account_id, CryptoHash([0; 32]))
+            .await
+            .expect_err("duplicate keys must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("duplicate storage key in state response"));
+        server.await.unwrap();
+    }
 }

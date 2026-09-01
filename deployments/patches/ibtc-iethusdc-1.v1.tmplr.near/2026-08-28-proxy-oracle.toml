@@ -1,0 +1,8 @@
+schema = 3
+account_id = "ibtc-iethusdc-1.v1.tmplr.near"
+
+[[op]]
+op = "set"
+key.hex = "5354415445"
+expect.hash = "5c489b5588fde7e6dc9da6c2cbd1a685aceacefe48a3f6cf2bc274591ec27b9f"
+value.file = "blobs/2026-08-28-proxy-oracle-state.borsh"

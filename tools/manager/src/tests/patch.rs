@@ -132,7 +132,15 @@ fn checked_in_patch_fixture_covers_supported_toml_syntax() {
                 ResolvedOperation::RemovePrefix { .. } => "remove_prefix",
             })
             .collect::<Vec<_>>(),
-        ["expect", "set", "remove", "remove_prefix", "set", "set"]
+        [
+            "expect",
+            "set",
+            "remove",
+            "remove_prefix",
+            "set",
+            "set",
+            "set"
+        ]
     );
     let ResolvedOperation::Set { value, .. } = &resolved.operations[1] else {
         panic!("reference file operation must be a set");
@@ -168,6 +176,14 @@ fn checked_in_patch_fixture_covers_supported_toml_syntax() {
         panic!("fresh-key operation must be a set");
     };
     assert!(matches!(expected, Some(ResolvedExpectation::Absent)));
+
+    let ResolvedOperation::Set { expected, .. } = &resolved.operations[6] else {
+        panic!("STATE operation must be a set");
+    };
+    assert_eq!(
+        expected,
+        &Some(ResolvedExpectation::Hash(Sha256Digest([0xab; 32])))
+    );
 }
 
 #[test]

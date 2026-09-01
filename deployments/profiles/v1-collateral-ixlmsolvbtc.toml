@@ -1,0 +1,11 @@
+[collateral]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB5xzU1EsXby4ckez2qjWFTBiPoqHzZpPkq1Gr9gB7FQpeZ"
+symbol = "SOLVBTC"
+reference = { coin_gecko = { id = "solv-btc" } }
+decimals = 8
+aggregator = "median_low"
+min_sources = 1
+# { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 566, weight = 8 }
+sources = [
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "SolvBTC_FUNDAMENTAL/USD", weight = 1 },
+]
