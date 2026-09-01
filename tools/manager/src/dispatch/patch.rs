@@ -328,8 +328,7 @@ pub(super) async fn build(
             reporter.record(Check::new(
                 "patch.state_complete",
                 Status::passed(format!(
-                    "complete {} {} storage entries in {} request(s), accounting for {} bytes at {}",
-                    if state.chunked { "after chunking" } else { "in one request" },
+                    "complete {} storage entries in {} request(s), accounting for {} bytes at {}",
                     state.entries.len(),
                     state.request_count,
                     state.storage_usage,
@@ -971,7 +970,6 @@ mod tests {
             access_keys: Vec::new(),
             entries: Vec::new(),
             block_hash: near_api::types::CryptoHash([0; 32]),
-            chunked: false,
             request_count: 0,
         };
         let error = restore_from_state(&state).expect_err("codeless account rejected");

@@ -1,0 +1,11 @@
+[borrow]
+asset = "nep245:intents.near:nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near"
+symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
+decimals = 6
+aggregator = "median_high"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 7, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "USDC", weight = 2 },
+]

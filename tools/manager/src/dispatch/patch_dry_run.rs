@@ -239,8 +239,9 @@ async fn setup_account(
                 .parse()
                 .context("parse source public key")?
         };
-        let access_key =
+        let mut access_key =
             near_primitives::account::AccessKey::try_from_slice(&borsh::to_vec(access_key)?)?;
+        access_key.nonce = 0;
         records.push(StateRecord::AccessKey {
             account_id: plan.spec.account_id.clone(),
             public_key,
@@ -483,7 +484,21 @@ fn execution_status(
                 result.operation.status,
                 templar_gateway_types::OperationStatus::Succeeded
             );
-            (success, format!("{:?}", result.operation.status))
+            let failures = result
+                .operation
+                .steps
+                .iter()
+                .filter_map(|step| step.status.outcome()?.failure.as_deref())
+                .collect::<Vec<_>>()
+                .join("; ");
+            (
+                success,
+                if failures.is_empty() {
+                    format!("{:?}", result.operation.status)
+                } else {
+                    failures
+                },
+            )
         }
         Err(error) => (false, format!("failed: {error}")),
     }
