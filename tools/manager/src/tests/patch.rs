@@ -232,7 +232,7 @@ fn proxy_migration_patch_declares_expected_views() {
 )]
 #[tokio::test]
 async fn requires_sandbox_patch_dry_run_replays_proxy_v0_to_v1() -> Result<()> {
-    let harness = templar_gateway_testing::SandboxHarness::start().await?;
+    let harness = templar_gateway_testing::SandboxHarness::start_owned().await?;
     let account_id: AccountId = "proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near".parse()?;
     let key: SecretKey =
         near_crypto::SecretKey::from_seed(KeyType::ED25519, "proxy-oracle-v0-to-v1-signer")
