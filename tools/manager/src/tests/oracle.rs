@@ -172,19 +172,13 @@ fn update_pyth_deduplicates_repeated_price_ids() {
     );
 }
 
-/// Each update takes its feed/price ids as a repeated required flag, so omitting them
-/// entirely is a parse error rather than a silent empty request.
+/// Empty is a no-op at the gateway, so each update rejects a missing id at parse time.
 #[rstest]
-#[case::update_pyth(&["update-pyth", "--oracle-id", "pyth.testnet"])]
-#[case::update_red_stone(&["update-red-stone", "--oracle-id", "redstone.testnet"])]
-#[case::update_lazer(&[
-    "update-lazer",
-    "--oracle-id",
-    "lazer.testnet",
-    "--pyth-lazer-api-key",
-    "secret-token",
-])]
-fn oracle_updates_require_an_id(#[case] subcommand: &[&str]) {
+#[case::update_pyth(&["update-pyth", "--oracle-id", "pyth.testnet"], "--price-id")]
+#[case::update_red_stone(&["update-red-stone", "--oracle-id", "redstone.testnet"], "--feed-id")]
+#[case::update_lazer(&["update-lazer", "--oracle-id", "lazer.testnet"], "--feed-id")]
+#[case::update_prices(&["update-prices", "--oracle-id", "proxy.testnet"], "--price-id")]
+fn oracle_updates_require_an_id(#[case] subcommand: &[&str], #[case] expected_flag: &str) {
     let error = Cli::try_parse_from(
         ["tmplrmgr", "oracle"]
             .into_iter()
@@ -196,6 +190,11 @@ fn oracle_updates_require_an_id(#[case] subcommand: &[&str]) {
     assert_eq!(
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
+    );
+    assert!(
+        error.to_string().contains(expected_flag),
+        "the error should name {expected_flag}, so a flag losing `required` cannot pass \
+         by way of some other missing argument: {error}"
     );
 }
 

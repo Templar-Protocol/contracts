@@ -548,18 +548,20 @@ mod tests {
     async fn update_lazer_plans_one_adapter_write(#[case] feed_ids: Vec<u32>) {
         let payload = vec![0xAA, 0xBB, 0xCC, 0xDD];
         let ctx = lazer_ctx(Ok(payload.clone()));
+        // Shares the recorder with the context `plan` consumes.
+        let source = ctx.lazer_source.clone();
         let oracle_id: AccountId = "pyth-lazer.near".parse().expect("valid account id");
         let request = write_request(UpdateLazer {
             oracle_id: oracle_id.clone(),
             feed_ids: feed_ids.clone(),
         });
 
-        let plan = <Dispatch as PlanWrite<UpdateLazer, TestCtx>>::plan(request, ctx.clone())
+        let plan = <Dispatch as PlanWrite<UpdateLazer, TestCtx>>::plan(request, ctx)
             .await
             .expect("UpdateLazer plan must succeed with a fresh payload");
 
         assert_eq!(
-            ctx.lazer_source.calls(),
+            source.calls(),
             vec![feed_ids],
             "every requested feed must reach the source in a single fetch"
         );

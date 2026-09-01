@@ -5,8 +5,9 @@
 //! [`FakeLazerSource`]. They cover the three Lazer-specific behaviors that the
 //! RPC layer must guarantee:
 //!
-//! 1. `oracle.updateLazer` plans one adapter write for the whole feed set,
-//!    carrying the payload as base64 `payload` (never classic-Pyth hex `data`).
+//! 1. `oracle.updateLazer` plans an adapter write carrying the payload as
+//!    base64 `payload` (never classic-Pyth hex `data`). The feed set reaching
+//!    the source is pinned one layer down, where the fake records its calls.
 //! 2. A proxy `oracle.updatePrices` for a Lazer-backed feed routes through the
 //!    Lazer source (the canned payload shows up in the planned adapter write).
 //! 3. A Lazer cache-miss surfaces as a structured gateway error through the RPC
@@ -87,7 +88,7 @@ async fn oracle_update_lazer_plan_carries_payload_base64_not_data() -> Result<()
         idempotency_key: None,
         body: oracle_updates::UpdateLazer {
             oracle_id: oracle_id.clone(),
-            feed_ids: vec![7, 8],
+            feed_ids: vec![7],
         },
     };
 
@@ -99,7 +100,7 @@ async fn oracle_update_lazer_plan_carries_payload_base64_not_data() -> Result<()
     assert_eq!(
         plan.steps.len(),
         1,
-        "UpdateLazer must plan exactly one step for the whole feed set"
+        "UpdateLazer must plan exactly one step"
     );
     let step = &plan.steps[0];
     assert_eq!(step.receiver_id, oracle_id);
