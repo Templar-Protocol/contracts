@@ -231,7 +231,7 @@ fn proxy_migration_patch_declares_expected_views() {
     reason = "one integration scenario deliberately presents fixture setup, plan, replay, and stamp assertions together"
 )]
 #[tokio::test]
-async fn patch_dry_run_replays_proxy_v0_to_v1() -> Result<()> {
+async fn requires_sandbox_patch_dry_run_replays_proxy_v0_to_v1() -> Result<()> {
     let harness = templar_gateway_testing::SandboxHarness::start().await?;
     let account_id: AccountId = "proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near".parse()?;
     let key: SecretKey = near_crypto::SecretKey::from_random(KeyType::ED25519)

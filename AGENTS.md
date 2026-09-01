@@ -113,9 +113,10 @@ Notes:
 
 Several CI/test-infra files enumerate crates, contracts, or paths by hand. A feature change elsewhere easily leaves one stale, and the failure is silent — tests that never run, jobs that never trigger. When your change matches a trigger below, update the listed files in the _same_ change.
 
-- **Adding a node-backed test crate** (integration tests that need a `SandboxHarness`):
+- **Adding a node-backed test crate** (tests that need a `SandboxHarness`):
   - `justfile` — add the package to `sandbox_full_packages`; the sandbox filter and Cargo package boundary are both derived from that list. (`templar-gateway-service`'s node tests live in `src/` and are matched separately by module path.)
   - `.github/workflows/test.yml` — add the crate's `src/**` and `tests/**` under the `changes` job's `near_integration` paths filter, or the test job won't trigger on changes to it.
+- **Adding a node-backed test inside a `src/` unit-test module**: the package list above selects `kind(test)` targets only, so name the test `requires_sandbox_*`. Without the prefix it stays in the fast gate, which runs no `neard` and installs no `cargo-near`.
 - **Adding or removing a contract / mock WASM**:
   - `contract/artifacts/src/ids.rs` — the `ArtifactId` enum and each artifact's name/path. `contract/artifacts/releases/` holds the released history, compiled in by `build.rs` (empty for mocks, which are never released). See `contract/artifacts/README.md`. This is the canonical list; `script/prebuild-test-contracts.sh` derives from it.
   - `gateway/testing/src/wasm.rs` — the `wasm_fns!` list, so the harness can load it.
