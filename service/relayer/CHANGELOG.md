@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/Templar-Protocol/contracts/compare/templar-relayer-v0.3.1...templar-relayer-v0.4.0) - 2026-09-01
+
+### Added
+
+- *(gateway)* [**breaking**] validate registry init args against ABI (ENG-463) ([#607](https://github.com/Templar-Protocol/contracts/pull/607))
+
 ## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-relayer-v0.2.1...templar-relayer-v0.3.0) - 2026-08-24
 
 ### Added

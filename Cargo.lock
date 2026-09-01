@@ -4452,7 +4452,7 @@ dependencies = [
 
 [[package]]
 name = "harvest-static-yield"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -12959,7 +12959,7 @@ dependencies = [
 
 [[package]]
 name = "templar-accumulator"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -13053,7 +13053,7 @@ dependencies = [
 
 [[package]]
 name = "templar-funding-bridge"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13123,7 +13123,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-artifacts-dispatch"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "near-account-id",
@@ -13141,7 +13141,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-artifacts-spec"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "near-account-id",
  "schemars 0.8.22",
@@ -13165,7 +13165,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-client"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "clap",
  "near-api",
@@ -13183,7 +13183,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "actix",
  "anyhow",
@@ -13235,7 +13235,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-methods-dispatch"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "borsh 1.6.1",
@@ -13266,7 +13266,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-methods-spec"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "near-account-id",
  "schemars 0.8.22",
@@ -13284,7 +13284,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-oracle-updates-dispatch"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13322,7 +13322,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-oracle-updates-spec"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "hex",
  "near-account-id",
@@ -13337,7 +13337,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-runtime"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "actix",
  "async-trait",
@@ -13351,7 +13351,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-service"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "actix",
  "anyhow",
@@ -13402,7 +13402,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-store"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "borsh 1.6.1",
@@ -13457,7 +13457,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-types"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "borsh 1.6.1",
@@ -13480,7 +13480,7 @@ dependencies = [
 
 [[package]]
 name = "templar-liquidator"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13514,7 +13514,7 @@ dependencies = [
 
 [[package]]
 name = "templar-lst-oracle-contract"
-version = "1.2.5"
+version = "1.2.6"
 dependencies = [
  "anyhow",
  "getrandom 0.2.17",
@@ -13534,7 +13534,7 @@ dependencies = [
 
 [[package]]
 name = "templar-manager"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13586,7 +13586,7 @@ dependencies = [
 
 [[package]]
 name = "templar-market-contract"
-version = "1.5.2"
+version = "1.5.3"
 dependencies = [
  "anyhow",
  "getrandom 0.2.17",
@@ -13634,7 +13634,7 @@ dependencies = [
 
 [[package]]
 name = "templar-patch-state-contract"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13717,7 +13717,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-contract"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13755,7 +13755,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-governance-contract"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13908,7 +13908,7 @@ dependencies = [
 
 [[package]]
 name = "templar-registry-contract"
-version = "2.0.1"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "getrandom 0.2.17",
@@ -13927,7 +13927,7 @@ dependencies = [
 
 [[package]]
 name = "templar-relayer"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -14090,7 +14090,7 @@ dependencies = [
 
 [[package]]
 name = "templar-tools-common"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "cargo_metadata 0.23.1",
