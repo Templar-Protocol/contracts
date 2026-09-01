@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.5.1...templar-manager-v0.6.0) - 2026-09-01
+
+### Added
+
+- *(gateway)* [**breaking**] validate registry init args against ABI (ENG-463) ([#607](https://github.com/Templar-Protocol/contracts/pull/607))
+- *(manager)* add guarded storage patch plans (ENG-652) ([#609](https://github.com/Templar-Protocol/contracts/pull/609))
+- *(market)* migrate v1 markets to proxy oracles ([#614](https://github.com/Templar-Protocol/contracts/pull/614))
+
+### Fixed
+
+- *(manager)* harden patch dry-run replay (ENG-653) ([#612](https://github.com/Templar-Protocol/contracts/pull/612))
+- *(ci)* route the patch dry-run replay to the node gate ([#616](https://github.com/Templar-Protocol/contracts/pull/616))
+- *(manager)* stabilize patch replay test ([#617](https://github.com/Templar-Protocol/contracts/pull/617))
+- *(manager)* isolate patch replay sandbox ([#618](https://github.com/Templar-Protocol/contracts/pull/618))
+
 ## [0.5.1](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.5.0...templar-manager-v0.5.1) - 2026-08-25
 
 ### Added
