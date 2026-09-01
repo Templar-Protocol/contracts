@@ -184,6 +184,7 @@ struct StateQueryResponse {
 
 #[derive(Deserialize)]
 struct StateQueryPage {
+    block_hash: CryptoHash,
     values: Vec<StateQueryEntry>,
     last_key: Option<String>,
 }
@@ -290,6 +291,7 @@ async fn fetch_entries(
             },
         )
         .await?;
+        ensure_block(page.block_hash, block_hash, "contract storage")?;
         request_count += page_request_count;
         entries.extend(
             page.values
@@ -427,25 +429,22 @@ mod tests {
         assert_ne!(digest, refetched.digest().unwrap());
     }
 
-    #[tokio::test]
-    async fn state_cursor_retries_fails_over_and_preserves_endpoint_headers() {
+    fn http_response(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    async fn start_server(
+        responses: Vec<String>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Vec<String>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .unwrap();
         let address = listener.local_addr().unwrap();
-        let body = r#"{"result":{"values":[{"key":"AQ==","value":"Ag=="}],"last_key":null}}"#;
-        let responses = [
-            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                .to_owned(),
-            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                .to_owned(),
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            ),
-        ];
         let server = tokio::spawn(async move {
             let mut requests = Vec::new();
             for response in responses {
@@ -457,8 +456,23 @@ mod tests {
             }
             requests
         });
-        let mut network =
-            NetworkConfig::from_rpc_url("test", format!("http://{address}").parse().unwrap());
+        (address, server)
+    }
+
+    fn test_network(address: std::net::SocketAddr) -> NetworkConfig {
+        NetworkConfig::from_rpc_url("test", format!("http://{address}").parse().unwrap())
+    }
+
+    #[tokio::test]
+    async fn state_cursor_retries_fails_over_and_preserves_endpoint_headers() {
+        let body = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"AQ==","value":"Ag=="}],"last_key":null}}"#;
+        let (address, server) = start_server(vec![
+            http_response("429 Too Many Requests", ""),
+            http_response("500 Internal Server Error", ""),
+            http_response("200 OK", body),
+        ])
+        .await;
+        let mut network = test_network(address);
         let url = network.rpc_endpoints[0].url.clone();
         network.rpc_endpoints = vec![
             RPCEndpoint::new(url.clone()).with_retries(2),
@@ -506,5 +520,107 @@ mod tests {
                 .contains("x-api-key: bearer secret"),
             "failover endpoint omitted API key"
         );
+    }
+
+    #[tokio::test]
+    async fn state_cursor_merges_pages_and_sends_continuation_key() {
+        let first_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"AQ==","value":"Ag=="}],"last_key":"AQ=="}}"#;
+        let second_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"Aw==","value":"BA=="}],"last_key":null}}"#;
+        let (address, server) = start_server(vec![
+            http_response("200 OK", first_page),
+            http_response("200 OK", second_page),
+        ])
+        .await;
+        let network = test_network(address);
+        let account_id = "account.near".parse().unwrap();
+
+        let (entries, request_count) = fetch_entries(&network, &account_id, CryptoHash([0; 32]))
+            .await
+            .unwrap();
+
+        assert_eq!(request_count, 2);
+        assert_eq!(
+            entries,
+            vec![
+                RawStateEntry {
+                    key: vec![1],
+                    value: vec![2],
+                },
+                RawStateEntry {
+                    key: vec![3],
+                    value: vec![4],
+                },
+            ]
+        );
+        let requests = server.await.unwrap();
+        assert!(
+            !requests[0].contains("\"after_key_base64\""),
+            "first page unexpectedly continued a cursor"
+        );
+        assert!(
+            requests[1].contains(r#""after_key_base64":"AQ==""#),
+            "second page omitted the previous cursor"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_cursor_rejects_wrong_page_block() {
+        let page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[],"last_key":null}}"#;
+        let (address, server) = start_server(vec![http_response("200 OK", page)]).await;
+        let network = test_network(address);
+        let account_id = "account.near".parse().unwrap();
+
+        let error = fetch_entries(&network, &account_id, CryptoHash([1; 32]))
+            .await
+            .expect_err("wrong page block must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("contract storage response is pinned"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn state_cursor_rejects_stalled_cursor() {
+        let first_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"AQ==","value":"Ag=="}],"last_key":"AQ=="}}"#;
+        let stalled_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"Aw==","value":"BA=="}],"last_key":"AQ=="}}"#;
+        let (address, server) = start_server(vec![
+            http_response("200 OK", first_page),
+            http_response("200 OK", stalled_page),
+        ])
+        .await;
+        let network = test_network(address);
+        let account_id = "account.near".parse().unwrap();
+
+        let error = fetch_entries(&network, &account_id, CryptoHash([0; 32]))
+            .await
+            .expect_err("stalled cursor must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("contract storage cursor did not advance"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn state_cursor_rejects_duplicate_keys_across_pages() {
+        let first_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"AQ==","value":"Ag=="}],"last_key":"AQ=="}}"#;
+        let second_page = r#"{"result":{"block_hash":"11111111111111111111111111111111","values":[{"key":"AQ==","value":"Aw=="}],"last_key":null}}"#;
+        let (address, server) = start_server(vec![
+            http_response("200 OK", first_page),
+            http_response("200 OK", second_page),
+        ])
+        .await;
+        let network = test_network(address);
+        let account_id = "account.near".parse().unwrap();
+
+        let error = fetch_entries(&network, &account_id, CryptoHash([0; 32]))
+            .await
+            .expect_err("duplicate keys must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("duplicate storage key in state response"));
+        server.await.unwrap();
     }
 }
