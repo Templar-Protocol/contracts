@@ -132,7 +132,15 @@ fn checked_in_patch_fixture_covers_supported_toml_syntax() {
                 ResolvedOperation::RemovePrefix { .. } => "remove_prefix",
             })
             .collect::<Vec<_>>(),
-        ["expect", "set", "remove", "remove_prefix", "set", "set"]
+        [
+            "expect",
+            "set",
+            "remove",
+            "remove_prefix",
+            "set",
+            "set",
+            "set"
+        ]
     );
     let ResolvedOperation::Set { value, .. } = &resolved.operations[1] else {
         panic!("reference file operation must be a set");
@@ -168,6 +176,14 @@ fn checked_in_patch_fixture_covers_supported_toml_syntax() {
         panic!("fresh-key operation must be a set");
     };
     assert!(matches!(expected, Some(ResolvedExpectation::Absent)));
+
+    let ResolvedOperation::Set { expected, .. } = &resolved.operations[6] else {
+        panic!("STATE operation must be a set");
+    };
+    assert_eq!(
+        expected,
+        &Some(ResolvedExpectation::Hash(Sha256Digest([0xab; 32])))
+    );
 }
 
 #[test]
@@ -232,11 +248,12 @@ fn proxy_migration_patch_declares_expected_views() {
 )]
 #[tokio::test]
 async fn requires_sandbox_patch_dry_run_replays_proxy_v0_to_v1() -> Result<()> {
-    let harness = templar_gateway_testing::SandboxHarness::start().await?;
+    let harness = templar_gateway_testing::SandboxHarness::start_owned().await?;
     let account_id: AccountId = "proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near".parse()?;
-    let key: SecretKey = near_crypto::SecretKey::from_random(KeyType::ED25519)
-        .to_string()
-        .parse()?;
+    let key: SecretKey =
+        near_crypto::SecretKey::from_seed(KeyType::ED25519, "proxy-oracle-v0-to-v1-signer")
+            .to_string()
+            .parse()?;
     let public_key: near_crypto::PublicKey = key.public_key().to_string().parse()?;
     let current_code = templar_gateway_testing::wasm::proxy_oracle().await.to_vec();
     let current_hash = CryptoHash::from(near_api::types::CryptoHash::hash(&current_code));
@@ -244,9 +261,10 @@ async fn requires_sandbox_patch_dry_run_replays_proxy_v0_to_v1() -> Result<()> {
         "../../../../contract/proxy-oracle/near/contract/tests/migration/mainnet_proxy_oracle_ixlmustry_ixlmusdc.borsh"
     ))?;
     let access_key = AccessKey::full_access();
-    let barrier_key: SecretKey = near_crypto::SecretKey::from_random(KeyType::ED25519)
-        .to_string()
-        .parse()?;
+    let barrier_key: SecretKey =
+        near_crypto::SecretKey::from_seed(KeyType::ED25519, "proxy-oracle-v0-to-v1-barrier")
+            .to_string()
+            .parse()?;
     let barrier_public_key: near_crypto::PublicKey =
         barrier_key.public_key().to_string().parse()?;
     let barrier_access_key = AccessKey::full_access();
@@ -290,6 +308,7 @@ async fn requires_sandbox_patch_dry_run_replays_proxy_v0_to_v1() -> Result<()> {
         ],
     )
     .await?;
+    templar_sandbox::wait_until_final(&network, &account_id, &public_key).await?;
     let remote = templar_gateway_client::Client::builder(network.clone())
         .secret_key(account_id.clone(), key.clone())?
         .build()?;

@@ -214,6 +214,7 @@ fn abi_error(reason: impl std::fmt::Display) -> GatewayError {
 mod tests {
     use super::{validate_constructor_args_sync, MAX_ABI_CANDIDATES, ZSTD_MAGIC};
     use rstest::rstest;
+    use templar_gateway_core::GatewayError;
 
     fn wasm_with_abi(abi: &str) -> Vec<u8> {
         let compressed = zstd::stream::encode_all(abi.as_bytes(), 0).expect("compress ABI");
@@ -292,6 +293,20 @@ mod tests {
 
         validate(&wasm, b"").expect("empty arguments are the empty JSON object");
     }
+
+    #[test]
+    fn rejects_owner_id_for_no_argument_constructor() {
+        let wasm = wasm_with_abi(&valid_abi("[]"));
+
+        let error = validate(&wasm, br#"{"owner_id":"owner.near"}"#)
+            .expect_err("owner_id must not be accepted by a no-argument constructor");
+        assert!(matches!(
+            error,
+            GatewayError::RequestPreconditionFailed(message)
+                if message.contains("do not match")
+        ));
+    }
+
     #[test]
     fn accepts_embedded_abi_before_trailing_segment_data() {
         let mut data =

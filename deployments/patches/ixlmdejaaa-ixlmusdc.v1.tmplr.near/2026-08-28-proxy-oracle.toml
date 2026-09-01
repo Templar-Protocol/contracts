@@ -1,0 +1,8 @@
+schema = 3
+account_id = "ixlmdejaaa-ixlmusdc.v1.tmplr.near"
+
+[[op]]
+op = "set"
+key.hex = "5354415445"
+expect.hash = "7f1deb34db0de055d171e34c2a9615d05f8b14fc2971798ac79adfac98cf06bf"
+value.file = "blobs/2026-08-28-proxy-oracle-state.borsh"
