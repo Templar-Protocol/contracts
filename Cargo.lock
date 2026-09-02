@@ -13993,7 +13993,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-blend-adapter"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "blend-contract-sdk",
  "soroban-sdk",
@@ -14022,7 +14022,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-runtime"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "blend-contract-sdk",
  "derive_more 1.0.0",
