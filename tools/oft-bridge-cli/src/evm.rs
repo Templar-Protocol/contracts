@@ -2,7 +2,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use alloy::network::Ethereum;
-use alloy::primitives::{keccak256, Address, Bytes, TxKind, B256};
+use alloy::primitives::{keccak256, Address, Bytes, TxKind, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder, RootProvider};
 use alloy::rpc::types::{TransactionInput, TransactionRequest};
 use alloy::signers::local::PrivateKeySigner;
@@ -196,11 +196,23 @@ pub fn read_password_file(path: &Path) -> Result<Zeroizing<String>> {
     Ok(Zeroizing::new(trimmed.to_string()))
 }
 
-/// Decrypts a Foundry V3 keystore JSON into a local signer after path checks.
-pub fn keystore_signer(path: &Path, password: &str) -> Result<PrivateKeySigner> {
+/// Qualifies an encrypted Foundry V3 keystore file and decrypts it into a
+/// local signer. Qualification is fail-closed: regular file, no symlink,
+/// mode 0600, and the decrypted signer identity must equal `expected`.
+/// The password never enters the error string.
+pub fn keystore_signer(path: &Path, password: &str, expected: Address) -> Result<PrivateKeySigner> {
     validate_secret_file(path)?;
-    PrivateKeySigner::decrypt_keystore(path, password)
-        .map_err(|error| Error::Chain(format!("keystore decrypt failed: {error}")))
+    let signer = PrivateKeySigner::decrypt_keystore(path, password)
+        .map_err(|error| Error::Chain(format!("keystore decrypt failed: {error}")))?;
+    if signer.address() != expected {
+        return Err(Error::Custody(format!(
+            "keystore {} decrypts to signer {} but expected identity {}; refusing to sign",
+            path.display(),
+            canonical_address(signer.address()),
+            canonical_address(expected),
+        )));
+    }
+    Ok(signer)
 }
 
 /// Observable EVM chain boundary for preflight, verification, and simulation
@@ -219,6 +231,29 @@ pub trait EvmChain: Send + Sync {
     async fn account_nonce(&self, address: Address) -> Result<u64>;
     /// Safe `getThreshold()` and `nonce()` when `safe` is a Safe proxy.
     async fn safe_state(&self, safe: Address) -> Result<Option<(u32, String)>>;
+    /// Simulates the exact typed transaction (sender, target, value,
+    /// calldata) against latest state and returns the RPC-derived gas and
+    /// fee policy. Estimation failure is a typed refusal; no invented
+    /// constants.
+    async fn estimate_transaction(
+        &self,
+        from: Address,
+        to: Address,
+        value: U256,
+        calldata: Vec<u8>,
+    ) -> Result<EvmSimulationV1>;
+}
+
+/// Live gas/fee simulation for the exact typed transaction a proposal
+/// commits to. Every field is adapter-derived; no constant policy values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvmSimulationV1 {
+    /// RPC gas estimate for the exact sender, target, value, and calldata.
+    pub gas_limit: u64,
+    /// Decimal-string wei EIP-1559 max base fee.
+    pub max_fee_per_gas_wei: String,
+    /// Decimal-string wei EIP-1559 max priority fee.
+    pub max_priority_fee_per_gas_wei: String,
 }
 /// HTTP JSON-RPC implementation of [`EvmChain`].
 pub struct HttpEvmChain {
@@ -301,6 +336,37 @@ impl EvmChain for HttpEvmChain {
             threshold,
             u128::from_be_bytes(nonce_bytes).to_string(),
         )))
+    }
+
+    async fn estimate_transaction(
+        &self,
+        from: Address,
+        to: Address,
+        value: U256,
+        calldata: Vec<u8>,
+    ) -> Result<EvmSimulationV1> {
+        let transaction = TransactionRequest {
+            from: Some(from),
+            to: Some(TxKind::Call(to)),
+            value: Some(value),
+            input: TransactionInput::new(Bytes::from(calldata)),
+            ..Default::default()
+        };
+        let gas_limit = self
+            .provider
+            .estimate_gas(transaction)
+            .await
+            .map_err(|error| Error::Chain(format!("evm gas estimation failed: {error}")))?;
+        let fees = self
+            .provider
+            .estimate_eip1559_fees()
+            .await
+            .map_err(|error| Error::Chain(format!("evm fee estimation failed: {error}")))?;
+        Ok(EvmSimulationV1 {
+            gas_limit,
+            max_fee_per_gas_wei: fees.max_fee_per_gas.to_string(),
+            max_priority_fee_per_gas_wei: fees.max_priority_fee_per_gas.to_string(),
+        })
     }
 }
 /// ABI selector for a canonical function signature, computed at runtime so
@@ -413,6 +479,115 @@ mod tests {
             validate_secret_file(&link),
             Err(Error::Custody(_))
         ));
+    }
+
+    /// Writes a real encrypted Foundry V3 keystore fixture for `key` with the
+    /// given password and POSIX mode, returning its path.
+    fn write_encrypted_fixture(
+        dir: &std::path::Path,
+        key: &[u8; 32],
+        password: &str,
+        mode: u32,
+    ) -> std::path::PathBuf {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        eth_keystore::encrypt_key(dir, &mut rng, key, password, Some("fixture.json"))
+            .expect("encrypt fixture");
+        let path = dir.join("fixture.json");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        path
+    }
+
+    fn fixture_signer(key: &[u8; 32]) -> PrivateKeySigner {
+        PrivateKeySigner::from_bytes(&B256::from(*key)).expect("signer from key")
+    }
+
+    #[test]
+    fn encrypted_keystore_fixture_qualifies_with_expected_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = [0xAB; 32];
+        let password = "op-secret-marker-7f3a";
+        let expected = fixture_signer(&key).address();
+        let path = write_encrypted_fixture(dir.path(), &key, password, 0o600);
+
+        let loaded = keystore_signer(&path, password, expected).expect("fixture qualifies");
+        assert_eq!(loaded.address(), expected);
+    }
+
+    #[test]
+    fn encrypted_keystore_fixture_rejects_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = [0xAB; 32];
+        let password = "op-secret-marker-7f3a";
+        let expected = fixture_signer(&key).address();
+        let path = write_encrypted_fixture(dir.path(), &key, password, 0o600);
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link).expect("symlink");
+
+        let error =
+            keystore_signer(&link, password, expected).expect_err("symlink must be rejected");
+        assert!(matches!(error, Error::Custody(_)));
+        assert!(error.to_string().contains("symlink"));
+        assert!(!error.to_string().contains(password));
+    }
+
+    #[test]
+    fn encrypted_keystore_fixture_rejects_unsafe_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = [0xAB; 32];
+        let password = "op-secret-marker-7f3a";
+        let expected = fixture_signer(&key).address();
+        let path = write_encrypted_fixture(dir.path(), &key, password, 0o644);
+
+        let error =
+            keystore_signer(&path, password, expected).expect_err("loose mode must be rejected");
+        assert!(matches!(error, Error::Custody(_)));
+        assert!(error.to_string().contains("0600"));
+        assert!(!error.to_string().contains(password));
+    }
+
+    #[test]
+    fn encrypted_keystore_identity_mismatch_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = [0xAB; 32];
+        let other_key = [0xCD; 32];
+        let password = "op-secret-marker-7f3a";
+        let expected = fixture_signer(&other_key).address();
+        let path = write_encrypted_fixture(dir.path(), &key, password, 0o600);
+
+        let error = keystore_signer(&path, password, expected)
+            .expect_err("identity mismatch must fail closed");
+        assert!(matches!(error, Error::Custody(_)));
+        assert!(error.to_string().contains("expected identity"));
+        assert!(!error.to_string().contains(password));
+    }
+
+    #[test]
+    fn encrypted_keystore_secrets_never_enter_errors_or_rendered_commands() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = [0xAB; 32];
+        let password = "op-secret-marker-7f3a";
+        let expected = fixture_signer(&key).address();
+        let path = write_encrypted_fixture(dir.path(), &key, password, 0o600);
+
+        let error = keystore_signer(&path, "wrong-password", expected)
+            .expect_err("wrong password must fail decryption");
+        assert!(matches!(error, Error::Chain(_)));
+        assert!(!error.to_string().contains(password));
+
+        let rendered = crate::process::display_command(
+            "cast",
+            &[
+                "wallet".to_string(),
+                "sign".to_string(),
+                "--password".to_string(),
+                password.to_string(),
+            ],
+            &[3],
+            &[],
+        );
+        assert!(!rendered.contains(password));
+        assert!(rendered.contains("<redacted>"));
     }
 
     #[test]

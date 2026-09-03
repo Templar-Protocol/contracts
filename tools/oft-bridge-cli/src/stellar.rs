@@ -339,6 +339,23 @@ pub fn role_drift(
 /// proceed.
 pub const RESTORATION_REQUIRED: &str = "restoration_required";
 
+/// RPC-backed simulation outcome for the exact typed transaction a
+/// proposal commits to. Every field is adapter-derived; no value is ever
+/// fabricated or defaulted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StellarSimulationV1 {
+    /// Base64 transaction envelope XDR of the assembled, broadcast-exact
+    /// transaction.
+    pub envelope_xdr: String,
+    /// Hex network-bound hash of the assembled envelope.
+    pub envelope_sha256: String,
+    /// Base64 Soroban authorization entries; the adapter guarantees only
+    /// source-account credential entries in v1.
+    pub auth_entries: Vec<String>,
+    /// Ledger sequence the simulation ran against.
+    pub simulation_ledger: u32,
+}
+
 /// Observable Stellar chain boundary for proposal construction. Live reads
 /// beyond passphrase/ledger/sequence remain pending the native-mutation
 /// qualification gate and fail closed with a typed refusal — never a
@@ -356,6 +373,20 @@ pub trait StellarChain {
     fn account_threshold(&self, account: &str, level: &str) -> Result<u32>;
     /// Sequence number of the latest ledger known to the RPC.
     fn latest_ledger(&self) -> Result<u32>;
+    /// Constructs, simulates, and assembles the exact typed Soroban
+    /// transaction a proposal commits to, from the live source account,
+    /// sequence, and ledger bounds. The returned envelope is the exact
+    /// object that would be broadcast; simulation failures, footprint
+    /// restoration, and non-source-account auth classes are typed
+    /// refusals, never silent markers.
+    fn simulate_transaction(
+        &self,
+        operation: &OperationV1,
+        source: &str,
+        sequence: &str,
+        min_ledger: u32,
+        max_ledger: u32,
+    ) -> Result<StellarSimulationV1>;
 }
 
 /// Live Soroban RPC implementation of [`StellarChain`] over
@@ -420,5 +451,16 @@ impl StellarChain for HttpStellarChain {
     fn latest_ledger(&self) -> Result<u32> {
         let response = rpc(crate::block_on(self.server.get_latest_ledger())?)?;
         Ok(response.sequence)
+    }
+
+    fn simulate_transaction(
+        &self,
+        _operation: &OperationV1,
+        _source: &str,
+        _sequence: &str,
+        _min_ledger: u32,
+        _max_ledger: u32,
+    ) -> Result<StellarSimulationV1> {
+        Err(pending_qualification("simulate_transaction"))
     }
 }

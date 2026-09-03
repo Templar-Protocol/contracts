@@ -4,8 +4,26 @@
 
 use std::collections::BTreeMap;
 
+use alloy::sol_types::SolCall as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+
+alloy::sol! {
+    interface Safe {
+        function getTransactionHash(
+            address to,
+            uint256 value,
+            bytes data,
+            uint8 operation,
+            uint256 safeTxGas,
+            uint256 baseGas,
+            uint256 gasPrice,
+            address gasToken,
+            address refundReceiver,
+            uint256 nonce
+        ) external view returns (bytes32);
+    }
+}
 
 use crate::domain::{Environment, ExecutablePlanV1, OperationV1, ProposalV1, Vm, SCHEMA_VERSION};
 use crate::error::{Error, Result};
@@ -83,37 +101,39 @@ fn require_url<'a>(url: Option<&'a str>, chain: &str) -> Result<&'a str> {
 }
 
 /// Builds an executable plan bound to live adapter state: Stellar proposals
-/// bind passphrase, source account, sequence, time bounds and the authority
-/// topology (signer weights and required threshold); EVM proposals bind
-/// chain ID, nonce, typed calldata and a conservative gas policy, plus Safe
-/// metadata when the owner is a Safe. Offline tests inject fakes.
+/// bind passphrase, source account, sequence, time bounds, the authority
+/// topology, and the RPC-simulated exact transaction envelope with its
+/// authorization entries; EVM proposals bind chain ID, nonce, typed
+/// calldata, a live estimated gas/fee policy, and Safe metadata when the
+/// owner is a Safe. Offline tests inject fakes.
 pub fn build_executable_plan(
     state: &RouteStateV1,
     operation: &OperationV1,
     stellar: &dyn crate::stellar::StellarChain,
     evm: &dyn crate::evm::EvmChain,
 ) -> Result<ExecutablePlanV1> {
-    let operation_sha256 = crate::canonical_sha256(operation)?;
     let desired_sha256 = state.desired_sha256.clone();
     match operation_vm(operation) {
         Vm::Stellar => {
-            let binding = stellar_plan_binding(state, operation, &operation_sha256, stellar)?;
+            let binding = stellar_plan_binding(state, operation, stellar)?;
+            let simulation_sha256 = stellar_simulation_digest(&binding)?;
             executable_plan(
                 state,
                 operation,
-                &operation_sha256,
                 desired_sha256,
+                simulation_sha256,
                 Some(binding),
                 None,
             )
         }
         Vm::Evm => {
             let binding = evm_plan_binding(state, operation, evm)?;
+            let simulation_sha256 = binding.transaction_digest.clone();
             executable_plan(
                 state,
                 operation,
-                &operation_sha256,
                 desired_sha256,
+                simulation_sha256,
                 None,
                 Some(binding),
             )
@@ -121,13 +141,34 @@ pub fn build_executable_plan(
     }
 }
 
-/// Shared plan envelope; the simulation digest binds the offline-construction
-/// marker plus the operation digest.
+/// Digest of the constructed transaction's canonical bytes: the decoded
+/// envelope XDR of the exact transaction the proposal commits to.
+fn stellar_simulation_digest(binding: &crate::domain::StellarPlanBindingV1) -> Result<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(binding.envelope_xdr.as_bytes())
+        .map_err(|_| Error::Chain("adapter envelope XDR is not valid base64".into()))?;
+    if bytes.is_empty() {
+        return Err(Error::Chain(
+            "adapter returned an empty transaction envelope".into(),
+        ));
+    }
+    let digest = hex::encode(Sha256::digest(&bytes));
+    if binding.envelope_sha256 != digest {
+        return Err(Error::Custody(
+            "adapter envelope digest does not match envelope XDR".into(),
+        ));
+    }
+    Ok(digest)
+}
+
+/// Shared plan envelope; the simulation digest binds the constructed
+/// transaction's canonical bytes.
 fn executable_plan(
     state: &RouteStateV1,
     operation: &OperationV1,
-    operation_sha256: &str,
     desired_sha256: String,
+    simulation_sha256: String,
     stellar_binding: Option<crate::domain::StellarPlanBindingV1>,
     evm_binding: Option<crate::domain::EvmPlanBindingV1>,
 ) -> Result<ExecutablePlanV1> {
@@ -138,11 +179,10 @@ fn executable_plan(
         desired_sha256,
         operation: operation.clone(),
         artifact_lock_sha256: crate::artifacts::lock_sha256()?,
-        simulation_sha256: crate::canonical_sha256(&serde_json::json!({
-            "simulated": false,
-            "reason": "offline_testnet_proposal_construction",
-            "operation_sha256": operation_sha256,
-        }))?,
+        // Binds the constructed transaction's canonical bytes: the
+        // assembled envelope XDR digest (Stellar) or the typed-transaction
+        // digest (EVM), both adapter-derived.
+        simulation_sha256,
         expires_at_unix: 0,
         stellar: stellar_binding,
         evm: evm_binding,
@@ -153,7 +193,6 @@ fn executable_plan(
 fn stellar_plan_binding(
     state: &RouteStateV1,
     operation: &OperationV1,
-    operation_sha256: &str,
     stellar: &dyn crate::stellar::StellarChain,
 ) -> Result<crate::domain::StellarPlanBindingV1> {
     let passphrase = stellar.network_passphrase()?;
@@ -174,21 +213,23 @@ fn stellar_plan_binding(
             "insufficient signer weight {available} for threshold {threshold} ({level})"
         )));
     }
-    let marker = serde_json::json!({
-        "envelope": "unconstructed",
-        "operation_sha256": operation_sha256,
-        "sequence": sequence,
-    });
+    let min_ledger = ledger;
+    let max_ledger = ledger.saturating_add(1_000);
+    // RPC-backed simulation of the exact typed transaction this proposal
+    // commits to; the adapter owns construction, simulation, assembly, and
+    // auth-class qualification and refuses rather than fabricating.
+    let simulation =
+        stellar.simulate_transaction(operation, &sender, &sequence, min_ledger, max_ledger)?;
     Ok(crate::domain::StellarPlanBindingV1 {
         network_passphrase: passphrase,
         source_account: sender,
         sequence,
-        min_ledger: ledger,
-        max_ledger: ledger.saturating_add(1_000),
-        auth_entries: Vec::new(),
-        envelope_xdr: String::new(),
-        envelope_sha256: crate::canonical_sha256(&marker)?,
-        simulation_ledger: ledger,
+        min_ledger,
+        max_ledger,
+        auth_entries: simulation.auth_entries,
+        envelope_xdr: simulation.envelope_xdr,
+        envelope_sha256: simulation.envelope_sha256,
+        simulation_ledger: simulation.simulation_ledger,
         signer_weights: weights,
         required_threshold_weight: threshold,
         threshold_level: level.to_string(),
@@ -210,10 +251,22 @@ fn evm_plan_binding(
     let address = crate::evm::parse_address(&owner)?;
     let nonce = crate::block_on_result(evm.account_nonce(address))?;
     let calldata = crate::layerzero::encode_calldata(operation)?;
-    let safe_binding =
-        crate::block_on_result(evm.safe_state(address))?.map(|(threshold, safe_nonce)| {
-            crate::domain::SafeTransactionV1 {
-                to: state.contracts.get("evm_oft").cloned().unwrap_or_default(),
+    let target = state.contracts.get("evm_oft").cloned().unwrap_or_default();
+    let target_address = crate::evm::parse_address(&target)?;
+    // Every v1 governance operation carries zero explicit value.
+    let value = alloy::primitives::U256::from(0u64);
+    // Live gas and fee policy for the exact typed transaction; the digest
+    // below binds these exact values. Estimation failure fails closed.
+    let estimate = crate::block_on_result(evm.estimate_transaction(
+        address,
+        target_address,
+        value,
+        calldata.clone(),
+    ))?;
+    let safe_binding = match crate::block_on_result(evm.safe_state(address))? {
+        Some((threshold, safe_nonce)) => {
+            let safe = crate::domain::SafeTransactionV1 {
+                to: target.clone(),
                 value: "0".into(),
                 data: hex::encode(&calldata),
                 operation: 0,
@@ -222,25 +275,25 @@ fn evm_plan_binding(
                 gas_price: "0".into(),
                 gas_token: "0x0000000000000000000000000000000000000000".into(),
                 refund_receiver: "0x0000000000000000000000000000000000000000".into(),
-                nonce: safe_nonce,
+                nonce: safe_nonce.clone(),
                 threshold,
-                // Computing SafeTxHash requires the qualified live Safe
-                // adapter; a locally guessed EIP-712 encoding is worse
-                // than an explicit pending marker.
-                safe_tx_hash: "pending_qualified_adapter".into(),
-            }
-        });
+                // The Safe contract itself computes the digest over these
+                // exact fields through its `getTransactionHash` view.
+                safe_tx_hash: safe_tx_hash(evm, address, &target, &calldata, &safe_nonce)?,
+            };
+            Some(safe)
+        }
+        None => None,
+    };
     let binding = crate::domain::EvmPlanBindingV1 {
         chain_id: chain_id.to_string(),
-        target: state.contracts.get("evm_oft").cloned().unwrap_or_default(),
+        target,
         value: "0".into(),
         nonce: nonce.to_string(),
         calldata: format!("0x{}", hex::encode(&calldata)),
-        // Explicit constant gas policy marker until live estimate
-        // plumbing lands; the digest below binds these exact values.
-        gas_limit: "constant:200000".into(),
-        max_fee_per_gas_wei: "constant:20000000000".into(),
-        max_priority_fee_per_gas_wei: "constant:1000000000".into(),
+        gas_limit: estimate.gas_limit.to_string(),
+        max_fee_per_gas_wei: estimate.max_fee_per_gas_wei,
+        max_priority_fee_per_gas_wei: estimate.max_priority_fee_per_gas_wei,
         transaction_digest: String::new(),
         safe: safe_binding,
     };
@@ -250,6 +303,43 @@ fn evm_plan_binding(
         transaction_digest,
         ..binding
     })
+}
+
+/// Computes the Safe transaction hash through the live Safe contract's own
+/// `getTransactionHash` view over the exact bound fields. The digest is the
+/// contract's answer, never a locally guessed EIP-712 encoding; a failing
+/// view call fails closed.
+fn safe_tx_hash(
+    evm: &dyn crate::evm::EvmChain,
+    safe: alloy::primitives::Address,
+    to: &str,
+    data: &[u8],
+    nonce: &str,
+) -> Result<String> {
+    let zero = alloy::primitives::U256::ZERO;
+    let nonce = nonce
+        .parse::<alloy::primitives::U256>()
+        .map_err(|_| Error::Chain("safe nonce is not a decimal string".to_string()))?;
+    let calldata = Safe::getTransactionHashCall {
+        to: crate::evm::parse_address(to)?,
+        value: zero,
+        data: data.to_vec().into(),
+        operation: 0,
+        safeTxGas: zero,
+        baseGas: zero,
+        gasPrice: zero,
+        gasToken: alloy::primitives::Address::ZERO,
+        refundReceiver: alloy::primitives::Address::ZERO,
+        nonce,
+    }
+    .abi_encode();
+    let result = crate::block_on_result(evm.call(safe, calldata))?;
+    if result.len() != 32 {
+        return Err(Error::Chain(
+            "safe getTransactionHash returned a non-word result".into(),
+        ));
+    }
+    Ok(format!("0x{}", hex::encode(&result)))
 }
 
 fn route_owner(state: &RouteStateV1, vm: Vm) -> Result<String> {
@@ -343,10 +433,47 @@ fn validate_plan(plan: &ExecutablePlanV1) -> Result<()> {
             "plan route_id must not be empty".into(),
         ));
     }
+    if plan.simulation_sha256.trim().is_empty() {
+        return Err(Error::InvalidInput(
+            "plan must bind a simulation digest".into(),
+        ));
+    }
     if plan.stellar.is_some() == plan.evm.is_some() {
         return Err(Error::InvalidInput(
             "plan must bind exactly one chain".into(),
         ));
+    }
+    if let Some(stellar) = plan.stellar.as_ref() {
+        if stellar.envelope_xdr.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "stellar plan must bind the constructed envelope".into(),
+            ));
+        }
+    }
+    if let Some(evm) = plan.evm.as_ref() {
+        let gas_policy = [
+            ("gas_limit", &evm.gas_limit),
+            ("max_fee_per_gas_wei", &evm.max_fee_per_gas_wei),
+            (
+                "max_priority_fee_per_gas_wei",
+                &evm.max_priority_fee_per_gas_wei,
+            ),
+        ];
+        for (field, value) in gas_policy {
+            if value.trim().is_empty() || value.parse::<u128>().is_err() {
+                return Err(Error::InvalidInput(format!(
+                    "evm plan {field} must be a live decimal estimate"
+                )));
+            }
+        }
+        if let Some(safe) = evm.safe.as_ref() {
+            let hash = safe.safe_tx_hash.strip_prefix("0x").unwrap_or_default();
+            if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(Error::InvalidInput(
+                    "safe transaction hash must be the live adapter digest".into(),
+                ));
+            }
+        }
     }
     Ok(())
 }
