@@ -2,6 +2,7 @@ pub mod artifacts;
 pub mod canary;
 pub mod cli;
 pub mod codec;
+pub mod config;
 pub mod domain;
 pub mod environment;
 pub mod error;
@@ -22,9 +23,22 @@ use std::sync::LazyLock;
 use clap::Parser as _;
 
 use crate::{cli::Cli, error::Error};
-
 pub fn main_entry() -> ExitCode {
-    let cli = Cli::parse();
+    let json_requested = std::env::args_os().any(|argument| argument == "--json");
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(parse_error) if json_requested => {
+            let error = Error::InvalidInput(parse_error.to_string());
+            if let Err(output_error) = output::failure("parse", "local_read", &error) {
+                eprintln!("failed to emit error envelope: {output_error}");
+            }
+            return error.exit_code();
+        }
+        Err(parse_error) => {
+            let _ = parse_error.print();
+            return ExitCode::from(2);
+        }
+    };
     let command = cli.command_name();
     let effect = cli.effect();
     match cli.run() {

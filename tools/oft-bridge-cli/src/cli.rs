@@ -26,6 +26,10 @@ use crate::{
     about = "Non-USDC LayerZero OFT route operator"
 )]
 pub struct Cli {
+    /// Emit the stable JSON envelope. Retained as an explicit global switch
+    /// even though v1 currently emits JSON for every command.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     command: Command,
 }

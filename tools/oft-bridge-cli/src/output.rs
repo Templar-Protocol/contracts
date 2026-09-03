@@ -11,6 +11,7 @@ use crate::{
 pub struct Envelope<T: Serialize> {
     pub version: u32,
     pub ok: bool,
+    pub status: &'static str,
     pub command: String,
     /// Exhaustive command-effect classification from the CLI surface.
     pub effect: &'static str,
@@ -19,6 +20,7 @@ pub struct Envelope<T: Serialize> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorBody<'static>>,
     pub warnings: Vec<String>,
+    pub transactions: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -31,11 +33,13 @@ pub fn success(command: &str, effect: &'static str, data: CommandData) -> Result
     write_envelope(&Envelope {
         version: 1,
         ok: true,
+        status: "ok",
         command: command.to_owned(),
         effect,
         data: Some(data),
         error: None,
         warnings: Vec::new(),
+        transactions: Vec::new(),
     })
 }
 
@@ -44,6 +48,7 @@ pub fn failure(command: &str, effect: &'static str, error: &Error) -> Result<()>
         version: 1,
         ok: false,
         command: command.to_owned(),
+        status: "error",
         effect,
         data: None,
         error: Some(ErrorBody {
@@ -52,6 +57,7 @@ pub fn failure(command: &str, effect: &'static str, error: &Error) -> Result<()>
             context: serde_json::json!({}),
         }),
         warnings: Vec::new(),
+        transactions: Vec::new(),
     })
 }
 
