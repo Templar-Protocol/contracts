@@ -12,7 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 alloy = { workspace = true, features = ["contract", "provider-http", "reqwest-rustls-tls", "rlp", "rpc-types", "signer-keystore", "signer-local"] }
-anyhow.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 clap.workspace = true
@@ -31,9 +30,7 @@ url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-rstest.workspace = true
 tempfile = "3.13"
-wiremock.workspace = true
 eth-keystore = "=0.5.0"
 rand = "=0.8.5"
 

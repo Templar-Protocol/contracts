@@ -1,6 +1,8 @@
 // Tests fail by panicking; Result handling in assertions is noise.
 #![allow(clippy::expect_used)]
 
+mod common;
+
 use std::{collections::BTreeMap, fs};
 
 use templar_oft_bridge_cli::{
@@ -46,34 +48,14 @@ fn desired() -> DesiredRouteV1 {
 }
 
 fn record(guid: &str, nonce: &str) -> MessageRecordV1 {
-    MessageRecordV1 {
-        schema_name: "message_record".into(),
-        schema_version: 1,
-        source_eid: 40_600,
-        sender: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF".into(),
-        nonce: nonce.into(),
-        guid: guid.into(),
-        direction: Direction::StellarToEvm,
-        amount_raw: "1000000".into(),
-        packet_sha256: format!("packet-{guid}"),
-        payload_sha256: format!("payload-{guid}"),
-        origin: "CAJ4".into(),
-        receiver: "0x417e".into(),
-        config_snapshot_sha256: "config-1".into(),
-        source_transaction: format!("tx-{guid}"),
-        destination_transaction: None,
-        status_events: vec![MessageStatusEventV1 {
-            stage: MessageStageV1::ForwardSourceAccepted,
-            observed_at_unix: 1,
-            evidence_sha256: "ev-1".into(),
-        }],
-    }
+    common::message_record(Direction::StellarToEvm, nonce.parse().expect("nonce"), guid)
 }
 
 fn store() -> (tempfile::TempDir, RouteStore) {
     let directory = tempfile::tempdir().expect("tempdir");
     let (store, _) =
         RouteStore::create(&directory.path().join("route"), desired()).expect("create route");
+    common::seed_ofts(&store);
     (directory, store)
 }
 
@@ -95,9 +77,25 @@ fn appends_and_folds_status_history() {
     store
         .append_message_event(&identity, reobserved_event())
         .expect("reobserved");
+    for (stage, observed_at_unix) in [
+        (MessageStageV1::ForwardVerified, 4),
+        (MessageStageV1::ForwardCommitted, 5),
+        (MessageStageV1::ForwardMinted, 6),
+    ] {
+        store
+            .append_message_event(
+                &identity,
+                MessageStatusEventV1 {
+                    stage,
+                    observed_at_unix,
+                    evidence_sha256: format!("ev-{observed_at_unix}"),
+                },
+            )
+            .expect("progress after reobservation");
+    }
     let messages = store.load_messages().expect("load");
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].status_events.len(), 3);
+    assert_eq!(messages[0].status_events.len(), 6);
 }
 
 fn reobserved_event() -> MessageStatusEventV1 {
@@ -113,7 +111,7 @@ fn non_monotonic_transition_is_rejected() {
     let (_directory, store) = store();
     let identity = record("g1", "1").identity();
     store.append_message(record("g1", "1")).expect("append");
-    store
+    let error = store
         .append_message_event(
             &identity,
             MessageStatusEventV1 {
@@ -122,17 +120,7 @@ fn non_monotonic_transition_is_rejected() {
                 evidence_sha256: "ev-2".into(),
             },
         )
-        .expect("event");
-    let error = store
-        .append_message_event(
-            &identity,
-            MessageStatusEventV1 {
-                stage: MessageStageV1::ForwardLocked,
-                observed_at_unix: 3,
-                evidence_sha256: "ev-3".into(),
-            },
-        )
-        .expect_err("non-monotonic");
+        .expect_err("skipped custody stages");
     assert!(matches!(
         error,
         templar_oft_bridge_cli::error::Error::InvalidInput(_)
@@ -144,6 +132,7 @@ fn tampered_message_log_is_detected_on_open() {
     let directory = tempfile::tempdir().expect("tempdir");
     let root = directory.path().join("route");
     let (store, _) = RouteStore::create(&root, desired()).expect("create route");
+    common::seed_ofts(&store);
     store.append_message(record("g1", "1")).expect("append");
     drop(store);
     let log = fs::read_to_string(root.join("messages.jsonl")).expect("read");
@@ -175,4 +164,23 @@ fn message_records_carry_no_secret_material() {
     let raw = fs::read_to_string(store.root().join("messages.jsonl")).expect("read log");
     assert!(!raw.contains("password"));
     assert!(!raw.contains("secret"));
+}
+
+#[test]
+fn duplicate_source_nonce_or_guid_is_rejected() {
+    let (_directory, store1) = store();
+    store1.append_message(record("first", "1")).expect("append");
+    let nonce_error = store1
+        .append_message(record("different-guid", "1"))
+        .expect_err("same source nonce");
+    assert!(nonce_error.to_string().contains("nonce or GUID"));
+
+    let (_directory2, store2) = store();
+    store2
+        .append_message(record("same-guid", "1"))
+        .expect("append");
+    let guid_error = store2
+        .append_message(record("same-guid", "2"))
+        .expect_err("same GUID");
+    assert!(guid_error.to_string().contains("nonce or GUID"));
 }

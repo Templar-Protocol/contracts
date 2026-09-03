@@ -27,10 +27,26 @@ use crate::{
     about = "Non-USDC LayerZero OFT route operator"
 )]
 pub struct Cli {
-    /// Emit the stable JSON envelope. Retained as an explicit global switch
-    /// even though v1 currently emits JSON for every command.
+    /// Emit the stable JSON envelope (accepted; v1 already emits JSON for
+    /// every command). Retained so existing `--json` invocations parse and
+    /// so `main_entry` can render parse failures as JSON.
     #[arg(long, global = true)]
     json: bool,
+
+    #[command(flatten)]
+    rpc: RpcArgs,
+    /// Mode-0600 non-symlink JSON object containing RPC headers.
+    #[arg(long, global = true)]
+    rpc_headers_file: Option<PathBuf>,
+    /// Named environment provider for the Stellar signing secret.
+    #[arg(long, global = true)]
+    stellar_secret_env: Option<String>,
+    /// Mode-0600 non-symlink Foundry V3 keystore.
+    #[arg(long, global = true, requires = "evm_password_file")]
+    evm_keystore: Option<PathBuf>,
+    /// Mode-0600 non-symlink keystore password provider.
+    #[arg(long, global = true, requires = "evm_keystore")]
+    evm_password_file: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -63,19 +79,19 @@ struct ReconcileArgs {
     fail_on_deficit: bool,
 }
 
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 struct RpcArgs {
     /// Environment variable holding the Stellar RPC URL.
-    #[arg(long)]
+    #[arg(long, global = true)]
     stellar_rpc_env: Option<String>,
     /// Mode-0600 non-symlink file holding the Stellar RPC URL.
-    #[arg(long, conflicts_with = "stellar_rpc_env")]
+    #[arg(long, global = true, conflicts_with = "stellar_rpc_env")]
     stellar_rpc_file: Option<PathBuf>,
     /// Environment variable holding the EVM RPC URL.
-    #[arg(long)]
+    #[arg(long, global = true)]
     evm_rpc_env: Option<String>,
     /// Mode-0600 non-symlink file holding the EVM RPC URL.
-    #[arg(long, conflicts_with = "evm_rpc_env")]
+    #[arg(long, global = true, conflicts_with = "evm_rpc_env")]
     evm_rpc_file: Option<PathBuf>,
 }
 
@@ -135,6 +151,11 @@ struct AdoptArgs {
     evm_oft: String,
     #[arg(long)]
     write: bool,
+    /// Finalized zero-history proof or imported-history custody baseline.
+    #[arg(long)]
+    opening_custody: PathBuf,
+    #[command(flatten)]
+    rpc: RpcArgs,
 }
 
 #[derive(Debug, Args)]
@@ -204,6 +225,8 @@ struct ProposalIngestArgs {
     executed_tx: String,
     #[arg(long)]
     write: bool,
+    #[command(flatten)]
+    rpc: RpcArgs,
 }
 
 #[derive(Debug, Args)]
@@ -248,6 +271,8 @@ struct ProposalSafeArgs {
     proposal: PathBuf,
     #[arg(long)]
     safe_tx: PathBuf,
+    #[command(flatten)]
+    rpc: RpcArgs,
 }
 
 #[derive(Debug, Args)]
@@ -273,6 +298,9 @@ struct ArtifactBuildArgs {
     /// Digest-verified build dependency archive (npm package closure).
     #[arg(long)]
     deps_archive: Option<PathBuf>,
+    /// Digest-verified resolved LayerZero Stellar OFT source closure.
+    #[arg(long)]
+    source_archive: Option<PathBuf>,
 }
 #[derive(Debug, Args)]
 struct AssetArgs {
@@ -335,6 +363,7 @@ struct RouteArgs {
 enum RouteCommand {
     DraftConfig(OutputStateArgs),
     Inspect(StateOnlyArgs),
+    Apply(ApplyRouteArgs),
     SetPeer(SetPeerArgs),
     SetLibrary(SetLibraryArgs),
     RemoveReceiveTimeout(VmRemoteArgs),
@@ -349,6 +378,16 @@ struct OutputStateArgs {
     state: PathBuf,
     #[arg(long)]
     out: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct ApplyRouteArgs {
+    #[arg(long)]
+    state: PathBuf,
+    #[arg(long)]
+    config: PathBuf,
+    #[command(flatten)]
+    effect: ChainEffectArgs,
 }
 
 #[derive(Debug, Args)]
@@ -484,6 +523,17 @@ struct StellarSetDelegateArgs {
     #[command(flatten)]
     effect: ChainEffectArgs,
 }
+
+#[derive(Debug, Args)]
+struct TtlFreezeArgs {
+    #[arg(long)]
+    state: PathBuf,
+    /// Exact acknowledgement that freezing TTL configuration is irreversible.
+    #[arg(long)]
+    acknowledge_irreversible: String,
+    #[command(flatten)]
+    effect: ChainEffectArgs,
+}
 #[derive(Debug, Args)]
 struct EvmTransferOwnerArgs {
     #[arg(long)]
@@ -515,7 +565,7 @@ enum StellarCommand {
     SetMessageInspector(SetMessageInspectorArgs),
     SetRateLimit(SetRateLimitArgs),
     TtlSet(TtlSetArgs),
-    TtlFreeze(StateEffectArgs),
+    TtlFreeze(TtlFreezeArgs),
     TtlExtendInstance(TtlExtendArgs),
     EmergencyPause(StateEffectArgs),
     EmergencyUnpause(StateEffectArgs),
@@ -723,6 +773,11 @@ struct MessageWatchArgs {
     /// Stop condition for the watch; v1 accepts only `terminal`.
     #[arg(long)]
     until: Option<String>,
+    /// LayerZero Scan API base URL.
+    #[arg(long)]
+    scan_url: String,
+    #[command(flatten)]
+    rpc: RpcArgs,
 }
 #[derive(Debug, Args)]
 struct MessageRecoverArgs {
@@ -753,7 +808,7 @@ struct EvidenceImportArgs {
     write: bool,
 }
 
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 struct ChainEffectArgs {
     #[arg(long, conflicts_with = "proposal_out")]
     execute: bool,
@@ -761,6 +816,15 @@ struct ChainEffectArgs {
     proposal_out: Option<PathBuf>,
     #[command(flatten)]
     rpc: RpcArgs,
+    /// Named environment provider for the Stellar signing secret.
+    #[arg(long, global = true)]
+    stellar_secret_env: Option<String>,
+    /// Mode-0600 non-symlink Foundry V3 keystore.
+    #[arg(long, global = true, requires = "evm_password_file")]
+    evm_keystore: Option<PathBuf>,
+    /// Mode-0600 non-symlink keystore password provider.
+    #[arg(long, global = true, requires = "evm_keystore")]
+    evm_password_file: Option<PathBuf>,
 }
 
 impl Cli {
@@ -768,7 +832,11 @@ impl Cli {
         self.command.name().into()
     }
 
-    pub fn run(self) -> Result<CommandData> {
+    pub fn run(mut self) -> Result<CommandData> {
+        if let Some(path) = self.rpc_headers_file.take().as_deref() {
+            crate::config::set_rpc_headers(crate::config::read_headers_file(path)?);
+        }
+        let rpc = self.rpc;
         match self.command {
             Command::Init(args) => init(&args),
             Command::Adopt(args) => adopt(args),
@@ -780,7 +848,7 @@ impl Cli {
             Command::Authority(args) => generic_authority(args),
             Command::Stellar(args) => generic_stellar(args),
             Command::Contain(args) => contain(args),
-            Command::Leg(args) => leg(args),
+            Command::Leg(args) => leg(args, &rpc),
             Command::Message(args) => message(args),
             Command::Evidence(args) => evidence(args),
             Command::Reconcile(args) => {
@@ -906,7 +974,8 @@ impl RouteCommand {
         match self {
             Self::DraftConfig(_) => CommandEffect::LocalPrepare,
             Self::Inspect(_) => CommandEffect::LocalRead,
-            Self::SetPeer(_)
+            Self::Apply(_)
+            | Self::SetPeer(_)
             | Self::SetLibrary(_)
             | Self::RemoveReceiveTimeout(_)
             | Self::SetUln(_)
@@ -1003,7 +1072,7 @@ fn init(args: &InitArgs) -> Result<CommandData> {
         );
     }
     environment::init_environment(
-        &desired.identity,
+        &desired,
         args.rpc.stellar_url()?.as_deref(),
         args.rpc.evm_url()?.as_deref(),
         true,
@@ -1027,32 +1096,91 @@ fn init(args: &InitArgs) -> Result<CommandData> {
 }
 
 fn adopt(args: AdoptArgs) -> Result<CommandData> {
+    use crate::evm::EvmChain as _;
+    use crate::stellar::StellarChain as _;
+
     let desired = read_desired_precontext(&args.desired)?;
-    environment::classify(&desired.identity)?;
-    if !args.write {
-        return data(
-            serde_json::json!({"preview": true, "stellar_oft": args.stellar_oft, "evm_oft": args.evm_oft}),
-        );
+    let asserted = environment::classify(&desired.identity)?;
+    let opening: crate::domain::OpeningCustodyV1 = read_json(&args.opening_custody)?;
+    crate::state::validate_opening_custody(Some(&opening))?;
+    if opening.artifact_lock_sha256 != crate::artifacts::lock_sha256()? {
+        return Err(Error::Custody(
+            "opening custody artifact lock differs from the embedded closure".into(),
+        ));
     }
-    let (store, mut state) = RouteStore::create(&args.state, desired.clone())?;
-    state
-        .contracts
-        .insert("stellar_owner".into(), desired.stellar_owner.clone());
-    state
-        .contracts
-        .insert("stellar_delegate".into(), desired.stellar_delegate.clone());
-    state
-        .contracts
-        .insert("evm_owner".into(), desired.evm_owner.clone());
-    state
-        .contracts
-        .insert("evm_delegate".into(), desired.evm_delegate.clone());
-    state
-        .contracts
-        .insert("stellar_oft".into(), args.stellar_oft);
-    state.contracts.insert("evm_oft".into(), args.evm_oft);
-    store.save_state(&state)?;
-    data(serde_json::to_value(state)?)
+    if opening.effective_config_sha256 != canonical_sha256(&desired.config)? {
+        return Err(Error::Conflict(
+            "opening custody effective configuration differs from desired route".into(),
+        ));
+    }
+    let output = serde_json::json!({
+        "action": "adopt",
+        "environment": asserted,
+        "route_id": desired.route_id,
+        "stellar_oft": args.stellar_oft,
+        "evm_oft": args.evm_oft,
+        "artifact_lock_sha256": opening.artifact_lock_sha256,
+        "opening_custody_sha256": canonical_sha256(&opening)?,
+    });
+    if !args.write {
+        return data(output);
+    }
+    let lock = crate::artifacts::embedded_lock()?;
+    let stellar_rpc = args.rpc.stellar_url()?.ok_or_else(|| {
+        Error::InvalidInput("adoption requires --stellar-rpc-env or --stellar-rpc-file".into())
+    })?;
+    let stellar = crate::stellar::HttpStellarChain::new(&stellar_rpc)?;
+    let observed_stellar_hash = stellar.contract_code_hash(&args.stellar_oft)?;
+    if !observed_stellar_hash.eq_ignore_ascii_case(&lock.stellar.oft_wasm_sha256) {
+        return Err(Error::Custody(
+            "deployed Stellar OFT WASM hash differs from the artifact closure".into(),
+        ));
+    }
+    let evm_address = crate::evm::parse_address(&args.evm_oft)?;
+    let evm_rpc = args.rpc.evm_url()?.ok_or_else(|| {
+        Error::InvalidInput("adoption requires --evm-rpc-env or --evm-rpc-file".into())
+    })?;
+    let evm = crate::evm::HttpEvmChain::new(&evm_rpc)?;
+    let code = crate::block_on_result(evm.code(evm_address))?;
+    crate::deployment::verify_runtime_code_hash(&code, &lock.evm.runtime_bytecode_keccak256)?;
+
+    if args.state.exists() {
+        return Err(Error::Conflict(format!(
+            "route state already exists: {}",
+            args.state.display()
+        )));
+    }
+    let temporary = args
+        .state
+        .with_extension(format!("adopt-{}.tmp", std::process::id()));
+    if temporary.exists() {
+        return Err(Error::Conflict(format!(
+            "adoption staging path already exists: {}",
+            temporary.display()
+        )));
+    }
+    let result: Result<()> = (|| {
+        let (store, mut state) = RouteStore::create(&temporary, desired.clone())?;
+        state
+            .contracts
+            .insert("stellar_oft".into(), args.stellar_oft);
+        state.contracts.insert("evm_oft".into(), args.evm_oft);
+        store.save_state(&state)?;
+        store.record_opening_custody(opening)?;
+        state = store.load_state()?;
+        crate::route::apply_adoption_readback(&stellar, &evm, &mut state, &desired)?;
+        store.save_state(&state)?;
+        std::fs::rename(&temporary, &args.state)?;
+        if let Some(parent) = args.state.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() && temporary.exists() {
+        let _ = std::fs::remove_dir_all(&temporary);
+    }
+    result?;
+    data(output)
 }
 fn operation(args: OperationArgs) -> Result<CommandData> {
     match args.command {
@@ -1092,6 +1220,7 @@ fn opt_str_field(value: &serde_json::Value, name: &str) -> Result<Option<String>
         ))),
     }
 }
+
 fn num_field<T>(value: &serde_json::Value, name: &str) -> Result<T>
 where
     T: TryFrom<u64>,
@@ -1111,11 +1240,24 @@ fn draft_operation(command: &str, value: &serde_json::Value) -> Result<Operation
             wasm_sha256: str_field(value, "wasm_sha256")?,
         }),
         "deploy-stellar-oft" => Ok(OperationV1::DeployStellarOft {
+            deployer: str_field(value, "deployer")?,
             salt: str_field(value, "salt")?,
+            wasm_sha256: str_field(value, "wasm_sha256")?,
+            token: str_field(value, "token")?,
+            shared_decimals: num_field(value, "shared_decimals")?,
+            endpoint: str_field(value, "endpoint")?,
+            delegate: str_field(value, "delegate")?,
+            expected_address: str_field(value, "expected_address")?,
         }),
         "deploy-evm-oft" => Ok(OperationV1::DeployEvmOft {
             deployer: str_field(value, "deployer")?,
             nonce: num_field(value, "nonce")?,
+            creation_bytecode_keccak256: str_field(value, "creation_bytecode_keccak256")?,
+            name: str_field(value, "name")?,
+            symbol: str_field(value, "symbol")?,
+            endpoint: str_field(value, "endpoint")?,
+            owner_delegate: str_field(value, "owner_delegate")?,
+            expected_address: str_field(value, "expected_address")?,
         }),
         "begin-stellar-ownership-transfer" => Ok(OperationV1::BeginStellarOwnershipTransfer {
             new_owner: str_field(value, "new_owner")?,
@@ -1168,11 +1310,27 @@ fn draft_operation(command: &str, value: &serde_json::Value) -> Result<Operation
         }),
         "set-stellar-uln-config" => Ok(OperationV1::SetStellarUlnConfig {
             remote_eid: num_field(value, "remote_eid")?,
+            direction: str_field(value, "direction")?,
+            caller: str_field(value, "caller")?,
+            oapp: str_field(value, "oapp")?,
+            library: str_field(value, "library")?,
             config_sha256: str_field(value, "config_sha256")?,
+            config: value
+                .get("config")
+                .cloned()
+                .ok_or_else(|| Error::InvalidInput("draft args: missing config".into()))?,
         }),
         "set-evm-uln-config" => Ok(OperationV1::SetEvmUlnConfig {
             remote_eid: num_field(value, "remote_eid")?,
+            direction: str_field(value, "direction")?,
+            caller: str_field(value, "caller")?,
+            oapp: str_field(value, "oapp")?,
+            library: str_field(value, "library")?,
             config_sha256: str_field(value, "config_sha256")?,
+            config: value
+                .get("config")
+                .cloned()
+                .ok_or_else(|| Error::InvalidInput("draft args: missing config".into()))?,
         }),
         _ => draft_operation_tail(command, value),
     }
@@ -1184,11 +1342,25 @@ fn draft_operation_tail(command: &str, value: &serde_json::Value) -> Result<Oper
     match command {
         "set-stellar-executor-config" => Ok(OperationV1::SetStellarExecutorConfig {
             remote_eid: num_field(value, "remote_eid")?,
+            caller: str_field(value, "caller")?,
+            oapp: str_field(value, "oapp")?,
+            library: str_field(value, "library")?,
             config_sha256: str_field(value, "config_sha256")?,
+            config: value
+                .get("config")
+                .cloned()
+                .ok_or_else(|| Error::InvalidInput("draft args: missing config".into()))?,
         }),
         "set-evm-executor-config" => Ok(OperationV1::SetEvmExecutorConfig {
             remote_eid: num_field(value, "remote_eid")?,
+            caller: str_field(value, "caller")?,
+            oapp: str_field(value, "oapp")?,
+            library: str_field(value, "library")?,
             config_sha256: str_field(value, "config_sha256")?,
+            config: value
+                .get("config")
+                .cloned()
+                .ok_or_else(|| Error::InvalidInput("draft args: missing config".into()))?,
         }),
         "set-stellar-receive-options" => Ok(OperationV1::SetStellarReceiveOptions {
             remote_eid: num_field(value, "remote_eid")?,
@@ -1263,7 +1435,21 @@ fn draft_operation_admin(command: &str, value: &serde_json::Value) -> Result<Ope
             admin_role: str_field(value, "admin_role")?,
         }),
         "send-leg" => Ok(OperationV1::SendLeg {
-            intent_sha256: str_field(value, "intent_sha256")?,
+            vm: match str_field(value, "vm")?.as_str() {
+                "stellar" => Vm::Stellar,
+                "evm" => Vm::Evm,
+                other => {
+                    return Err(Error::InvalidInput(format!(
+                        "draft args: unknown vm {other}"
+                    )))
+                }
+            },
+            intent: Box::new(serde_json::from_value(
+                value
+                    .get("intent")
+                    .cloned()
+                    .ok_or_else(|| Error::InvalidInput("draft args: missing intent".into()))?,
+            )?),
         }),
         "commit-verification" => Ok(OperationV1::CommitVerification {
             vm: match str_field(value, "vm")?.as_str() {
@@ -1275,8 +1461,12 @@ fn draft_operation_admin(command: &str, value: &serde_json::Value) -> Result<Ope
                     )))
                 }
             },
-            guid: str_field(value, "guid")?,
-            packet_sha256: str_field(value, "packet_sha256")?,
+            message: Box::new(serde_json::from_value(
+                value
+                    .get("message")
+                    .cloned()
+                    .ok_or_else(|| Error::InvalidInput("draft args: missing message".into()))?,
+            )?),
         }),
         "execute-receive" => Ok(OperationV1::ExecuteReceive {
             vm: match str_field(value, "vm")?.as_str() {
@@ -1288,25 +1478,28 @@ fn draft_operation_admin(command: &str, value: &serde_json::Value) -> Result<Ope
                     )))
                 }
             },
-            guid: str_field(value, "guid")?,
-            packet_sha256: str_field(value, "packet_sha256")?,
+            message: Box::new(serde_json::from_value(
+                value
+                    .get("message")
+                    .cloned()
+                    .ok_or_else(|| Error::InvalidInput("draft args: missing message".into()))?,
+            )?),
         }),
         "contain-outbound" => Ok(OperationV1::ContainOutbound {
-            direction: match str_field(value, "direction")?.as_str() {
-                "stellar_to_evm" => Direction::StellarToEvm,
-                "evm_to_stellar" => Direction::EvmToStellar,
-                other => {
-                    return Err(Error::InvalidInput(format!(
-                        "draft args: unknown direction {other}"
-                    )))
-                }
-            },
+            snapshot: Box::new(serde_json::from_value(
+                value
+                    .get("snapshot")
+                    .cloned()
+                    .ok_or_else(|| Error::InvalidInput("draft args: missing snapshot".into()))?,
+            )?),
         }),
         "restore-outbound" => Ok(OperationV1::RestoreOutbound {
-            snapshot_sha256: str_field(value, "snapshot_sha256")?,
-        }),
-        "restore-footprint" => Ok(OperationV1::RestoreFootprint {
-            original_operation_sha256: str_field(value, "original_operation_sha256")?,
+            snapshot: Box::new(serde_json::from_value(
+                value
+                    .get("snapshot")
+                    .cloned()
+                    .ok_or_else(|| Error::InvalidInput("draft args: missing snapshot".into()))?,
+            )?),
         }),
         other => Err(Error::InvalidInput(format!(
             "unknown draft command {other}"
@@ -1316,19 +1509,29 @@ fn draft_operation_admin(command: &str, value: &serde_json::Value) -> Result<Ope
 
 fn proposal(args: ProposalArgs) -> Result<CommandData> {
     match args.command {
-        ProposalCommand::Create(args) => crate::governance::create_proposal(
-            &args.state,
-            &args.draft,
-            &args.out,
-            args.rpc.stellar_url()?.as_deref(),
-            args.rpc.evm_url()?.as_deref(),
-        ),
-        ProposalCommand::Ingest(args) => crate::governance::ingest_proposal(
-            &args.state,
-            &args.proposal,
-            &args.executed_tx,
-            args.write,
-        ),
+        ProposalCommand::Create(args) => {
+            let state = RouteStore::open(&args.state)?.load_state()?;
+            environment::require_testnet(&state.identity)?;
+            crate::governance::create_proposal(
+                &args.state,
+                &args.draft,
+                &args.out,
+                args.rpc.stellar_url()?.as_deref(),
+                args.rpc.evm_url()?.as_deref(),
+            )
+        }
+        ProposalCommand::Ingest(args) => {
+            let state = RouteStore::open(&args.state)?.load_state()?;
+            environment::require_testnet(&state.identity)?;
+            crate::governance::ingest_proposal(
+                &args.state,
+                &args.proposal,
+                &args.executed_tx,
+                args.rpc.stellar_url()?.as_deref(),
+                args.rpc.evm_url()?.as_deref(),
+                args.write,
+            )
+        }
         ProposalCommand::StellarSignature(args) => match args.command {
             ProposalSignatureCommand::Attach(args) => crate::governance::attach_signature_command(
                 &args.state,
@@ -1342,7 +1545,14 @@ fn proposal(args: ProposalArgs) -> Result<CommandData> {
             }
         },
         ProposalCommand::SafeVerify(args) => {
-            crate::governance::verify_safe_proposal(&args.state, &args.proposal, &args.safe_tx)
+            let state = RouteStore::open(&args.state)?.load_state()?;
+            environment::require_testnet(&state.identity)?;
+            crate::governance::verify_safe_proposal(
+                &args.state,
+                &args.proposal,
+                &args.safe_tx,
+                args.rpc.evm_url()?.as_deref(),
+            )
         }
     }
 }
@@ -1355,6 +1565,7 @@ fn artifact(args: ArtifactArgs) -> Result<CommandData> {
             &args.out_dir,
             args.write,
             args.deps_archive.as_deref(),
+            args.source_archive.as_deref(),
         ),
     }
 }
@@ -1407,9 +1618,7 @@ fn wrap(args: WrapArgs) -> Result<CommandData> {
         require_evidence,
     )?;
     if args.effect.execute {
-        return Err(Error::Chain(
-            "wrap execution requires a qualified live adapter; use --proposal-out".into(),
-        ));
+        return execute_wrap_deployment(&args.state, &desired, &plan, args.effect);
     }
     if let Some(out) = args.effect.proposal_out {
         // v1 emits a proposal for the first plan node; the remaining nodes
@@ -1430,10 +1639,104 @@ fn wrap(args: WrapArgs) -> Result<CommandData> {
     data(serde_json::to_value(&plan)?)
 }
 
+fn execute_wrap_deployment(
+    state_path: &Path,
+    desired: &DesiredRouteV1,
+    plan: &crate::wrap::WrapPlanV1,
+    effect: ChainEffectArgs,
+) -> Result<CommandData> {
+    use alloy::primitives::B256;
+
+    let stellar_url = effect.rpc.stellar_url()?.ok_or_else(|| {
+        Error::InvalidInput("wrap execution requires a Stellar RPC provider".into())
+    })?;
+    let evm_url = effect
+        .rpc
+        .evm_url()?
+        .ok_or_else(|| Error::InvalidInput("wrap execution requires an EVM RPC provider".into()))?;
+    let stellar =
+        crate::stellar::HttpStellarChain::new(&stellar_url)?.with_artifact_root(state_path);
+    let evm = crate::evm::HttpEvmChain::new(&evm_url)?.with_artifact_root(state_path);
+    let lock = crate::artifacts::embedded_lock()?;
+    let creation_hash: [u8; 32] = hex::decode(&lock.evm.creation_bytecode_keccak256)
+        .map_err(|_| Error::Custody("artifact lock EVM creation hash is not hex".into()))?
+        .try_into()
+        .map_err(|_| Error::Custody("artifact lock EVM creation hash must be 32 bytes".into()))?;
+    let binding = crate::evm::DeployEvmOftBindingV1::bind(
+        crate::evm::parse_address(&plan.evm_deployer)?,
+        plan.evm_nonce,
+        Some(B256::from(creation_hash)),
+        plan.name.clone(),
+        plan.symbol.clone(),
+        crate::evm::parse_address(&desired.identity.evm_endpoint)?,
+        crate::evm::parse_address(&desired.evm_delegate)?,
+    )?;
+    let mut executed = Vec::new();
+    loop {
+        let observed = crate::deployment::observe_deployments(&stellar, &evm, desired, plan)?;
+        let node_plan = crate::deployment::deployment_node_plan(
+            desired,
+            &crate::canonical_sha256(desired)?,
+            plan,
+            &binding,
+            &observed,
+        )?;
+        let Some(index) = crate::deployment::require_resumable(&node_plan)? else {
+            return data(serde_json::json!({
+                "plan": plan,
+                "deployment": node_plan,
+                "executed": executed
+            }));
+        };
+        let operation = node_plan.nodes[index].operation.clone();
+        let result = chain_effect(state_path, &operation, effect.clone())?;
+        let after = crate::deployment::observe_deployments(&stellar, &evm, desired, plan)?;
+        let after_plan = crate::deployment::deployment_node_plan(
+            desired,
+            &crate::canonical_sha256(desired)?,
+            plan,
+            &binding,
+            &after,
+        )?;
+        if after_plan.nodes[index].status != crate::deployment::DeploymentNodeStatus::Satisfied {
+            return Err(Error::Chain(format!(
+                "deployment node {} did not satisfy exact readback",
+                after_plan.nodes[index].kind
+            )));
+        }
+        if matches!(
+            operation,
+            OperationV1::DeployStellarOft { .. } | OperationV1::DeployEvmOft { .. }
+        ) {
+            let store = RouteStore::open(state_path)?;
+            let _lock = store.lock()?;
+            let mut state = store.load_state()?;
+            match operation {
+                OperationV1::DeployStellarOft {
+                    expected_address, ..
+                } => {
+                    state
+                        .contracts
+                        .insert("stellar_oft".into(), expected_address);
+                }
+                OperationV1::DeployEvmOft {
+                    expected_address, ..
+                } => {
+                    state.contracts.insert("evm_oft".into(), expected_address);
+                }
+                _ => unreachable!(),
+            }
+            store.save_state(&state)?;
+        }
+        executed.push(result.result);
+    }
+}
+
 fn route(args: RouteArgs) -> Result<CommandData> {
     match args.command {
         RouteCommand::DraftConfig(args) => draft_config(&args.state, &args.out),
         RouteCommand::Inspect(args) => inspect(&args.state),
+        RouteCommand::Apply(args) => apply_route(args),
         RouteCommand::SetPeer(args) => {
             let remote_eid = args.remote_eid;
             let peer = args.peer;
@@ -1441,7 +1744,7 @@ fn route(args: RouteArgs) -> Result<CommandData> {
                 Vm::Stellar => OperationV1::SetStellarPeer { remote_eid, peer },
                 Vm::Evm => OperationV1::SetEvmPeer { remote_eid, peer },
             };
-            chain_effect(&args.state, &operation, args.effect)
+            route_effect(&args.state, &operation, args.effect)
         }
         RouteCommand::SetLibrary(args) => {
             let direction = match args.direction.as_str() {
@@ -1460,7 +1763,7 @@ fn route(args: RouteArgs) -> Result<CommandData> {
                 args.library,
                 args.grace_period_seconds,
             )?;
-            chain_effect(&args.state, &operation, args.effect)
+            route_effect(&args.state, &operation, args.effect)
         }
         RouteCommand::RemoveReceiveTimeout(args) => {
             let remote_eid = args.remote_eid;
@@ -1468,7 +1771,7 @@ fn route(args: RouteArgs) -> Result<CommandData> {
                 Vm::Stellar => OperationV1::RemoveStellarReceiveLibraryTimeout { remote_eid },
                 Vm::Evm => OperationV1::RemoveEvmReceiveLibraryTimeout { remote_eid },
             };
-            chain_effect(&args.state, &operation, args.effect)
+            route_effect(&args.state, &operation, args.effect)
         }
         RouteCommand::SetUln(args) => config_hash_effect(args, true),
         RouteCommand::SetExecutor(args) => config_hash_effect(args, false),
@@ -1488,14 +1791,148 @@ fn route(args: RouteArgs) -> Result<CommandData> {
                     options,
                 },
             };
-            chain_effect(&args.state, &operation, args.effect)
+            route_effect(&args.state, &operation, args.effect)
         }
+    }
+}
+
+fn route_effect(
+    state_path: &Path,
+    operation: &OperationV1,
+    effect: ChainEffectArgs,
+) -> Result<CommandData> {
+    let execute = effect.execute;
+    let stellar_url = if execute {
+        Some(effect.rpc.stellar_url()?.ok_or_else(|| {
+            Error::InvalidInput("route execution requires a Stellar RPC provider".into())
+        })?)
+    } else {
+        None
+    };
+    let evm_url = if execute {
+        Some(effect.rpc.evm_url()?.ok_or_else(|| {
+            Error::InvalidInput("route execution requires an EVM RPC provider".into())
+        })?)
+    } else {
+        None
+    };
+    let result = chain_effect(state_path, operation, effect)?;
+    if execute {
+        let stellar_url = stellar_url
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput("Stellar RPC provider is absent".into()))?;
+        let evm_url = evm_url
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput("EVM RPC provider is absent".into()))?;
+        let stellar =
+            crate::stellar::HttpStellarChain::new(stellar_url)?.with_artifact_root(state_path);
+        let evm = crate::evm::HttpEvmChain::new(evm_url)?.with_artifact_root(state_path);
+        let store = RouteStore::open(state_path)?;
+        let _lock = store.lock()?;
+        let mut state = store.load_state()?;
+        crate::route::apply_live_readback(&stellar, &evm, &mut state, operation)?;
+        store.save_state(&state)?;
+    }
+    Ok(result)
+}
+
+fn management_effect(
+    state_path: &Path,
+    operation: &OperationV1,
+    effect: ChainEffectArgs,
+) -> Result<CommandData> {
+    let execute = effect.execute;
+    let stellar_url = if execute {
+        Some(effect.rpc.stellar_url()?.ok_or_else(|| {
+            Error::InvalidInput("management execution requires a Stellar RPC provider".into())
+        })?)
+    } else {
+        None
+    };
+    let evm_url = if execute {
+        Some(effect.rpc.evm_url()?.ok_or_else(|| {
+            Error::InvalidInput("management execution requires an EVM RPC provider".into())
+        })?)
+    } else {
+        None
+    };
+    let result = chain_effect(state_path, operation, effect)?;
+    if execute {
+        let stellar = crate::stellar::HttpStellarChain::new(
+            stellar_url
+                .as_deref()
+                .ok_or_else(|| Error::InvalidInput("Stellar RPC provider is absent".into()))?,
+        )?
+        .with_artifact_root(state_path);
+        let evm = crate::evm::HttpEvmChain::new(
+            evm_url
+                .as_deref()
+                .ok_or_else(|| Error::InvalidInput("EVM RPC provider is absent".into()))?,
+        )?
+        .with_artifact_root(state_path);
+        let store = RouteStore::open(state_path)?;
+        let _lock = store.lock()?;
+        let mut state = store.load_state()?;
+        crate::route::apply_management_readback(&stellar, &evm, &mut state, operation)?;
+        store.save_state(&state)?;
+    }
+    Ok(result)
+}
+
+fn apply_route(args: ApplyRouteArgs) -> Result<CommandData> {
+    let desired: DesiredRouteV1 = read_json(&args.config)?;
+    let store = RouteStore::open(&args.state)?;
+    let state = store.load_state()?;
+    crate::route::mutation_gate(&state.identity)?;
+    let initial = crate::route::plan_route_mutations(&desired, &state)?;
+    if !args.effect.execute && args.effect.proposal_out.is_none() {
+        return data(serde_json::to_value(initial)?);
+    }
+    if args.effect.proposal_out.is_some() {
+        let operation = initial
+            .steps
+            .iter()
+            .find_map(|step| {
+                (step.status == crate::route::RouteStepStatus::Pending)
+                    .then_some(step.operation.as_ref())
+                    .flatten()
+            })
+            .ok_or_else(|| {
+                if initial.converged {
+                    Error::Conflict("route is already converged".into())
+                } else {
+                    Error::Conflict("route mutation plan is blocked".into())
+                }
+            })?;
+        return route_effect(&args.state, operation, args.effect);
+    }
+    let mut results = Vec::new();
+    loop {
+        let state = store.load_state()?;
+        let plan = crate::route::plan_route_mutations(&desired, &state)?;
+        if plan.converged {
+            return data(serde_json::json!({
+                "plan": plan,
+                "executed": results,
+            }));
+        }
+        let operation = plan
+            .steps
+            .iter()
+            .find_map(|step| {
+                (step.status == crate::route::RouteStepStatus::Pending)
+                    .then_some(step.operation.as_ref())
+                    .flatten()
+            })
+            .ok_or_else(|| Error::Conflict("route mutation plan is blocked".into()))?;
+        let result = route_effect(&args.state, operation, args.effect.clone())?;
+        results.push(result.result);
     }
 }
 
 fn generic_authority(args: AuthorityArgs) -> Result<CommandData> {
     match args.command {
-        AuthorityCommand::StellarBeginOwner(a) => chain_effect(
+        AuthorityCommand::StellarBeginOwner(a) => management_effect(
             &a.state,
             &OperationV1::BeginStellarOwnershipTransfer {
                 new_owner: a.new_owner,
@@ -1504,28 +1941,28 @@ fn generic_authority(args: AuthorityArgs) -> Result<CommandData> {
             a.effect,
         ),
         AuthorityCommand::StellarAcceptOwner(a) => {
-            chain_effect(&a.state, &OperationV1::AcceptStellarOwnership, a.effect)
+            management_effect(&a.state, &OperationV1::AcceptStellarOwnership, a.effect)
         }
-        AuthorityCommand::StellarCancelOwner(a) => chain_effect(
+        AuthorityCommand::StellarCancelOwner(a) => management_effect(
             &a.state,
             &OperationV1::CancelStellarOwnershipTransfer,
             a.effect,
         ),
-        AuthorityCommand::StellarSetDelegate(a) => chain_effect(
+        AuthorityCommand::StellarSetDelegate(a) => management_effect(
             &a.state,
             &OperationV1::SetStellarDelegate {
                 delegate: a.delegate,
             },
             a.effect,
         ),
-        AuthorityCommand::EvmTransferOwner(a) => chain_effect(
+        AuthorityCommand::EvmTransferOwner(a) => management_effect(
             &a.state,
             &OperationV1::TransferEvmOwnership {
                 new_owner: a.new_owner,
             },
             a.effect,
         ),
-        AuthorityCommand::EvmSetDelegate(a) => chain_effect(
+        AuthorityCommand::EvmSetDelegate(a) => management_effect(
             &a.state,
             &OperationV1::SetEvmDelegate {
                 delegate: a.delegate,
@@ -1542,10 +1979,10 @@ fn chain_effect(
 ) -> Result<CommandData> {
     let store = RouteStore::open(state_path)?;
     let state = store.load_state()?;
-    environment::require_testnet(&state.identity)?;
     if !effect.execute && effect.proposal_out.is_none() {
         return data(serde_json::json!({"preview": true, "operation": operation}));
     }
+    environment::require_testnet(&state.identity)?;
     if let Some(out) = effect.proposal_out {
         return crate::governance::proposal_for_operation(
             state_path,
@@ -1555,7 +1992,584 @@ fn chain_effect(
             effect.rpc.evm_url()?.as_deref(),
         );
     }
-    Err(Error::Chain("native execution requires a qualified live adapter; use --proposal-out until qualification succeeds".into()))
+    match crate::governance::operation_vm(operation) {
+        Vm::Stellar => execute_stellar_operation(state_path, operation, effect),
+        Vm::Evm => execute_evm_operation(state_path, operation, effect),
+    }
+}
+
+fn verify_stellar_recovery_payload(payload: &str, expected_sha256: &str) -> Result<()> {
+    use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+    use sha2::{Digest as _, Sha256};
+    let bytes = BASE64_STANDARD
+        .decode(payload)
+        .map_err(|_| Error::Custody("journaled Stellar payload is not base64".into()))?;
+    if hex::encode(Sha256::digest(bytes)) != expected_sha256 {
+        return Err(Error::Custody(
+            "journaled Stellar signed payload digest mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_evm_recovery_payload(
+    payload: &[u8],
+    expected_sha256: &str,
+    transaction_hash: &str,
+) -> Result<()> {
+    use sha2::{Digest as _, Sha256};
+    if hex::encode(Sha256::digest(payload)) != expected_sha256 {
+        return Err(Error::Custody(
+            "journaled EVM signed payload digest mismatch".into(),
+        ));
+    }
+    let derived_hash = format!("0x{}", hex::encode(crate::evm::keccak256_of(payload)));
+    if !derived_hash.eq_ignore_ascii_case(transaction_hash) {
+        return Err(Error::Custody(
+            "journaled EVM transaction hash does not bind signed payload".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn recover_stellar_submission(
+    store: &RouteStore,
+    operation_id: &str,
+    stellar: &dyn crate::stellar::StellarChain,
+) -> Result<Option<CommandData>> {
+    let history = store.operation_history(operation_id)?;
+    let Some(last) = history.last() else {
+        return Ok(None);
+    };
+    match last.state {
+        crate::state::OperationState::Planned => return Ok(None),
+        crate::state::OperationState::Confirmed | crate::state::OperationState::Failed => {
+            return data(serde_json::json!({
+                "operation_id": operation_id,
+                "status": last.state,
+                "recovered": true,
+            }))
+            .map(Some)
+        }
+        crate::state::OperationState::Signed
+        | crate::state::OperationState::SubmissionPending
+        | crate::state::OperationState::Ambiguous => {}
+        _ => {
+            return Err(Error::Conflict(
+                "operation journal is not resumable as a direct Stellar execution".into(),
+            ))
+        }
+    }
+    let checkpoint = history
+        .iter()
+        .rev()
+        .find(|event| {
+            matches!(
+                event.state,
+                crate::state::OperationState::Signed
+                    | crate::state::OperationState::SubmissionPending
+            ) && event.detail.get("signed_payload").is_some()
+        })
+        .ok_or_else(|| Error::Custody("signed Stellar payload is missing from journal".into()))?;
+    let payload = checkpoint.detail["signed_payload"]
+        .as_str()
+        .ok_or_else(|| Error::Custody("journaled Stellar payload is not a string".into()))?;
+    let transaction_hash = checkpoint.detail["transaction_hash"]
+        .as_str()
+        .ok_or_else(|| Error::Custody("journaled Stellar transaction hash is missing".into()))?;
+    let signed_sha256 = checkpoint.detail["signed_transaction_sha256"]
+        .as_str()
+        .ok_or_else(|| Error::Custody("journaled Stellar payload digest is missing".into()))?;
+    verify_stellar_recovery_payload(payload, signed_sha256)?;
+    if last.state == crate::state::OperationState::Signed {
+        store.append_operation(
+            crate::state::OperationEventV1 {
+                operation_id: operation_id.into(),
+                state: crate::state::OperationState::SubmissionPending,
+                detail: checkpoint.detail.clone(),
+            },
+            None,
+        )?;
+    }
+    let mut status = stellar.transaction_status(transaction_hash)?;
+    if status.status == "not_found" {
+        let returned = stellar.submit_transaction(payload)?;
+        if returned != transaction_hash {
+            store.append_operation(
+                crate::state::OperationEventV1 {
+                    operation_id: operation_id.into(),
+                    state: crate::state::OperationState::Ambiguous,
+                    detail: serde_json::json!({
+                        "transaction_hash": returned,
+                        "expected_transaction_hash": transaction_hash,
+                    }),
+                },
+                None,
+            )?;
+            return Err(Error::Custody(
+                "RPC returned an unexpected transaction hash".into(),
+            ));
+        }
+        status = stellar.transaction_status(transaction_hash)?;
+    }
+    let terminal = match status.status.as_str() {
+        "success" => crate::state::OperationState::Confirmed,
+        "failed" => crate::state::OperationState::Failed,
+        _ => crate::state::OperationState::Ambiguous,
+    };
+    store.append_operation(
+        crate::state::OperationEventV1 {
+            operation_id: operation_id.into(),
+            state: terminal,
+            detail: serde_json::json!({
+                "transaction_hash": transaction_hash,
+                "ledger": status.ledger,
+                "signed_transaction_sha256": signed_sha256,
+                "recovered": true,
+            }),
+        },
+        None,
+    )?;
+    data(serde_json::json!({
+        "transaction_hash": transaction_hash,
+        "status": status.status,
+        "ledger": status.ledger,
+        "recovered": true,
+    }))
+    .map(Some)
+}
+
+fn recover_evm_submission(
+    store: &RouteStore,
+    operation_id: &str,
+    evm: &dyn crate::evm::EvmChain,
+) -> Result<Option<CommandData>> {
+    let history = store.operation_history(operation_id)?;
+    let Some(last) = history.last() else {
+        return Ok(None);
+    };
+    match last.state {
+        crate::state::OperationState::Planned => return Ok(None),
+        crate::state::OperationState::Confirmed | crate::state::OperationState::Failed => {
+            return data(serde_json::json!({
+                "operation_id": operation_id,
+                "status": last.state,
+                "recovered": true,
+            }))
+            .map(Some)
+        }
+        crate::state::OperationState::Signed
+        | crate::state::OperationState::SubmissionPending
+        | crate::state::OperationState::Ambiguous => {}
+        _ => {
+            return Err(Error::Conflict(
+                "operation journal is not resumable as a direct EVM execution".into(),
+            ))
+        }
+    }
+    let checkpoint = history
+        .iter()
+        .rev()
+        .find(|event| {
+            matches!(
+                event.state,
+                crate::state::OperationState::Signed
+                    | crate::state::OperationState::SubmissionPending
+            ) && event.detail.get("signed_payload").is_some()
+        })
+        .ok_or_else(|| Error::Custody("signed EVM payload is missing from journal".into()))?;
+    let payload = hex::decode(
+        checkpoint.detail["signed_payload"]
+            .as_str()
+            .ok_or_else(|| Error::Custody("journaled EVM payload is not a string".into()))?,
+    )
+    .map_err(|_| Error::Custody("journaled EVM payload is not hex".into()))?;
+    let transaction_hash = checkpoint.detail["transaction_hash"]
+        .as_str()
+        .ok_or_else(|| Error::Custody("journaled EVM transaction hash is missing".into()))?;
+    let signed_sha256 = checkpoint.detail["signed_transaction_sha256"]
+        .as_str()
+        .ok_or_else(|| Error::Custody("journaled EVM payload digest is missing".into()))?;
+    verify_evm_recovery_payload(&payload, signed_sha256, transaction_hash)?;
+    if last.state == crate::state::OperationState::Signed {
+        store.append_operation(
+            crate::state::OperationEventV1 {
+                operation_id: operation_id.into(),
+                state: crate::state::OperationState::SubmissionPending,
+                detail: checkpoint.detail.clone(),
+            },
+            None,
+        )?;
+    }
+    let mut receipt = crate::block_on_result(evm.transaction_receipt(transaction_hash))?;
+    if receipt.is_none() {
+        let returned = crate::block_on_result(evm.send_raw_transaction(&payload))?;
+        if returned != transaction_hash {
+            store.append_operation(
+                crate::state::OperationEventV1 {
+                    operation_id: operation_id.into(),
+                    state: crate::state::OperationState::Ambiguous,
+                    detail: serde_json::json!({
+                        "transaction_hash": returned,
+                        "expected_transaction_hash": transaction_hash,
+                    }),
+                },
+                None,
+            )?;
+            return Err(Error::Custody(
+                "RPC returned an unexpected transaction hash".into(),
+            ));
+        }
+        receipt = crate::block_on_result(evm.transaction_receipt(transaction_hash))?;
+    }
+    let terminal = match receipt.as_ref().and_then(|receipt| receipt.succeeded) {
+        Some(true) => crate::state::OperationState::Confirmed,
+        Some(false) => crate::state::OperationState::Failed,
+        None => crate::state::OperationState::Ambiguous,
+    };
+    store.append_operation(
+        crate::state::OperationEventV1 {
+            operation_id: operation_id.into(),
+            state: terminal,
+            detail: serde_json::json!({
+                "transaction_hash": transaction_hash,
+                "receipt": receipt,
+                "recovered": true,
+            }),
+        },
+        None,
+    )?;
+    data(serde_json::json!({
+        "transaction_hash": transaction_hash,
+        "receipt": receipt,
+        "recovered": true,
+    }))
+    .map(Some)
+}
+
+fn execute_stellar_operation(
+    state_path: &Path,
+    operation: &OperationV1,
+    effect: ChainEffectArgs,
+) -> Result<CommandData> {
+    use crate::stellar::StellarChain as _;
+    use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+    use sha2::{Digest as _, Sha256};
+
+    let store = RouteStore::open(state_path)?;
+    let state = store.load_state()?;
+    crate::environment::require_testnet(&state.identity)?;
+    let rpc_url = effect.rpc.stellar_url()?.ok_or_else(|| {
+        Error::InvalidInput(
+            "Stellar execution requires --stellar-rpc-env or --stellar-rpc-file".into(),
+        )
+    })?;
+    let evm_rpc_url = effect.rpc.evm_url()?.ok_or_else(|| {
+        Error::InvalidInput(
+            "Stellar execution requires the counterparty --evm-rpc-env or --evm-rpc-file".into(),
+        )
+    })?;
+    let secret_env = effect.stellar_secret_env.as_deref().ok_or_else(|| {
+        Error::InvalidInput("Stellar execution requires --stellar-secret-env".into())
+    })?;
+    let sender = crate::layerzero::stellar_operation_authorizer(&state, operation)?;
+    let signer = crate::stellar::StellarSecretProviderV1::from_named_env(secret_env)?;
+    if signer.public_key() != sender {
+        return Err(Error::Policy(format!(
+            "Stellar signer {} is not the recorded route owner",
+            signer.public_key()
+        )));
+    }
+    let operation_id = canonical_sha256(operation)?;
+    let binding = store.derive_phase_a_binding(Vm::Stellar, sender)?;
+    let operations_root = state_path.parent().unwrap_or_else(|| Path::new("."));
+    let guard = store.acquire_mutation(&binding, operations_root, &operation_id)?;
+    let stellar = crate::stellar::HttpStellarChain::new(&rpc_url)?.with_artifact_root(state_path);
+    if let Some(result) = recover_stellar_submission(guard.store(), &operation_id, &stellar)? {
+        guard.release_authority_if_terminal()?;
+        return Ok(result);
+    }
+    if guard.store().operation_history(&operation_id)?.is_empty() {
+        guard.store().append_operation(
+            crate::state::OperationEventV1 {
+                operation_id: operation_id.clone(),
+                state: crate::state::OperationState::Planned,
+                detail: serde_json::json!({"operation": operation}),
+            },
+            None,
+        )?;
+    }
+    let evm = crate::evm::HttpEvmChain::new(&evm_rpc_url)?.with_artifact_root(state_path);
+    let plan = crate::governance::build_executable_plan(guard.state(), operation, &stellar, &evm)?;
+    if let crate::domain::OperationV1::SendLeg { intent, .. } = operation {
+        crate::canary::verify_stellar_plan_fee_ceiling(
+            intent,
+            plan.stellar
+                .as_ref()
+                .ok_or_else(|| Error::Chain("Stellar plan omitted its envelope".into()))?,
+        )?;
+    }
+    let stellar_binding = plan
+        .stellar
+        .ok_or_else(|| Error::Chain("Stellar plan omitted its envelope".into()))?;
+    let signed = crate::stellar::sign_envelope(
+        &stellar_binding.envelope_xdr,
+        &stellar_binding.network_passphrase,
+        &signer,
+    )?;
+    let signed_bytes = BASE64_STANDARD
+        .decode(&signed)
+        .map_err(|error| Error::Chain(format!("signed Stellar envelope base64 failed: {error}")))?;
+    let signed_sha256 = hex::encode(Sha256::digest(signed_bytes));
+    let expected_transaction_hash =
+        crate::stellar::envelope_transaction_hash(&signed, &stellar_binding.network_passphrase)?;
+    guard.reserve_authority(&stellar_binding.sequence, &signed_sha256)?;
+    guard.store().append_operation(
+        crate::state::OperationEventV1 {
+            operation_id: operation_id.clone(),
+            state: crate::state::OperationState::Signed,
+            detail: serde_json::json!({
+                "unsigned_envelope_sha256": stellar_binding.envelope_sha256,
+                "signed_envelope_sha256": signed_sha256,
+                "signed_transaction_sha256": signed_sha256,
+                "transaction_hash": expected_transaction_hash,
+                "signed_payload": signed,
+            }),
+        },
+        None,
+    )?;
+    guard.submission_pending(
+        &operation_id,
+        &signed_sha256,
+        &expected_transaction_hash,
+        &signed,
+    )?;
+    let transaction_hash = match stellar.submit_transaction(&signed) {
+        Ok(hash) => hash,
+        Err(error) => {
+            guard.store().append_operation(
+                crate::state::OperationEventV1 {
+                    operation_id,
+                    state: crate::state::OperationState::Ambiguous,
+                    detail: serde_json::json!({"error_code": error.code()}),
+                },
+                None,
+            )?;
+            return Err(error);
+        }
+    };
+    if transaction_hash != expected_transaction_hash {
+        guard.store().append_operation(
+            crate::state::OperationEventV1 {
+                operation_id,
+                state: crate::state::OperationState::Ambiguous,
+                detail: serde_json::json!({
+                    "transaction_hash": transaction_hash,
+                    "expected_transaction_hash": expected_transaction_hash,
+                }),
+            },
+            None,
+        )?;
+        return Err(Error::Custody(
+            "RPC returned an unexpected transaction hash".into(),
+        ));
+    }
+    let status = match stellar.transaction_status(&transaction_hash) {
+        Ok(status) => status,
+        Err(error) => {
+            guard.store().append_operation(
+                crate::state::OperationEventV1 {
+                    operation_id,
+                    state: crate::state::OperationState::Ambiguous,
+                    detail: serde_json::json!({
+                        "transaction_hash": transaction_hash,
+                        "error_code": error.code(),
+                    }),
+                },
+                None,
+            )?;
+            return Err(error);
+        }
+    };
+    let terminal = match status.status.as_str() {
+        "success" => crate::state::OperationState::Confirmed,
+        "failed" => crate::state::OperationState::Failed,
+        _ => crate::state::OperationState::Ambiguous,
+    };
+    guard.store().append_operation(
+        crate::state::OperationEventV1 {
+            operation_id,
+            state: terminal,
+            detail: serde_json::json!({
+                "transaction_hash": transaction_hash,
+                "ledger": status.ledger,
+            }),
+        },
+        None,
+    )?;
+    guard.release_authority_if_terminal()?;
+    data(serde_json::json!({
+        "transaction_hash": transaction_hash,
+        "status": status.status,
+        "ledger": status.ledger,
+    }))
+}
+
+fn execute_evm_operation(
+    state_path: &Path,
+    operation: &OperationV1,
+    effect: ChainEffectArgs,
+) -> Result<CommandData> {
+    use crate::evm::EvmChain as _;
+    use sha2::Digest as _;
+
+    let store = RouteStore::open(state_path)?;
+    let state = store.load_state()?;
+    crate::environment::require_testnet(&state.identity)?;
+    let rpc_url = effect.rpc.evm_url()?.ok_or_else(|| {
+        Error::InvalidInput("EVM execution requires --evm-rpc-env or --evm-rpc-file".into())
+    })?;
+    let stellar_rpc_url = effect.rpc.stellar_url()?.ok_or_else(|| {
+        Error::InvalidInput(
+            "EVM execution requires the counterparty --stellar-rpc-env or --stellar-rpc-file"
+                .into(),
+        )
+    })?;
+    let keystore = effect
+        .evm_keystore
+        .as_deref()
+        .ok_or_else(|| Error::InvalidInput("EVM execution requires --evm-keystore".into()))?;
+    let password_file = effect
+        .evm_password_file
+        .as_deref()
+        .ok_or_else(|| Error::InvalidInput("EVM execution requires --evm-password-file".into()))?;
+    let sender = crate::layerzero::evm_operation_authorizer(&state, operation)?;
+    let sender_address = crate::evm::parse_address(sender)?;
+    let password = crate::config::SecretProvider::File(password_file.to_path_buf()).read()?;
+    let signer = crate::evm::keystore_signer(keystore, &password, sender_address)?;
+    let operation_id = canonical_sha256(operation)?;
+    let binding = store.derive_phase_a_binding(Vm::Evm, sender)?;
+    let operations_root = state_path.parent().unwrap_or_else(|| Path::new("."));
+    let guard = store.acquire_mutation(&binding, operations_root, &operation_id)?;
+    let evm = crate::evm::HttpEvmChain::new(&rpc_url)?.with_artifact_root(state_path);
+    if let Some(result) = recover_evm_submission(guard.store(), &operation_id, &evm)? {
+        guard.release_authority_if_terminal()?;
+        return Ok(result);
+    }
+    if guard.store().operation_history(&operation_id)?.is_empty() {
+        guard.store().append_operation(
+            crate::state::OperationEventV1 {
+                operation_id: operation_id.clone(),
+                state: crate::state::OperationState::Planned,
+                detail: serde_json::json!({"operation": operation}),
+            },
+            None,
+        )?;
+    }
+    let stellar =
+        crate::stellar::HttpStellarChain::new(&stellar_rpc_url)?.with_artifact_root(state_path);
+    let plan = crate::governance::build_executable_plan(guard.state(), operation, &stellar, &evm)?;
+    if let crate::domain::OperationV1::SendLeg { intent, .. } = operation {
+        crate::canary::verify_evm_plan_fee_ceiling(
+            intent,
+            plan.evm
+                .as_ref()
+                .ok_or_else(|| Error::Chain("EVM plan omitted its transaction".into()))?,
+        )?;
+    }
+    let evm_binding = plan
+        .evm
+        .ok_or_else(|| Error::Chain("EVM plan omitted its transaction".into()))?;
+    let signed = crate::evm::sign_eip1559(&evm_binding, &signer)?;
+    let signed_sha256 = hex::encode(sha2::Sha256::digest(&signed.encoded));
+    guard.reserve_authority(&evm_binding.nonce.to_string(), &signed_sha256)?;
+    guard.store().append_operation(
+        crate::state::OperationEventV1 {
+            operation_id: operation_id.clone(),
+            state: crate::state::OperationState::Signed,
+            detail: serde_json::json!({
+                "unsigned_transaction_sha256": evm_binding.transaction_digest,
+                "signed_transaction_sha256": signed_sha256,
+                "transaction_hash": signed.transaction_hash,
+                "signed_payload": hex::encode(&signed.encoded),
+            }),
+        },
+        None,
+    )?;
+    guard.submission_pending(
+        &operation_id,
+        &signed_sha256,
+        &signed.transaction_hash,
+        &hex::encode(&signed.encoded),
+    )?;
+    let transaction_hash = match crate::block_on_result(evm.send_raw_transaction(&signed.encoded)) {
+        Ok(hash) => hash,
+        Err(error) => {
+            guard.store().append_operation(
+                crate::state::OperationEventV1 {
+                    operation_id,
+                    state: crate::state::OperationState::Ambiguous,
+                    detail: serde_json::json!({"error_code": error.code()}),
+                },
+                None,
+            )?;
+            return Err(error);
+        }
+    };
+    if transaction_hash != signed.transaction_hash {
+        guard.store().append_operation(
+            crate::state::OperationEventV1 {
+                operation_id,
+                state: crate::state::OperationState::Ambiguous,
+                detail: serde_json::json!({
+                    "transaction_hash": transaction_hash,
+                    "expected_transaction_hash": signed.transaction_hash,
+                }),
+            },
+            None,
+        )?;
+        return Err(Error::Custody(
+            "RPC returned an unexpected transaction hash".into(),
+        ));
+    }
+    let receipt = match crate::block_on_result(evm.transaction_receipt(&transaction_hash)) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            guard.store().append_operation(
+                crate::state::OperationEventV1 {
+                    operation_id,
+                    state: crate::state::OperationState::Ambiguous,
+                    detail: serde_json::json!({
+                        "transaction_hash": transaction_hash,
+                        "error_code": error.code(),
+                    }),
+                },
+                None,
+            )?;
+            return Err(error);
+        }
+    };
+    let terminal = match receipt.as_ref().and_then(|receipt| receipt.succeeded) {
+        Some(true) => crate::state::OperationState::Confirmed,
+        Some(false) => crate::state::OperationState::Failed,
+        None => crate::state::OperationState::Ambiguous,
+    };
+    guard.store().append_operation(
+        crate::state::OperationEventV1 {
+            operation_id,
+            state: terminal,
+            detail: serde_json::json!({
+                "transaction_hash": transaction_hash,
+                "receipt": receipt,
+            }),
+        },
+        None,
+    )?;
+    guard.release_authority_if_terminal()?;
+    data(serde_json::json!({
+        "transaction_hash": transaction_hash,
+        "receipt": receipt,
+    }))
 }
 
 fn generic_stellar(args: StellarArgs) -> Result<CommandData> {
@@ -1568,16 +2582,16 @@ fn generic_stellar(args: StellarArgs) -> Result<CommandData> {
                 },
                 None => OperationV1::SetDefaultFee { bps: a.bps },
             };
-            chain_effect(&a.state, &operation, a.effect)
+            management_effect(&a.state, &operation, a.effect)
         }
-        StellarCommand::SetFeeDepositAddress(a) => chain_effect(
+        StellarCommand::SetFeeDepositAddress(a) => management_effect(
             &a.state,
             &OperationV1::SetFeeRecipient {
                 recipient: a.recipient,
             },
             a.effect,
         ),
-        StellarCommand::SetMessageInspector(a) => chain_effect(
+        StellarCommand::SetMessageInspector(a) => management_effect(
             &a.state,
             &OperationV1::SetMessageInspector {
                 inspector: a.inspector,
@@ -1603,61 +2617,71 @@ fn generic_stellar(args: StellarArgs) -> Result<CommandData> {
                     mode,
                 },
             };
-            chain_effect(&a.state, &operation, a.effect)
+            management_effect(&a.state, &operation, a.effect)
         }
-        StellarCommand::TtlSet(a) => chain_effect(
-            &a.state,
-            &OperationV1::SetTtlConfig {
-                instance_threshold: a.instance_threshold,
-                instance_extend_to: a.instance_extend_to,
-                persistent_threshold: a.persistent_threshold,
-                persistent_extend_to: a.persistent_extend_to,
-            },
-            a.effect,
-        ),
-        StellarCommand::TtlFreeze(a) => chain_effect(
-            &a.state,
-            &OperationV1::FreezeTtlConfig {
-                acknowledgement: "typed".into(),
-            },
-            a.effect,
-        ),
-        StellarCommand::TtlExtendInstance(a) => chain_effect(
-            &a.state,
-            &OperationV1::ExtendInstanceTtl { ledgers: a.ledgers },
-            a.effect,
-        ),
+        StellarCommand::TtlSet(a) => {
+            let state = RouteStore::open(&a.state)?.load_state()?;
+            let operation = crate::ttl::set_config(
+                &state,
+                a.instance_threshold,
+                a.instance_extend_to,
+                a.persistent_threshold,
+                a.persistent_extend_to,
+            )?;
+            management_effect(&a.state, &operation, a.effect)
+        }
+        StellarCommand::TtlFreeze(a) => {
+            let state = RouteStore::open(&a.state)?.load_state()?;
+            let operation = crate::ttl::freeze(&state, &a.acknowledge_irreversible)?;
+            management_effect(&a.state, &operation, a.effect)
+        }
+        StellarCommand::TtlExtendInstance(a) => {
+            let state = RouteStore::open(&a.state)?.load_state()?;
+            let operation = crate::ttl::extend_instance(&state, a.ledgers)?;
+            management_effect(&a.state, &operation, a.effect)
+        }
         StellarCommand::EmergencyPause(a) => {
-            chain_effect(&a.state, &OperationV1::PauseEmergency, a.effect)
+            management_effect(&a.state, &OperationV1::PauseEmergency, a.effect)
         }
         StellarCommand::EmergencyUnpause(a) => {
-            chain_effect(&a.state, &OperationV1::UnpauseEmergency, a.effect)
+            management_effect(&a.state, &OperationV1::UnpauseEmergency, a.effect)
         }
-        StellarCommand::RoleGrant(a) => chain_effect(
-            &a.state,
-            &OperationV1::GrantRole {
-                role: a.role,
-                address: a.address,
-            },
-            a.effect,
-        ),
-        StellarCommand::RoleRevoke(a) => chain_effect(
-            &a.state,
-            &OperationV1::RevokeRole {
-                role: a.role,
-                address: a.address,
-            },
-            a.effect,
-        ),
-
-        StellarCommand::RoleSetAdmin(a) => chain_effect(
-            &a.state,
-            &OperationV1::SetRoleAdmin {
-                role: a.role,
-                admin_role: a.admin_role,
-            },
-            a.effect,
-        ),
+        StellarCommand::RoleGrant(a) => {
+            crate::ttl::require_role(&a.role)?;
+            crate::ttl::require_classic_role_address(&a.address)?;
+            management_effect(
+                &a.state,
+                &OperationV1::GrantRole {
+                    role: a.role,
+                    address: a.address,
+                },
+                a.effect,
+            )
+        }
+        StellarCommand::RoleRevoke(a) => {
+            crate::ttl::require_role(&a.role)?;
+            crate::ttl::require_classic_role_address(&a.address)?;
+            management_effect(
+                &a.state,
+                &OperationV1::RevokeRole {
+                    role: a.role,
+                    address: a.address,
+                },
+                a.effect,
+            )
+        }
+        StellarCommand::RoleSetAdmin(a) => {
+            crate::ttl::require_role(&a.role)?;
+            crate::ttl::require_role(&a.admin_role)?;
+            management_effect(
+                &a.state,
+                &OperationV1::SetRoleAdmin {
+                    role: a.role,
+                    admin_role: a.admin_role,
+                },
+                a.effect,
+            )
+        }
     }
 }
 
@@ -1718,77 +2742,255 @@ fn config_hash_effect(args: ConfigHashArgs, uln: bool) -> Result<CommandData> {
             "set-executor has no --direction".into(),
         ));
     }
-    let hash = file_sha256(&args.config)?;
+    let config: serde_json::Value = read_json(&args.config)?;
+    let config_sha256 = canonical_sha256(&config)?;
     let remote_eid = args.remote_eid;
-    let config_sha256 = hash;
-    let operation = match (args.vm.into(), uln) {
+    let vm: Vm = args.vm.into();
+    let state = RouteStore::open(&args.state)?.load_state()?;
+    let contract = |stellar: &str, evm: &str| {
+        state
+            .contracts
+            .get(match vm {
+                Vm::Stellar => stellar,
+                Vm::Evm => evm,
+            })
+            .cloned()
+            .ok_or_else(|| {
+                Error::Custody(format!("route contract is not recorded: {stellar}/{evm}"))
+            })
+    };
+    let caller = contract("stellar_owner", "evm_owner")?;
+    let oapp = contract("stellar_oft", "evm_oft")?;
+    let direction = args.direction.unwrap_or_else(|| "receive".into());
+    let library_key = match direction.as_str() {
+        "send" => crate::route::config_key_send_library(vm, remote_eid),
+        _ => crate::route::config_key_receive_library(vm, remote_eid),
+    };
+    let library = state
+        .requested_config
+        .get(&library_key)
+        .or_else(|| state.effective_config.get(&library_key))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Custody(format!("route library is not recorded: {library_key}")))?
+        .to_string();
+    let operation = match (vm, uln) {
         (Vm::Stellar, true) => OperationV1::SetStellarUlnConfig {
             remote_eid,
+            direction,
+            caller,
+            oapp,
+            library,
             config_sha256,
+            config,
         },
         (Vm::Evm, true) => OperationV1::SetEvmUlnConfig {
             remote_eid,
+            direction,
+            caller,
+            oapp,
+            library,
             config_sha256,
+            config,
         },
         (Vm::Stellar, false) => OperationV1::SetStellarExecutorConfig {
             remote_eid,
+            caller,
+            oapp,
+            library,
             config_sha256,
+            config,
         },
         (Vm::Evm, false) => OperationV1::SetEvmExecutorConfig {
             remote_eid,
+            caller,
+            oapp,
+            library,
             config_sha256,
+            config,
         },
     };
-    chain_effect(&args.state, &operation, args.effect)
+    route_effect(&args.state, &operation, args.effect)
 }
 
 fn contain(args: ContainArgs) -> Result<CommandData> {
     match args.command {
         ContainCommand::Inspect(args) => crate::layerzero::containment_status(&args.state),
         ContainCommand::Outbound(args) => {
-            if let Some(limit) = args.limit_raw {
-                if limit != 0 {
-                    return Err(Error::InvalidInput(
-                        "v1 containment is zero-cap only: --limit-raw must be 0".into(),
-                    ));
+            if args.limit_raw.is_some_and(|limit| limit != 0) {
+                return Err(Error::InvalidInput(
+                    "v1 containment is zero-cap only: --limit-raw must be 0".into(),
+                ));
+            }
+            let store = RouteStore::open(&args.state)?;
+            let mut state = store.load_state()?;
+            let direction: Direction = args.direction.into();
+            if args.effect.execute || args.effect.proposal_out.is_some() {
+                environment::require_testnet(&state.identity)?;
+                if direction == Direction::EvmToStellar {
+                    let evm_url = args.effect.rpc.evm_url()?.ok_or_else(|| {
+                        Error::InvalidInput("EVM containment requires an EVM RPC provider".into())
+                    })?;
+                    let evm = crate::evm::HttpEvmChain::new(&evm_url)?;
+                    let blocked =
+                        crate::route::read_evm_blocked_library(&evm, &state.identity.evm_endpoint)?;
+                    let _lock = store.lock()?;
+                    state = store.load_state()?;
+                    state.effective_config.insert(
+                        "endpoint:blocked_library:evm".into(),
+                        serde_json::Value::String(blocked),
+                    );
+                    store.save_state(&state)?;
                 }
             }
-            chain_effect(
-                &args.state,
-                &OperationV1::ContainOutbound {
-                    direction: args.direction.into(),
-                },
-                args.effect,
-            )
+            let snapshot = crate::layerzero::containment_snapshot(&state, direction)?;
+            let operation = OperationV1::ContainOutbound {
+                snapshot: Box::new(snapshot),
+            };
+            containment_effect(&args.state, &operation, args.effect)
         }
-        ContainCommand::Restore(args) => chain_effect(
-            &args.state,
-            &OperationV1::RestoreOutbound {
-                snapshot_sha256: args.snapshot,
-            },
-            args.effect,
-        ),
+        ContainCommand::Restore(args) => {
+            let state = RouteStore::open(&args.state)?.load_state()?;
+            if args.effect.execute || args.effect.proposal_out.is_some() {
+                environment::require_testnet(&state.identity)?;
+            }
+            let snapshot: crate::domain::ContainmentSnapshotV1 = serde_json::from_value(
+                state
+                    .effective_config
+                    .get(&format!("containment:snapshot:{}", args.snapshot))
+                    .cloned()
+                    .ok_or_else(|| {
+                        Error::Custody("containment snapshot is not recorded in route state".into())
+                    })?,
+            )?;
+            if crate::canonical_sha256(&snapshot)? != args.snapshot {
+                return Err(Error::Custody(
+                    "containment snapshot digest mismatch".into(),
+                ));
+            }
+            let operation = OperationV1::RestoreOutbound {
+                snapshot: Box::new(snapshot),
+            };
+            containment_effect(&args.state, &operation, args.effect)
+        }
     }
 }
 
-fn leg(args: LegArgs) -> Result<CommandData> {
+fn containment_effect(
+    state_path: &Path,
+    operation: &OperationV1,
+    effect: ChainEffectArgs,
+) -> Result<CommandData> {
+    let (snapshot, restore) = match operation {
+        OperationV1::ContainOutbound { snapshot } => (snapshot.as_ref(), false),
+        OperationV1::RestoreOutbound { snapshot } => (snapshot.as_ref(), true),
+        _ => {
+            return Err(Error::InvalidInput(
+                "containment_effect requires a containment operation".into(),
+            ))
+        }
+    };
+    let before = RouteStore::open(state_path)?.load_state()?;
+    let mutation = crate::layerzero::containment_mutation(&before, snapshot, restore)?;
+    let execute = effect.execute;
+    let stellar_url = if execute {
+        Some(effect.rpc.stellar_url()?.ok_or_else(|| {
+            Error::InvalidInput("containment execution requires a Stellar RPC provider".into())
+        })?)
+    } else {
+        None
+    };
+    let evm_url = if execute {
+        Some(effect.rpc.evm_url()?.ok_or_else(|| {
+            Error::InvalidInput("containment execution requires an EVM RPC provider".into())
+        })?)
+    } else {
+        None
+    };
+    let result = chain_effect(state_path, operation, effect)?;
+    if execute {
+        let stellar = crate::stellar::HttpStellarChain::new(
+            stellar_url
+                .as_deref()
+                .ok_or_else(|| Error::InvalidInput("Stellar RPC provider is absent".into()))?,
+        )?
+        .with_artifact_root(state_path);
+        let evm = crate::evm::HttpEvmChain::new(
+            evm_url
+                .as_deref()
+                .ok_or_else(|| Error::InvalidInput("EVM RPC provider is absent".into()))?,
+        )?
+        .with_artifact_root(state_path);
+        let store = RouteStore::open(state_path)?;
+        let _lock = store.lock()?;
+        let mut state = store.load_state()?;
+        crate::route::apply_live_readback(&stellar, &evm, &mut state, &mutation)?;
+        let snapshot_sha256 = crate::canonical_sha256(snapshot)?;
+        state.effective_config.insert(
+            format!("containment:snapshot:{snapshot_sha256}"),
+            serde_json::to_value(snapshot)?,
+        );
+        state.effective_config.insert(
+            format!(
+                "containment:{}",
+                match snapshot.direction {
+                    Direction::StellarToEvm => "stellar",
+                    Direction::EvmToStellar => "evm",
+                }
+            ),
+            serde_json::json!({
+                "snapshot_sha256": snapshot_sha256,
+                "status": if restore { "restored" } else { "confirmed" }
+            }),
+        );
+        store.save_state(&state)?;
+    }
+    Ok(result)
+}
+
+fn leg(args: LegArgs, rpc: &RpcArgs) -> Result<CommandData> {
     match args.command {
-        LegCommand::Quote(args) => crate::canary::quote(
-            &args.state,
-            args.direction.into(),
-            args.amount_raw,
-            &args.to,
-            &args.out,
-        ),
-        LegCommand::Send(args) => crate::canary::send(
-            &args.state,
-            &args.intent,
-            args.allow_additional_obligation,
-            args.effect.execute,
-            args.effect.proposal_out.as_deref(),
-            args.effect.rpc.stellar_url()?.as_deref(),
-            args.effect.rpc.evm_url()?.as_deref(),
-        ),
+        LegCommand::Quote(args) => {
+            let stellar_url = rpc.stellar_url()?.ok_or_else(|| {
+                Error::InvalidInput("leg quote requires a Stellar RPC provider".into())
+            })?;
+            let evm_url = rpc.evm_url()?.ok_or_else(|| {
+                Error::InvalidInput("leg quote requires an EVM RPC provider".into())
+            })?;
+            let stellar = crate::stellar::HttpStellarChain::new(&stellar_url)?
+                .with_artifact_root(&args.state);
+            let evm = crate::evm::HttpEvmChain::new(&evm_url)?.with_artifact_root(&args.state);
+            crate::canary::quote_live(
+                &args.state,
+                args.direction.into(),
+                args.amount_raw,
+                &args.to,
+                &args.out,
+                &stellar,
+                &evm,
+            )
+        }
+        LegCommand::Send(args) => {
+            let operation = match (args.effect.rpc.stellar_url()?, args.effect.rpc.evm_url()?) {
+                (Some(stellar_url), Some(evm_url)) => {
+                    let stellar = crate::stellar::HttpStellarChain::new(&stellar_url)?
+                        .with_artifact_root(&args.state);
+                    let evm = crate::evm::HttpEvmChain::new(&evm_url)?.with_artifact_root(&args.state);
+                    crate::canary::send_operation_live(
+                        &args.state,
+                        &args.intent,
+                        args.allow_additional_obligation,
+                        &stellar,
+                        &evm,
+                    )?
+                }
+                _ => crate::canary::send_operation(
+                    &args.state,
+                    &args.intent,
+                    args.allow_additional_obligation,
+                )?,
+            };
+            chain_effect(&args.state, &operation, args.effect)
+        }
     }
 }
 
@@ -1803,14 +3005,66 @@ fn message(args: MessageArgs) -> Result<CommandData> {
                     )))
                 }
             }
-            crate::canary::watch(&args.state, &args.guid)
+            let stellar_url = args.rpc.stellar_url()?.ok_or_else(|| {
+                Error::InvalidInput("message watch requires a Stellar RPC provider".into())
+            })?;
+            let evm_url = args.rpc.evm_url()?.ok_or_else(|| {
+                Error::InvalidInput("message watch requires an EVM RPC provider".into())
+            })?;
+            let scan = crate::scan::HttpScanClient::new(&args.scan_url)?;
+            let stellar = crate::stellar::HttpStellarChain::new(&stellar_url)?
+                .with_artifact_root(&args.state);
+            let evm = crate::evm::HttpEvmChain::new(&evm_url)?.with_artifact_root(&args.state);
+            let destination = crate::canary::LiveDestinationPacketReader {
+                stellar: &stellar,
+                evm: &evm,
+            };
+            crate::canary::watch_with_scan(&args.state, &args.guid, &scan, &destination)
         }
-        MessageCommand::Recover(args) => crate::canary::recover(
-            &args.state,
-            &args.guid,
-            args.effect.execute,
-            args.effect.proposal_out.as_deref(),
-        ),
+        MessageCommand::Recover(args) => {
+            let operation = crate::canary::recovery_operation(&args.state, &args.guid)?;
+            let execute = args.effect.execute;
+            let (identity, stage) = match &operation {
+                OperationV1::CommitVerification { message, .. } => (
+                    message.identity(),
+                    match message.direction {
+                        Direction::StellarToEvm => crate::domain::MessageStageV1::ForwardCommitted,
+                        Direction::EvmToStellar => crate::domain::MessageStageV1::ReverseCommitted,
+                    },
+                ),
+                OperationV1::ExecuteReceive { message, .. } => (
+                    message.identity(),
+                    match message.direction {
+                        Direction::StellarToEvm => crate::domain::MessageStageV1::ForwardMinted,
+                        Direction::EvmToStellar => crate::domain::MessageStageV1::ReverseUnlocked,
+                    },
+                ),
+                _ => unreachable!(),
+            };
+            let result = chain_effect(&args.state, &operation, args.effect)?;
+            if execute {
+                let transaction = result
+                    .result
+                    .get("transaction_hash")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        Error::Chain("confirmed recovery result has no transaction hash".into())
+                    })?
+                    .to_string();
+                let store = RouteStore::open(&args.state)?;
+                let _lock = store.lock()?;
+                store.append_message_recovery_event(
+                    &identity,
+                    transaction,
+                    crate::domain::MessageStatusEventV1 {
+                        stage,
+                        observed_at_unix: crate::now_unix()?,
+                        evidence_sha256: crate::canonical_sha256(&result.result)?,
+                    },
+                )?;
+            }
+            Ok(result)
+        }
     }
 }
 
@@ -1824,18 +3078,84 @@ fn evidence(args: EvidenceArgs) -> Result<CommandData> {
 
 fn draft_config(state_path: &Path, out: &Path) -> Result<CommandData> {
     let state = RouteStore::open(state_path)?.load_state()?;
-    let value = serde_json::json!({"schema_name":"route_config_draft","schema_version":1,"route_id":state.route_id,"desired_sha256":state.desired_sha256,"effective":state.effective_config});
-    write_create_new_json(out, &value)?;
-    artifact_data("route_config_draft", out.to_path_buf(), &value, false)
+    let desired = DesiredRouteV1 {
+        schema_name: "desired_route".into(),
+        schema_version: crate::domain::SCHEMA_VERSION,
+        route_id: state.route_id.clone(),
+        identity: state.identity.clone(),
+        asset: state.asset.clone(),
+        stellar_owner: state
+            .contracts
+            .get("stellar_owner")
+            .cloned()
+            .ok_or_else(|| Error::Custody("route has no recorded stellar_owner".into()))?,
+        stellar_delegate: state
+            .contracts
+            .get("stellar_delegate")
+            .cloned()
+            .ok_or_else(|| Error::Custody("route has no recorded stellar_delegate".into()))?,
+        evm_owner: state
+            .contracts
+            .get("evm_owner")
+            .cloned()
+            .ok_or_else(|| Error::Custody("route has no recorded evm_owner".into()))?,
+        evm_delegate: state
+            .contracts
+            .get("evm_delegate")
+            .cloned()
+            .ok_or_else(|| Error::Custody("route has no recorded evm_delegate".into()))?,
+        config: state.requested_config.clone(),
+    };
+    if canonical_sha256(&desired)? != state.desired_sha256 {
+        return Err(Error::Custody(
+            "route state cannot reconstruct its desired-route binding".into(),
+        ));
+    }
+    write_create_new_json(out, &desired)?;
+    artifact_data("route_config_draft", out.to_path_buf(), &desired, false)
 }
 
-fn inspect(state: &Path) -> Result<CommandData> {
-    data(serde_json::to_value(
-        RouteStore::open(state)?.load_state()?,
-    )?)
+fn inspect(path: &Path) -> Result<CommandData> {
+    let state = RouteStore::open(path)?.load_state()?;
+    let keys: std::collections::BTreeSet<_> = state
+        .requested_config
+        .keys()
+        .chain(state.effective_config.keys())
+        .collect();
+    let drift: Vec<_> = keys
+        .into_iter()
+        .filter_map(|key| {
+            let requested = state.requested_config.get(key);
+            let effective = state.effective_config.get(key);
+            (requested != effective).then(|| {
+                serde_json::json!({
+                    "field": key,
+                    "requested": requested,
+                    "effective": effective,
+                })
+            })
+        })
+        .collect();
+    let missing_contracts: Vec<_> = [
+        "stellar_owner",
+        "stellar_delegate",
+        "evm_owner",
+        "evm_delegate",
+        "stellar_oft",
+        "evm_oft",
+    ]
+    .into_iter()
+    .filter(|key| state.contracts.get(*key).is_none_or(String::is_empty))
+    .collect();
+    data(serde_json::json!({
+        "route": state,
+        "config_drift": drift,
+        "missing_contracts": missing_contracts,
+        "converged": drift.is_empty() && missing_contracts.is_empty(),
+    }))
 }
 fn health(state: &Path) -> Result<CommandData> {
-    crate::reconcile::health_command(state)
+    crate::health::command(state)
 }
 
 fn read_desired_precontext(path: &Path) -> Result<DesiredRouteV1> {
@@ -1847,11 +3167,6 @@ fn read_desired_precontext(path: &Path) -> Result<DesiredRouteV1> {
     }
     let desired: DesiredRouteV1 = read_json(path)?;
     desired.parse()
-}
-
-fn file_sha256(path: &Path) -> Result<String> {
-    use sha2::{Digest as _, Sha256};
-    Ok(hex::encode(Sha256::digest(fs::read(path)?)))
 }
 
 #[allow(clippy::unnecessary_wraps)]
@@ -1879,4 +3194,33 @@ fn artifact_data<T: Serialize>(
         result: serde_json::json!({}),
         artifact: Some(artifact),
     })
+}
+
+#[cfg(test)]
+mod recovery_integrity_tests {
+    use super::{verify_evm_recovery_payload, verify_stellar_recovery_payload};
+    use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+    use sha2::{Digest as _, Sha256};
+
+    #[test]
+    fn stellar_recovery_reuses_only_digest_bound_payload() {
+        let payload = BASE64_STANDARD.encode(b"signed-envelope");
+        let digest = hex::encode(Sha256::digest(b"signed-envelope"));
+        verify_stellar_recovery_payload(&payload, &digest).unwrap();
+        assert!(verify_stellar_recovery_payload(&payload, &"0".repeat(64)).is_err());
+        assert!(verify_stellar_recovery_payload("not base64", &digest).is_err());
+    }
+
+    #[test]
+    fn evm_recovery_reuses_only_digest_and_transaction_hash_bound_payload() {
+        let payload = b"signed-transaction";
+        let digest = hex::encode(Sha256::digest(payload));
+        let transaction_hash = format!("0x{}", hex::encode(crate::evm::keccak256_of(payload)));
+        verify_evm_recovery_payload(payload, &digest, &transaction_hash).unwrap();
+        assert!(verify_evm_recovery_payload(payload, &"0".repeat(64), &transaction_hash).is_err());
+        assert!(
+            verify_evm_recovery_payload(payload, &digest, &format!("0x{}", "0".repeat(64)))
+                .is_err()
+        );
+    }
 }

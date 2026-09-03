@@ -4,6 +4,23 @@ use stellar_strkey::{Contract, Strkey};
 
 use crate::domain::SHARED_DECIMALS;
 use crate::error::{Error, Result};
+use crate::layerzero::{ExecutorConfigType3V1, UlnConfigType3V1};
+
+alloy::sol! {
+    struct EvmUlnConfigAbi {
+        uint64 confirmations;
+        uint8 requiredDVNCount;
+        uint8 optionalDVNCount;
+        uint8 optionalDVNThreshold;
+        address[] requiredDVNs;
+        address[] optionalDVNs;
+    }
+
+    struct EvmExecutorConfigAbi {
+        uint32 maxMessageSize;
+        address executor;
+    }
+}
 
 pub const BYTES32_LEN: usize = 32;
 pub const EVM_ADDRESS_LEN: usize = 20;
@@ -26,6 +43,341 @@ pub struct NativeDrop {
 pub struct Type3Options {
     pub gas: u128,
     pub native_drop: Option<NativeDrop>,
+}
+
+/// Native Stellar representation of the official ULN-302
+/// `OAppUlnConfig`. Address strings are converted to `ScAddress` before XDR
+/// encoding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StellarOAppUlnConfig {
+    pub use_default_confirmations: bool,
+    pub use_default_required_dvns: bool,
+    pub use_default_optional_dvns: bool,
+    pub confirmations: u64,
+    pub required_dvns: Vec<String>,
+    pub optional_dvns: Vec<String>,
+    pub optional_dvn_threshold: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvmUlnConfig {
+    pub confirmations: u64,
+    pub required_dvns: Vec<String>,
+    pub optional_dvns: Vec<String>,
+    pub optional_dvn_threshold: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvmExecutorConfig {
+    pub max_message_size: u32,
+    pub executor: String,
+}
+
+/// Encodes the official Soroban contracttype map for ULN-302
+/// `OAppUlnConfig`.
+pub fn encode_stellar_oapp_uln_config(config: &StellarOAppUlnConfig) -> Result<Vec<u8>> {
+    use stellar_baselib::xdr::{
+        AccountId, ContractId, Hash, Limits, PublicKey, ScAddress, ScMap, ScMapEntry, ScSymbol,
+        ScVal, ScVec, StringM, Uint256, VecM, WriteXdr,
+    };
+
+    fn symbol(value: &str) -> Result<ScVal> {
+        let value = StringM::try_from(value.as_bytes().to_vec())
+            .map_err(|error| Error::InvalidInput(format!("invalid Soroban symbol: {error}")))?;
+        Ok(ScVal::Symbol(ScSymbol(value)))
+    }
+
+    fn address(value: &str) -> Result<ScVal> {
+        let address = match Strkey::from_str(value) {
+            Ok(Strkey::PublicKeyEd25519(key)) => {
+                ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(key.0))))
+            }
+            Ok(Strkey::Contract(contract)) => ScAddress::Contract(ContractId(Hash(contract.0))),
+            _ => {
+                return Err(Error::InvalidInput(format!(
+                    "ULN DVN {value} must be a Stellar account or contract address"
+                )))
+            }
+        };
+        Ok(ScVal::Address(address))
+    }
+
+    fn map(entries: impl IntoIterator<Item = Result<(ScVal, ScVal)>>) -> Result<ScVal> {
+        let entries = entries
+            .into_iter()
+            .map(|entry| entry.map(|(key, val)| ScMapEntry { key, val }))
+            .collect::<Result<Vec<_>>>()?;
+        let entries: VecM<ScMapEntry> = entries
+            .try_into()
+            .map_err(|error| Error::InvalidInput(format!("Soroban map too large: {error}")))?;
+        Ok(ScVal::Map(Some(ScMap(entries))))
+    }
+
+    fn addresses(values: &[String]) -> Result<ScVal> {
+        let values = values
+            .iter()
+            .map(|value| address(value))
+            .collect::<Result<Vec<_>>>()?;
+        let values: VecM<ScVal> = values
+            .try_into()
+            .map_err(|error| Error::InvalidInput(format!("Soroban vector too large: {error}")))?;
+        Ok(ScVal::Vec(Some(ScVec(values))))
+    }
+
+    let uln = map([
+        Ok((symbol("confirmations")?, ScVal::U64(config.confirmations))),
+        Ok((
+            symbol("optional_dvn_threshold")?,
+            ScVal::U32(config.optional_dvn_threshold),
+        )),
+        Ok((symbol("optional_dvns")?, addresses(&config.optional_dvns)?)),
+        Ok((symbol("required_dvns")?, addresses(&config.required_dvns)?)),
+    ])?;
+    let value = map([
+        Ok((symbol("uln_config")?, uln)),
+        Ok((
+            symbol("use_default_confirmations")?,
+            ScVal::Bool(config.use_default_confirmations),
+        )),
+        Ok((
+            symbol("use_default_optional_dvns")?,
+            ScVal::Bool(config.use_default_optional_dvns),
+        )),
+        Ok((
+            symbol("use_default_required_dvns")?,
+            ScVal::Bool(config.use_default_required_dvns),
+        )),
+    ])?;
+    value
+        .to_xdr(Limits::none())
+        .map_err(|error| Error::InvalidInput(format!("ULN XDR encode failed: {error}")))
+}
+
+/// ABI-encodes the official EVM ULN-302 config tuple used by
+pub fn encode_stellar_executor_config(max_message_size: u32, executor: &str) -> Result<Vec<u8>> {
+    use std::str::FromStr as _;
+    use stellar_baselib::xdr::{
+        AccountId, ContractId, Hash, Limits, PublicKey, ScAddress, ScMap, ScMapEntry, ScSymbol,
+        ScVal, StringM, Uint256, VecM, WriteXdr as _,
+    };
+    use stellar_strkey::Strkey;
+
+    let symbol = |value: &str| {
+        Ok::<_, Error>(ScVal::Symbol(ScSymbol(
+            StringM::try_from(value.as_bytes().to_vec())
+                .map_err(|error| Error::InvalidInput(format!("invalid symbol: {error}")))?,
+        )))
+    };
+    let address = match Strkey::from_str(executor) {
+        Ok(Strkey::PublicKeyEd25519(key)) => {
+            ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(key.0))))
+        }
+        Ok(Strkey::Contract(contract)) => ScAddress::Contract(ContractId(Hash(contract.0))),
+        _ => {
+            return Err(Error::InvalidInput(format!(
+                "invalid Stellar executor address: {executor}"
+            )))
+        }
+    };
+    ScVal::Map(Some(ScMap(
+        VecM::try_from(vec![
+            ScMapEntry {
+                key: symbol("executor")?,
+                val: ScVal::Address(address),
+            },
+            ScMapEntry {
+                key: symbol("max_message_size")?,
+                val: ScVal::U32(max_message_size),
+            },
+        ])
+        .map_err(|error| Error::InvalidInput(format!("executor config map too large: {error}")))?,
+    )))
+    .to_xdr(Limits::none())
+    .map_err(|error| Error::InvalidInput(format!("xdr encode failed: {error}")))
+}
+
+fn stellar_map_value<'a>(
+    value: &'a stellar_baselib::xdr::ScVal,
+    key: &str,
+) -> Result<&'a stellar_baselib::xdr::ScVal> {
+    use stellar_baselib::xdr::ScVal;
+    let ScVal::Map(Some(map)) = value else {
+        return Err(Error::InvalidInput("expected Soroban map".into()));
+    };
+    map.0
+        .iter()
+        .find_map(|entry| match &entry.key {
+            ScVal::Symbol(symbol) if symbol.0.as_slice() == key.as_bytes() => Some(&entry.val),
+            _ => None,
+        })
+        .ok_or_else(|| Error::InvalidInput(format!("Soroban map is missing {key}")))
+}
+
+fn stellar_address_string(value: &stellar_baselib::xdr::ScVal) -> Result<String> {
+    use stellar_baselib::{
+        address::{Address, AddressTrait as _},
+        xdr::ScVal,
+    };
+    let ScVal::Address(address) = value else {
+        return Err(Error::InvalidInput("expected Soroban address".into()));
+    };
+    Address::from_sc_address(address)
+        .map(|address| address.to_string())
+        .map_err(|error| Error::InvalidInput(format!("invalid Soroban address: {error}")))
+}
+
+pub fn decode_stellar_effective_uln_config(encoded: &[u8]) -> Result<UlnConfigType3V1> {
+    use stellar_baselib::xdr::{Limits, ReadXdr as _, ScVal};
+
+    let value = ScVal::from_xdr(encoded, Limits::none())
+        .map_err(|error| Error::InvalidInput(format!("invalid Stellar ULN config XDR: {error}")))?;
+    let confirmations = match stellar_map_value(&value, "confirmations")? {
+        ScVal::U64(value) => u32::try_from(*value)
+            .map_err(|_| Error::InvalidInput("ULN confirmations exceed u32".into()))?,
+        _ => return Err(Error::InvalidInput("ULN confirmations are not u64".into())),
+    };
+    let threshold = match stellar_map_value(&value, "optional_dvn_threshold")? {
+        ScVal::U32(value) => u8::try_from(*value)
+            .map_err(|_| Error::InvalidInput("ULN optional threshold exceeds u8".into()))?,
+        _ => {
+            return Err(Error::InvalidInput(
+                "ULN optional threshold is not u32".into(),
+            ))
+        }
+    };
+    let addresses = |key| {
+        let ScVal::Vec(Some(values)) = stellar_map_value(&value, key)? else {
+            return Err(Error::InvalidInput(format!("ULN {key} is not a vector")));
+        };
+        values
+            .0
+            .iter()
+            .map(stellar_address_string)
+            .collect::<Result<Vec<_>>>()
+    };
+    Ok(UlnConfigType3V1 {
+        required_dvns: addresses("required_dvns")?,
+        optional_dvns: addresses("optional_dvns")?,
+        optional_threshold: threshold,
+        confirmations,
+        use_default_confirmations: false,
+        use_default_required_dvns: false,
+        use_default_optional_dvns: false,
+    })
+}
+
+pub fn decode_stellar_effective_executor_config(encoded: &[u8]) -> Result<ExecutorConfigType3V1> {
+    use stellar_baselib::xdr::{Limits, ReadXdr as _, ScVal};
+
+    let value = ScVal::from_xdr(encoded, Limits::none()).map_err(|error| {
+        Error::InvalidInput(format!("invalid Stellar executor config XDR: {error}"))
+    })?;
+    let max_message_size = match stellar_map_value(&value, "max_message_size")? {
+        ScVal::U32(value) => *value,
+        _ => {
+            return Err(Error::InvalidInput(
+                "executor max_message_size is not u32".into(),
+            ))
+        }
+    };
+    Ok(ExecutorConfigType3V1 {
+        max_message_size,
+        executor: stellar_address_string(stellar_map_value(&value, "executor")?)?,
+    })
+}
+
+/// `EndpointV2.setConfig`.
+pub fn encode_evm_uln_config(
+    confirmations: u64,
+    required_dvns: &[String],
+    optional_dvns: &[String],
+    optional_dvn_threshold: u8,
+) -> Result<Vec<u8>> {
+    use alloy::{primitives::Address, sol_types::SolValue as _};
+
+    let parse = |values: &[String]| {
+        values
+            .iter()
+            .map(|value| {
+                value.parse::<Address>().map_err(|error| {
+                    Error::InvalidInput(format!("invalid EVM DVN address {value}: {error}"))
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    };
+    let required_count = u8::try_from(required_dvns.len())
+        .map_err(|_| Error::InvalidInput("too many required DVNs".into()))?;
+    let optional_count = u8::try_from(optional_dvns.len())
+        .map_err(|_| Error::InvalidInput("too many optional DVNs".into()))?;
+    if optional_dvn_threshold > optional_count {
+        return Err(Error::InvalidInput(
+            "optional threshold exceeds optional DVN count".into(),
+        ));
+    }
+    Ok(EvmUlnConfigAbi {
+        confirmations,
+        requiredDVNCount: required_count,
+        optionalDVNCount: optional_count,
+        optionalDVNThreshold: optional_dvn_threshold,
+        requiredDVNs: parse(required_dvns)?,
+        optionalDVNs: parse(optional_dvns)?,
+    }
+    .abi_encode())
+}
+
+/// ABI-encodes the official EVM ULN-302 executor config tuple.
+pub fn encode_evm_executor_config(max_message_size: u32, executor: &str) -> Result<Vec<u8>> {
+    use alloy::{primitives::Address, sol_types::SolValue as _};
+    let executor = executor.parse::<Address>().map_err(|error| {
+        Error::InvalidInput(format!("invalid EVM executor address {executor}: {error}"))
+    })?;
+    Ok(EvmExecutorConfigAbi {
+        maxMessageSize: max_message_size,
+        executor,
+    }
+    .abi_encode())
+}
+
+/// Decodes the official EVM ULN-302 ABI tuple and verifies its redundant
+/// counts and threshold.
+pub fn decode_evm_uln_config(encoded: &[u8]) -> Result<EvmUlnConfig> {
+    use alloy::sol_types::SolValue as _;
+    let config = EvmUlnConfigAbi::abi_decode(encoded)
+        .map_err(|error| Error::InvalidInput(format!("invalid EVM ULN config ABI: {error}")))?;
+    if usize::from(config.requiredDVNCount) != config.requiredDVNs.len()
+        || usize::from(config.optionalDVNCount) != config.optionalDVNs.len()
+        || config.optionalDVNThreshold > config.optionalDVNCount
+    {
+        return Err(Error::InvalidInput(
+            "EVM ULN config counts or threshold do not match its DVN arrays".into(),
+        ));
+    }
+    Ok(EvmUlnConfig {
+        confirmations: config.confirmations,
+        required_dvns: config
+            .requiredDVNs
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        optional_dvns: config
+            .optionalDVNs
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        optional_dvn_threshold: config.optionalDVNThreshold,
+    })
+}
+
+/// Decodes the official EVM ULN-302 executor config tuple.
+pub fn decode_evm_executor_config(encoded: &[u8]) -> Result<EvmExecutorConfig> {
+    use alloy::sol_types::SolValue as _;
+    let config = EvmExecutorConfigAbi::abi_decode(encoded).map_err(|error| {
+        Error::InvalidInput(format!("invalid EVM executor config ABI: {error}"))
+    })?;
+    Ok(EvmExecutorConfig {
+        max_message_size: config.maxMessageSize,
+        executor: config.executor.to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------

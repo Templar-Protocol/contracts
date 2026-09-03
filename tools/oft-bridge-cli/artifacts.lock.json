@@ -4,7 +4,7 @@
   "layerzero_source": {
     "remote": "https://github.com/LayerZero-Labs/monorepo-external",
     "commit": "a877e3fb45f3a0629e8332073f9d7a41260a9b08",
-    "source_archive_sha256": null
+    "source_archive_sha256": "b2785648782a61617b4eaa9b1bb01d5e9ca83cde2d2bab5d1946c93eb5415260"
   },
   "stellar": {
     "rust_toolchain": "1.90.0",
@@ -15,6 +15,16 @@
   "evm": {
     "oft_evm_version": "4.0.1",
     "solc": "0.8.23",
+    "oft_evm_integrity": "sha512-GjjfnUbx77TnFFKALVRXJYb1bt1jvarcyyx/AQo6sZfJng5DIqzI9wDxEGlUz03tEnsS6ZOOLBsH+e/hYsruiA==",
+    "oapp_evm_version": "0.4.1",
+    "oapp_evm_integrity": "sha512-eOoDepVSrUlVNIlnkH0Vd5Vt4lXBkSBh6Bb16vsLbaN9AryBjy4GDpsE7K4c8iWTFL9BiBXGsV7nJTkgqi+xRQ==",
+    "message_lib_version": "3.0.168",
+    "message_lib_integrity": "sha512-tNrpfDu9nhB+/onG3Qzby0PFqi21HpW9dI9oa4HulW5/VfiMQllj2gKOX+BEemokdq2JQhAHvj8dTkp0euXPPg==",
+    "protocol_version": "3.0.168",
+    "protocol_integrity": "sha512-1m9uZDcROJrFjjFZ06J6kmXIqFoJ4r2VH95bL5wsKjkmffNrRYyxbTr2pael7EP8dcq55HpCKc9dg4G1SfTOVQ==",
+    "openzeppelin_version": "5.6.1",
+    "openzeppelin_integrity": "sha512-Ly6SlsVJ3mj+b18W3R8gNufB7dTICT105fJhodGAGgyC2oqnBAhqSiNDJ8V8DLY05cCz81GLI0CU5vNYA1EC/w==",
+    "openzeppelin_upgradeable_integrity": "sha512-n4a/vfRs114lXyUdYg7pyY8LvFKWvCDF5lEcRRAVxap8g6ZEdLqm+9tmt2zTtRHcNMxTYp9y5t6KBof4tHp7Og==",
     "optimizer": true,
     "optimizer_runs": 200,
     "wrapper_source_sha256": "5014a29ca9731b989eb1156829af4c4ca761b47e2ff1924f96a9ada15052eeab",

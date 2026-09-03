@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 
-use crate::error::{Error, Result};
+use crate::{
+    domain::{Direction, MessageRecordV1, MessageStageV1},
+    error::{Error, Result},
+};
 
 /// Uniquely identifies an appended packet record:
 /// `(source_eid, sender, nonce, guid)`.
@@ -122,6 +125,140 @@ pub fn reconcile(observed: &ObservedCustody, deltas: &StageDeltas) -> Result<Rec
     })
 }
 
+fn parse_raw(value: &str, field: &str) -> Result<u128> {
+    value.parse().map_err(|_| {
+        Error::Custody(format!(
+            "message {field} must be a canonical nonnegative decimal integer"
+        ))
+    })
+}
+
+fn packet_records(messages: &[MessageRecordV1]) -> Result<(Vec<PacketRecord>, u128, u128)> {
+    let mut records = Vec::with_capacity(messages.len());
+    let mut retained = 0u128;
+    let mut external = 0u128;
+    for message in messages {
+        let nonce = message
+            .nonce
+            .parse::<u64>()
+            .map_err(|_| Error::Custody("message nonce is not a u64 decimal integer".into()))?;
+        let header = hex::decode(message.packet_header.trim_start_matches("0x"))
+            .map_err(|_| Error::Custody("message packet_header is not hex".into()))?;
+        if header.len() != 81 || header[0] != 1 {
+            return Err(Error::Custody(
+                "message packet_header must be the 81-byte LayerZero v1 header".into(),
+            ));
+        }
+        let header_nonce = u64::from_be_bytes(
+            header[1..9]
+                .try_into()
+                .map_err(|_| Error::Custody("message header nonce is malformed".into()))?,
+        );
+        let header_source_eid = u32::from_be_bytes(
+            header[9..13]
+                .try_into()
+                .map_err(|_| Error::Custody("message header source EID is malformed".into()))?,
+        );
+        if header_nonce != nonce || header_source_eid != message.source_eid {
+            return Err(Error::Custody(
+                "message identity differs from its packet header".into(),
+            ));
+        }
+        let sender: [u8; 32] = header[13..45]
+            .try_into()
+            .map_err(|_| Error::Custody("message header sender is malformed".into()))?;
+        let guid = decode_key(&message.guid, "guid")?;
+        let stage = message
+            .status_events
+            .iter()
+            .rev()
+            .find(|event| event.stage != MessageStageV1::Reobserved)
+            .ok_or_else(|| {
+                Error::Custody(format!("message {} has no custody stage", message.guid))
+            })?
+            .stage;
+        let (stage, amount_raw) = match (message.direction, stage) {
+            (Direction::StellarToEvm, MessageStageV1::ForwardSourceAccepted) => {
+                (PacketStage::Delivered, 0)
+            }
+            (
+                Direction::StellarToEvm,
+                MessageStageV1::ForwardLocked
+                | MessageStageV1::ForwardVerified
+                | MessageStageV1::ForwardCommitted,
+            ) => (
+                PacketStage::ForwardLocked,
+                parse_raw(&message.net_locked_raw, "net_locked_raw")?,
+            ),
+            (Direction::StellarToEvm, MessageStageV1::ForwardMinted)
+            | (Direction::EvmToStellar, MessageStageV1::ReverseUnlocked) => {
+                (PacketStage::Delivered, 0)
+            }
+            (Direction::EvmToStellar, MessageStageV1::ReverseSourceAccepted) => {
+                (PacketStage::Delivered, 0)
+            }
+            (
+                Direction::EvmToStellar,
+                MessageStageV1::ReverseBurned
+                | MessageStageV1::ReverseVerified
+                | MessageStageV1::ReverseCommitted,
+            ) => (
+                PacketStage::ReverseAfterBurn,
+                parse_raw(&message.burned_raw, "burned_raw")?,
+            ),
+            _ => {
+                return Err(Error::Custody(format!(
+                    "message {} has a stage inconsistent with its direction",
+                    message.guid
+                )))
+            }
+        };
+        retained = retained
+            .checked_add(parse_raw(&message.dust_raw, "dust_raw")?)
+            .ok_or_else(|| Error::Custody("retained dust overflow".into()))?;
+        external = external
+            .checked_add(parse_raw(&message.external_fee_raw, "external_fee_raw")?)
+            .ok_or_else(|| Error::Custody("external fee overflow".into()))?;
+        records.push(PacketRecord {
+            key: PacketKey {
+                source_eid: message.source_eid,
+                sender,
+                nonce,
+                guid,
+            },
+            stage,
+            amount_raw,
+        });
+    }
+    Ok((records, retained, external))
+}
+
+fn decode_key(value: &str, field: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode(value.trim_start_matches("0x"))
+        .map_err(|_| Error::Custody(format!("message {field} is not hex")))?;
+    bytes
+        .try_into()
+        .map_err(|_| Error::Custody(format!("message {field} must be 32 bytes")))
+}
+
+fn observed_value(
+    route: &crate::domain::RouteStateV1,
+    key: &str,
+    fallback: u128,
+    messages_present: bool,
+) -> Result<u128> {
+    match route.effective_config.get(key) {
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| Error::Custody(format!("{key} observation must be a decimal string")))
+            .and_then(|value| parse_raw(value, key)),
+        None if messages_present => Err(Error::Custody(format!(
+            "current {key} observation is required when packet history is nonempty"
+        ))),
+        None => Ok(fallback),
+    }
+}
+
 /// `reconcile` command: verifies log integrity then reports custody from
 /// state-bound observations. Fails closed when opening custody is absent.
 pub fn run_command(
@@ -131,18 +268,31 @@ pub fn run_command(
     let store = crate::state::RouteStore::open(state)?;
     let route = store.load_state()?;
     store.verify_log::<crate::state::OperationEventV1>(&route.operations_log, "operations")?;
-    let Some(opening) = route.opening_custody else {
+    let Some(opening) = route.opening_custody.as_ref() else {
         return Err(Error::Custody(
             "opening custody is not finalized; reconciliation requires adopted baseline".into(),
         ));
     };
+    let messages = store.load_messages()?;
+    let (records, retained, external) = packet_records(&messages)?;
+    let deltas = aggregate(&records)?;
     let observed = ObservedCustody {
-        observed_lockbox_raw: opening.lockbox_raw,
-        normalized_evm_supply_raw: opening.evm_supply_raw,
-        lockbox_retained_fee_or_dust_raw: 0,
-        external_fee_reported_raw: 0,
+        observed_lockbox_raw: observed_value(
+            &route,
+            "custody:observed_lockbox_raw",
+            opening.lockbox_raw,
+            !messages.is_empty(),
+        )?,
+        normalized_evm_supply_raw: observed_value(
+            &route,
+            "custody:normalized_evm_supply_raw",
+            opening.evm_supply_raw,
+            !messages.is_empty(),
+        )?,
+        lockbox_retained_fee_or_dust_raw: retained,
+        external_fee_reported_raw: external,
     };
-    let report = reconcile(&observed, &StageDeltas::default())?;
+    let report = reconcile(&observed, &deltas)?;
     if fail_on_deficit && report.deficit_raw > 0 {
         return Err(Error::Custody(format!(
             "custody deficit {} raw; failing per --fail-on-deficit",
@@ -153,6 +303,11 @@ pub fn run_command(
         result: serde_json::json!({
             "expected_lockbox_raw": report.expected_lockbox_raw.to_string(),
             "observed_lockbox_raw": report.observed_lockbox_raw.to_string(),
+            "normalized_evm_supply_raw": observed.normalized_evm_supply_raw.to_string(),
+            "pending_forward_raw": deltas.pending_forward_raw.to_string(),
+            "pending_reverse_raw": deltas.pending_reverse_raw.to_string(),
+            "lockbox_retained_fee_or_dust_raw": retained.to_string(),
+            "external_fee_reported_raw": external.to_string(),
             "deficit_raw": report.deficit_raw.to_string(),
             "surplus_raw": report.surplus_raw.to_string()
         }),
@@ -160,18 +315,4 @@ pub fn run_command(
     })
 }
 
-/// `health` command: stable custody/config health over verified state.
-pub fn health_command(state: &std::path::Path) -> Result<crate::output::CommandData> {
-    let store = crate::state::RouteStore::open(state)?;
-    let route = store.load_state()?;
-    store.verify_log::<crate::state::OperationEventV1>(&route.operations_log, "operations")?;
-    Ok(crate::output::CommandData {
-        result: serde_json::json!({
-            "route_id": route.route_id,
-            "opening_custody_finalized": route.opening_custody.is_some(),
-            "log_chain_verified": true,
-            "whole_directory_rollback_residual_risk": true
-        }),
-        artifact: None,
-    })
-}
+

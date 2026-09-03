@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use soroban_client::keypair::{Keypair, KeypairBehavior};
-use stellar_strkey::ed25519::PrivateKey;
+use stellar_strkey::{ed25519::PrivateKey, Strkey};
 use zeroize::Zeroizing;
 
 use crate::domain::{Environment, OperationV1};
@@ -356,6 +356,50 @@ pub struct StellarSimulationV1 {
     pub simulation_ledger: u32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StellarTransactionStatusV1 {
+    pub status: String,
+    pub ledger: Option<u32>,
+    pub envelope_xdr: Option<String>,
+}
+pub fn envelope_transaction_hash(envelope_xdr: &str, network_passphrase: &str) -> Result<String> {
+    use stellar_baselib::transaction::{Transaction, TransactionBehavior as _};
+
+    std::panic::catch_unwind(|| {
+        hex::encode(Transaction::from_xdr_envelope(envelope_xdr, network_passphrase).hash())
+    })
+    .map_err(|_| Error::InvalidInput("invalid Stellar transaction envelope XDR".into()))
+}
+
+/// Signs one assembled envelope with the named secret provider. The seed is
+/// zeroized by the provider and never returned.
+pub fn sign_envelope(
+    envelope_xdr: &str,
+    network_passphrase: &str,
+    signer: &StellarSecretProviderV1,
+) -> Result<String> {
+    use stellar_baselib::{
+        keypair::KeypairBehavior as _,
+        transaction::{Transaction, TransactionBehavior as _},
+        xdr::{Limits, WriteXdr as _},
+    };
+
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(signer.seed());
+    let keypair = Keypair::from_raw_ed25519_seed(&seed)
+        .map_err(|error| Error::InvalidInput(format!("invalid Stellar seed: {error}")))?;
+    let mut transaction = std::panic::catch_unwind(|| {
+        Transaction::from_xdr_envelope(envelope_xdr, network_passphrase)
+    })
+    .map_err(|_| Error::InvalidInput("invalid Stellar envelope XDR".into()))?;
+    transaction.sign(&[keypair]);
+    transaction
+        .to_envelope()
+        .map_err(|error| Error::Chain(format!("signed Stellar envelope failed: {error}")))?
+        .to_xdr_base64(Limits::none())
+        .map_err(|error| Error::Chain(format!("signed Stellar envelope XDR failed: {error}")))
+}
+
 /// Observable Stellar chain boundary for proposal construction. Live reads
 /// beyond passphrase/ledger/sequence remain pending the native-mutation
 /// qualification gate and fail closed with a typed refusal — never a
@@ -363,10 +407,41 @@ pub struct StellarSimulationV1 {
 pub trait StellarChain {
     /// RPC-reported network passphrase.
     fn network_passphrase(&self) -> Result<String>;
+    /// WASM code hash bound by the deployed contract instance.
+    fn contract_code_hash(&self, _contract: &str) -> Result<String> {
+        Err(Error::Chain(
+            "contract code-hash readback is unsupported by this Stellar adapter".into(),
+        ))
+    }
+    fn contract_code_hash_optional(&self, contract: &str) -> Result<Option<String>> {
+        self.contract_code_hash(contract).map(Some)
+    }
+    /// Current expiration ledger for the contract-instance entry.
+    fn contract_instance_live_until(&self, _contract: &str) -> Result<u32> {
+        Err(Error::Chain(
+            "contract instance TTL readback is unsupported by this Stellar adapter".into(),
+        ))
+    }
+    /// Whether the exact WASM hash exists in network contract-code storage.
+    fn wasm_installed(&self, _wasm_sha256: &str) -> Result<bool> {
+        Err(Error::Chain(
+            "WASM install readback is unsupported by this Stellar adapter".into(),
+        ))
+    }
     /// Live EndpointV2 `eid()` view for the configured endpoint.
-    fn endpoint_eid(&self, endpoint: &str) -> Result<u32>;
+    fn endpoint_eid(&self, endpoint: &str, source: &str) -> Result<u32>;
     /// Current account sequence as a decimal string.
     fn account_sequence(&self, account: &str) -> Result<String>;
+    /// Simulates a read-only contract invocation using XDR-encoded arguments.
+    fn invoke_view(
+        &self,
+        contract: &str,
+        function: &str,
+        args_xdr_hex: &[String],
+        source: &str,
+    ) -> Result<stellar_baselib::xdr::ScVal>;
+    /// Reads a Stellar asset-contract balance.
+    fn token_balance(&self, token: &str, address: &str, source: &str) -> Result<String>;
     /// Live signer weights for `account`, keyed by public key.
     fn account_signers(&self, account: &str) -> Result<std::collections::BTreeMap<String, u32>>;
     /// Required threshold weight for `level` (`low`/`medium`/`high`).
@@ -381,12 +456,17 @@ pub trait StellarChain {
     /// refusals, never silent markers.
     fn simulate_transaction(
         &self,
+        state: &crate::domain::RouteStateV1,
         operation: &OperationV1,
         source: &str,
         sequence: &str,
         min_ledger: u32,
         max_ledger: u32,
     ) -> Result<StellarSimulationV1>;
+    /// Submits an already-signed assembled envelope.
+    fn submit_transaction(&self, signed_envelope_xdr: &str) -> Result<String>;
+    /// Polls transaction status by network hash.
+    fn transaction_status(&self, transaction_hash: &str) -> Result<StellarTransactionStatusV1>;
 }
 
 /// Live Soroban RPC implementation of [`StellarChain`] over
@@ -395,6 +475,91 @@ pub trait StellarChain {
 /// views wait on the pinned qualification gate.
 pub struct HttpStellarChain {
     server: soroban_client::Server,
+    artifact_root: Option<std::path::PathBuf>,
+}
+
+const MAX_SIMULATION_XDR_BYTES: usize = 1_048_576;
+const MAX_SIMULATION_AUTH_ENTRIES: usize = 64;
+
+fn checked_simulation_result(
+    response: &soroban_client::soroban_rpc::SimulateTransactionResponse,
+) -> Result<(
+    stellar_baselib::xdr::ScVal,
+    Vec<stellar_baselib::xdr::SorobanAuthorizationEntry>,
+)> {
+    use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+    use stellar_baselib::xdr::{Limits, ReadXdr as _, ScVal, SorobanAuthorizationEntry};
+
+    let raw = serde_json::to_value(response)?;
+    for field in ["transactionData"] {
+        if raw
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.len() > MAX_SIMULATION_XDR_BYTES * 2)
+        {
+            return Err(Error::Chain(format!(
+                "Stellar simulation {field} exceeds the bounded parser limit"
+            )));
+        }
+    }
+    let results = raw
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Chain("Stellar simulation returned no results".into()))?;
+    if results.len() != 1 {
+        return Err(Error::Chain(format!(
+            "Stellar simulation returned {} results; expected exactly one",
+            results.len()
+        )));
+    }
+    let decode = |value: &str, label: &str| {
+        if value.len() > MAX_SIMULATION_XDR_BYTES * 2 {
+            return Err(Error::Chain(format!(
+                "Stellar simulation {label} exceeds the bounded parser limit"
+            )));
+        }
+        let bytes = BASE64_STANDARD
+            .decode(value)
+            .map_err(|_| Error::Chain(format!("Stellar simulation {label} is not base64")))?;
+        if bytes.len() > MAX_SIMULATION_XDR_BYTES {
+            return Err(Error::Chain(format!(
+                "Stellar simulation {label} exceeds the bounded parser limit"
+            )));
+        }
+        Ok(bytes)
+    };
+    let result = &results[0];
+    let value = result
+        .get("xdr")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Chain("Stellar simulation result omitted XDR".into()))?;
+    let value = ScVal::from_xdr(decode(value, "result XDR")?, Limits::none()).map_err(|error| {
+        Error::Chain(format!("Stellar simulation result XDR is invalid: {error}"))
+    })?;
+    let auth = result
+        .get("auth")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Chain("Stellar simulation result omitted authorization".into()))?;
+    if auth.len() > MAX_SIMULATION_AUTH_ENTRIES {
+        return Err(Error::Chain(
+            "Stellar simulation returned too many authorization entries".into(),
+        ));
+    }
+    let auth = auth
+        .iter()
+        .map(|value| {
+            let value = value.as_str().ok_or_else(|| {
+                Error::Chain("Stellar simulation authorization is not a string".into())
+            })?;
+            SorobanAuthorizationEntry::from_xdr(decode(value, "authorization XDR")?, Limits::none())
+                .map_err(|error| {
+                    Error::Chain(format!(
+                        "Stellar simulation authorization XDR is invalid: {error}"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((value, auth))
 }
 
 impl HttpStellarChain {
@@ -406,20 +571,92 @@ impl HttpStellarChain {
                 "Stellar RPC URL must be https in v1".into(),
             ));
         }
-        let server = soroban_client::Server::new(url, soroban_client::Options::default())
+        let mut options = soroban_client::Options::default();
+        options.headers = crate::config::rpc_headers()
+            .into_iter()
+            .map(|(name, value)| (name, value.to_string()))
+            .collect();
+        let server = soroban_client::Server::new(url, options)
             .map_err(|error| Error::Chain(format!("stellar rpc connect failed: {error}")))?;
-        Ok(Self { server })
+        Ok(Self {
+            server,
+            artifact_root: None,
+        })
+    }
+
+    #[must_use]
+    pub fn with_artifact_root(mut self, root: &std::path::Path) -> Self {
+        self.artifact_root = Some(root.to_path_buf());
+        self
+    }
+
+    fn account_entry(&self, account: &str) -> Result<stellar_baselib::xdr::AccountEntry> {
+        use stellar_baselib::xdr::{LedgerEntryData, LedgerKey, LedgerKeyAccount};
+
+        let account_id = Keypair::from_public_key(account)
+            .map_err(|error| Error::InvalidInput(format!("invalid Stellar account: {error}")))?
+            .xdr_account_id();
+        let response = rpc(crate::block_on(self.server.get_ledger_entries(vec![
+            LedgerKey::Account(LedgerKeyAccount { account_id }),
+        ]))?)?;
+        let entry = response
+            .entries
+            .and_then(|mut entries| entries.pop())
+            .ok_or_else(|| Error::Chain(format!("Stellar account not found: {account}")))?;
+        let data = std::panic::catch_unwind(|| entry.to_data())
+            .map_err(|_| Error::Chain("stellar RPC returned malformed account XDR".into()))?;
+        match data {
+            LedgerEntryData::Account(account) => Ok(account),
+            _ => Err(Error::Chain(
+                "stellar RPC returned a non-account ledger entry".into(),
+            )),
+        }
+    }
+
+    fn simulate_view(
+        &self,
+        contract: &str,
+        function: &str,
+        args: Vec<stellar_baselib::xdr::ScVal>,
+        source: &str,
+    ) -> Result<stellar_baselib::xdr::ScVal> {
+        use stellar_baselib::{
+            account::{Account, AccountBehavior as _},
+            operation::Operation,
+            transaction_builder::{TransactionBuilder, TransactionBuilderBehavior as _},
+            xdr::LedgerBounds,
+        };
+
+        let sequence = self.account_sequence(source)?;
+        let mut account = Account::new(source, &sequence)
+            .map_err(|error| Error::InvalidInput(format!("invalid source account: {error}")))?;
+        let operation = Operation::new()
+            .invoke_contract(contract, function, args, None)
+            .map_err(|error| Error::InvalidInput(format!("invalid contract view: {error:?}")))?;
+        let latest = self.latest_ledger()?;
+        let mut builder = TransactionBuilder::new(&mut account, &self.network_passphrase()?, None);
+        builder
+            .fee(100u32)
+            .set_ledger_bounds(LedgerBounds {
+                min_ledger: latest,
+                max_ledger: latest.saturating_add(1_000),
+            })
+            .add_operation(operation);
+        let transaction = builder.build_for_simulation();
+        let response = rpc(crate::block_on(
+            self.server.simulate_transaction(&transaction, None),
+        )?)?;
+        if let Some(error) = response.error {
+            return Err(Error::Chain(format!(
+                "Stellar contract view failed: {error}"
+            )));
+        }
+        checked_simulation_result(&response).map(|(value, _)| value)
     }
 }
 
 fn rpc<T>(result: std::result::Result<T, soroban_client::error::Error>) -> Result<T> {
     result.map_err(|error| Error::Chain(format!("stellar rpc call failed: {error:?}")))
-}
-
-fn pending_qualification(what: &str) -> Error {
-    Error::Chain(format!(
-        "stellar live read '{what}' is disabled pending the native-mutation qualification gate"
-    ))
 }
 
 impl StellarChain for HttpStellarChain {
@@ -430,8 +667,152 @@ impl StellarChain for HttpStellarChain {
             .ok_or_else(|| Error::Chain("stellar rpc omitted network passphrase".into()))
     }
 
-    fn endpoint_eid(&self, _endpoint: &str) -> Result<u32> {
-        Err(pending_qualification("endpoint_eid"))
+    fn contract_code_hash(&self, contract: &str) -> Result<String> {
+        use stellar_baselib::xdr::{
+            ContractDataDurability, ContractExecutable, ContractId, Hash, LedgerEntryData,
+            LedgerKey, LedgerKeyContractData, ScAddress, ScVal,
+        };
+        use stellar_strkey::Strkey;
+
+        let id = match Strkey::from_str(contract) {
+            Ok(Strkey::Contract(id)) => id.0,
+            _ => {
+                return Err(Error::InvalidInput(format!(
+                    "Stellar contract address must be a C... strkey: {contract}"
+                )))
+            }
+        };
+        let response = rpc(crate::block_on(self.server.get_ledger_entries(vec![
+            LedgerKey::ContractData(LedgerKeyContractData {
+                contract: ScAddress::Contract(ContractId(Hash(id))),
+                key: ScVal::LedgerKeyContractInstance,
+                durability: ContractDataDurability::Persistent,
+            }),
+        ]))?)?;
+        let entry = response
+            .entries
+            .and_then(|mut entries| entries.pop())
+            .ok_or_else(|| Error::Chain(format!("Stellar contract not found: {contract}")))?;
+        let data = std::panic::catch_unwind(|| entry.to_data()).map_err(|_| {
+            Error::Chain("stellar RPC returned malformed contract instance XDR".into())
+        })?;
+        let LedgerEntryData::ContractData(contract_data) = data else {
+            return Err(Error::Chain(
+                "stellar RPC returned a non-contract-data ledger entry".into(),
+            ));
+        };
+        if contract_data.key != ScVal::LedgerKeyContractInstance {
+            return Err(Error::Chain(
+                "stellar RPC returned a contract-data entry with an unexpected key".into(),
+            ));
+        }
+        match contract_data.val {
+            ScVal::ContractInstance(instance) => match instance.executable {
+                ContractExecutable::Wasm(hash) => Ok(hex::encode(hash.0)),
+                ContractExecutable::StellarAsset => Err(Error::Chain(format!(
+                    "Stellar contract {contract} is an asset contract and has no WASM code"
+                ))),
+            },
+            _ => Err(Error::Chain(
+                "stellar RPC returned an instance entry without an instance value".into(),
+            )),
+        }
+    }
+
+    fn contract_code_hash_optional(&self, contract: &str) -> Result<Option<String>> {
+        match self.contract_code_hash(contract) {
+            Ok(hash) => Ok(Some(hash)),
+            Err(Error::Chain(message))
+                if message == format!("Stellar contract not found: {contract}") =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn contract_instance_live_until(&self, contract: &str) -> Result<u32> {
+        use stellar_baselib::xdr::{
+            ContractDataDurability, ContractId, Hash, LedgerKey, LedgerKeyContractData, ScAddress,
+            ScVal,
+        };
+        use stellar_strkey::Strkey;
+
+        let id = match Strkey::from_str(contract) {
+            Ok(Strkey::Contract(id)) => id.0,
+            _ => {
+                return Err(Error::InvalidInput(format!(
+                    "Stellar contract address must be a C... strkey: {contract}"
+                )))
+            }
+        };
+        let response = rpc(crate::block_on(self.server.get_ledger_entries(vec![
+            LedgerKey::ContractData(LedgerKeyContractData {
+                contract: ScAddress::Contract(ContractId(Hash(id))),
+                key: ScVal::LedgerKeyContractInstance,
+                durability: ContractDataDurability::Persistent,
+            }),
+        ]))?)?;
+        response
+            .entries
+            .and_then(|mut entries| entries.pop())
+            .and_then(|entry| entry.live_until_ledger_seq)
+            .ok_or_else(|| Error::Chain(format!("Stellar contract TTL not found: {contract}")))
+    }
+
+    fn wasm_installed(&self, wasm_sha256: &str) -> Result<bool> {
+        use stellar_baselib::xdr::{Hash, LedgerKey, LedgerKeyContractCode};
+
+        let hash: [u8; 32] = hex::decode(wasm_sha256.trim_start_matches("0x"))
+            .map_err(|_| Error::InvalidInput("Stellar WASM hash is not hex".into()))?
+            .try_into()
+            .map_err(|_| Error::InvalidInput("Stellar WASM hash must be 32 bytes".into()))?;
+        let response = rpc(crate::block_on(self.server.get_ledger_entries(vec![
+            LedgerKey::ContractCode(LedgerKeyContractCode { hash: Hash(hash) }),
+        ]))?)?;
+        Ok(response.entries.is_some_and(|entries| !entries.is_empty()))
+    }
+
+    fn endpoint_eid(&self, endpoint: &str, source: &str) -> Result<u32> {
+        use stellar_baselib::{
+            account::{Account, AccountBehavior as _},
+            operation::Operation,
+            transaction_builder::{TransactionBuilder, TransactionBuilderBehavior as _},
+            xdr::{LedgerBounds, ScVal},
+        };
+
+        let sequence = self.account_sequence(source)?;
+        let mut account = Account::new(source, &sequence)
+            .map_err(|error| Error::InvalidInput(format!("invalid source account: {error}")))?;
+        let operation = Operation::new()
+            .invoke_contract(endpoint, "eid", vec![], None)
+            .map_err(|error| {
+                Error::InvalidInput(format!("invalid endpoint invocation: {error:?}"))
+            })?;
+        let latest = self.latest_ledger()?;
+        let mut builder = TransactionBuilder::new(&mut account, &self.network_passphrase()?, None);
+        builder
+            .fee(100u32)
+            .set_ledger_bounds(LedgerBounds {
+                min_ledger: latest,
+                max_ledger: latest.saturating_add(1_000),
+            })
+            .add_operation(operation);
+        let transaction = builder.build_for_simulation();
+        let simulation = rpc(crate::block_on(
+            self.server.simulate_transaction(&transaction, None),
+        )?)?;
+        if let Some(error) = simulation.error {
+            return Err(Error::Chain(format!(
+                "endpoint eid simulation failed: {error}"
+            )));
+        }
+        match checked_simulation_result(&simulation)?.0 {
+            ScVal::U32(eid) => Ok(eid),
+            _ => Err(Error::Chain(
+                "endpoint eid simulation returned a non-u32 result".into(),
+            )),
+        }
     }
 
     fn account_sequence(&self, account: &str) -> Result<String> {
@@ -440,12 +821,80 @@ impl StellarChain for HttpStellarChain {
         Ok(loaded.sequence_number())
     }
 
-    fn account_signers(&self, _account: &str) -> Result<std::collections::BTreeMap<String, u32>> {
-        Err(pending_qualification("account_signers"))
+    fn invoke_view(
+        &self,
+        contract: &str,
+        function: &str,
+        args_xdr_hex: &[String],
+        source: &str,
+    ) -> Result<stellar_baselib::xdr::ScVal> {
+        use stellar_baselib::xdr::{Limits, ReadXdr as _, ScVal};
+
+        let args = args_xdr_hex
+            .iter()
+            .map(|encoded| {
+                let bytes = hex::decode(encoded).map_err(|error| {
+                    Error::InvalidInput(format!("invalid view argument hex: {error}"))
+                })?;
+                ScVal::from_xdr(bytes, Limits::none()).map_err(|error| {
+                    Error::InvalidInput(format!("invalid view argument XDR: {error}"))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.simulate_view(contract, function, args, source)
     }
 
-    fn account_threshold(&self, _account: &str, _level: &str) -> Result<u32> {
-        Err(pending_qualification("account_threshold"))
+    fn token_balance(&self, token: &str, address: &str, source: &str) -> Result<String> {
+        use stellar_baselib::{
+            address::{Address, AddressTrait as _},
+            xdr::ScVal,
+        };
+
+        let address = Address::new(address)
+            .map_err(|error| Error::InvalidInput(format!("invalid balance address: {error}")))?;
+        let address = address
+            .to_sc_val()
+            .map_err(|error| Error::InvalidInput(error.into()))?;
+        match self.simulate_view(token, "balance", vec![address], source)? {
+            ScVal::I128(parts) => {
+                let value = (i128::from(parts.hi) << 64) | i128::from(parts.lo);
+                Ok(value.to_string())
+            }
+            _ => Err(Error::Chain(
+                "Stellar balance view returned a non-i128 result".into(),
+            )),
+        }
+    }
+    fn account_signers(&self, account: &str) -> Result<std::collections::BTreeMap<String, u32>> {
+        use stellar_baselib::xdr::SignerKey;
+
+        let entry = self.account_entry(account)?;
+        let mut signers = std::collections::BTreeMap::new();
+        signers.insert(account.to_string(), u32::from(entry.thresholds.0[0]));
+        for signer in entry.signers.iter() {
+            if let SignerKey::Ed25519(key) = &signer.key {
+                let public = format!(
+                    "{}",
+                    Strkey::PublicKeyEd25519(stellar_strkey::ed25519::PublicKey(key.0))
+                );
+                signers.insert(public, signer.weight);
+            }
+        }
+        Ok(signers)
+    }
+
+    fn account_threshold(&self, account: &str, level: &str) -> Result<u32> {
+        let index = match level {
+            "low" => 1,
+            "medium" => 2,
+            "high" => 3,
+            _ => {
+                return Err(Error::InvalidInput(format!(
+                    "unknown Stellar threshold level: {level}"
+                )))
+            }
+        };
+        Ok(u32::from(self.account_entry(account)?.thresholds.0[index]))
     }
 
     fn latest_ledger(&self) -> Result<u32> {
@@ -455,12 +904,281 @@ impl StellarChain for HttpStellarChain {
 
     fn simulate_transaction(
         &self,
-        _operation: &OperationV1,
-        _source: &str,
-        _sequence: &str,
-        _min_ledger: u32,
-        _max_ledger: u32,
+        state: &crate::domain::RouteStateV1,
+        operation: &OperationV1,
+        source_account: &str,
+        sequence: &str,
+        min_ledger: u32,
+        max_ledger: u32,
     ) -> Result<StellarSimulationV1> {
-        Err(pending_qualification("simulate_transaction"))
+        use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+        use sha2::{Digest as _, Sha256};
+        use soroban_client::transaction::assemble_transaction;
+        use stellar_baselib::transaction::TransactionBehavior as _;
+        use stellar_baselib::{
+            account::{Account, AccountBehavior as _},
+            operation::Operation,
+            transaction_builder::{TransactionBuilder, TransactionBuilderBehavior as _},
+            xdr::{LedgerBounds, Limits, ReadXdr as _, ScVal, WriteXdr as _},
+        };
+        let operation = match operation {
+            OperationV1::InstallStellarWasm { wasm_sha256 } => {
+                let root = self.artifact_root.as_ref().ok_or_else(|| {
+                    Error::Custody("Stellar artifact root is not configured".into())
+                })?;
+                let code = std::fs::read(
+                    root.join(".artifacts")
+                        .join(format!("stellar-{wasm_sha256}.wasm")),
+                )?;
+                if hex::encode(Sha256::digest(&code)) != *wasm_sha256 {
+                    return Err(Error::Custody(
+                        "preserved Stellar WASM digest mismatch".into(),
+                    ));
+                }
+                Operation::new().upload_wasm(&code, None).map_err(|error| {
+                    Error::InvalidInput(format!("invalid WASM upload: {error:?}"))
+                })?
+            }
+            OperationV1::DeployStellarOft {
+                deployer,
+                salt,
+                wasm_sha256,
+                token,
+                shared_decimals,
+                endpoint,
+                delegate,
+                expected_address,
+            } => {
+                let salt: [u8; 32] = hex::decode(salt)
+                    .map_err(|_| Error::InvalidInput("Stellar deployment salt is not hex".into()))?
+                    .try_into()
+                    .map_err(|_| {
+                        Error::InvalidInput("Stellar deployment salt must be 32 bytes".into())
+                    })?;
+                let wasm_hash: [u8; 32] = hex::decode(wasm_sha256)
+                    .map_err(|_| Error::InvalidInput("Stellar WASM hash is not hex".into()))?
+                    .try_into()
+                    .map_err(|_| {
+                        Error::InvalidInput("Stellar WASM hash must be 32 bytes".into())
+                    })?;
+                let derived = crate::codec::derive_stellar_contract_address(
+                    &state.identity.stellar_passphrase,
+                    deployer,
+                    &salt,
+                )?;
+                if &derived != expected_address || source_account != deployer {
+                    return Err(Error::Custody(
+                        "Stellar deployment address or source binding mismatch".into(),
+                    ));
+                }
+                let oft_type = ScVal::Vec(Some(stellar_baselib::xdr::ScVec(
+                    stellar_baselib::xdr::VecM::try_from(vec![
+                        stellar_baselib::xdr::ScVal::Symbol(stellar_baselib::xdr::ScSymbol(
+                            stellar_baselib::xdr::StringM::try_from(b"LockUnlock".to_vec())
+                                .map_err(|error| {
+                                    Error::InvalidInput(format!("invalid OFT type: {error}"))
+                                })?,
+                        )),
+                    ])
+                    .map_err(|error| Error::InvalidInput(format!("invalid OFT type: {error}")))?,
+                )));
+                Operation::new()
+                    .create_contract(
+                        deployer,
+                        wasm_hash,
+                        Some(salt),
+                        None,
+                        vec![
+                            crate::layerzero::stellar_address(token)?,
+                            ScVal::U32(u32::from(*shared_decimals)),
+                            oft_type,
+                            crate::layerzero::stellar_address(endpoint)?,
+                            crate::layerzero::stellar_address(delegate)?,
+                        ],
+                    )
+                    .map_err(|error| {
+                        Error::InvalidInput(format!(
+                            "invalid Stellar contract deployment: {error:?}"
+                        ))
+                    })?
+            }
+            _ => {
+                let target = match operation {
+                    OperationV1::CommitVerification {
+                        vm: crate::domain::Vm::Stellar,
+                        message,
+                    } => &message.current_receive_library,
+                    OperationV1::SetStellarSendLibrary { .. }
+                    | OperationV1::SetStellarReceiveLibrary { .. }
+                    | OperationV1::RemoveStellarReceiveLibraryTimeout { .. }
+                    | OperationV1::SetStellarUlnConfig { .. }
+                    | OperationV1::SetStellarExecutorConfig { .. } => {
+                        &state.identity.stellar_endpoint
+                    }
+                    _ => state.contracts.get("stellar_oft").ok_or_else(|| {
+                        Error::Custody("route has no recorded stellar_oft contract".into())
+                    })?,
+                };
+                let invocation =
+                    crate::layerzero::build_stellar_operation_for_route(state, operation)?;
+                let args = invocation
+                    .args_xdr_hex
+                    .iter()
+                    .map(|encoded| {
+                        let bytes = hex::decode(encoded).map_err(|error| {
+                            Error::InvalidInput(format!("invalid Stellar argument hex: {error}"))
+                        })?;
+                        ScVal::from_xdr(bytes, Limits::none()).map_err(|error| {
+                            Error::InvalidInput(format!("invalid Stellar argument XDR: {error}"))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Operation::new()
+                    .invoke_contract(target, &invocation.function, args, None)
+                    .map_err(|error| {
+                        Error::InvalidInput(format!("invalid Stellar invocation: {error:?}"))
+                    })?
+            }
+        };
+        let mut account = Account::new(source_account, sequence)
+            .map_err(|error| Error::InvalidInput(format!("invalid source account: {error}")))?;
+        let mut builder = TransactionBuilder::new(&mut account, &self.network_passphrase()?, None);
+        builder
+            .fee(100u32)
+            .set_ledger_bounds(LedgerBounds {
+                min_ledger,
+                max_ledger,
+            })
+            .add_operation(operation);
+        let transaction = builder.build_for_simulation();
+        let simulation = rpc(crate::block_on(
+            self.server.simulate_transaction(&transaction, None),
+        )?)?;
+        if let Some(error) = &simulation.error {
+            return Err(Error::Chain(format!(
+                "Stellar transaction simulation failed: {error}"
+            )));
+        }
+        if simulation.to_restore_transaction_data().is_some() {
+            return Err(Error::Policy(RESTORATION_REQUIRED.into()));
+        }
+        let (_, auth) = checked_simulation_result(&simulation)?;
+        if auth.iter().any(|entry| {
+            !matches!(
+                entry.credentials,
+                stellar_baselib::xdr::SorobanCredentials::SourceAccount
+            )
+        }) {
+            return Err(Error::Policy("address_contract_auth_unsupported_v1".into()));
+        }
+        let simulation_ledger = simulation.latest_ledger;
+        assemble_transaction(&transaction, simulation)
+            .map_err(|error| Error::Chain(format!("Stellar assembly failed: {error:?}")))?;
+        let envelope = transaction
+            .to_envelope()
+            .map_err(|error| Error::Chain(format!("Stellar envelope failed: {error}")))?;
+        let envelope_xdr = envelope
+            .to_xdr_base64(Limits::none())
+            .map_err(|error| Error::Chain(format!("Stellar envelope XDR failed: {error}")))?;
+        let envelope_bytes = BASE64_STANDARD.decode(&envelope_xdr).map_err(|error| {
+            Error::Chain(format!("Stellar envelope base64 decode failed: {error}"))
+        })?;
+        Ok(StellarSimulationV1 {
+            envelope_sha256: hex::encode(Sha256::digest(envelope_bytes)),
+            envelope_xdr,
+            auth_entries: auth
+                .iter()
+                .map(|entry| {
+                    entry.to_xdr_base64(Limits::none()).map_err(|error| {
+                        Error::Chain(format!("Stellar authorization XDR failed: {error}"))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            simulation_ledger,
+        })
+    }
+
+    fn submit_transaction(&self, signed_envelope_xdr: &str) -> Result<String> {
+        use stellar_baselib::transaction::{Transaction, TransactionBehavior as _};
+
+        let passphrase = self.network_passphrase()?;
+        let transaction = std::panic::catch_unwind(|| {
+            Transaction::from_xdr_envelope(signed_envelope_xdr, &passphrase)
+        })
+        .map_err(|_| Error::InvalidInput("invalid signed Stellar envelope XDR".into()))?;
+        let response = rpc(crate::block_on(self.server.send_transaction(transaction))?)?;
+        match response.status {
+            soroban_client::soroban_rpc::SendTransactionStatus::Pending => Ok(response.hash),
+            status => Err(Error::Chain(format!(
+                "Stellar transaction submission rejected with status {status:?}"
+            ))),
+        }
+    }
+
+    fn transaction_status(&self, transaction_hash: &str) -> Result<StellarTransactionStatusV1> {
+        use stellar_baselib::xdr::{Limits, WriteXdr as _};
+
+        let response = rpc(crate::block_on(
+            self.server.get_transaction(transaction_hash),
+        )?)?;
+        let status = match response.status {
+            soroban_client::soroban_rpc::TransactionStatus::Success => "success",
+            soroban_client::soroban_rpc::TransactionStatus::NotFound => "not_found",
+            soroban_client::soroban_rpc::TransactionStatus::Failed => "failed",
+        };
+        let envelope_xdr = response
+            .to_envelope()
+            .map(|envelope| envelope.to_xdr_base64(Limits::none()))
+            .transpose()
+            .map_err(|error| {
+                Error::Chain(format!("transaction envelope encode failed: {error}"))
+            })?;
+        Ok(StellarTransactionStatusV1 {
+            status: status.into(),
+            ledger: response.ledger,
+            envelope_xdr,
+        })
+    }
+}
+
+#[cfg(test)]
+mod simulation_parser_tests {
+    use super::{checked_simulation_result, MAX_SIMULATION_XDR_BYTES};
+    use stellar_baselib::xdr::{Limits, ScVal, WriteXdr as _};
+
+    fn response(
+        results: serde_json::Value,
+    ) -> soroban_client::soroban_rpc::SimulateTransactionResponse {
+        serde_json::from_value(serde_json::json!({
+            "latestLedger": 1,
+            "minResourceFee": "0",
+            "error": null,
+            "results": results,
+            "transactionData": null,
+            "restorePreamble": null,
+            "events": null,
+            "stateChanges": null
+        }))
+        .expect("response")
+    }
+
+    #[test]
+    fn simulation_parser_rejects_missing_multiple_malformed_and_oversized_results() {
+        assert!(checked_simulation_result(&response(serde_json::json!([]))).is_err());
+        let valid = ScVal::U32(7).to_xdr_base64(Limits::none()).unwrap();
+        let one = serde_json::json!({"auth": [], "xdr": valid});
+        assert!(
+            checked_simulation_result(&response(serde_json::json!([one.clone(), one]))).is_err()
+        );
+        assert!(checked_simulation_result(&response(serde_json::json!([{
+            "auth": [],
+            "xdr": "not base64"
+        }])))
+        .is_err());
+        assert!(checked_simulation_result(&response(serde_json::json!([{
+            "auth": [],
+            "xdr": "A".repeat(MAX_SIMULATION_XDR_BYTES * 2 + 1)
+        }])))
+        .is_err());
     }
 }

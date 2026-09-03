@@ -164,3 +164,24 @@ fn rpc_environment_and_file_providers_are_mutually_exclusive() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
 }
+
+#[test]
+fn rpc_provider_flags_are_accepted_before_the_subcommand() {
+    let output = binary()
+        .args([
+            "--stellar-rpc-env",
+            "STELLAR_RPC_URL",
+            "init",
+            "--desired",
+            "/missing/desired.json",
+            "--state",
+            "/missing/state",
+        ])
+        .output()
+        .expect("run CLI");
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "global provider parsed; command reached desired-file access"
+    );
+}

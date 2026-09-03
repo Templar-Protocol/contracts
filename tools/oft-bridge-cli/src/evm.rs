@@ -94,14 +94,7 @@ impl DeployEvmOftBindingV1 {
         })
     }
 
-    /// The closed-enum operation this binding plans.
-    #[must_use]
-    pub fn intent_operation(&self) -> OperationV1 {
-        OperationV1::DeployEvmOft {
-            deployer: self.deployer.clone(),
-            nonce: self.nonce,
-        }
-    }
+
 
     /// Canonical-JSON intent digest bound into plan/proposal/journal.
     pub fn intent_sha256(&self) -> Result<String> {
@@ -215,6 +208,72 @@ pub fn keystore_signer(path: &Path, password: &str, expected: Address) -> Result
     Ok(signer)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignedEvmTransactionV1 {
+    pub encoded: Vec<u8>,
+    pub transaction_hash: String,
+}
+
+/// Signs the exact direct EIP-1559 transaction bound by an executable plan.
+/// Safe plans are deliberately not converted into direct account sends.
+pub fn sign_eip1559(
+    binding: &crate::domain::EvmPlanBindingV1,
+    signer: &PrivateKeySigner,
+) -> Result<SignedEvmTransactionV1> {
+    use alloy::{
+        consensus::{SignableTransaction as _, TxEip1559, TxEnvelope},
+        eips::eip2718::Encodable2718 as _,
+        signers::Signer as _,
+    };
+
+    if binding.safe.is_some() {
+        return Err(Error::Policy(
+            "Safe proposals require external Safe execution".into(),
+        ));
+    }
+    let transaction = TxEip1559 {
+        chain_id: binding
+            .chain_id
+            .parse()
+            .map_err(|error| Error::InvalidInput(format!("invalid chain id: {error}")))?,
+        nonce: binding
+            .nonce
+            .parse()
+            .map_err(|error| Error::InvalidInput(format!("invalid nonce: {error}")))?,
+        gas_limit: binding
+            .gas_limit
+            .parse()
+            .map_err(|error| Error::InvalidInput(format!("invalid gas limit: {error}")))?,
+        max_fee_per_gas: binding
+            .max_fee_per_gas_wei
+            .parse()
+            .map_err(|error| Error::InvalidInput(format!("invalid max fee per gas: {error}")))?,
+        max_priority_fee_per_gas: binding.max_priority_fee_per_gas_wei.parse().map_err(
+            |error| Error::InvalidInput(format!("invalid priority fee per gas: {error}")),
+        )?,
+        to: if binding.target == "create" {
+            TxKind::Create
+        } else {
+            TxKind::Call(parse_address(&binding.target)?)
+        },
+        value: U256::from_str_radix(&binding.value, 10)
+            .map_err(|error| Error::InvalidInput(format!("invalid EVM value: {error}")))?,
+        access_list: Default::default(),
+        input: Bytes::from(
+            hex::decode(binding.calldata.trim_start_matches("0x"))
+                .map_err(|error| Error::InvalidInput(format!("invalid calldata: {error}")))?,
+        ),
+    };
+    let signature = crate::block_on(signer.sign_hash(&transaction.signature_hash()))?
+        .map_err(|error| Error::Chain(format!("EVM transaction signing failed: {error}")))?;
+    let envelope: TxEnvelope = transaction.into_signed(signature).into();
+    let encoded = envelope.encoded_2718();
+    Ok(SignedEvmTransactionV1 {
+        transaction_hash: format!("{:#x}", keccak256(&encoded)),
+        encoded,
+    })
+}
+
 /// Observable EVM chain boundary for preflight, verification, and simulation
 /// reads. Production implementations use Alloy; fakes serve command tests.
 #[async_trait::async_trait]
@@ -231,6 +290,12 @@ pub trait EvmChain: Send + Sync {
     async fn account_nonce(&self, address: Address) -> Result<u64>;
     /// Safe `getThreshold()` and `nonce()` when `safe` is a Safe proxy.
     async fn safe_state(&self, safe: Address) -> Result<Option<(u32, String)>>;
+    /// Latest confirmed block number known to the RPC.
+    async fn latest_block(&self) -> Result<u64> {
+        Err(Error::Chain(
+            "EVM latest-block readback is unsupported by this adapter".into(),
+        ))
+    }
     /// Simulates the exact typed transaction (sender, target, value,
     /// calldata) against latest state and returns the RPC-derived gas and
     /// fee policy. Estimation failure is a typed refusal; no invented
@@ -242,6 +307,33 @@ pub trait EvmChain: Send + Sync {
         value: U256,
         calldata: Vec<u8>,
     ) -> Result<EvmSimulationV1>;
+    /// Resolves and validates preserved creation bytecode, then appends the
+    /// exact constructor ABI for a deployment operation.
+    fn deployment_init_code(&self, _operation: &OperationV1) -> Result<Vec<u8>> {
+        Err(Error::Chain(
+            "EVM deployment artifacts are unavailable to this adapter".into(),
+        ))
+    }
+    /// Simulates a contract-creation transaction.
+    async fn estimate_creation(
+        &self,
+        _from: Address,
+        _value: U256,
+        _init_code: Vec<u8>,
+    ) -> Result<EvmSimulationV1> {
+        Err(Error::Chain(
+            "EVM contract-creation simulation is unsupported by this adapter".into(),
+        ))
+    }
+    /// Submits a locally signed EIP-2718 transaction.
+    async fn send_raw_transaction(&self, encoded: &[u8]) -> Result<String>;
+    /// Reads a receipt and its emitted logs by transaction hash.
+    async fn transaction_receipt(&self, transaction_hash: &str) -> Result<Option<EvmReceiptV1>>;
+    /// Reads the canonical RPC transaction object by hash.
+    async fn transaction_by_hash(
+        &self,
+        transaction_hash: &str,
+    ) -> Result<Option<serde_json::Value>>;
 }
 
 /// Live gas/fee simulation for the exact typed transaction a proposal
@@ -255,9 +347,19 @@ pub struct EvmSimulationV1 {
     /// Decimal-string wei EIP-1559 max priority fee.
     pub max_priority_fee_per_gas_wei: String,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EvmReceiptV1 {
+    pub transaction_hash: String,
+    pub block_number: Option<u64>,
+    pub succeeded: Option<bool>,
+    pub logs: Vec<serde_json::Value>,
+    pub raw: serde_json::Value,
+}
 /// HTTP JSON-RPC implementation of [`EvmChain`].
 pub struct HttpEvmChain {
     provider: RootProvider<Ethereum>,
+    artifact_root: Option<std::path::PathBuf>,
 }
 
 impl HttpEvmChain {
@@ -265,15 +367,48 @@ impl HttpEvmChain {
     pub fn connect_http(url: &str) -> Result<Self> {
         let url = reqwest::Url::parse(url)
             .map_err(|error| Error::InvalidInput(format!("invalid EVM RPC URL: {error}")))?;
-        let provider = ProviderBuilder::new()
-            .disable_recommended_fillers()
-            .connect_http(url);
-        Ok(Self { provider })
+        let headers = crate::config::rpc_headers();
+        let provider = if headers.is_empty() {
+            ProviderBuilder::new()
+                .disable_recommended_fillers()
+                .connect_http(url)
+        } else {
+            let mut header_map = reqwest::header::HeaderMap::new();
+            for (name, value) in &headers {
+                let header_name = reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(
+                    |error| {
+                        Error::InvalidInput(format!("invalid RPC header name {name}: {error}"))
+                    },
+                )?;
+                let header_value = reqwest::header::HeaderValue::from_str(value.as_str()).map_err(
+                    |error| Error::InvalidInput(format!("RPC header {name} is invalid: {error}")),
+                )?;
+                header_map.insert(header_name, header_value);
+            }
+            let client = reqwest::Client::builder()
+                .default_headers(header_map)
+                .build()
+                .map_err(|error| Error::Chain(format!("rpc header client build failed: {error}")))?;
+            ProviderBuilder::new()
+                .disable_recommended_fillers()
+                .connect_reqwest(client, url)
+        };
+        Ok(Self {
+            provider,
+            artifact_root: None,
+        })
     }
 
     /// Contract-name alias used by the adapter boundary contract.
     pub fn new(url: &str) -> Result<Self> {
         Self::connect_http(url)
+    }
+
+
+    #[must_use]
+    pub fn with_artifact_root(mut self, root: &std::path::Path) -> Self {
+        self.artifact_root = Some(root.to_path_buf());
+        self
     }
 }
 
@@ -313,6 +448,13 @@ impl EvmChain for HttpEvmChain {
         decode_u32_word(&data)
     }
 
+    async fn latest_block(&self) -> Result<u64> {
+        self.provider
+            .get_block_number()
+            .await
+            .map_err(|error| Error::Chain(format!("evm block read failed: {error}")))
+    }
+
     async fn account_nonce(&self, address: Address) -> Result<u64> {
         self.provider
             .get_transaction_count(address)
@@ -336,6 +478,97 @@ impl EvmChain for HttpEvmChain {
             threshold,
             u128::from_be_bytes(nonce_bytes).to_string(),
         )))
+    }
+
+    fn deployment_init_code(&self, operation: &OperationV1) -> Result<Vec<u8>> {
+        use alloy::sol_types::SolValue as _;
+
+        let OperationV1::DeployEvmOft {
+            deployer,
+            nonce,
+            creation_bytecode_keccak256,
+            name,
+            symbol,
+            endpoint,
+            owner_delegate,
+            expected_address,
+        } = operation
+        else {
+            return Err(Error::InvalidInput(
+                "deployment init code requires deploy_evm_oft".into(),
+            ));
+        };
+        let deployer_address = parse_address(deployer)?;
+        if canonical_address(derive_create_address(deployer_address, *nonce))
+            != canonical_address(parse_address(expected_address)?)
+        {
+            return Err(Error::Custody(
+                "EVM deployment expected address does not match deployer nonce".into(),
+            ));
+        }
+        let hash = creation_bytecode_keccak256.trim_start_matches("0x");
+        let root = self
+            .artifact_root
+            .as_ref()
+            .ok_or_else(|| Error::Custody("EVM artifact root is not configured".into()))?;
+        let artifact: serde_json::Value = serde_json::from_slice(&std::fs::read(
+            root.join(".artifacts").join(format!("evm-{hash}.json")),
+        )?)?;
+        let bytecode = artifact
+            .pointer("/bytecode/object")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                Error::Custody("preserved EVM artifact has no creation bytecode".into())
+            })?;
+        let mut init_code = hex::decode(bytecode.trim_start_matches("0x"))
+            .map_err(|_| Error::Custody("preserved EVM creation bytecode is not hex".into()))?;
+        if !hex::encode(keccak256_of(&init_code)).eq_ignore_ascii_case(hash) {
+            return Err(Error::Custody(
+                "preserved EVM creation bytecode digest mismatch".into(),
+            ));
+        }
+        init_code.extend(
+            (
+                name.clone(),
+                symbol.clone(),
+                parse_address(endpoint)?,
+                parse_address(owner_delegate)?,
+            )
+                .abi_encode(),
+        );
+        Ok(init_code)
+    }
+
+    async fn estimate_creation(
+        &self,
+        from: Address,
+        value: U256,
+        init_code: Vec<u8>,
+    ) -> Result<EvmSimulationV1> {
+        let transaction = TransactionRequest {
+            from: Some(from),
+            to: Some(TxKind::Create),
+            value: Some(value),
+            input: TransactionInput::new(Bytes::from(init_code)),
+            ..Default::default()
+        };
+        let gas_limit = self
+            .provider
+            .estimate_gas(transaction)
+            .await
+            .map_err(|error| {
+                Error::Chain(format!("EVM creation gas estimation failed: {error}"))
+            })?;
+        let fees = self
+            .provider
+            .estimate_eip1559_fees()
+            .await
+            .map_err(|error| Error::Chain(format!("EVM fee estimation failed: {error}")))?;
+        Ok(EvmSimulationV1 {
+            gas_limit,
+            max_fee_per_gas_wei: fees.max_fee_per_gas.to_string(),
+            max_priority_fee_per_gas_wei: fees.max_priority_fee_per_gas.to_string(),
+        })
     }
 
     async fn estimate_transaction(
@@ -367,6 +600,67 @@ impl EvmChain for HttpEvmChain {
             max_fee_per_gas_wei: fees.max_fee_per_gas.to_string(),
             max_priority_fee_per_gas_wei: fees.max_priority_fee_per_gas.to_string(),
         })
+    }
+
+    async fn send_raw_transaction(&self, encoded: &[u8]) -> Result<String> {
+        let pending = self
+            .provider
+            .send_raw_transaction(encoded)
+            .await
+            .map_err(|error| Error::Chain(format!("evm raw transaction send failed: {error}")))?;
+        Ok(format!("{:#x}", pending.tx_hash()))
+    }
+
+    async fn transaction_receipt(&self, transaction_hash: &str) -> Result<Option<EvmReceiptV1>> {
+        let hash = transaction_hash.parse().map_err(|error| {
+            Error::InvalidInput(format!("invalid EVM transaction hash: {error}"))
+        })?;
+        let Some(receipt) = self
+            .provider
+            .get_transaction_receipt(hash)
+            .await
+            .map_err(|error| Error::Chain(format!("evm receipt read failed: {error}")))?
+        else {
+            return Ok(None);
+        };
+        let raw = serde_json::to_value(&receipt)?;
+        let block_number = raw
+            .get("blockNumber")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| u64::from_str_radix(value.trim_start_matches("0x"), 16).ok())
+            .or_else(|| raw.get("blockNumber").and_then(serde_json::Value::as_u64));
+        let succeeded = raw
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .map(|status| status == "0x1")
+            .or_else(|| raw.get("status").and_then(serde_json::Value::as_bool));
+        let logs = raw
+            .get("logs")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(Some(EvmReceiptV1 {
+            transaction_hash: transaction_hash.into(),
+            block_number,
+            succeeded,
+            logs,
+            raw,
+        }))
+    }
+
+    async fn transaction_by_hash(
+        &self,
+        transaction_hash: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let hash = transaction_hash.parse().map_err(|error| {
+            Error::InvalidInput(format!("invalid EVM transaction hash: {error}"))
+        })?;
+        self.provider
+            .get_transaction_by_hash(hash)
+            .await
+            .map_err(|error| Error::Chain(format!("evm transaction read failed: {error}")))?
+            .map(|transaction| serde_json::to_value(transaction).map_err(Error::from))
+            .transpose()
     }
 }
 /// ABI selector for a canonical function signature, computed at runtime so
@@ -598,5 +892,46 @@ mod tests {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         let password = read_password_file(&file).expect("readable");
         assert_eq!(password.as_str(), "op secret");
+    }
+    #[test]
+    fn signs_exact_eip1559_plan_binding() {
+        use alloy::{consensus::TxEnvelope, eips::eip2718::Decodable2718 as _};
+        let signer = fixture_signer(&[0xAB; 32]);
+        let binding = crate::domain::EvmPlanBindingV1 {
+            chain_id: "11155111".into(),
+            target: "0x1111111111111111111111111111111111111111".into(),
+            value: "17".into(),
+            nonce: "9".into(),
+            calldata: "0x1234".into(),
+            gas_limit: "50000".into(),
+            max_fee_per_gas_wei: "2000000000".into(),
+            max_priority_fee_per_gas_wei: "1000000000".into(),
+            transaction_digest: "plan-digest".into(),
+            safe: None,
+        };
+        let signed = sign_eip1559(&binding, &signer).expect("sign");
+        assert_eq!(
+            signed.transaction_hash,
+            format!("{:#x}", keccak256(&signed.encoded))
+        );
+        let mut encoded = signed.encoded.as_slice();
+        let envelope = TxEnvelope::decode_2718(&mut encoded).expect("decode");
+        assert!(encoded.is_empty());
+        match envelope {
+            TxEnvelope::Eip1559(transaction) => {
+                assert_eq!(transaction.tx().chain_id, 11_155_111);
+                assert_eq!(transaction.tx().nonce, 9);
+                assert_eq!(transaction.tx().value, U256::from(17));
+                assert_eq!(transaction.tx().input.as_ref(), &[0x12, 0x34]);
+                assert_eq!(
+                    transaction
+                        .signature()
+                        .recover_address_from_prehash(&transaction.signature_hash())
+                        .expect("recover"),
+                    signer.address()
+                );
+            }
+            other => panic!("unexpected transaction envelope: {other:?}"),
+        }
     }
 }

@@ -1,4 +1,8 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -24,7 +28,7 @@ pub struct ArtifactLockV1 {
 pub struct LayerZeroSourceLockV1 {
     pub remote: String,
     pub commit: String,
-    pub source_archive_sha256: Option<String>,
+    pub source_archive_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -38,6 +42,16 @@ pub struct StellarArtifactLockV1 {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EvmArtifactLockV1 {
     pub oft_evm_version: String,
+    pub oft_evm_integrity: String,
+    pub oapp_evm_version: String,
+    pub oapp_evm_integrity: String,
+    pub message_lib_version: String,
+    pub message_lib_integrity: String,
+    pub protocol_version: String,
+    pub protocol_integrity: String,
+    pub openzeppelin_version: String,
+    pub openzeppelin_integrity: String,
+    pub openzeppelin_upgradeable_integrity: String,
     pub solc: String,
     pub optimizer: bool,
     pub optimizer_runs: u32,
@@ -60,10 +74,24 @@ pub fn embedded_lock() -> Result<ArtifactLockV1> {
         ));
     }
     if lock.evm.oft_evm_version != "4.0.1"
-        || lock.evm.oft_evm_version.contains(['^', '~', '*', '>', '<'])
+        || lock.evm.oapp_evm_version != "0.4.1"
+        || lock.evm.message_lib_version != "3.0.168"
+        || lock.evm.protocol_version != "3.0.168"
+        || lock.evm.openzeppelin_version != "5.6.1"
+        || [
+            &lock.evm.oft_evm_integrity,
+            &lock.evm.oapp_evm_integrity,
+            &lock.evm.message_lib_integrity,
+            &lock.evm.protocol_integrity,
+            &lock.evm.openzeppelin_integrity,
+            &lock.evm.openzeppelin_upgradeable_integrity,
+        ]
+        .iter()
+        .any(|integrity| !integrity.starts_with("sha512-"))
     {
         return Err(Error::Custody(
-            "EVM OFT dependency must be pinned exactly to 4.0.1".into(),
+            "EVM dependency closure must use the frozen exact versions and sha512 integrities"
+                .into(),
         ));
     }
     Ok(lock)
@@ -94,10 +122,57 @@ pub fn verify_command(state: &Path) -> Result<CommandData> {
         &root.join("evm/remappings.txt"),
         &lock.evm.remappings_sha256,
     )?;
+    verify_preserved_artifacts(state, &lock)?;
     Ok(CommandData {
         result: serde_json::json!({"verified": true, "artifact_lock_sha256": sha256(LOCK_BYTES)}),
         artifact: None,
     })
+}
+
+pub fn verify_preserved_artifacts(state: &Path, lock: &ArtifactLockV1) -> Result<()> {
+    let route_root = state;
+    let stellar_path = route_root
+        .join(".artifacts")
+        .join(format!("stellar-{}.wasm", lock.stellar.oft_wasm_sha256));
+    verify_hash(&stellar_path, &lock.stellar.oft_wasm_sha256)?;
+    let evm_path = route_root
+        .join(".artifacts")
+        .join(format!("evm-{}.json", lock.evm.creation_bytecode_keccak256));
+    let metadata = fs::symlink_metadata(&evm_path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 16 * 1024 * 1024
+    {
+        return Err(Error::Custody(
+            "preserved EVM artifact must be a regular file no larger than 16 MiB".into(),
+        ));
+    }
+    let artifact: serde_json::Value = serde_json::from_slice(&fs::read(&evm_path)?)?;
+    for (field, expected, label) in [
+        (
+            "bytecode",
+            &lock.evm.creation_bytecode_keccak256,
+            "creation",
+        ),
+        (
+            "deployedBytecode",
+            &lock.evm.runtime_bytecode_keccak256,
+            "runtime",
+        ),
+    ] {
+        let encoded = artifact
+            .get(field)
+            .and_then(|value| value.get("object"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| Error::Custody(format!("preserved EVM {label} bytecode is absent")))?;
+        let bytes = hex::decode(encoded.trim_start_matches("0x"))
+            .map_err(|_| Error::Custody(format!("preserved EVM {label} bytecode is not hex")))?;
+        let actual = hex::encode(crate::evm::keccak256_of(&bytes));
+        if actual != *expected {
+            return Err(Error::Custody(format!(
+                "preserved EVM {label} bytecode diverges from the artifact lock"
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn build_command(
@@ -105,6 +180,7 @@ pub fn build_command(
     out_dir: &Path,
     write: bool,
     deps_archive: Option<&Path>,
+    source_archive: Option<&Path>,
 ) -> Result<CommandData> {
     let lock = embedded_lock()?;
     build_with_executor(
@@ -112,43 +188,49 @@ pub fn build_command(
         out_dir,
         write,
         deps_archive,
+        source_archive,
         &lock,
         &crate::process::RealExecutor,
     )
 }
 
-/// Deterministic EVM artifact build: local preparation, not a chain mutation.
-/// The operator-supplied dependency archive is digest-verified against the
-/// embedded lock before extraction; `forge` is the only external tool.
 pub fn build_with_executor(
     state: &Path,
     out_dir: &Path,
     write: bool,
     deps_archive: Option<&Path>,
+    source_archive: Option<&Path>,
     lock: &ArtifactLockV1,
     executor: &dyn crate::process::CommandExecutor,
 ) -> Result<CommandData> {
+    if !write {
+        let _ = RouteStore::open(state)?.load_state()?;
+        return Ok(CommandData {
+            result: serde_json::json!({
+                "preview": true,
+                "out_dir": out_dir,
+                "commands": [
+                    "verify wrapper/package/foundry/remappings/deps-archive/source-archive digests",
+                    "forge build --root <out_dir>/work",
+                    "stellar contract build --manifest-path <out_dir>/stellar-source/Cargo.toml --package oft",
+                ],
+                "requires_deps_archive": true,
+                "requires_source_archive": true,
+            }),
+            artifact: None,
+        });
+    }
+    let source = source_archive.ok_or_else(|| {
+        Error::InvalidInput("artifact build --write requires --source-archive".into())
+    })?;
+    verify_hash(source, &lock.layerzero_source.source_archive_sha256)?;
+
     let _route = RouteStore::open(state)?.load_state()?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let wrapper = root.join("evm/src/DisposableOFT.sol");
     let package = root.join("evm/package.json");
     let foundry_toml = root.join("evm/foundry.toml");
     let remappings = root.join("evm/remappings.txt");
-    if !write {
-        return Ok(CommandData {
-            result: serde_json::json!({
-                "preview": true,
-                "out_dir": out_dir,
-                "commands": [
-                    "verify wrapper/package/foundry/remappings/deps-archive digests",
-                    "tar -xf <deps-archive> -C <out_dir>/work",
-                    "forge build --root <out_dir>/work",
-                ],
-                "requires_deps_archive": true,
-            }),
-            artifact: None,
-        });
-    }
     if out_dir.exists() {
         return Err(Error::Conflict(format!(
             "artifact output already exists: {}",
@@ -172,7 +254,8 @@ pub fn build_with_executor(
         executor,
     )?;
     run_forge(&work, executor)?;
-    finalize_build(state, out_dir, &work, lock)
+    let stellar_wasm = build_stellar(out_dir, source, lock, executor)?;
+    finalize_build(state, out_dir, &work, lock, &stellar_wasm)
 }
 
 /// Runs the pinned Foundry build inside the prepared work dir.
@@ -195,17 +278,142 @@ fn run_forge(work: &Path, executor: &dyn crate::process::CommandExecutor) -> Res
     Ok(())
 }
 
+fn build_stellar(
+    out_dir: &Path,
+    source: &Path,
+    lock: &ArtifactLockV1,
+    executor: &dyn crate::process::CommandExecutor,
+) -> Result<std::path::PathBuf> {
+    let work = out_dir.join("stellar-source");
+    fs::create_dir(&work)?;
+    let work_str = work
+        .to_str()
+        .ok_or_else(|| Error::InvalidInput("Stellar work path must be valid UTF-8".into()))?;
+    let source_str = source
+        .to_str()
+        .ok_or_else(|| Error::InvalidInput("source archive path must be valid UTF-8".into()))?;
+    executor.run(
+        "tar",
+        &[
+            "-xzf".into(),
+            source_str.into(),
+            "-C".into(),
+            work_str.into(),
+        ],
+        &[],
+        &[],
+    )?;
+    let version = executor.run("stellar", &["--version".into()], &[], &[])?;
+    if !version.stdout.contains(&lock.stellar.soroban_cli) {
+        return Err(Error::Custody(format!(
+            "stellar CLI version mismatch: expected {}",
+            lock.stellar.soroban_cli
+        )));
+    }
+    let manifest = work.join("Cargo.toml");
+    let manifest = manifest
+        .to_str()
+        .ok_or_else(|| Error::InvalidInput("Stellar manifest path must be valid UTF-8".into()))?;
+    executor.run(
+        "stellar",
+        &[
+            "contract".into(),
+            "build".into(),
+            "--manifest-path".into(),
+            manifest.into(),
+            "--package".into(),
+            "oft".into(),
+        ],
+        &[],
+        &[],
+    )?;
+    let built = work.join("target/wasm32v1-none/release/oft.wasm");
+    verify_hash(&built, &lock.stellar.oft_wasm_sha256)?;
+    let destination = out_dir.join("stellar/oft.wasm");
+    fs::create_dir(out_dir.join("stellar"))?;
+    fs::copy(&built, &destination)?;
+    Ok(destination)
+}
+
 /// Reads the forge artifact, verifies the frozen bytecode digests, and
 /// persists the chained build report.
+fn preserve_route_artifact(route: &Path, source: &Path, name: &str) -> Result<PathBuf> {
+    let directory = RouteStore::open(route)?.root().join(".artifacts");
+    if directory.exists() {
+        let metadata = fs::symlink_metadata(&directory)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(Error::Custody(
+                "route artifact directory is not a real directory".into(),
+            ));
+        }
+    } else {
+        fs::create_dir(&directory)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    let destination = directory.join(name);
+    let bytes = fs::read(source)?;
+    if destination.exists() {
+        if fs::read(&destination)? != bytes {
+            return Err(Error::Conflict(format!(
+                "route artifact {name} already exists with different bytes"
+            )));
+        }
+        return Ok(destination);
+    }
+    let temporary = directory.join(format!(".{name}.{}.tmp", std::process::id()));
+    if temporary.exists() {
+        let metadata = fs::symlink_metadata(&temporary)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(Error::Custody(
+                "route artifact temporary path is unsafe".into(),
+            ));
+        }
+        fs::remove_file(&temporary)?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+    match fs::hard_link(&temporary, &destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if fs::read(&destination)? != bytes {
+                fs::remove_file(&temporary)?;
+                return Err(Error::Conflict(format!(
+                    "route artifact {name} concurrently appeared with different bytes"
+                )));
+            }
+        }
+        Err(error) => {
+            fs::remove_file(&temporary)?;
+            return Err(error.into());
+        }
+    }
+    fs::remove_file(&temporary)?;
+    fs::File::open(&directory)?.sync_all()?;
+    Ok(destination)
+}
+
 fn finalize_build(
     state: &Path,
     out_dir: &Path,
     work: &Path,
     lock: &ArtifactLockV1,
+    stellar_wasm: &Path,
 ) -> Result<CommandData> {
-    let artifact_json: serde_json::Value = serde_json::from_slice(&fs::read(
-        work.join("out/DisposableOFT.sol/DisposableOFT.json"),
-    )?)?;
+    let evm_artifact = work.join("out/DisposableOFT.sol/DisposableOFT.json");
+    let artifact_json: serde_json::Value = serde_json::from_slice(&fs::read(&evm_artifact)?)?;
     let bytecode_hex = artifact_json
         .get("bytecode")
         .and_then(|b| b.get("object"))
@@ -247,6 +455,16 @@ fn finalize_build(
             )));
         }
     }
+    let stellar_name = format!("stellar-{}.wasm", lock.stellar.oft_wasm_sha256);
+    let evm_name = format!("evm-{}.json", lock.evm.creation_bytecode_keccak256);
+    preserve_route_artifact(state, stellar_wasm, &stellar_name)?;
+    preserve_route_artifact(state, &evm_artifact, &evm_name)?;
+    let stellar = serde_json::json!({
+        "oft_wasm_sha256": lock.stellar.oft_wasm_sha256,
+        "path": format!(".artifacts/{stellar_name}"),
+        "source_archive_sha256": lock.layerzero_source.source_archive_sha256,
+        "source_commit": lock.layerzero_source.commit,
+    });
     let report = serde_json::json!({
         "schema": "artifact_build_report",
         "schema_version": crate::domain::SCHEMA_VERSION,
@@ -255,8 +473,9 @@ fn finalize_build(
         "evm": {
             "creation_bytecode_keccak256": creation,
             "runtime_bytecode_keccak256": runtime,
+            "path": format!(".artifacts/{evm_name}"),
         },
-        "work_dir": work,
+        "stellar": stellar,
     });
     let report_path = out_dir.join("build-report.json");
     crate::state::write_create_new_json(&report_path, &report)?;

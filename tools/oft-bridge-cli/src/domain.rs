@@ -155,13 +155,21 @@ pub struct ArtifactRefV1 {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OpeningCustodyV1 {
+    pub schema_name: String,
+    pub schema_version: u32,
     pub stellar_ledger: u64,
     pub stellar_ledger_hash: String,
+    pub stellar_ledger_time_unix: u64,
     pub lockbox_raw: u128,
     pub evm_block: u64,
     pub evm_block_hash: String,
     pub evm_supply_raw: u128,
-    pub history_evidence_sha256: String,
+    pub artifact_lock_sha256: String,
+    pub effective_config_sha256: String,
+    /// True only when both chains independently prove no prior packet activity.
+    pub zero_packet_history_proven: bool,
+    /// Required instead of a zero-history proof for adopted routes.
+    pub history_evidence_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -179,7 +187,21 @@ pub struct RouteStateV1 {
     #[serde(default)]
     pub contracts: BTreeMap<String, String>,
     #[serde(default)]
+    pub requested_config: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
     pub effective_config: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ContainmentSnapshotV1 {
+    pub schema_name: String,
+    pub schema_version: u32,
+    pub direction: Direction,
+    pub remote_eid: u32,
+    pub restore_operation: Box<OperationV1>,
+    pub peer: String,
+    pub receive_library: String,
+    pub receive_config_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -189,11 +211,24 @@ pub enum OperationV1 {
         wasm_sha256: String,
     },
     DeployStellarOft {
+        deployer: String,
         salt: String,
+        wasm_sha256: String,
+        token: String,
+        shared_decimals: u8,
+        endpoint: String,
+        delegate: String,
+        expected_address: String,
     },
     DeployEvmOft {
         deployer: String,
         nonce: u64,
+        creation_bytecode_keccak256: String,
+        name: String,
+        symbol: String,
+        endpoint: String,
+        owner_delegate: String,
+        expected_address: String,
     },
     BeginStellarOwnershipTransfer {
         new_owner: String,
@@ -244,19 +279,37 @@ pub enum OperationV1 {
     },
     SetStellarUlnConfig {
         remote_eid: u32,
+        direction: String,
+        caller: String,
+        oapp: String,
+        library: String,
         config_sha256: String,
+        config: serde_json::Value,
     },
     SetEvmUlnConfig {
         remote_eid: u32,
+        direction: String,
+        caller: String,
+        oapp: String,
+        library: String,
         config_sha256: String,
+        config: serde_json::Value,
     },
     SetStellarExecutorConfig {
         remote_eid: u32,
+        caller: String,
+        oapp: String,
+        library: String,
         config_sha256: String,
+        config: serde_json::Value,
     },
     SetEvmExecutorConfig {
         remote_eid: u32,
+        caller: String,
+        oapp: String,
+        library: String,
         config_sha256: String,
+        config: serde_json::Value,
     },
     SetStellarReceiveOptions {
         remote_eid: u32,
@@ -324,23 +377,22 @@ pub enum OperationV1 {
         admin_role: String,
     },
     SendLeg {
-        intent_sha256: String,
+        vm: Vm,
+        intent: Box<LegIntentV1>,
     },
     CommitVerification {
         vm: Vm,
-        guid: String,
-        packet_sha256: String,
+        message: Box<MessageRecordV1>,
     },
     ExecuteReceive {
         vm: Vm,
-        guid: String,
-        packet_sha256: String,
+        message: Box<MessageRecordV1>,
     },
     ContainOutbound {
-        direction: Direction,
+        snapshot: Box<ContainmentSnapshotV1>,
     },
     RestoreOutbound {
-        snapshot_sha256: String,
+        snapshot: Box<ContainmentSnapshotV1>,
     },
     RestoreFootprint {
         original_operation_sha256: String,
@@ -355,6 +407,44 @@ pub enum LocalPreparationV1 {
     AdoptRoute { opening_custody_sha256: String },
     ImportEvidence { evidence_sha256: String },
 }
+/// Bound send-cost ceiling recorded at quote time. The quoted leg refuses to
+/// sign when the live plan exceeds the ceiling.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LegFeeCeilingV1 {
+    /// Stellar source: ceiling in stroops on the total Soroban transaction
+    /// fee, including the resource fee the assembled envelope carries.
+    Stellar {
+        resource_fee_ceiling_raw: String,
+    },
+    /// EVM source: EIP-1559 fee and gas ceilings.
+    Evm {
+        max_fee_per_gas_wei: String,
+        max_priority_fee_per_gas_wei: String,
+        gas_limit: u64,
+    },
+}
+
+/// Live pre-send balance/lockbox/supply snapshot bound by a quoted leg.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LegPreSendSnapshotV1 {
+    /// Source-sender token balance in raw units at quote time.
+    pub source_balance_raw: String,
+    /// Stellar lockbox reserve (SEP-41 balance of the Stellar OFT) in raw
+    /// units.
+    pub lockbox_raw: String,
+    /// EVM OFT total supply in raw units.
+    pub evm_supply_raw: String,
+}
+
+/// Recorded additional-obligation policy at quote time.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LegAdditionalObligationV1 {
+    /// Outstanding unresolved obligations at quote time.
+    pub outstanding_raw: String,
+    /// Recorded cap the resulting outstanding obligation must respect.
+    pub cap_raw: String,
+}
 
 /// Typed, route-bound leg intent produced by `leg quote` and consumed by
 /// `leg send`. Amounts are decimal strings per the schema rule.
@@ -366,7 +456,41 @@ pub struct LegIntentV1 {
     pub desired_sha256: String,
     pub direction: Direction,
     pub amount_raw: String,
+    pub destination_eid: u32,
     pub to: String,
+    pub sender: String,
+    pub refund_address: String,
+    pub minimum_received_raw: String,
+    pub native_fee_raw: String,
+    pub extra_options: String,
+    pub maximum_native_fee_raw: String,
+    pub config_snapshot_sha256: String,
+    pub custody_snapshot_sha256: String,
+    /// Exact peer records bound at quote time (contracts `peer:*` entries).
+    pub peer_snapshot_sha256: String,
+    /// Quote source Stellar ledger; `None` for EVM-sourced legs.
+    #[serde(default)]
+    pub quote_source_ledger: Option<u32>,
+    /// Quote source EVM block; `None` for Stellar-sourced legs.
+    #[serde(default)]
+    pub quote_source_block: Option<u64>,
+    /// Source-account sequence (Stellar) or EOA nonce (EVM) observed at quote
+    /// time. Read-only; the quote performs no reservation.
+    #[serde(default)]
+    pub observed_sequence_nonce: Option<String>,
+    /// Bound send-cost ceiling (Stellar resource fee or EVM fee/gas).
+    #[serde(default)]
+    pub fee_ceiling: Option<LegFeeCeilingV1>,
+    /// Live pre-send balance/lockbox/supply snapshot bound by the quote.
+    #[serde(default)]
+    pub pre_send_snapshot: Option<LegPreSendSnapshotV1>,
+    /// Route finality policy recorded at quote time.
+    #[serde(default)]
+    pub finality_policy: Option<String>,
+    /// Recorded additional-obligation policy and cap.
+    #[serde(default)]
+    pub additional_obligation: Option<LegAdditionalObligationV1>,
+    pub expires_at_unix: u64,
 }
 
 impl LegIntentV1 {
@@ -388,9 +512,143 @@ impl LegIntentV1 {
                 "amount_raw must be greater than zero".into(),
             ));
         }
+        if self.destination_eid == 0 {
+            return Err(Error::InvalidInput(
+                "destination_eid must be nonzero".into(),
+            ));
+        }
         if self.to.trim().is_empty() {
             return Err(Error::InvalidInput("destination must not be empty".into()));
         }
+        for (name, value) in [
+            ("sender", &self.sender),
+            ("refund_address", &self.refund_address),
+            ("minimum_received_raw", &self.minimum_received_raw),
+            ("maximum_native_fee_raw", &self.maximum_native_fee_raw),
+            ("config_snapshot_sha256", &self.config_snapshot_sha256),
+            ("native_fee_raw", &self.native_fee_raw),
+            ("extra_options", &self.extra_options),
+            ("custody_snapshot_sha256", &self.custody_snapshot_sha256),
+            ("peer_snapshot_sha256", &self.peer_snapshot_sha256),
+        ] {
+            if value.trim().is_empty() {
+                return Err(Error::InvalidInput(format!(
+                    "leg intent {name} must not be empty"
+                )));
+            }
+        }
+        if self.peer_snapshot_sha256.len() != 64
+            || hex::decode(&self.peer_snapshot_sha256).is_err()
+        {
+            return Err(Error::InvalidInput(
+                "peer_snapshot_sha256 must be a 64-char hex digest".into(),
+            ));
+        }
+        if self
+            .config_snapshot_sha256
+            .trim_start_matches("0x")
+            .len()
+            != 64
+        {
+            return Err(Error::InvalidInput(
+                "config_snapshot_sha256 must be a 64-char hex digest".into(),
+            ));
+        }
+        if self
+            .custody_snapshot_sha256
+            .trim_start_matches("0x")
+            .len()
+            != 64
+        {
+            return Err(Error::InvalidInput(
+                "custody_snapshot_sha256 must be a 64-char hex digest".into(),
+            ));
+        }
+        if let Some(sequence) = &self.observed_sequence_nonce {
+            if sequence.parse::<u128>().is_err() {
+                return Err(Error::InvalidInput(
+                    "observed_sequence_nonce must be a decimal string".into(),
+                ));
+            }
+        }
+        if let Some(ceiling) = &self.fee_ceiling {
+            match ceiling {
+                LegFeeCeilingV1::Stellar {
+                    resource_fee_ceiling_raw,
+                } => {
+                    if resource_fee_ceiling_raw.parse::<u128>().is_err() {
+                        return Err(Error::InvalidInput(
+                            "stellar resource fee ceiling must be decimal".into(),
+                        ));
+                    }
+                }
+                LegFeeCeilingV1::Evm {
+                    max_fee_per_gas_wei,
+                    max_priority_fee_per_gas_wei,
+                    gas_limit,
+                } => {
+                    if max_fee_per_gas_wei.parse::<u128>().is_err()
+                        || max_priority_fee_per_gas_wei.parse::<u128>().is_err()
+                    {
+                        return Err(Error::InvalidInput(
+                            "EVM fee ceilings must be decimal strings".into(),
+                        ));
+                    }
+                    if *gas_limit == 0 {
+                        return Err(Error::InvalidInput(
+                            "EVM gas limit ceiling must be nonzero".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(snapshot) = &self.pre_send_snapshot {
+            for (name, value) in [
+                ("source_balance_raw", &snapshot.source_balance_raw),
+                ("lockbox_raw", &snapshot.lockbox_raw),
+                ("evm_supply_raw", &snapshot.evm_supply_raw),
+            ] {
+                if value.parse::<u128>().is_err() {
+                    return Err(Error::InvalidInput(format!(
+                        "pre-send snapshot {name} must be decimal"
+                    )));
+                }
+            }
+        }
+        if let Some(policy) = &self.finality_policy {
+            if policy.trim().is_empty() {
+                return Err(Error::InvalidInput(
+                    "finality_policy must not be empty".into(),
+                ));
+            }
+        }
+        if let Some(obligation) = &self.additional_obligation {
+            if obligation.outstanding_raw.parse::<u128>().is_err()
+                || obligation.cap_raw.parse::<u128>().is_err()
+            {
+                return Err(Error::InvalidInput(
+                    "additional-obligation amounts must be decimal strings".into(),
+                ));
+            }
+        }
+        self.minimum_received_raw
+            .parse::<u128>()
+            .map_err(|_| Error::InvalidInput("minimum_received_raw must be decimal".into()))?;
+        let native_fee = self
+            .native_fee_raw
+            .parse::<u128>()
+            .map_err(|_| Error::InvalidInput("native_fee_raw must be decimal".into()))?;
+        let maximum_native_fee = self
+            .maximum_native_fee_raw
+            .parse::<u128>()
+            .map_err(|_| Error::InvalidInput("maximum_native_fee_raw must be decimal".into()))?;
+        if native_fee > maximum_native_fee {
+            return Err(Error::Policy(
+                "quoted native fee exceeds the intent fee ceiling".into(),
+            ));
+        }
+        hex::decode(self.extra_options.trim_start_matches("0x"))
+            .map_err(|_| Error::InvalidInput("extra_options must be hex".into()))?;
         Ok(self)
     }
 }
@@ -432,14 +690,20 @@ pub struct SafeTransactionV1 {
     pub value: String,
     pub data: String,
     pub operation: u8,
+    #[serde(alias = "safeTxGas")]
     pub safe_tx_gas: String,
+    #[serde(alias = "baseGas")]
     pub base_gas: String,
+    #[serde(alias = "gasPrice")]
     pub gas_price: String,
+    #[serde(alias = "gasToken")]
     pub gas_token: String,
+    #[serde(alias = "refundReceiver")]
     pub refund_receiver: String,
     /// Decimal string Safe nonce.
     pub nonce: String,
     pub threshold: u32,
+    #[serde(alias = "safeTxHash")]
     pub safe_tx_hash: String,
 }
 
@@ -480,14 +744,18 @@ pub struct ExecutablePlanV1 {
 }
 
 /// Monotonic packet lifecycle stage. Only `Reobserved` may revisit evidence.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageStageV1 {
     ForwardSourceAccepted,
     ForwardLocked,
+    ForwardVerified,
+    ForwardCommitted,
     ForwardMinted,
     ReverseSourceAccepted,
     ReverseBurned,
+    ReverseVerified,
+    ReverseCommitted,
     ReverseUnlocked,
     Reobserved,
 }
@@ -515,13 +783,36 @@ pub struct MessageRecordV1 {
     /// Decimal string raw amount in shared units.
     pub amount_raw: String,
     pub packet_sha256: String,
-    pub payload_sha256: String,
+    pub packet_header: String,
+    pub message: String,
+    /// keccak256(guid ‖ message): the exact payload digest the pinned
+    /// ULN/commit contracts bind. Independent of the ledger's own SHA-256
+    /// digests; recoverable from durable bytes, never synthesized.
+    pub payload_keccak256: String,
     pub origin: String,
     pub receiver: String,
+    pub current_receive_library: String,
+    pub old_receive_library: Option<String>,
+    pub receive_grace_until: Option<u64>,
+    pub send_library: String,
+    pub uln_snapshot_sha256: String,
+    pub dvn_snapshot_sha256: String,
+    pub executor_snapshot_sha256: String,
     /// Effective config snapshot at send time; immutable after append.
     pub config_snapshot_sha256: String,
+    pub source_height: String,
+    pub source_event_coordinate: String,
     pub source_transaction: String,
     pub destination_transaction: Option<String>,
+    pub recovery_transactions: Vec<String>,
+    pub debited_raw: String,
+    pub net_locked_raw: String,
+    pub minted_raw: String,
+    pub burned_raw: String,
+    pub unlocked_raw: String,
+    pub external_fee_raw: String,
+    pub dust_raw: String,
+    pub reconciliation_classification: Option<String>,
     pub status_events: Vec<MessageStatusEventV1>,
 }
 

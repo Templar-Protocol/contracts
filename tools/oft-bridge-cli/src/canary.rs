@@ -1,175 +1,16 @@
-//! Canary and packet message monotonic state machine with the
-//! additional-obligation registry. Pure state transitions; no live mutation.
-
-use std::collections::BTreeMap;
+//! Canary leg intent, live observation, send, watch, recovery, and evidence
+//! import flows. Quote is non-authoritative; send re-reads live state and
+//! refuses drift before signing.
 
 use serde::{Deserialize, Serialize};
-
-use crate::error::{Error, Result};
-
-/// Monotonic canary stages for one bridge message.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CanaryStage {
-    /// Message armed, not yet sent.
-    Armed,
-    /// Message submitted to the source chain.
-    Dispatched,
-    /// Message observed delivered on the destination chain.
-    Delivered,
-    /// Destination application acknowledged the message.
-    Acknowledged,
-    /// Value settled; the message lifecycle is complete.
-    Settled,
-}
-
-impl CanaryStage {
-    /// Monotonic rank used to order transitions.
-    pub fn rank(self) -> u8 {
-        match self {
-            Self::Armed => 0,
-            Self::Dispatched => 1,
-            Self::Delivered => 2,
-            Self::Acknowledged => 3,
-            Self::Settled => 4,
-        }
-    }
-
-    /// Parses the canonical snake_case label at an input boundary.
-    pub fn parse(label: &str) -> Result<Self> {
-        match label.trim() {
-            "armed" => Ok(Self::Armed),
-            "dispatched" => Ok(Self::Dispatched),
-            "delivered" => Ok(Self::Delivered),
-            "acknowledged" => Ok(Self::Acknowledged),
-            "settled" => Ok(Self::Settled),
-            other => Err(Error::InvalidInput(format!("unknown canary stage {other}"))),
-        }
-    }
-
-    /// Canonical label of the stage.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Armed => "armed",
-            Self::Dispatched => "dispatched",
-            Self::Delivered => "delivered",
-            Self::Acknowledged => "acknowledged",
-            Self::Settled => "settled",
-        }
-    }
-}
-
-/// Monotonic state of one canary or packet message.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CanaryMessageV1 {
-    guid: String,
-    stage: CanaryStage,
-    ledger_sequence: Option<u64>,
-    obligations: BTreeMap<String, String>,
-}
-
-impl CanaryMessageV1 {
-    /// Arms a new message; the only entry point into the machine.
-    pub fn arm(guid: &str) -> Result<Self> {
-        if guid.trim().is_empty() {
-            return Err(Error::InvalidInput("message guid must not be empty".into()));
-        }
-        Ok(Self {
-            guid: guid.to_string(),
-            stage: CanaryStage::Armed,
-            ledger_sequence: None,
-            obligations: BTreeMap::new(),
-        })
-    }
-
-    /// Message guid.
-    pub fn guid(&self) -> &str {
-        &self.guid
-    }
-
-    /// Current stage.
-    pub fn stage(&self) -> CanaryStage {
-        self.stage
-    }
-
-    /// Highest observed ledger or block sequence, when recorded.
-    pub fn ledger_sequence(&self) -> Option<u64> {
-        self.ledger_sequence
-    }
-
-    /// Recorded obligations.
-    pub fn obligations(&self) -> &BTreeMap<String, String> {
-        &self.obligations
-    }
-
-    /// Whether the message is in the recovery-eligible window: moving but
-    /// not yet settled.
-    pub fn can_recover(&self) -> bool {
-        matches!(
-            self.stage,
-            CanaryStage::Dispatched | CanaryStage::Delivered | CanaryStage::Acknowledged
-        )
-    }
-
-    /// Advances the stage. Transitions are strictly forward: equal or
-    /// backwards transitions are conflicts.
-    pub fn advance(&mut self, to: CanaryStage, ledger_sequence: Option<u64>) -> Result<()> {
-        if to.rank() <= self.stage.rank() {
-            return Err(Error::Conflict(format!(
-                "canary message {} cannot move from {} backwards or sideways to {}",
-                self.guid,
-                self.stage.label(),
-                to.label()
-            )));
-        }
-        if let Some(sequence) = ledger_sequence {
-            if let Some(previous) = self.ledger_sequence {
-                if sequence < previous {
-                    return Err(Error::Conflict(format!(
-                        "canary message {} observed sequence {sequence} below recorded {previous}",
-                        self.guid
-                    )));
-                }
-            }
-            self.ledger_sequence = Some(sequence);
-        }
-        self.stage = to;
-        Ok(())
-    }
-
-    /// Records an additional obligation. Duplicate keys are refused unless
-    /// `allow_override` is set.
-    pub fn set_obligation(&mut self, key: &str, value: &str, allow_override: bool) -> Result<()> {
-        if key.trim().is_empty() {
-            return Err(Error::InvalidInput(
-                "obligation key must not be empty".into(),
-            ));
-        }
-        if value.trim().is_empty() {
-            return Err(Error::InvalidInput(
-                "obligation value must not be empty".into(),
-            ));
-        }
-        if !allow_override && self.obligations.contains_key(key) {
-            return Err(Error::Conflict(format!(
-                "obligation {key} already recorded for message {}",
-                self.guid
-            )));
-        }
-        self.obligations.insert(key.to_string(), value.to_string());
-        Ok(())
-    }
-
-    /// Reads a recorded obligation.
-    pub fn obligation(&self, key: &str) -> Option<&str> {
-        self.obligations.get(key).map(String::as_str)
-    }
-}
+use std::path::Path;
 
 use crate::domain::Direction;
+use crate::error::{Error, Result};
 use crate::output::CommandData;
 use crate::state::RouteStore;
-use std::path::Path;
+
+
 
 /// Read-only route access: allowed on mainnet (inspection/drafting).
 fn route_read(state_path: &Path) -> Result<crate::domain::RouteStateV1> {
@@ -185,7 +26,390 @@ fn route_environment(state_path: &Path) -> Result<crate::domain::RouteStateV1> {
     Ok(state)
 }
 
-/// `leg quote`: writes a typed, route-bound leg intent; no nonce reservation.
+fn config_raw(state: &crate::domain::RouteStateV1, key: &str) -> Result<u128> {
+    state
+        .effective_config
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Custody(format!("effective route is missing {key}")))?
+        .parse()
+        .map_err(|_| Error::Custody(format!("effective route field {key} is not decimal")))
+}
+
+fn validate_destination(direction: Direction, destination: &str) -> Result<()> {
+    match direction {
+        Direction::StellarToEvm => {
+            crate::evm::parse_address(destination)?;
+        }
+        Direction::EvmToStellar => {
+            crate::codec::strkey_to_bytes32(destination)?;
+        }
+    }
+    Ok(())
+}
+
+/// Exact-route convergence gate: every requested configuration field must
+/// equal its recorded effective readback. Unknown effective-only fields are
+/// recorded evidence, never a convergence failure.
+fn require_route_converged(state: &crate::domain::RouteStateV1) -> Result<()> {
+    let mut unmatched: Vec<String> = Vec::new();
+    for (key, requested) in &state.requested_config {
+        match state.effective_config.get(key) {
+            Some(actual) if actual == requested => {}
+            Some(actual) => unmatched.push(format!(
+                "{key}: requested {requested} but effective readback is {actual}"
+            )),
+            None => unmatched.push(format!(
+                "{key}: requested but no effective readback is recorded"
+            )),
+        }
+    }
+    if unmatched.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Conflict(format!(
+            "route is not fully converged: {}",
+            unmatched.join("; ")
+        )))
+    }
+}
+
+fn direction_label(direction: Direction) -> &'static str {
+    match direction {
+        Direction::StellarToEvm => "stellar_to_evm",
+        Direction::EvmToStellar => "evm_to_stellar",
+    }
+}
+
+/// Validates an address on the source side of the leg: Stellar for the
+/// forward leg, EVM for the reverse leg.
+fn validate_source_address(direction: Direction, source: &str) -> Result<()> {
+    match direction {
+        Direction::StellarToEvm => crate::codec::strkey_to_bytes32(source).map(|_| ()),
+        Direction::EvmToStellar => crate::evm::parse_address(source).map(|_| ()),
+    }
+}
+
+/// Recorded source-specific canary sender. The forward leg originates on
+/// Stellar, the reverse leg on EVM.
+fn sender_for(state: &crate::domain::RouteStateV1, direction: Direction) -> Result<String> {
+    let key = format!("canary:sender:{}", direction_label(direction));
+    let sender = state
+        .effective_config
+        .get(&key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Custody(format!("effective route is missing {key}")))?
+        .to_string();
+    validate_source_address(direction, &sender)?;
+    Ok(sender)
+}
+
+/// Recorded source refund address. Without recorded evidence the refund
+/// defaults to the source sender, which is the canonical OFT `refundAddress`
+/// protocol default; nothing is synthesized beyond that default.
+fn refund_for(
+    state: &crate::domain::RouteStateV1,
+    direction: Direction,
+    sender: &str,
+) -> Result<String> {
+    let key = format!("canary:refund_address:{}", direction_label(direction));
+    let refund = match state
+        .effective_config
+        .get(&key)
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(recorded) => recorded.to_string(),
+        None => sender.to_string(),
+    };
+    validate_source_address(direction, &refund)?;
+    Ok(refund)
+}
+
+
+/// Canonical intent derived exclusively from converged recorded state and
+/// finalized custody evidence. `leg quote` writes this; `leg send` re-derives
+/// it to refuse any drift before signing or proposal. Missing fee, rate,
+/// option, or balance evidence is refused, never fabricated.
+fn build_intent(
+    state: &crate::domain::RouteStateV1,
+    direction: Direction,
+    amount_raw: u128,
+    to: &str,
+    now_unix: u64,
+    outstanding_raw: u128,
+) -> Result<crate::domain::LegIntentV1> {
+    require_route_converged(state)?;
+    let opening = state
+        .opening_custody
+        .as_ref()
+        .ok_or_else(|| Error::Custody("opening custody is not finalized".into()))?;
+    validate_destination(direction, to)?;
+    let cap = config_raw(state, "canary:max_amount_raw")?;
+    if amount_raw == 0 || amount_raw > cap {
+        return Err(Error::Policy(format!(
+            "canary amount must be between 1 and {cap} raw"
+        )));
+    }
+    let direction_label = direction_label(direction);
+    let sender = sender_for(state, direction)?;
+    let refund_address = refund_for(state, direction, &sender)?;
+    let fee_bps = config_raw(state, &format!("fee_bps:{direction_label}"))?;
+    if fee_bps > 10_000 {
+        return Err(Error::Custody("recorded fee bps exceeds 100%".into()));
+    }
+    let minimum_received_raw = amount_raw
+        .checked_sub(
+            amount_raw
+                .checked_mul(fee_bps)
+                .ok_or_else(|| Error::Custody("quote fee overflow".into()))?
+                / 10_000,
+        )
+        .ok_or_else(|| Error::Custody("quote fee exceeds amount".into()))?;
+    let native_fee_raw = config_raw(
+        state,
+        &format!("canary:quoted_native_fee_raw:{direction_label}"),
+    )?;
+    let maximum_native_fee_raw = config_raw(
+        state,
+        &format!("canary:max_native_fee_raw:{direction_label}"),
+    )?;
+    if native_fee_raw > maximum_native_fee_raw {
+        return Err(Error::Custody(format!(
+            "recorded canary native fee exceeds the recorded ceiling for {direction_label}"
+        )));
+    }
+    let extra_options = state
+        .effective_config
+        .get(&format!("canary:extra_options:{direction_label}"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Custody("effective route is missing canary extra options".into()))?
+        .to_string();
+    let ttl = config_raw(state, "canary:quote_ttl_seconds")?;
+    let finality_policy = state
+        .effective_config
+        .get("canary:finality_policy")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Custody("effective route is missing canary:finality_policy".into()))?
+        .to_string();
+    if finality_policy.trim().is_empty() {
+        return Err(Error::Custody(
+            "recorded canary finality policy is empty".into(),
+        ));
+    }
+    let fee_ceiling = match direction {
+        Direction::StellarToEvm => crate::domain::LegFeeCeilingV1::Stellar {
+            resource_fee_ceiling_raw: config_raw(
+                state,
+                &format!("canary:stellar_resource_fee_ceiling_raw:{direction_label}"),
+            )?
+            .to_string(),
+        },
+        Direction::EvmToStellar => crate::domain::LegFeeCeilingV1::Evm {
+            max_fee_per_gas_wei: config_raw(
+                state,
+                &format!("canary:evm_max_fee_per_gas_wei:{direction_label}"),
+            )?
+            .to_string(),
+            max_priority_fee_per_gas_wei: config_raw(
+                state,
+                &format!("canary:evm_max_priority_fee_per_gas_wei:{direction_label}"),
+            )?
+            .to_string(),
+            gas_limit: config_raw(
+                state,
+                &format!("canary:evm_gas_limit:{direction_label}"),
+            )?
+            .try_into()
+            .map_err(|_| Error::Custody("recorded EVM gas limit exceeds u64".into()))?,
+        },
+    };
+    let outstanding_cap_raw = config_raw(state, "canary:max_outstanding_obligation_raw")?;
+    let peer_snapshot_sha256 = crate::canonical_sha256(&peer_records(state))?;
+    let additional_obligation = crate::domain::LegAdditionalObligationV1 {
+        outstanding_raw: outstanding_raw.to_string(),
+        cap_raw: outstanding_cap_raw.to_string(),
+    };
+    let expires_at_unix = now_unix
+        .checked_add(
+            ttl.try_into()
+                .map_err(|_| Error::Custody("quote TTL exceeds u64".into()))?,
+        )
+        .ok_or_else(|| Error::Custody("quote expiry overflow".into()))?;
+    let intent = crate::domain::LegIntentV1 {
+        schema_name: "leg_intent".into(),
+        schema_version: crate::domain::SCHEMA_VERSION,
+        route_id: state.route_id.clone(),
+        desired_sha256: state.desired_sha256.clone(),
+        direction,
+        amount_raw: amount_raw.to_string(),
+        destination_eid: match direction {
+            Direction::StellarToEvm => state.identity.evm_eid,
+            Direction::EvmToStellar => state.identity.stellar_eid,
+        },
+        to: to.to_string(),
+        sender,
+        refund_address,
+        minimum_received_raw: minimum_received_raw.to_string(),
+        native_fee_raw: native_fee_raw.to_string(),
+        extra_options,
+        maximum_native_fee_raw: maximum_native_fee_raw.to_string(),
+        config_snapshot_sha256: crate::canonical_sha256(&state.effective_config)?,
+        custody_snapshot_sha256: crate::canonical_sha256(opening)?,
+        peer_snapshot_sha256,
+        quote_source_ledger: None,
+        quote_source_block: None,
+        observed_sequence_nonce: None,
+        fee_ceiling: Some(fee_ceiling),
+        pre_send_snapshot: None,
+        finality_policy: Some(finality_policy),
+        additional_obligation: Some(additional_obligation),
+        expires_at_unix,
+    }
+    .parse()?;
+    Ok(intent)
+}
+
+/// Re-derives the canonical intent for the same direction, amount, and
+/// destination from current recorded state and refuses the quoted intent when
+/// any bound input drifted. Expiry is governed separately by the intent's own
+/// ceiling and the current TTL policy, never by a re-derived clock value.
+fn revalidate_intent(
+    state: &crate::domain::RouteStateV1,
+    intent: &crate::domain::LegIntentV1,
+    now_unix: u64,
+    outstanding_raw: u128,
+) -> Result<()> {
+    let amount: u128 = intent.amount_raw.parse().map_err(|_| {
+        Error::InvalidInput("leg intent amount_raw is not a decimal integer".into())
+    })?;
+    let rederived = build_intent(state, intent.direction, amount, &intent.to, now_unix, outstanding_raw)?;
+    let mut drift: Vec<&'static str> = Vec::new();
+    if intent.route_id != rederived.route_id {
+        drift.push("route_id");
+    }
+    if intent.desired_sha256 != rederived.desired_sha256 {
+        drift.push("desired_sha256");
+    }
+    if intent.direction != rederived.direction {
+        drift.push("direction");
+    }
+    if intent.amount_raw != rederived.amount_raw {
+        drift.push("amount_raw");
+    }
+    if intent.destination_eid != rederived.destination_eid {
+        drift.push("destination_eid");
+    }
+    if intent.to != rederived.to {
+        drift.push("destination");
+    }
+    if intent.sender != rederived.sender {
+        drift.push("sender");
+    }
+    if intent.refund_address != rederived.refund_address {
+        drift.push("refund_address");
+    }
+    if intent.minimum_received_raw != rederived.minimum_received_raw {
+        drift.push("minimum_received_raw");
+    }
+    if intent.native_fee_raw != rederived.native_fee_raw {
+        drift.push("native_fee_raw");
+    }
+    if intent.extra_options != rederived.extra_options {
+        drift.push("extra_options");
+    }
+    if intent.maximum_native_fee_raw != rederived.maximum_native_fee_raw {
+        drift.push("maximum_native_fee_raw");
+    }
+    if intent.config_snapshot_sha256 != rederived.config_snapshot_sha256 {
+        drift.push("config_snapshot_sha256");
+    }
+    if intent.custody_snapshot_sha256 != rederived.custody_snapshot_sha256 {
+        drift.push("custody_snapshot_sha256");
+    }
+    if intent.peer_snapshot_sha256 != rederived.peer_snapshot_sha256 {
+        drift.push("peer_snapshot_sha256");
+    }
+    if intent.fee_ceiling != rederived.fee_ceiling {
+        drift.push("fee_ceiling");
+    }
+    if intent.finality_policy != rederived.finality_policy {
+        drift.push("finality_policy");
+    }
+    if intent.additional_obligation != rederived.additional_obligation {
+        drift.push("additional_obligation");
+    }
+    if !drift.is_empty() {
+        return Err(Error::Conflict(format!(
+            "leg intent no longer matches current route state; drifted: {}",
+            drift.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+/// Sums outstanding unresolved packet obligations from the append-only
+/// message ledger, mirroring the canonical reconcile classification: locked
+/// and not yet minted forwards, and burned and not yet unlocked reverses.
+/// Ledger records are the only obligation evidence; a stuck reverse cannot
+/// trigger another send unless the operator explicitly allows it within the
+/// recorded cap.
+fn outstanding_obligations(store: &crate::state::RouteStore) -> Result<u128> {
+    use crate::domain::MessageStageV1;
+    let messages = store.load_messages()?;
+    let mut outstanding: u128 = 0;
+    for message in &messages {
+        let stage = message
+            .status_events
+            .iter()
+            .rev()
+            .find(|event| event.stage != MessageStageV1::Reobserved)
+            .ok_or_else(|| {
+                Error::Custody(format!("message {} has no recorded stage", message.guid))
+            })?
+            .stage;
+        let amount_field = match (message.direction, stage) {
+            (
+                Direction::StellarToEvm,
+                MessageStageV1::ForwardLocked
+                | MessageStageV1::ForwardVerified
+                | MessageStageV1::ForwardCommitted,
+            ) => Some(&message.net_locked_raw[..]),
+            (
+                Direction::EvmToStellar,
+                MessageStageV1::ReverseBurned
+                | MessageStageV1::ReverseVerified
+                | MessageStageV1::ReverseCommitted,
+            ) => Some(&message.burned_raw[..]),
+            (
+                Direction::StellarToEvm,
+                MessageStageV1::ForwardMinted | MessageStageV1::ForwardSourceAccepted,
+            )
+            | (
+                Direction::EvmToStellar,
+                MessageStageV1::ReverseUnlocked | MessageStageV1::ReverseSourceAccepted,
+            ) => None,
+            _ => {
+                return Err(Error::Custody(format!(
+                    "message {} has a stage inconsistent with its direction",
+                    message.guid
+                )))
+            }
+        };
+        if let Some(raw) = amount_field {
+            let value: u128 = raw.parse().map_err(|_| {
+                Error::Custody(format!("message {} amount is not decimal", message.guid))
+            })?;
+            outstanding = outstanding
+                .checked_add(value)
+                .ok_or_else(|| Error::Custody("outstanding obligation overflow".into()))?;
+        }
+    }
+    Ok(outstanding)
+}
+
+/// Produces a route-bound, expiring, non-signable intent solely from
+/// converged exact state and recorded finalized quote/config/custody
+/// evidence. No nonce reservation or signable transaction construction.
 pub fn quote(
     state_path: &Path,
     direction: Direction,
@@ -194,16 +418,9 @@ pub fn quote(
     out: &Path,
 ) -> Result<CommandData> {
     let state = route_read(state_path)?;
-    let intent = crate::domain::LegIntentV1 {
-        schema_name: "leg_intent".into(),
-        schema_version: crate::domain::SCHEMA_VERSION,
-        route_id: state.route_id.clone(),
-        desired_sha256: state.desired_sha256.clone(),
-        direction,
-        amount_raw: amount_raw.to_string(),
-        to: to.to_string(),
-    }
-    .parse()?;
+    let store = crate::state::RouteStore::open(state_path)?;
+    let outstanding = outstanding_obligations(&store)?;
+    let intent = build_intent(&state, direction, amount_raw, to, crate::now_unix()?, outstanding)?;
     crate::state::write_create_new_json(out, &intent)?;
     Ok(CommandData {
         result: serde_json::to_value(&intent)?,
@@ -211,19 +428,44 @@ pub fn quote(
     })
 }
 
-/// `leg send`: binds the quoted intent digest into a `SendLeg` operation and
-/// routes it through the live-bound proposal path. Broadcasting requires a
-/// qualified live adapter and stays fail-closed in v1.
-pub fn send(
+pub fn quote_live(
+    state_path: &Path,
+    direction: Direction,
+    amount_raw: u128,
+    to: &str,
+    out: &Path,
+    stellar: &dyn crate::stellar::StellarChain,
+    evm: &dyn crate::evm::EvmChain,
+) -> Result<CommandData> {
+    let state = route_read(state_path)?;
+    let store = crate::state::RouteStore::open(state_path)?;
+    let outstanding = outstanding_obligations(&store)?;
+    let mut intent = build_intent(&state, direction, amount_raw, to, crate::now_unix()?, outstanding)?;
+    let observation = observe_leg(&state, direction, stellar, evm)?;
+    intent.quote_source_ledger = observation.quote_source_ledger;
+    intent.quote_source_block = observation.quote_source_block;
+    intent.observed_sequence_nonce = Some(observation.observed_sequence_nonce);
+    intent.pre_send_snapshot = Some(observation.pre_send_snapshot);
+    let intent = intent.parse()?;
+    crate::state::write_create_new_json(out, &intent)?;
+    Ok(CommandData {
+        result: serde_json::to_value(&intent)?,
+        artifact: None,
+    })
+}
+
+/// Validates the exact quoted intent against current custody/config/obligation
+/// state and returns the source-VM operation. Every bound input is re-derived
+/// from recorded state; any drift, expiry breach, cap breach, or source
+/// authority mismatch rejects the intent before signing or proposal. No loose
+/// send flags are reconstructed.
+pub fn send_operation(
     state_path: &Path,
     intent_path: &Path,
-    _allow_additional_obligation: bool,
-    execute: bool,
-    proposal_out: Option<&Path>,
-    stellar_rpc: Option<&str>,
-    evm_rpc: Option<&str>,
-) -> Result<CommandData> {
+    allow_additional_obligation: bool,
+) -> Result<crate::domain::OperationV1> {
     let state = route_environment(state_path)?;
+    let store = crate::state::RouteStore::open(state_path)?;
     let intent: crate::domain::LegIntentV1 = crate::state::read_json(intent_path)?;
     let intent = intent.parse()?;
     if intent.route_id != state.route_id || intent.desired_sha256 != state.desired_sha256 {
@@ -231,76 +473,894 @@ pub fn send(
             "leg intent does not bind to this route state".into(),
         ));
     }
-    let intent_sha256 = crate::canonical_sha256(&intent)?;
-    let operation = crate::domain::OperationV1::SendLeg { intent_sha256 };
-    if execute {
-        return Err(Error::Chain(
-            "leg execution requires a qualified live adapter; use --proposal-out".into(),
+    let now = crate::now_unix()?;
+    if now >= intent.expires_at_unix {
+        return Err(Error::Conflict("leg intent has expired".into()));
+    }
+    let ttl = config_raw(&state, "canary:quote_ttl_seconds")?;
+    let ttl_ceiling = now
+        .checked_add(
+            ttl.try_into()
+                .map_err(|_| Error::Custody("quote TTL exceeds u64".into()))?,
+        )
+        .ok_or_else(|| Error::Custody("quote TTL ceiling overflow".into()))?;
+    if intent.expires_at_unix > ttl_ceiling {
+        return Err(Error::Conflict(
+            "leg intent expiry exceeds the currently recorded quote TTL ceiling; re-quote".into(),
         ));
     }
-    match proposal_out {
-        Some(out) => crate::governance::proposal_for_operation(
-            state_path,
-            &operation,
-            out,
-            stellar_rpc,
-            evm_rpc,
+    let outstanding = outstanding_obligations(&store)?;
+    revalidate_intent(&state, &intent, now, outstanding)?;
+    let amount: u128 = intent.amount_raw.parse().map_err(|_| {
+        Error::InvalidInput("leg intent amount_raw is not a decimal integer".into())
+    })?;
+    if amount > config_raw(&state, "canary:max_amount_raw")? {
+        return Err(Error::Policy(
+            "leg intent exceeds the current canary cap".into(),
+        ));
+    }
+    if outstanding > 0 {
+        if !allow_additional_obligation {
+            return Err(Error::Policy(
+                "an outstanding bridge obligation requires --allow-additional-obligation".into(),
+            ));
+        }
+        let cap: u128 = intent
+            .additional_obligation
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Custody("leg intent is missing the recorded obligation cap".into())
+            })?
+            .cap_raw
+            .parse()
+            .map_err(|_| Error::Custody("leg intent obligation cap is not decimal".into()))?;
+        let resulting = outstanding
+            .checked_add(amount)
+            .ok_or_else(|| Error::Custody("resulting obligation overflow".into()))?;
+        if resulting > cap {
+            return Err(Error::Policy(format!(
+                "resulting outstanding obligation {resulting} exceeds the recorded cap {cap}"
+            )));
+        }
+    }
+    Ok(crate::domain::OperationV1::SendLeg {
+        vm: match intent.direction {
+            Direction::StellarToEvm => crate::domain::Vm::Stellar,
+            Direction::EvmToStellar => crate::domain::Vm::Evm,
+        },
+        intent: Box::new(intent),
+    })
+}
+
+/// Exact `peer:*` records bound by the canonical intent. The OFT economic and
+/// rate-limit surface lives in `effective_config` and is already bound by
+/// `config_snapshot_sha256`; peer bindings are chain state, not config, so they
+/// are hashed explicitly here.
+fn peer_records(state: &crate::domain::RouteStateV1) -> serde_json::Map<String, serde_json::Value>
+{
+    state
+        .contracts
+        .iter()
+        .filter(|(key, _)| key.starts_with("peer:"))
+        .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+        .collect()
+}
+
+/// Read-only live observation bound by a quoted leg: source chain height,
+/// source-account sequence/nonce, and the pre-send
+/// balance/lockbox/supply snapshot. The quote never reserves the sequence or
+/// nonce and never constructs a signable transaction; send re-reads these same
+/// observations and refuses any drift before signing.
+struct LegLiveObservationV1 {
+    quote_source_ledger: Option<u32>,
+    quote_source_block: Option<u64>,
+    observed_sequence_nonce: String,
+    pre_send_snapshot: crate::domain::LegPreSendSnapshotV1,
+}
+
+
+
+/// Executes a read-only EVM view and decodes its 32-byte word result as a
+/// decimal string, mirroring the recorded economic readback pattern.
+fn evm_word(
+    evm: &dyn crate::evm::EvmChain,
+    to: &str,
+    signature: &str,
+    words: Vec<[u8; 32]>,
+) -> Result<String> {
+    let target = crate::evm::parse_address(to)?;
+    let mut calldata = crate::evm::keccak256_of(signature.as_bytes())[..4].to_vec();
+    for word in words {
+        calldata.extend(word);
+    }
+    let bytes = crate::block_on_result(evm.call(target, calldata))?;
+    if bytes.len() != 32 {
+        return Err(Error::Chain(format!(
+            "{signature} returned a short EVM word"
+        )));
+    }
+    Ok(alloy::primitives::U256::from_be_slice(&bytes).to_string())
+}
+
+fn observe_leg(
+    state: &crate::domain::RouteStateV1,
+    direction: Direction,
+    stellar: &dyn crate::stellar::StellarChain,
+    evm: &dyn crate::evm::EvmChain,
+) -> Result<LegLiveObservationV1> {
+    let stellar_token = state
+        .contracts
+        .get("stellar_token")
+        .ok_or_else(|| Error::Custody("route has no recorded stellar_token".into()))?;
+    let stellar_oft = state
+        .contracts
+        .get("stellar_oft")
+        .ok_or_else(|| Error::Custody("route has no recorded stellar_oft".into()))?;
+    let evm_token = state
+        .contracts
+        .get("evm_token")
+        .ok_or_else(|| Error::Custody("route has no recorded evm_token".into()))?;
+    let evm_oft = state
+        .contracts
+        .get("evm_oft")
+        .ok_or_else(|| Error::Custody("route has no recorded evm_oft".into()))?;
+    let stellar_source = state
+        .contracts
+        .get("stellar_owner")
+        .ok_or_else(|| Error::Custody("route has no recorded stellar_owner".into()))?;
+    let sender = sender_for(state, direction)?;
+    let (quote_source_ledger, quote_source_block, observed_sequence_nonce) = match direction {
+        Direction::StellarToEvm => (
+            Some(stellar.latest_ledger()?),
+            None,
+            stellar.account_sequence(&sender)?,
         ),
-        None => Ok(CommandData {
-            result: serde_json::to_value(&operation)?,
-            artifact: None,
-        }),
+        Direction::EvmToStellar => {
+            let sender_address = crate::evm::parse_address(&sender)?;
+            let block = crate::block_on_result(evm.latest_block())?;
+            let nonce = crate::block_on_result(evm.account_nonce(sender_address))?;
+            (None, Some(block), nonce.to_string())
+        }
+    };
+    let source_balance_raw = match direction {
+        Direction::StellarToEvm => {
+            stellar.token_balance(stellar_token, &sender, stellar_source)?
+        }
+        Direction::EvmToStellar => evm_word(
+            evm,
+            evm_token,
+            "balanceOf(address)",
+            vec![crate::codec::evm_address_to_bytes32(&sender)?],
+        )?,
+    };
+    let lockbox_raw = stellar.token_balance(stellar_token, stellar_oft, stellar_source)?;
+    let evm_supply_raw = evm_word(evm, evm_oft, "totalSupply()", Vec::new())?;
+    Ok(LegLiveObservationV1 {
+        quote_source_ledger,
+        quote_source_block,
+        observed_sequence_nonce,
+        pre_send_snapshot: crate::domain::LegPreSendSnapshotV1 {
+            source_balance_raw,
+            lockbox_raw,
+            evm_supply_raw,
+        },
+    })
+}
+
+/// Refuses the leg when any live observation no longer matches the values the
+/// quote bound. Source height and sequence/nonce are compared only for the
+/// leg's own source VM; the cross-VM height is not observed and cannot drift.
+fn reject_live_drift(
+    intent: &crate::domain::LegIntentV1,
+    observation: &LegLiveObservationV1,
+) -> Result<()> {
+    let mut drift: Vec<&'static str> = Vec::new();
+    match intent.direction {
+        Direction::StellarToEvm => {
+            if intent.quote_source_ledger.is_none()
+                || intent.quote_source_ledger != observation.quote_source_ledger
+            {
+                drift.push("quote_source_ledger");
+            }
+        }
+        Direction::EvmToStellar => {
+            if intent.quote_source_block.is_none()
+                || intent.quote_source_block != observation.quote_source_block
+            {
+                drift.push("quote_source_block");
+            }
+        }
+    }
+    if intent.observed_sequence_nonce.as_deref()
+        != Some(observation.observed_sequence_nonce.as_str())
+    {
+        drift.push("observed_sequence_nonce");
+    }
+    match &intent.pre_send_snapshot {
+        Some(snapshot) => {
+            if snapshot.source_balance_raw != observation.pre_send_snapshot.source_balance_raw {
+                drift.push("source_balance_raw");
+            }
+            if snapshot.lockbox_raw != observation.pre_send_snapshot.lockbox_raw {
+                drift.push("lockbox_raw");
+            }
+            if snapshot.evm_supply_raw != observation.pre_send_snapshot.evm_supply_raw {
+                drift.push("evm_supply_raw");
+            }
+        }
+        None => drift.push("pre_send_snapshot"),
+    }
+    if drift.is_empty() {
+        return Ok(());
+    }
+    Err(Error::Conflict(format!(
+        "leg send live re-read rejects drift before signing: {}",
+        drift.join(", ")
+    )))
+}
+
+/// Validates the exact quoted intent against recorded state and then re-reads
+/// the live observations the quote bound, refusing the leg before any signing
+/// or nonce acquisition when the source height, sequence/nonce, or pre-send
+/// balance/lockbox/supply drifted. The quote performed no reservation; the
+/// send acquires the sequence/nonce only after this re-read passes.
+pub fn send_operation_live(
+    state_path: &Path,
+    intent_path: &Path,
+    allow_additional_obligation: bool,
+    stellar: &dyn crate::stellar::StellarChain,
+    evm: &dyn crate::evm::EvmChain,
+) -> Result<crate::domain::OperationV1> {
+    let operation = send_operation(state_path, intent_path, allow_additional_obligation)?;
+    let state = route_environment(state_path)?;
+    let intent: crate::domain::LegIntentV1 = crate::state::read_json(intent_path)?;
+    let intent = intent.parse()?;
+    let observation = observe_leg(&state, intent.direction, stellar, evm)?;
+    reject_live_drift(&intent, &observation)?;
+    Ok(operation)
+}
+
+/// Refuses signing when the live Stellar envelope fee exceeds the
+/// resource-fee ceiling the quote bound.
+pub fn verify_stellar_plan_fee_ceiling(
+    intent: &crate::domain::LegIntentV1,
+    binding: &crate::domain::StellarPlanBindingV1,
+) -> Result<()> {
+    let Some(crate::domain::LegFeeCeilingV1::Stellar {
+        resource_fee_ceiling_raw,
+    }) = &intent.fee_ceiling
+    else {
+        return Ok(());
+    };
+    let ceiling: u64 = resource_fee_ceiling_raw.parse().map_err(|_| {
+        Error::Custody("recorded stellar resource fee ceiling is not decimal".into())
+    })?;
+    use stellar_baselib::transaction::{Transaction, TransactionBehavior as _};
+    let transaction = std::panic::catch_unwind(|| {
+        Transaction::from_xdr_envelope(&binding.envelope_xdr, &binding.network_passphrase)
+    })
+    .map_err(|_| Error::InvalidInput("invalid Stellar transaction envelope XDR".into()))?;
+    if u64::from(transaction.fee) > ceiling {
+        return Err(Error::Policy(format!(
+            "live Stellar transaction fee {} stroops exceeds the quoted resource-fee ceiling {ceiling}",
+            transaction.fee
+        )));
+    }
+    Ok(())
+}
+
+/// Refuses signing when the live EVM fee policy exceeds the ceilings the quote
+/// bound.
+pub fn verify_evm_plan_fee_ceiling(
+    intent: &crate::domain::LegIntentV1,
+    binding: &crate::domain::EvmPlanBindingV1,
+) -> Result<()> {
+    let Some(crate::domain::LegFeeCeilingV1::Evm {
+        max_fee_per_gas_wei,
+        max_priority_fee_per_gas_wei,
+        gas_limit,
+    }) = &intent.fee_ceiling
+    else {
+        return Ok(());
+    };
+    let max_fee: u128 = max_fee_per_gas_wei
+        .parse()
+        .map_err(|_| Error::Custody("recorded EVM max fee is not decimal".into()))?;
+    let max_priority: u128 = max_priority_fee_per_gas_wei
+        .parse()
+        .map_err(|_| Error::Custody("recorded EVM max priority fee is not decimal".into()))?;
+    let live_gas: u64 = binding
+        .gas_limit
+        .parse()
+        .map_err(|_| Error::Chain("plan gas limit is not decimal".into()))?;
+    let live_max_fee: u128 = binding
+        .max_fee_per_gas_wei
+        .parse()
+        .map_err(|_| Error::Chain("plan max fee is not decimal".into()))?;
+    let live_max_priority: u128 = binding
+        .max_priority_fee_per_gas_wei
+        .parse()
+        .map_err(|_| Error::Chain("plan max priority fee is not decimal".into()))?;
+    let mut breaches: Vec<&'static str> = Vec::new();
+    if live_gas > *gas_limit {
+        breaches.push("gas_limit");
+    }
+    if live_max_fee > max_fee {
+        breaches.push("max_fee_per_gas_wei");
+    }
+    if live_max_priority > max_priority {
+        breaches.push("max_priority_fee_per_gas_wei");
+    }
+    if !breaches.is_empty() {
+        return Err(Error::Policy(format!(
+            "live EVM fee policy exceeds the quoted ceiling; breached: {}",
+            breaches.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DestinationPacketState {
+    Unverified,
+    Verified,
+    Committed,
+    Executed,
+}
+
+pub trait DestinationPacketReader {
+    fn packet_state(
+        &self,
+        state: &crate::domain::RouteStateV1,
+        message: &crate::domain::MessageRecordV1,
+    ) -> Result<DestinationPacketState>;
+}
+
+pub struct LiveDestinationPacketReader<'a> {
+    pub stellar: &'a dyn crate::stellar::StellarChain,
+    pub evm: &'a dyn crate::evm::EvmChain,
+}
+
+impl DestinationPacketReader for LiveDestinationPacketReader<'_> {
+    fn packet_state(
+        &self,
+        state: &crate::domain::RouteStateV1,
+        message: &crate::domain::MessageRecordV1,
+    ) -> Result<DestinationPacketState> {
+        use stellar_baselib::xdr::{Limits, ScBytes, ScVal, WriteXdr as _};
+
+        let header = crate::layerzero::qualify_message_for_route(state, message)?;
+        let payload: [u8; 32] = hex::decode(message.payload_keccak256.trim_start_matches("0x"))
+            .map_err(|_| Error::Custody("payload hash is not hex".into()))?
+            .try_into()
+            .map_err(|_| Error::Custody("payload hash must be 32 bytes".into()))?;
+        if message.direction == Direction::EvmToStellar {
+            let encode = |value: ScVal| {
+                value
+                    .to_xdr(Limits::none())
+                    .map(hex::encode)
+                    .map_err(|error| {
+                        Error::Chain(format!("Stellar view arg encoding failed: {error}"))
+                    })
+            };
+            let bytes = |value: Vec<u8>| {
+                Ok::<_, Error>(ScVal::Bytes(ScBytes(value.try_into().map_err(
+                    |error| Error::InvalidInput(format!("Soroban bytes too large: {error}")),
+                )?)))
+            };
+            let packet_header = bytes(
+                hex::decode(message.packet_header.trim_start_matches("0x"))
+                    .map_err(|_| Error::Custody("packet header is not hex".into()))?,
+            )?;
+            let payload_hash = bytes(payload.to_vec())?;
+            let verifiable = match self.stellar.invoke_view(
+                &message.current_receive_library,
+                "verifiable",
+                &[encode(packet_header)?, encode(payload_hash.clone())?],
+                &state
+                    .contracts
+                    .get("stellar_recovery_executor")
+                    .cloned()
+                    .unwrap_or_else(|| state.contracts["stellar_owner"].clone()),
+            )? {
+                ScVal::Bool(value) => value,
+                _ => {
+                    return Err(Error::Chain(
+                        "Stellar receive ULN verifiable returned non-bool".into(),
+                    ))
+                }
+            };
+            let receiver = crate::layerzero::stellar_address(&message.receiver)?;
+            let inbound_nonce = match self.stellar.invoke_view(
+                &state.identity.stellar_endpoint,
+                "inbound_nonce",
+                &[
+                    encode(receiver.clone())?,
+                    encode(ScVal::U32(header.source_eid))?,
+                    encode(bytes(header.sender.to_vec())?)?,
+                ],
+                &state.contracts["stellar_owner"],
+            )? {
+                ScVal::U64(value) => value,
+                _ => {
+                    return Err(Error::Chain(
+                        "Stellar inbound_nonce returned non-u64".into(),
+                    ))
+                }
+            };
+            let committed = match self.stellar.invoke_view(
+                &state.identity.stellar_endpoint,
+                "inbound_payload_hash",
+                &[
+                    encode(receiver)?,
+                    encode(ScVal::U32(header.source_eid))?,
+                    encode(bytes(header.sender.to_vec())?)?,
+                    encode(ScVal::U64(header.nonce))?,
+                ],
+                &state.contracts["stellar_owner"],
+            )? {
+                ScVal::Bytes(value) => value.0.as_slice() == payload,
+                ScVal::Void => false,
+                _ => {
+                    return Err(Error::Chain(
+                        "Stellar inbound_payload_hash returned an unexpected value".into(),
+                    ))
+                }
+            };
+            return Ok(if inbound_nonce >= header.nonce && !committed {
+                DestinationPacketState::Executed
+            } else if committed {
+                DestinationPacketState::Committed
+            } else if verifiable {
+                DestinationPacketState::Verified
+            } else {
+                DestinationPacketState::Unverified
+            });
+        }
+
+        let receiver = crate::evm::parse_address(&message.receiver)?;
+        let endpoint = crate::evm::parse_address(&state.identity.evm_endpoint)?;
+        let call = |to, signature: &str, words: Vec<[u8; 32]>| {
+            let mut calldata = crate::evm::keccak256_of(signature.as_bytes())[..4].to_vec();
+            calldata.extend(words.into_iter().flatten());
+            crate::block_on_result(self.evm.call(to, calldata))
+        };
+        let address_word = |address: alloy::primitives::Address| {
+            let mut word = [0u8; 32];
+            word[12..].copy_from_slice(address.as_slice());
+            word
+        };
+        let u32_word = |value: u32| {
+            let mut word = [0u8; 32];
+            word[28..].copy_from_slice(&value.to_be_bytes());
+            word
+        };
+        let u64_word = |value: u64| {
+            let mut word = [0u8; 32];
+            word[24..].copy_from_slice(&value.to_be_bytes());
+            word
+        };
+        let inbound_nonce_bytes = call(
+            endpoint,
+            "inboundNonce(address,uint32,bytes32)",
+            vec![
+                address_word(receiver),
+                u32_word(header.source_eid),
+                header.sender,
+            ],
+        )?;
+        if inbound_nonce_bytes.len() != 32 {
+            return Err(Error::Chain(
+                "EVM inboundNonce returned malformed data".into(),
+            ));
+        }
+        let mut inbound_nonce = [0u8; 8];
+        inbound_nonce.copy_from_slice(&inbound_nonce_bytes[24..32]);
+        let inbound_nonce = u64::from_be_bytes(inbound_nonce);
+        let committed_bytes = call(
+            endpoint,
+            "inboundPayloadHash(address,uint32,bytes32,uint64)",
+            vec![
+                address_word(receiver),
+                u32_word(header.source_eid),
+                header.sender,
+                u64_word(header.nonce),
+            ],
+        )?;
+        if committed_bytes.len() != 32 {
+            return Err(Error::Chain(
+                "EVM inboundPayloadHash returned malformed data".into(),
+            ));
+        }
+        let committed = committed_bytes.as_slice() == payload;
+        if inbound_nonce >= header.nonce && !committed {
+            return Ok(DestinationPacketState::Executed);
+        }
+        if committed {
+            return Ok(DestinationPacketState::Committed);
+        }
+        use alloy::sol_types::SolCall as _;
+        alloy::sol! {
+            interface IReceiveUlnView {
+                function verifiable(bytes calldata packetHeader, bytes32 payloadHash)
+                    external view returns (bool);
+            }
+        }
+        let calldata = IReceiveUlnView::verifiableCall {
+            packetHeader: hex::decode(message.packet_header.trim_start_matches("0x"))
+                .map_err(|_| Error::Custody("packet header is not hex".into()))?
+                .into(),
+            payloadHash: alloy::primitives::FixedBytes(payload),
+        }
+        .abi_encode();
+        let verifiable = crate::block_on_result(self.evm.call(
+            crate::evm::parse_address(&message.current_receive_library)?,
+            calldata,
+        ))?;
+        if verifiable.len() != 32 {
+            return Err(Error::Chain(
+                "EVM receive ULN verifiable returned malformed data".into(),
+            ));
+        }
+        Ok(if verifiable[31] == 1 {
+            DestinationPacketState::Verified
+        } else {
+            DestinationPacketState::Unverified
+        })
     }
 }
 
-/// `message watch`: read-only observation requires a live Scan client.
-pub fn watch(state_path: &Path, guid: &str) -> Result<CommandData> {
-    let _state = route_read(state_path)?;
-    if guid.trim().is_empty() {
-        return Err(Error::InvalidInput("guid must not be empty".into()));
-    }
-    Err(Error::Chain(
-        "message watch requires a qualified live Scan client".into(),
-    ))
-}
-
-/// `message recover`: capability-gated packet recovery.
-pub fn recover(
+/// Applies one finalized LayerZero Scan observation to an existing message.
+pub fn watch_with_scan(
     state_path: &Path,
     guid: &str,
-    _execute: bool,
-    _proposal_out: Option<&Path>,
+    scan: &dyn crate::scan::ScanClient,
+    destination: &dyn DestinationPacketReader,
 ) -> Result<CommandData> {
-    let _state = route_environment(state_path)?;
-    if guid.trim().is_empty() {
-        return Err(Error::InvalidInput("guid must not be empty".into()));
-    }
-    Err(Error::Chain(
-        "message recovery requires qualified packet evidence and a live adapter".into(),
-    ))
-}
-
-/// `evidence import`: validates an evidence bundle against route binding.
-pub fn import_evidence(state_path: &Path, bundle: &Path, write: bool) -> Result<CommandData> {
     let state = route_read(state_path)?;
-    let bundle_value: serde_json::Value = crate::state::read_json(bundle)?;
-    let bundle_route = bundle_value
-        .get("route_id")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| Error::InvalidInput("evidence bundle must carry route_id".into()))?;
-    if bundle_route != state.route_id {
-        return Err(Error::Conflict(
-            "evidence bundle does not bind to this route".into(),
+    let store = RouteStore::open(state_path)?;
+    let _lock = store.lock()?;
+    let message = store
+        .load_messages()?
+        .into_iter()
+        .find(|message| message.guid.eq_ignore_ascii_case(guid))
+        .ok_or_else(|| Error::InvalidInput(format!("message guid is not recorded: {guid}")))?;
+    let evidence =
+        crate::block_on_result(scan.messages_by_transaction(&message.source_transaction))?
+            .into_iter()
+            .find(|evidence| evidence.guid.eq_ignore_ascii_case(guid))
+            .ok_or_else(|| Error::Chain(format!("LayerZero Scan has no message {guid}")))?;
+    let status = evidence.status.to_ascii_lowercase();
+    let scan_terminal = matches!(status.as_str(), "delivered" | "succeeded" | "completed");
+    if scan_terminal && evidence.destination_transaction.is_none() {
+        return Err(Error::Chain(
+            "LayerZero Scan terminal status is not finalized".into(),
         ));
     }
+    let packet_state = destination.packet_state(&state, &message)?;
+    if scan_terminal && packet_state != DestinationPacketState::Executed {
+        return Err(Error::Conflict(
+            "LayerZero Scan claims terminal delivery but destination RPC does not".into(),
+        ));
+    }
+    let (verified, committed, terminal) = match message.direction {
+        Direction::StellarToEvm => (
+            crate::domain::MessageStageV1::ForwardVerified,
+            crate::domain::MessageStageV1::ForwardCommitted,
+            crate::domain::MessageStageV1::ForwardMinted,
+        ),
+        Direction::EvmToStellar => (
+            crate::domain::MessageStageV1::ReverseVerified,
+            crate::domain::MessageStageV1::ReverseCommitted,
+            crate::domain::MessageStageV1::ReverseUnlocked,
+        ),
+    };
+    let last = message
+        .status_events
+        .iter()
+        .rev()
+        .find(|event| event.stage != crate::domain::MessageStageV1::Reobserved)
+        .ok_or_else(|| Error::Custody("message has no custody stage".into()))?
+        .stage;
+    let mut stages = match packet_state {
+        DestinationPacketState::Unverified => Vec::new(),
+        DestinationPacketState::Verified => vec![verified],
+        DestinationPacketState::Committed => vec![verified, committed],
+        DestinationPacketState::Executed if scan_terminal => vec![verified, committed, terminal],
+        DestinationPacketState::Executed => Vec::new(),
+    };
+    if let Some(position) = stages.iter().position(|stage| *stage == last) {
+        stages.drain(..=position);
+    }
+    let observed_at_unix = crate::now_unix()?;
+    let evidence_sha256 = crate::canonical_sha256(&serde_json::json!({
+        "scan": evidence,
+        "destination_state": format!("{packet_state:?}")
+    }))?;
+    if stages.is_empty() {
+        store.append_message_event(
+            &message.identity(),
+            crate::domain::MessageStatusEventV1 {
+                stage: crate::domain::MessageStageV1::Reobserved,
+                observed_at_unix,
+                evidence_sha256: evidence_sha256.clone(),
+            },
+        )?;
+    } else {
+        for stage in stages {
+            let event = crate::domain::MessageStatusEventV1 {
+                stage,
+                observed_at_unix,
+                evidence_sha256: evidence_sha256.clone(),
+            };
+            if stage == terminal {
+                store.append_message_destination_event(
+                    &message.identity(),
+                    evidence.destination_transaction.clone().ok_or_else(|| {
+                        Error::Chain("terminal destination transaction is absent".into())
+                    })?,
+                    event,
+                )?;
+            } else {
+                store.append_message_event(&message.identity(), event)?;
+            }
+        }
+    }
+    Ok(CommandData {
+        result: serde_json::json!({
+            "guid": guid,
+            "scan": evidence,
+            "destination_state": format!("{packet_state:?}"),
+            "terminal": scan_terminal && packet_state == DestinationPacketState::Executed,
+        }),
+        artifact: None,
+    })
+}
+
+/// Derives the permissionless recovery operation from exact packet custody.
+pub fn recovery_operation(state_path: &Path, guid: &str) -> Result<crate::domain::OperationV1> {
+    let state = route_environment(state_path)?;
+    let message = RouteStore::open(state_path)?
+        .load_messages()?
+        .into_iter()
+        .find(|message| message.guid.eq_ignore_ascii_case(guid))
+        .ok_or_else(|| Error::InvalidInput(format!("message guid is not recorded: {guid}")))?;
+    crate::layerzero::qualify_message_for_route(&state, &message)?;
+    let stage = message
+        .status_events
+        .iter()
+        .rev()
+        .find(|event| event.stage != crate::domain::MessageStageV1::Reobserved)
+        .ok_or_else(|| Error::Custody("message has no custody stage".into()))?
+        .stage;
+    let vm = match message.direction {
+        Direction::StellarToEvm => crate::domain::Vm::Evm,
+        Direction::EvmToStellar => crate::domain::Vm::Stellar,
+    };
+    let verified = matches!(
+        (message.direction, stage),
+        (
+            Direction::StellarToEvm,
+            crate::domain::MessageStageV1::ForwardVerified
+        ) | (
+            Direction::EvmToStellar,
+            crate::domain::MessageStageV1::ReverseVerified
+        )
+    );
+    let committed = matches!(
+        (message.direction, stage),
+        (
+            Direction::StellarToEvm,
+            crate::domain::MessageStageV1::ForwardCommitted
+        ) | (
+            Direction::EvmToStellar,
+            crate::domain::MessageStageV1::ReverseCommitted
+        )
+    );
+    if verified {
+        let remote_eid = message.source_eid;
+        let current_key = crate::route::config_key_receive_library(vm, remote_eid);
+        let effective_library = state
+            .effective_config
+            .get(&current_key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| Error::Custody(format!("recovery requires effective {current_key}")))?;
+        if !effective_library.eq_ignore_ascii_case(&message.current_receive_library) {
+            let now = crate::now_unix()?;
+            if message
+                .old_receive_library
+                .as_deref()
+                .is_none_or(|old| !old.eq_ignore_ascii_case(&message.current_receive_library))
+                || message.receive_grace_until.is_none_or(|until| now > until)
+            {
+                return Err(Error::Policy(
+                    "send-time receive library is no longer current or inside its grace period"
+                        .into(),
+                ));
+            }
+        }
+        return Ok(crate::domain::OperationV1::CommitVerification {
+            vm,
+            message: Box::new(message),
+        });
+    }
+    if committed {
+        return Ok(crate::domain::OperationV1::ExecuteReceive {
+            vm,
+            message: Box::new(message),
+        });
+    }
+    Err(Error::Policy(format!(
+        "message {guid} has neither verified-not-committed nor committed-not-executed evidence"
+    )))
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct EvidenceBundleV1 {
+    schema_name: String,
+    schema_version: u32,
+    route_id: String,
+    desired_sha256: String,
+    observed_lockbox_raw: String,
+    normalized_evm_supply_raw: String,
+    messages: Vec<crate::domain::MessageRecordV1>,
+}
+
+fn reject_secret_keys(value: &serde_json::Value) -> Result<()> {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, value) in object {
+                let key = key.to_ascii_lowercase();
+                if ["private_key", "secret", "seed", "password", "mnemonic"]
+                    .iter()
+                    .any(|needle| key.contains(needle))
+                {
+                    return Err(Error::Policy(
+                        "evidence bundle contains secret-bearing fields".into(),
+                    ));
+                }
+                reject_secret_keys(value)?;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                reject_secret_keys(value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Imports exact public packet evidence into a fresh append-only message log.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct EvidenceImportMarkerV1 {
+    schema_name: String,
+    schema_version: u32,
+    bundle_sha256: String,
+    evidence: EvidenceBundleV1,
+}
+
+/// Local evidence custody remains allowed for known mainnet routes.
+pub fn import_evidence(state_path: &Path, bundle: &Path, write: bool) -> Result<CommandData> {
+    let raw: serde_json::Value = crate::state::read_json(bundle)?;
+    reject_secret_keys(&raw)?;
+    let evidence: EvidenceBundleV1 = serde_json::from_value(raw)?;
+    if evidence.schema_name != "evidence_bundle"
+        || evidence.schema_version != crate::domain::SCHEMA_VERSION
+    {
+        return Err(Error::InvalidInput(
+            "unsupported evidence bundle schema".into(),
+        ));
+    }
+    evidence
+        .observed_lockbox_raw
+        .parse::<u128>()
+        .map_err(|_| Error::InvalidInput("observed_lockbox_raw must be decimal".into()))?;
+    evidence
+        .normalized_evm_supply_raw
+        .parse::<u128>()
+        .map_err(|_| Error::InvalidInput("normalized_evm_supply_raw must be decimal".into()))?;
+    if evidence.messages.is_empty() {
+        return Err(Error::InvalidInput(
+            "evidence bundle contains no packet evidence".into(),
+        ));
+    }
+    let digest = crate::canonical_sha256(&evidence)?;
+    let message_count = evidence.messages.len();
     if !write {
+        let state = route_read(state_path)?;
+        bind_evidence(&state, &evidence)?;
         return Ok(CommandData {
-            result: serde_json::json!({"preview": true}),
+            result: serde_json::json!({
+                "verified": true,
+                "written": false,
+                "bundle_sha256": digest,
+                "message_count": message_count,
+            }),
             artifact: None,
         });
     }
-    crate::environment::require_testnet(&state.identity)?;
-    Err(Error::Chain(
-        "durable evidence import requires a qualified custody adapter".into(),
-    ))
+    let store = RouteStore::open(state_path)?;
+    let _lock = store.lock()?;
+    let marker_path = store.root().join(".evidence-import.json");
+    let marker = if marker_path.exists() {
+        let marker: EvidenceImportMarkerV1 = crate::state::read_json(&marker_path)?;
+        if marker.schema_name != "evidence_import_marker"
+            || marker.schema_version != crate::domain::SCHEMA_VERSION
+            || marker.bundle_sha256 != digest
+            || crate::canonical_sha256(&marker.evidence)? != digest
+        {
+            return Err(Error::Conflict(
+                "pending evidence import binds a different bundle".into(),
+            ));
+        }
+        marker
+    } else {
+        let state = store.load_state()?;
+        crate::environment::classify(&state.identity)?;
+        bind_evidence(&state, &evidence)?;
+        if !store.load_messages()?.is_empty()
+            || state
+                .effective_config
+                .contains_key("custody:evidence_bundle_sha256")
+        {
+            return Err(Error::Conflict(
+                "historical evidence import requires an unimported empty message ledger".into(),
+            ));
+        }
+        let marker = EvidenceImportMarkerV1 {
+            schema_name: "evidence_import_marker".into(),
+            schema_version: crate::domain::SCHEMA_VERSION,
+            bundle_sha256: digest.clone(),
+            evidence: evidence.clone(),
+        };
+        crate::state::write_create_new_json(&marker_path, &marker)?;
+        marker
+    };
+    let existing = store.load_messages()?;
+    if existing.is_empty() {
+        store.append_messages_batch(marker.evidence.messages.clone())?;
+    } else if existing != marker.evidence.messages {
+        return Err(Error::Conflict(
+            "message ledger differs from the pending evidence import".into(),
+        ));
+    }
+    let mut imported = store.load_state()?;
+    bind_evidence(&imported, &marker.evidence)?;
+    imported.effective_config.insert(
+        "custody:observed_lockbox_raw".into(),
+        serde_json::Value::String(marker.evidence.observed_lockbox_raw.clone()),
+    );
+    imported.effective_config.insert(
+        "custody:normalized_evm_supply_raw".into(),
+        serde_json::Value::String(marker.evidence.normalized_evm_supply_raw.clone()),
+    );
+    imported.effective_config.insert(
+        "custody:evidence_bundle_sha256".into(),
+        serde_json::Value::String(digest.clone()),
+    );
+    store.save_state(&imported)?;
+    std::fs::remove_file(&marker_path)?;
+    std::fs::File::open(store.root())?.sync_all()?;
+    Ok(CommandData {
+        result: serde_json::json!({
+            "verified": true,
+            "written": true,
+            "bundle_sha256": digest,
+            "message_count": message_count,
+        }),
+        artifact: None,
+    })
+}
+
+/// The bundle must bind to the route state it is imported into.
+fn bind_evidence(state: &crate::domain::RouteStateV1, evidence: &EvidenceBundleV1) -> Result<()> {
+    if evidence.route_id != state.route_id || evidence.desired_sha256 != state.desired_sha256 {
+        return Err(Error::Conflict(
+            "evidence bundle does not bind to this route state".into(),
+        ));
+    }
+    Ok(())
 }

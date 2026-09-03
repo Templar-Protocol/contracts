@@ -2,7 +2,10 @@ use std::fs;
 
 use std::collections::BTreeMap;
 use templar_oft_bridge_cli::{
-    domain::{AssetKind, AssetPolicyV1, ChainIdentityV1, DesiredRouteV1, Environment, Vm},
+    domain::{
+        AssetKind, AssetPolicyV1, ChainIdentityV1, DesiredRouteV1, Environment, OpeningCustodyV1,
+        Vm,
+    },
     state::{OperationEventV1, OperationState, RouteStore},
 };
 
@@ -41,6 +44,7 @@ fn desired() -> DesiredRouteV1 {
 }
 
 const SENDER: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+const EVM_SENDER: &str = "0x0000000000000000000000000000000000000001";
 
 fn operations_root(directory: &std::path::Path) -> std::path::PathBuf {
     let root = directory.join("ops");
@@ -128,15 +132,15 @@ fn domain_lock_excludes_second_route_in_same_domain() {
         "same environment/vm/sender must share the authority domain"
     );
     let guard = store_a
-        .acquire_mutation(&binding_a, &operations_root)
+        .acquire_mutation(&binding_a, &operations_root, "test-operation")
         .expect("acquire a");
     let error = store_b
-        .acquire_mutation(&binding_b, &operations_root)
+        .acquire_mutation(&binding_b, &operations_root, "test-operation")
         .expect_err("second route in the same domain must be excluded");
     assert!(error.to_string().contains("busy"));
     drop(guard);
     store_b
-        .acquire_mutation(&binding_b, &operations_root)
+        .acquire_mutation(&binding_b, &operations_root, "test-operation")
         .expect("acquire b after release");
 }
 
@@ -155,7 +159,7 @@ fn stale_phase_a_binding_is_rejected_and_locks_released() {
         .save_state(&state)
         .expect("mutate state between phase a and acquire");
     let error = store
-        .acquire_mutation(&binding, &operations_root)
+        .acquire_mutation(&binding, &operations_root, "test-operation")
         .expect_err("stale binding must be rejected");
     assert!(error.to_string().contains("stale"));
     assert!(!root.join(".lock").exists(), "route lock released on stale");
@@ -170,7 +174,7 @@ fn stale_phase_a_binding_is_rejected_and_locks_released() {
         .derive_phase_a_binding(Vm::Stellar, SENDER)
         .expect("re-derive after state changed");
     store
-        .acquire_mutation(&fresh, &operations_root)
+        .acquire_mutation(&fresh, &operations_root, "test-operation")
         .expect("restart with a fresh binding succeeds");
 }
 
@@ -184,15 +188,39 @@ fn submission_guard_holds_locks_through_checkpoint() {
         .derive_phase_a_binding(Vm::Stellar, SENDER)
         .expect("phase a");
     let guard = store
-        .acquire_mutation(&binding, &operations_root)
+        .acquire_mutation(&binding, &operations_root, "op-send")
         .expect("acquire");
     assert!(
-        store.acquire_mutation(&binding, &operations_root).is_err(),
+        store
+            .acquire_mutation(&binding, &operations_root, "op-send")
+            .is_err(),
         "authority-domain lock held while checkpointing"
     );
     assert!(store.lock().is_err(), "route lock held while checkpointing");
     guard
-        .submission_pending("op-send", "0xdeadbeef")
+        .store()
+        .append_operation(
+            OperationEventV1 {
+                operation_id: "op-send".into(),
+                state: OperationState::Planned,
+                detail: serde_json::json!({"unsigned_transaction_sha256": "0xfeed"}),
+            },
+            None,
+        )
+        .expect("planned");
+    guard
+        .store()
+        .append_operation(
+            OperationEventV1 {
+                operation_id: "op-send".into(),
+                state: OperationState::Signed,
+                detail: serde_json::json!({"signed_transaction_sha256": "0xdeadbeef"}),
+            },
+            None,
+        )
+        .expect("signed");
+    guard
+        .submission_pending("op-send", "0xdeadbeef", "0x1234", "signed-payload")
         .expect("checkpoint appended under both locks");
     let records = guard
         .store()
@@ -204,8 +232,64 @@ fn submission_guard_holds_locks_through_checkpoint() {
     drop(guard);
     store.lock().expect("route lock released after guard drop");
     store
-        .acquire_mutation(&binding, &operations_root)
+        .acquire_mutation(&binding, &operations_root, "op-send")
         .expect("domain lock released after guard drop");
+}
+
+#[test]
+fn unresolved_authority_reservation_survives_guard_drop_and_blocks_competitors() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let operations_root = operations_root(directory.path());
+    let root = directory.path().join("route");
+    let (store, _) = RouteStore::create(&root, desired()).expect("create");
+    let binding = store
+        .derive_phase_a_binding(Vm::Evm, EVM_SENDER)
+        .expect("phase a");
+    let guard = store
+        .acquire_mutation(&binding, &operations_root, "op-a")
+        .expect("acquire");
+    guard.reserve_authority("7", &"a".repeat(64)).unwrap();
+    drop(guard);
+
+    assert!(store
+        .acquire_mutation(&binding, &operations_root, "op-b")
+        .is_err());
+    let resumed = store
+        .acquire_mutation(&binding, &operations_root, "op-a")
+        .expect("same operation resumes");
+    resumed.reserve_authority("7", &"a".repeat(64)).unwrap();
+    for state in [OperationState::Planned, OperationState::Signed] {
+        resumed
+            .store()
+            .append_operation(
+                OperationEventV1 {
+                    operation_id: "op-a".into(),
+                    state,
+                    detail: serde_json::json!({"signed_transaction_sha256": "a".repeat(64)}),
+                },
+                None,
+            )
+            .unwrap();
+    }
+    resumed
+        .submission_pending("op-a", &"a".repeat(64), "0x1", "payload")
+        .unwrap();
+    resumed
+        .store()
+        .append_operation(
+            OperationEventV1 {
+                operation_id: "op-a".into(),
+                state: OperationState::Confirmed,
+                detail: serde_json::json!({"transaction_hash": "0x1"}),
+            },
+            None,
+        )
+        .unwrap();
+    resumed.release_authority_if_terminal().unwrap();
+    drop(resumed);
+    store
+        .acquire_mutation(&binding, &operations_root, "op-b")
+        .expect("terminal release allows competitor");
 }
 
 fn pending_proposal(
@@ -348,14 +432,14 @@ fn two_process_domain_exclusion() {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     let error = store
-        .acquire_mutation(&binding, &operations_root)
+        .acquire_mutation(&binding, &operations_root, "test-operation")
         .expect_err("parent must observe the child-held domain lock");
     assert!(error.to_string().contains("busy"));
     fs::write(&release, b"release").expect("release marker");
     let status = child.wait().expect("child exit");
     assert!(status.success(), "child harness must pass");
     store
-        .acquire_mutation(&binding, &operations_root)
+        .acquire_mutation(&binding, &operations_root, "test-operation")
         .expect("parent acquires after child release");
 }
 
@@ -372,7 +456,7 @@ fn two_process_domain_exclusion_hold_child() {
         .derive_phase_a_binding(Vm::Stellar, SENDER)
         .expect("child phase a");
     let _guard = store
-        .acquire_mutation(&binding, std::path::Path::new(&ops))
+        .acquire_mutation(&binding, std::path::Path::new(&ops), "test-operation")
         .expect("child acquire");
     fs::write(&held, b"held").expect("held marker");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -383,4 +467,51 @@ fn two_process_domain_exclusion_hold_child() {
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
+}
+
+fn opening_custody() -> OpeningCustodyV1 {
+    OpeningCustodyV1 {
+        schema_name: "opening_custody".into(),
+        schema_version: 1,
+        stellar_ledger: 123,
+        stellar_ledger_hash: "stellar-hash".into(),
+        stellar_ledger_time_unix: 1_700_000_000,
+        lockbox_raw: 0,
+        evm_block: 456,
+        evm_block_hash: "evm-hash".into(),
+        evm_supply_raw: 0,
+        artifact_lock_sha256: "artifact-hash".into(),
+        effective_config_sha256: "config-hash".into(),
+        zero_packet_history_proven: true,
+        history_evidence_sha256: None,
+    }
+}
+
+#[test]
+fn opening_custody_is_recorded_once() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let (store, _) =
+        RouteStore::create(&directory.path().join("route"), desired()).expect("create");
+    store
+        .record_opening_custody(opening_custody())
+        .expect("record baseline");
+    assert_eq!(
+        store
+            .load_state()
+            .expect("state")
+            .opening_custody
+            .expect("opening"),
+        opening_custody()
+    );
+    assert!(store.record_opening_custody(opening_custody()).is_err());
+}
+
+#[test]
+fn opening_custody_requires_exactly_one_history_authority() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let (store, _) =
+        RouteStore::create(&directory.path().join("route"), desired()).expect("create");
+    let mut invalid = opening_custody();
+    invalid.history_evidence_sha256 = Some("history".into());
+    assert!(store.record_opening_custody(invalid).is_err());
 }

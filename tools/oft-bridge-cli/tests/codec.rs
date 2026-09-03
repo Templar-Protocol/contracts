@@ -1,7 +1,10 @@
+use sha2::{Digest as _, Sha256};
 use templar_oft_bridge_cli::codec::{
     bytes32_to_evm_address, bytes32_to_strkey_account, bytes32_to_strkey_contract,
-    decode_type3_options, encode_type3_options, evm_address_to_bytes32, from_shared,
-    strkey_to_bytes32, to_shared, NativeDrop, Type3Options,
+    decode_evm_executor_config, decode_evm_uln_config, decode_type3_options,
+    encode_evm_executor_config, encode_evm_uln_config, encode_stellar_oapp_uln_config,
+    encode_type3_options, evm_address_to_bytes32, from_shared, strkey_to_bytes32, to_shared,
+    NativeDrop, StellarOAppUlnConfig, Type3Options,
 };
 use templar_oft_bridge_cli::error::{Error, Result};
 
@@ -169,14 +172,14 @@ fn encodes_lz_receive_only_options() {
 fn encodes_gas_with_native_value() {
     let receiver = addr32(&[9u8; 32]);
     let options = Type3Options {
-        gas: 100_000,
+        gas: 200_000,
         native_drop: Some(NativeDrop {
             amount: 1_000,
             receiver,
         }),
     };
     let encoded = encode_type3_options(&options).unwrap();
-    let mut expected = lz_receive_bytes(100_000);
+    let mut expected = lz_receive_bytes(200_000);
     expected.extend_from_slice(&[1, 0, 49, 2]);
     expected.extend_from_slice(&1_000u128.to_be_bytes());
     expected.extend_from_slice(&receiver);
@@ -204,6 +207,86 @@ fn decodes_rejects_malformed_type3_options() {
     let mut unknown_type = lz_receive_bytes(1);
     unknown_type[4] = 7;
     assert!(invalid_decode(&unknown_type));
+}
+
+#[test]
+fn stellar_oapp_uln_config_matches_frozen_xdr_vector() {
+    let config = StellarOAppUlnConfig {
+        use_default_confirmations: true,
+        use_default_required_dvns: true,
+        use_default_optional_dvns: true,
+        confirmations: 0,
+        required_dvns: Vec::new(),
+        optional_dvns: Vec::new(),
+        optional_dvn_threshold: 0,
+    };
+    let encoded = encode_stellar_oapp_uln_config(&config).expect("encode ULN config");
+    assert_eq!(encoded.len(), 324);
+    assert_eq!(
+        hex::encode(Sha256::digest(&encoded)),
+        "46dccfecca1f1e085b04e442a9084bc19173c6139b449a5cf0938b8ca9160342"
+    );
+}
+
+#[test]
+fn evm_uln_config_matches_foundry_abi_oracle() {
+    let encoded = encode_evm_uln_config(
+        15,
+        &["0x1111111111111111111111111111111111111111".into()],
+        &["0x2222222222222222222222222222222222222222".into()],
+        1,
+    )
+    .expect("encode ULN config");
+    assert_eq!(
+        hex::encode(&encoded),
+        concat!(
+            "0000000000000000000000000000000000000000000000000000000000000020",
+            "000000000000000000000000000000000000000000000000000000000000000f",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "00000000000000000000000000000000000000000000000000000000000000c0",
+            "0000000000000000000000000000000000000000000000000000000000000100",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "0000000000000000000000001111111111111111111111111111111111111111",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "0000000000000000000000002222222222222222222222222222222222222222"
+        )
+    );
+    let decoded = decode_evm_uln_config(&encoded).expect("decode ULN config");
+    assert_eq!(decoded.confirmations, 15);
+    assert_eq!(decoded.optional_dvn_threshold, 1);
+    assert_eq!(
+        decoded.required_dvns,
+        ["0x1111111111111111111111111111111111111111"]
+    );
+    assert_eq!(
+        decoded.optional_dvns,
+        ["0x2222222222222222222222222222222222222222"]
+    );
+    let mut mismatched_count = encoded.clone();
+    mismatched_count[95] = 2;
+    assert!(decode_evm_uln_config(&mismatched_count).is_err());
+    assert!(decode_evm_uln_config(&encoded[..encoded.len() - 1]).is_err());
+}
+
+#[test]
+fn evm_executor_config_matches_foundry_abi_oracle() {
+    let encoded = encode_evm_executor_config(10_000, "0x3333333333333333333333333333333333333333")
+        .expect("encode executor config");
+    assert_eq!(
+        hex::encode(&encoded),
+        concat!(
+            "0000000000000000000000000000000000000000000000000000000000002710",
+            "0000000000000000000000003333333333333333333333333333333333333333"
+        )
+    );
+    assert_eq!(
+        decode_evm_executor_config(&encoded)
+            .expect("decode executor")
+            .max_message_size,
+        10_000
+    );
 }
 
 #[test]

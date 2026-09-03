@@ -71,16 +71,28 @@ fn stellar_only_operations_fail_closed() {
 }
 
 #[test]
-fn config_hash_operations_fail_closed() {
-    let operation = OperationV1::SetEvmUlnConfig {
-        remote_eid: 40161,
-        config_sha256: format!("{:064x}", 1),
+fn typed_config_operation_encodes_endpoint_set_config() {
+    let config = templar_oft_bridge_cli::layerzero::UlnConfigType3V1 {
+        required_dvns: vec!["0x1111111111111111111111111111111111111111".into()],
+        optional_dvns: vec![],
+        optional_threshold: 0,
+        confirmations: 1,
+        use_default_confirmations: false,
+        use_default_required_dvns: false,
+        use_default_optional_dvns: false,
     };
-    let error = encode_calldata(&operation).expect_err("digest is not a config");
-    assert!(
-        error.to_string().contains("config_hash_only_operation"),
-        "unexpected error: {error}"
-    );
+    let operation = templar_oft_bridge_cli::layerzero::set_uln_operation(
+        templar_oft_bridge_cli::domain::Vm::Evm,
+        40_161,
+        "send",
+        "0x2222222222222222222222222222222222222222",
+        "0x3333333333333333333333333333333333333333",
+        "0x4444444444444444444444444444444444444444",
+        &config,
+    )
+    .unwrap();
+    let calldata = encode_calldata(&operation).unwrap();
+    assert!(!calldata.is_empty());
 }
 
 #[test]

@@ -1,7 +1,10 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
+
 
 use url::Url;
 use zeroize::Zeroizing;
@@ -51,6 +54,45 @@ pub fn public_origin(raw: &str) -> Result<String> {
         .map(|value| format!(":{value}"))
         .unwrap_or_default();
     Ok(format!("{}://{host}{port}", url.scheme()))
+}
+/// Process-global RPC headers resolved once from `--rpc-headers-file` before
+/// command dispatch. A one-shot operator CLI resolves one flag once; every
+/// HTTP adapter reads them at construction, so no call site can silently skip
+/// the credentialed RPC path. Empty until `set_rpc_headers` runs; the existing
+/// no-flag behavior is unchanged.
+static RPC_HEADERS: OnceLock<Vec<(String, Zeroizing<String>)>> = OnceLock::new();
+
+/// Resolves the parsed header set once; later calls are ignored.
+pub fn set_rpc_headers(headers: Vec<(String, Zeroizing<String>)>) {
+    let _ = RPC_HEADERS.set(headers);
+}
+
+/// Returns the resolved RPC headers (empty when the flag was absent).
+pub fn rpc_headers() -> Vec<(String, Zeroizing<String>)> {
+    RPC_HEADERS
+        .get()
+        .map(Clone::clone)
+        .unwrap_or_default()
+}
+/// Reads a credential-safe JSON object of HTTP header names to values.
+/// Callers must keep the returned values in memory only.
+pub fn read_headers_file(path: &Path) -> Result<Vec<(String, Zeroizing<String>)>> {
+    let raw = Zeroizing::new(read_secret_file(path)?);
+    let headers: BTreeMap<String, String> = serde_json::from_str(&raw)?;
+    headers
+        .into_iter()
+        .map(|(name, value)| {
+            if name.trim().is_empty() {
+                return Err(Error::InvalidInput("RPC header name is empty".into()));
+            }
+            if value.is_empty() {
+                return Err(Error::InvalidInput(format!(
+                    "RPC header {name} value is empty"
+                )));
+            }
+            Ok((name, Zeroizing::new(value)))
+        })
+        .collect()
 }
 
 fn read_secret_file(path: &Path) -> Result<String> {

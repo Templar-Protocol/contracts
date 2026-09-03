@@ -73,11 +73,12 @@ pub fn require_testnet(identity: &ChainIdentityV1) -> Result<()> {
 /// is part of the pending native-mutation qualification gate and is bound
 /// by the desired-identity equality instead.
 pub fn init_environment(
-    identity: &ChainIdentityV1,
+    desired: &crate::domain::DesiredRouteV1,
     stellar_rpc: Option<&str>,
     evm_rpc: Option<&str>,
     write: bool,
 ) -> Result<()> {
+    let identity = &desired.identity;
     classify(identity)?;
     if !write {
         return Ok(());
@@ -95,6 +96,14 @@ pub fn init_environment(
         return Err(Error::Chain(format!(
             "stellar passphrase mismatch: desired {} but rpc reports {live_passphrase}",
             identity.stellar_passphrase
+        )));
+    }
+    let live_stellar_eid =
+        stellar.endpoint_eid(&identity.stellar_endpoint, &desired.stellar_owner)?;
+    if live_stellar_eid != identity.stellar_eid {
+        return Err(Error::Chain(format!(
+            "stellar endpoint eid mismatch: desired {} but rpc reports {live_stellar_eid}",
+            identity.stellar_eid
         )));
     }
     let live_chain_id = crate::block_on_result(evm.chain_id())?;

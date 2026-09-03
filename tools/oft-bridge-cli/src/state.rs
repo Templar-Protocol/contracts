@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{
     fs::{self, File, OpenOptions},
     io::{BufRead as _, BufReader, Read as _, Write as _},
@@ -11,7 +11,7 @@ use sha2::{Digest as _, Sha256};
 use crate::{
     canonical_sha256,
     domain::{
-        ArtifactRefV1, DesiredRouteV1, Environment, MessageRecordV1, MessageStageV1,
+        ArtifactRefV1, DesiredRouteV1, Direction, Environment, MessageRecordV1, MessageStageV1,
         MessageStatusEventV1, RouteStateV1, Vm, SCHEMA_VERSION,
     },
     error::{Error, Result},
@@ -22,6 +22,33 @@ const OPERATIONS_FILE: &str = "operations.jsonl";
 const MESSAGES_FILE: &str = "messages.jsonl";
 const LOCK_FILE: &str = ".lock";
 const AUTHORITY_LOCK_DIR: &str = ".authority";
+
+fn valid_message_transition(
+    direction: Direction,
+    previous: MessageStageV1,
+    next: MessageStageV1,
+) -> bool {
+    use MessageStageV1::*;
+    next == Reobserved
+        || matches!(
+            (direction, previous, next),
+            (
+                Direction::StellarToEvm,
+                ForwardSourceAccepted,
+                ForwardLocked
+            ) | (Direction::StellarToEvm, ForwardLocked, ForwardVerified)
+                | (Direction::StellarToEvm, ForwardVerified, ForwardCommitted)
+                | (Direction::StellarToEvm, ForwardCommitted, ForwardMinted)
+                | (
+                    Direction::EvmToStellar,
+                    ReverseSourceAccepted,
+                    ReverseBurned
+                )
+                | (Direction::EvmToStellar, ReverseBurned, ReverseVerified)
+                | (Direction::EvmToStellar, ReverseVerified, ReverseCommitted)
+                | (Direction::EvmToStellar, ReverseCommitted, ReverseUnlocked)
+        )
+}
 
 #[derive(Debug)]
 pub struct RouteLock {
@@ -129,6 +156,15 @@ impl PhaseABinding {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct AuthorityReservationV1 {
+    schema_name: String,
+    schema_version: u32,
+    operation_id: String,
+    slot: String,
+    signed_payload_sha256: String,
+}
+
 /// Sender-domain fence: a create-new lock file under the operation-store
 /// root keyed by the `{environment, vm, sender}` digest. Acquired before the
 /// route lock; every route in the same authority domain serializes here,
@@ -193,6 +229,8 @@ impl Drop for AuthorityDomainLock {
 #[derive(Debug)]
 pub struct SubmissionGuard {
     store: RouteStore,
+    reservation_path: PathBuf,
+    operation_id: String,
     _route_lock: RouteLock,
     _authority_lock: AuthorityDomainLock,
     state: RouteStateV1,
@@ -216,17 +254,79 @@ impl SubmissionGuard {
         &self,
         operation_id: &str,
         signed_transaction_sha256: &str,
+        transaction_hash: &str,
+        signed_payload: &str,
     ) -> Result<LogRecordV1<OperationEventV1>> {
+        if operation_id != self.operation_id {
+            return Err(Error::Conflict(
+                "submission checkpoint operation differs from the authority reservation".into(),
+            ));
+        }
         self.store.append_operation(
             OperationEventV1 {
                 operation_id: operation_id.into(),
                 state: OperationState::SubmissionPending,
                 detail: serde_json::json!({
                     "signed_transaction_sha256": signed_transaction_sha256,
+                    "transaction_hash": transaction_hash,
+                    "signed_payload": signed_payload,
                 }),
             },
             None,
         )
+    }
+    pub fn reserve_authority(&self, slot: &str, signed_payload_sha256: &str) -> Result<()> {
+        let reservation = AuthorityReservationV1 {
+            schema_name: "authority_reservation".into(),
+            schema_version: SCHEMA_VERSION,
+            operation_id: self.operation_id.clone(),
+            slot: slot.into(),
+            signed_payload_sha256: signed_payload_sha256.into(),
+        };
+        if self.reservation_path.exists() {
+            let existing: AuthorityReservationV1 = read_json(&self.reservation_path)?;
+            if existing != reservation {
+                return Err(Error::Conflict(
+                    "authority domain has a different unresolved reservation".into(),
+                ));
+            }
+            return Ok(());
+        }
+        write_create_new_json(&self.reservation_path, &reservation)
+    }
+
+    pub fn release_authority(&self) -> Result<()> {
+        if !self.reservation_path.exists() {
+            return Ok(());
+        }
+        let reservation: AuthorityReservationV1 = read_json(&self.reservation_path)?;
+        if reservation.operation_id != self.operation_id {
+            return Err(Error::Conflict(
+                "authority reservation belongs to a different operation".into(),
+            ));
+        }
+        fs::remove_file(&self.reservation_path)?;
+        if let Some(parent) = self.reservation_path.parent() {
+            sync_directory(parent)?;
+        }
+        Ok(())
+    }
+
+    pub fn release_authority_if_terminal(&self) -> Result<()> {
+        let terminal = self
+            .store
+            .operation_history(&self.operation_id)?
+            .last()
+            .is_some_and(|event| {
+                matches!(
+                    event.state,
+                    OperationState::Confirmed | OperationState::Failed
+                )
+            });
+        if terminal {
+            self.release_authority()?;
+        }
+        Ok(())
     }
 }
 
@@ -286,7 +386,13 @@ impl RouteStore {
             operations_log: PathBuf::from(OPERATIONS_FILE),
             messages_log: PathBuf::from(MESSAGES_FILE),
             lock_file: PathBuf::from(LOCK_FILE),
-            contracts: BTreeMap::default(),
+            contracts: BTreeMap::from([
+                ("stellar_owner".into(), desired.stellar_owner),
+                ("stellar_delegate".into(), desired.stellar_delegate),
+                ("evm_owner".into(), desired.evm_owner),
+                ("evm_delegate".into(), desired.evm_delegate),
+            ]),
+            requested_config: desired.config,
             effective_config: BTreeMap::default(),
         };
         let store = Self {
@@ -317,6 +423,7 @@ impl RouteStore {
         validate_relative_file(&state.operations_log)?;
         validate_relative_file(&state.messages_log)?;
         validate_relative_file(&state.lock_file)?;
+        validate_opening_custody(state.opening_custody.as_ref())?;
         store.verify_log::<OperationEventV1>(&state.operations_log, "operations")?;
         store.verify_log::<MessageRecordV1>(&state.messages_log, "messages")?;
         Ok(store)
@@ -331,18 +438,44 @@ impl RouteStore {
     }
 
     pub fn load_state(&self) -> Result<RouteStateV1> {
-        read_json(&self.root.join(STATE_FILE))
+        let state: RouteStateV1 = read_json(&self.root.join(STATE_FILE))?;
+        validate_opening_custody(state.opening_custody.as_ref())?;
+        Ok(state)
     }
 
     pub fn save_state(&self, state: &RouteStateV1) -> Result<()> {
+        validate_opening_custody(state.opening_custody.as_ref())?;
         atomic_replace_json(&self.root.join(STATE_FILE), state)
     }
 
+    /// Records the immutable finalized custody baseline exactly once.
+    pub fn record_opening_custody(&self, opening: crate::domain::OpeningCustodyV1) -> Result<()> {
+        let mut state = self.load_state()?;
+        if state.opening_custody.is_some() {
+            return Err(Error::Conflict(
+                "opening custody baseline is already recorded".into(),
+            ));
+        }
+        state.opening_custody = Some(opening);
+        self.save_state(&state)
+    }
     pub fn append_operation(
         &self,
         payload: OperationEventV1,
         companion_artifact_sha256: Option<String>,
     ) -> Result<LogRecordV1<OperationEventV1>> {
+        let previous = self
+            .verify_log::<OperationEventV1>(Path::new(OPERATIONS_FILE), "operations")?
+            .into_iter()
+            .rev()
+            .find(|record| record.payload.operation_id == payload.operation_id)
+            .map(|record| record.payload.state);
+        if !valid_operation_transition(previous, payload.state) {
+            return Err(Error::Conflict(format!(
+                "invalid operation transition for {}: {previous:?} -> {:?}",
+                payload.operation_id, payload.state
+            )));
+        }
         self.append_log(
             OPERATIONS_FILE,
             "operations",
@@ -351,9 +484,40 @@ impl RouteStore {
         )
     }
 
+    pub fn operation_history(&self, operation_id: &str) -> Result<Vec<OperationEventV1>> {
+        Ok(self
+            .verify_log::<OperationEventV1>(Path::new(OPERATIONS_FILE), "operations")?
+            .into_iter()
+            .filter_map(|record| {
+                (record.payload.operation_id == operation_id).then_some(record.payload)
+            })
+            .collect())
+    }
+
     /// Appends a brand-new packet record. Identity is the append-only key
     /// `(source_eid, sender, nonce, guid)`; duplicates are conflicts.
     pub fn append_message(&self, mut record: MessageRecordV1) -> Result<()> {
+        self.validate_new_message(&record)?;
+        let existing = self.load_messages()?;
+        if existing.iter().any(|other| {
+            other.guid == record.guid
+                || (other.source_eid, &other.sender, &other.nonce)
+                    == (record.source_eid, &record.sender, &record.nonce)
+        }) {
+            return Err(Error::Conflict(format!(
+                "message nonce or GUID already recorded: guid {}",
+                record.guid
+            )));
+        }
+        record.schema_name = "message_record".into();
+        record.schema_version = SCHEMA_VERSION;
+        self.append_log(MESSAGES_FILE, "messages", record, None)?;
+        Ok(())
+    }
+
+    /// Shared acceptance checks for a brand-new packet record. Identity
+    /// uniqueness is checked separately against the target ledger context.
+    fn validate_new_message(&self, record: &MessageRecordV1) -> Result<()> {
         if record.status_events.is_empty() {
             return Err(Error::InvalidInput(
                 "message record requires an initial status event".into(),
@@ -368,22 +532,106 @@ impl RouteStore {
                 "initial message status must be an observed stage, not reobserved".into(),
             ));
         }
-        if record.packet_sha256.trim().is_empty() || record.payload_sha256.trim().is_empty() {
+        let initial = record.status_events[0].stage;
+        let direction_matches = match record.direction {
+            Direction::StellarToEvm => matches!(
+                initial,
+                MessageStageV1::ForwardSourceAccepted
+                    | MessageStageV1::ForwardLocked
+                    | MessageStageV1::ForwardVerified
+                    | MessageStageV1::ForwardCommitted
+                    | MessageStageV1::ForwardMinted
+            ),
+            Direction::EvmToStellar => matches!(
+                initial,
+                MessageStageV1::ReverseSourceAccepted
+                    | MessageStageV1::ReverseBurned
+                    | MessageStageV1::ReverseVerified
+                    | MessageStageV1::ReverseCommitted
+                    | MessageStageV1::ReverseUnlocked
+            ),
+        };
+        if !direction_matches {
             return Err(Error::InvalidInput(
-                "message record requires packet and payload digests".into(),
+                "initial message status does not match packet direction".into(),
             ));
         }
-        if self.find_message(&record.identity())?.is_some() {
-            return Err(Error::Conflict(format!(
-                "message identity already recorded: guid {}",
-                record.guid
-            )));
+        if record.packet_sha256.trim().is_empty()
+            || record.packet_header.trim().is_empty()
+            || record.message.trim().is_empty()
+            || record.payload_keccak256.trim().is_empty()
+            || record.origin.trim().is_empty()
+            || record.receiver.trim().is_empty()
+            || record.current_receive_library.trim().is_empty()
+            || record.send_library.trim().is_empty()
+            || record.uln_snapshot_sha256.trim().is_empty()
+            || record.dvn_snapshot_sha256.trim().is_empty()
+            || record.executor_snapshot_sha256.trim().is_empty()
+            || record.config_snapshot_sha256.trim().is_empty()
+            || record.source_height.trim().is_empty()
+            || record.source_event_coordinate.trim().is_empty()
+            || record.source_transaction.trim().is_empty()
+        {
+            return Err(Error::InvalidInput(
+                "message record requires complete packet, chain-coordinate, and config evidence"
+                    .into(),
+            ));
         }
-        record.schema_name = "message_record".into();
-        record.schema_version = SCHEMA_VERSION;
-        self.append_log(MESSAGES_FILE, "messages", record, None)?;
+        crate::layerzero::qualify_message_for_route(&self.load_state()?, record)?;
         Ok(())
     }
+
+    /// Appends a batch of brand-new packet records as one durable write.
+    /// Every record passes the same acceptance checks as [`append_message`]
+    /// and identity uniqueness is enforced across the existing ledger and
+    /// within the batch before any byte is written, so a rejected record
+    /// cannot strand an earlier one in the log.
+    pub fn append_messages_batch(&self, mut records: Vec<MessageRecordV1>) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let existing = self.verify_log::<MessageRecordV1>(Path::new(MESSAGES_FILE), "messages")?;
+        let mut seen_nonces: BTreeSet<(u32, String, String)> = existing
+            .iter()
+            .map(|record| {
+                (
+                    record.payload.source_eid,
+                    record.payload.sender.clone(),
+                    record.payload.nonce.clone(),
+                )
+            })
+            .collect();
+        let mut seen_guids: BTreeSet<String> = existing
+            .iter()
+            .map(|record| record.payload.guid.clone())
+            .collect();
+        for record in &records {
+            self.validate_new_message(record)?;
+            if !seen_nonces.insert((
+                record.source_eid,
+                record.sender.clone(),
+                record.nonce.clone(),
+            )) || !seen_guids.insert(record.guid.clone())
+            {
+                return Err(Error::Conflict(format!(
+                    "message nonce or GUID already recorded: guid {}",
+                    record.guid
+                )));
+            }
+        }
+        for record in &mut records {
+            record.schema_name = "message_record".into();
+            record.schema_version = SCHEMA_VERSION;
+        }
+        self.append_log_records(
+            MESSAGES_FILE,
+            "messages",
+            records.into_iter().map(|record| (record, None)).collect(),
+        )?;
+        Ok(())
+    }
+
+
 
     /// Appends a status event to an existing packet. The ledger is
     /// append-only: history is never rewritten, the event lands as a new
@@ -397,17 +645,89 @@ impl RouteStore {
         let mut latest = self
             .find_message(identity)?
             .ok_or_else(|| Error::Conflict("message identity not recorded".into()))?;
-        let last = &latest
+        let last = latest
             .status_events
-            .last()
-            .ok_or_else(|| Error::Custody("recorded message lacks status events".into()))?
+            .iter()
+            .rev()
+            .find(|event| event.stage != MessageStageV1::Reobserved)
+            .ok_or_else(|| Error::Custody("recorded message lacks a custody status event".into()))?
             .stage;
-        if event.stage != MessageStageV1::Reobserved && &event.stage <= last {
+        if !valid_message_transition(latest.direction, last, event.stage) {
             return Err(Error::InvalidInput(format!(
                 "non-monotonic message status {:?} after {:?}",
                 event.stage, last
             )));
         }
+        latest.status_events.push(event);
+
+        self.append_log(MESSAGES_FILE, "messages", latest, None)?;
+        Ok(())
+    }
+    pub fn append_message_recovery_event(
+        &self,
+        identity: &(u32, String, String, String),
+        transaction: String,
+        event: MessageStatusEventV1,
+    ) -> Result<()> {
+        let mut latest = self
+            .find_message(identity)?
+            .ok_or_else(|| Error::Conflict("message identity not recorded".into()))?;
+        let last = latest
+            .status_events
+            .iter()
+            .rev()
+            .find(|event| event.stage != MessageStageV1::Reobserved)
+            .ok_or_else(|| Error::Custody("recorded message lacks a custody status event".into()))?
+            .stage;
+        if !valid_message_transition(latest.direction, last, event.stage) {
+            return Err(Error::InvalidInput(format!(
+                "non-monotonic recovery status {:?} after {:?}",
+                event.stage, last
+            )));
+        }
+        if latest
+            .recovery_transactions
+            .iter()
+            .any(|recorded| recorded.eq_ignore_ascii_case(&transaction))
+        {
+            return Err(Error::Conflict(
+                "recovery transaction is already recorded".into(),
+            ));
+        }
+        latest.recovery_transactions.push(transaction);
+        latest.status_events.push(event);
+        self.append_log(MESSAGES_FILE, "messages", latest, None)?;
+        Ok(())
+    }
+
+    pub fn append_message_destination_event(
+        &self,
+        identity: &(u32, String, String, String),
+        transaction: String,
+        event: MessageStatusEventV1,
+    ) -> Result<()> {
+        let mut latest = self
+            .find_message(identity)?
+            .ok_or_else(|| Error::Conflict("message identity not recorded".into()))?;
+        let last = latest
+            .status_events
+            .iter()
+            .rev()
+            .find(|event| event.stage != MessageStageV1::Reobserved)
+            .ok_or_else(|| Error::Custody("recorded message lacks a custody status event".into()))?
+            .stage;
+        if !valid_message_transition(latest.direction, last, event.stage) {
+            return Err(Error::InvalidInput(format!(
+                "non-monotonic destination status {:?} after {:?}",
+                event.stage, last
+            )));
+        }
+        if latest.destination_transaction.is_some() {
+            return Err(Error::Conflict(
+                "destination transaction is already recorded".into(),
+            ));
+        }
+        latest.destination_transaction = Some(transaction);
         latest.status_events.push(event);
         self.append_log(MESSAGES_FILE, "messages", latest, None)?;
         Ok(())
@@ -427,10 +747,30 @@ impl RouteStore {
                 Some(index) => {
                     let existing = &folded[index];
                     if existing.packet_sha256 != payload.packet_sha256
-                        || existing.payload_sha256 != payload.payload_sha256
+                        || existing.packet_header != payload.packet_header
+                        || existing.message != payload.message
+                        || existing.payload_keccak256 != payload.payload_keccak256
+                        || existing.origin != payload.origin
+                        || existing.receiver != payload.receiver
+                        || existing.current_receive_library != payload.current_receive_library
+                        || existing.old_receive_library != payload.old_receive_library
+                        || existing.receive_grace_until != payload.receive_grace_until
+                        || existing.send_library != payload.send_library
+                        || existing.uln_snapshot_sha256 != payload.uln_snapshot_sha256
+                        || existing.dvn_snapshot_sha256 != payload.dvn_snapshot_sha256
+                        || existing.executor_snapshot_sha256 != payload.executor_snapshot_sha256
                         || existing.config_snapshot_sha256 != payload.config_snapshot_sha256
+                        || existing.source_height != payload.source_height
+                        || existing.source_event_coordinate != payload.source_event_coordinate
                         || existing.amount_raw != payload.amount_raw
                         || existing.source_transaction != payload.source_transaction
+                        || existing.debited_raw != payload.debited_raw
+                        || existing.net_locked_raw != payload.net_locked_raw
+                        || existing.minted_raw != payload.minted_raw
+                        || existing.burned_raw != payload.burned_raw
+                        || existing.unlocked_raw != payload.unlocked_raw
+                        || existing.external_fee_raw != payload.external_fee_raw
+                        || existing.dust_raw != payload.dust_raw
                     {
                         return Err(Error::Custody(format!(
                             "immutable fields changed for guid {}",
@@ -561,33 +901,62 @@ impl RouteStore {
         payload: T,
         companion_artifact_sha256: Option<String>,
     ) -> Result<LogRecordV1<T>> {
+        let mut records = self.append_log_records(
+            file_name,
+            log_kind,
+            vec![(payload, companion_artifact_sha256)],
+        )?;
+        Ok(records.remove(0))
+    }
+
+    /// Builds the chained records for `payloads` and durably appends them in
+    /// one open/write/fsync pass. Chain indices, previous-record digests, and
+    /// canonical payload digests are computed exactly as for a sequence of
+    /// single [`Self::append_log`] calls, so the written bytes are identical
+    /// to appending one record at a time. All chain construction happens
+    /// before the file is opened, so callers that pre-validate the payloads
+    /// get an all-or-nothing append.
+    fn append_log_records<T: Clone + DeserializeOwned + Serialize>(
+        &self,
+        file_name: &str,
+        log_kind: &str,
+        payloads: Vec<(T, Option<String>)>,
+    ) -> Result<Vec<LogRecordV1<T>>> {
         let existing = self.verify_log::<T>(Path::new(file_name), log_kind)?;
         let state = self.load_state()?;
-        let index = existing.len() as u64;
-        let previous_record_sha256 = existing.last().map_or_else(
+        let mut records = Vec::with_capacity(payloads.len());
+        let mut previous = existing.last().map_or_else(
             || genesis_hash(log_kind, &state.route_id),
             |record| record.record_sha256.clone(),
         );
-        let canonical_payload_sha256 = canonical_sha256(&payload)?;
-        let mut record = LogRecordV1 {
-            schema_name: format!("{log_kind}_log_record"),
-            schema_version: SCHEMA_VERSION,
-            log_id: format!("{}:{log_kind}", state.route_id),
-            index,
-            previous_record_sha256,
-            companion_artifact_sha256,
-            canonical_payload_sha256,
-            payload,
-            record_sha256: String::new(),
-        };
-        record.record_sha256 = record_hash(&record)?;
+        let mut index = existing.len() as u64;
+        for (payload, companion_artifact_sha256) in payloads {
+            let canonical_payload_sha256 = canonical_sha256(&payload)?;
+            let mut record = LogRecordV1 {
+                schema_name: format!("{log_kind}_log_record"),
+                schema_version: SCHEMA_VERSION,
+                log_id: format!("{}:{log_kind}", state.route_id),
+                index,
+                previous_record_sha256: previous,
+                companion_artifact_sha256,
+                canonical_payload_sha256,
+                payload,
+                record_sha256: String::new(),
+            };
+            record.record_sha256 = record_hash(&record)?;
+            previous = record.record_sha256.clone();
+            index += 1;
+            records.push(record);
+        }
         let mut file = OpenOptions::new()
             .append(true)
             .open(self.root.join(file_name))?;
-        serde_json::to_writer(&mut file, &record)?;
-        file.write_all(b"\n")?;
+        for record in &records {
+            serde_json::to_writer(&mut file, record)?;
+            file.write_all(b"\n")?;
+        }
         file.sync_all()?;
-        Ok(record)
+        Ok(records)
     }
 
     /// Phase A: non-authoritative, read-only derivation of the authority
@@ -611,9 +980,21 @@ impl RouteStore {
         &self,
         binding: &PhaseABinding,
         operations_root: &Path,
+        operation_id: &str,
     ) -> Result<SubmissionGuard> {
         let authority_lock =
             AuthorityDomainLock::acquire(operations_root, binding.domain_sha256())?;
+        let reservation_path = operations_root
+            .join(AUTHORITY_LOCK_DIR)
+            .join(format!("{}.reservation.json", binding.domain_sha256()));
+        if reservation_path.exists() {
+            let reservation: AuthorityReservationV1 = read_json(&reservation_path)?;
+            if reservation.operation_id != operation_id {
+                return Err(Error::Conflict(
+                    "authority domain has an unresolved submission reservation".into(),
+                ));
+            }
+        }
         let route_lock = RouteLock::acquire(binding.route_canonical_path())?;
         let store = RouteStore::open(binding.route_canonical_path())?;
         let state = store.load_state()?;
@@ -631,6 +1012,8 @@ impl RouteStore {
         }
         Ok(SubmissionGuard {
             store,
+            reservation_path,
+            operation_id: operation_id.into(),
             _route_lock: route_lock,
             _authority_lock: authority_lock,
             state,
@@ -645,9 +1028,6 @@ impl RouteStore {
     /// temporary is atomically renamed over the final path and the directory
     /// fsynced; a mismatched or non-regular occupant of the final path (or a
     /// missing artifact entirely) fails closed with `proposal_write_failed`
-    /// and appends nothing. The committed checkpoint is detected from the
-    /// log after each append, so re-running recovery is idempotent and never
-    /// processed.
     pub fn recover_pending_proposal(&self) -> Result<()> {
         let records =
             self.verify_log::<OperationEventV1>(Path::new(OPERATIONS_FILE), "operations")?;
@@ -657,8 +1037,6 @@ impl RouteStore {
             }
             let Some((relative_path, expected_sha256)) = proposal_write_target(&record.payload)
             else {
-                // A prepared record without artifact coordinates is a journal
-                // checkpoint, not a recoverable proposal write.
                 continue;
             };
             let already_committed = records[index + 1..].iter().any(|later| {
@@ -827,6 +1205,13 @@ pub fn write_create_new_json<T: Serialize>(path: &Path, value: &T) -> Result<()>
 }
 
 fn atomic_replace_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    atomic_replace_bytes(path, &serde_json_canonicalizer::to_vec(value)?)
+}
+
+/// Atomically replaces a managed file with `bytes`: unique temp write+fsync,
+/// rename over the target, directory fsync. Any failure before the rename
+/// leaves the prior file intact.
+fn atomic_replace_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| Error::InvalidInput("state path has no parent".into()))?;
@@ -841,8 +1226,7 @@ fn atomic_replace_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
             temporary.display()
         )));
     }
-    let bytes = serde_json_canonicalizer::to_vec(value)?;
-    write_create_new_bytes(&temporary, &bytes)?;
+    write_create_new_bytes(&temporary, bytes)?;
     fs::rename(&temporary, path)?;
     sync_directory(parent)
 }
@@ -936,4 +1320,59 @@ fn set_directory_mode(_path: &Path) -> Result<()> {
 fn sync_directory(path: &Path) -> Result<()> {
     File::open(path)?.sync_all()?;
     Ok(())
+}
+
+pub fn validate_opening_custody(opening: Option<&crate::domain::OpeningCustodyV1>) -> Result<()> {
+    let Some(opening) = opening else {
+        return Ok(());
+    };
+    if opening.schema_name != "opening_custody" || opening.schema_version != SCHEMA_VERSION {
+        return Err(Error::InvalidInput(
+            "unsupported opening custody schema".into(),
+        ));
+    }
+    if opening.stellar_ledger_hash.trim().is_empty()
+        || opening.evm_block_hash.trim().is_empty()
+        || opening.artifact_lock_sha256.trim().is_empty()
+        || opening.effective_config_sha256.trim().is_empty()
+    {
+        return Err(Error::Custody(
+            "opening custody requires finalized chain and configuration digests".into(),
+        ));
+    }
+    let evidence = opening
+        .history_evidence_sha256
+        .as_deref()
+        .is_some_and(|digest| !digest.trim().is_empty());
+    if opening.zero_packet_history_proven == evidence {
+        return Err(Error::Custody(
+            "opening custody requires exactly one of zero-history proof or imported history".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn valid_operation_transition(previous: Option<OperationState>, next: OperationState) -> bool {
+    matches!(
+        (previous, next),
+        (
+            None,
+            OperationState::Planned | OperationState::ProposalPrepared
+        ) | (
+            Some(OperationState::Planned),
+            OperationState::ProposalPrepared | OperationState::Signed | OperationState::Failed
+        ) | (
+            Some(OperationState::ProposalPrepared),
+            OperationState::ProposalCommitted
+        ) | (
+            Some(OperationState::ProposalCommitted),
+            OperationState::Signed | OperationState::Confirmed | OperationState::Failed
+        ) | (
+            Some(OperationState::Signed),
+            OperationState::SubmissionPending
+        ) | (
+            Some(OperationState::SubmissionPending | OperationState::Ambiguous),
+            OperationState::Confirmed | OperationState::Failed | OperationState::Ambiguous
+        )
+    )
 }

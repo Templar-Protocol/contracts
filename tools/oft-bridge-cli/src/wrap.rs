@@ -5,7 +5,9 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::domain::{AssetKind, AssetPolicyV1, DesiredRouteV1, OperationV1, SCHEMA_VERSION};
+use crate::domain::{
+    AssetKind, AssetPolicyV1, DesiredRouteV1, OperationV1, SCHEMA_VERSION, SHARED_DECIMALS,
+};
 use crate::error::{Error, Result};
 
 /// Deterministic plan emitted by `asset wrap`. Every operation is fully
@@ -142,17 +144,31 @@ pub fn plan_wrap(
         crate::evm::canonical_address(crate::evm::derive_create_address(evm_deployer, evm_nonce));
     let stellar_peer_bytes = crate::codec::strkey_to_bytes32(&stellar_oft)?;
     let evm_peer_bytes = crate::codec::evm_address_to_bytes32(&evm_oft)?;
-    let wasm_sha256 = crate::artifacts::embedded_lock()?.stellar.oft_wasm_sha256;
+    let lock = crate::artifacts::embedded_lock()?;
+    let wasm_sha256 = lock.stellar.oft_wasm_sha256.clone();
     let operations = vec![
         OperationV1::InstallStellarWasm {
             wasm_sha256: wasm_sha256.clone(),
         },
         OperationV1::DeployStellarOft {
+            deployer: desired.stellar_owner.clone(),
             salt: hex::encode(salt),
+            wasm_sha256: wasm_sha256.clone(),
+            token: token_contract.clone(),
+            shared_decimals: SHARED_DECIMALS,
+            endpoint: desired.identity.stellar_endpoint.clone(),
+            delegate: desired.stellar_delegate.clone(),
+            expected_address: stellar_oft.clone(),
         },
         OperationV1::DeployEvmOft {
             deployer: desired.evm_owner.clone(),
             nonce: evm_nonce,
+            creation_bytecode_keccak256: lock.evm.creation_bytecode_keccak256,
+            name: name.to_string(),
+            symbol: symbol.to_string(),
+            endpoint: desired.identity.evm_endpoint.clone(),
+            owner_delegate: desired.evm_delegate.clone(),
+            expected_address: evm_oft.clone(),
         },
         OperationV1::SetStellarPeer {
             remote_eid: desired.identity.evm_eid,

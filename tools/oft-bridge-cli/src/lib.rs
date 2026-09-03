@@ -3,17 +3,22 @@ pub mod canary;
 pub mod cli;
 pub mod codec;
 pub mod config;
+pub mod deployment;
 pub mod domain;
 pub mod environment;
 pub mod error;
 pub mod evm;
 pub mod governance;
+pub mod health;
 pub mod layerzero;
 pub mod output;
 pub mod process;
 pub mod reconcile;
+pub mod route;
+pub mod scan;
 pub mod state;
 pub mod stellar;
+pub mod ttl;
 pub mod wrap;
 
 use std::future::Future;
@@ -98,6 +103,16 @@ pub fn canonical_sha256<T: serde::Serialize>(value: &T) -> error::Result<String>
     use sha2::{Digest as _, Sha256};
     let bytes = serde_json_canonicalizer::to_vec(value)?;
     Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+/// Current Unix time in seconds, refusing a system clock before the epoch.
+pub(crate) fn now_unix() -> error::Result<u64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| {
+            crate::error::Error::Custody(format!("system clock precedes Unix epoch: {error}"))
+        })?
+        .as_secs())
 }
 
 pub fn policy_error(message: impl Into<String>) -> Error {

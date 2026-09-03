@@ -17,6 +17,8 @@ pub enum Error {
     Conflict(String),
     #[error("custody or health invariant failed: {0}")]
     Custody(String),
+    #[error("health checks failed")]
+    Health(Vec<serde_json::Value>),
     #[error("I/O operation failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON operation failed: {0}")]
@@ -35,6 +37,7 @@ impl Error {
             Self::Chain(_) => "chain_failure",
             Self::Conflict(_) => "operation_conflict",
             Self::Custody(_) => "custody_failure",
+            Self::Health(_) => "health_failure",
             Self::Io(_) => "io_failure",
             Self::Json(_) => "invalid_json",
         }
@@ -46,8 +49,15 @@ impl Error {
             Self::Policy(_) => 3,
             Self::Chain(_) | Self::Io(_) | Self::Json(_) => 4,
             Self::Conflict(_) => 5,
-            Self::Custody(_) => 6,
+            Self::Custody(_) | Self::Health(_) => 6,
         })
+    }
+
+    pub fn context(&self) -> serde_json::Value {
+        match self {
+            Self::Health(findings) => serde_json::json!({"findings": findings}),
+            _ => serde_json::json!({}),
+        }
     }
 }
 

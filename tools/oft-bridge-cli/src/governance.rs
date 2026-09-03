@@ -22,6 +22,7 @@ alloy::sol! {
             address refundReceiver,
             uint256 nonce
         ) external view returns (bytes32);
+        function isOwner(address owner) external view returns (bool);
     }
 }
 
@@ -52,6 +53,9 @@ pub struct SignatureVerificationDataV1 {
     pub unsigned_payload_sha256: String,
     pub plan_sha256: String,
     pub expires_at_unix: u64,
+    pub attached_weight: u32,
+    pub required_weight: u32,
+    pub threshold_satisfied: bool,
 }
 
 /// Outcome of transaction preparation when a qualified simulation demands
@@ -112,6 +116,7 @@ pub fn build_executable_plan(
     stellar: &dyn crate::stellar::StellarChain,
     evm: &dyn crate::evm::EvmChain,
 ) -> Result<ExecutablePlanV1> {
+    validate_operation(operation)?;
     let desired_sha256 = state.desired_sha256.clone();
     match operation_vm(operation) {
         Vm::Stellar => {
@@ -172,6 +177,7 @@ fn executable_plan(
     stellar_binding: Option<crate::domain::StellarPlanBindingV1>,
     evm_binding: Option<crate::domain::EvmPlanBindingV1>,
 ) -> Result<ExecutablePlanV1> {
+    let now = crate::now_unix()?;
     Ok(ExecutablePlanV1 {
         schema_name: "executable_plan".into(),
         schema_version: SCHEMA_VERSION,
@@ -179,11 +185,10 @@ fn executable_plan(
         desired_sha256,
         operation: operation.clone(),
         artifact_lock_sha256: crate::artifacts::lock_sha256()?,
-        // Binds the constructed transaction's canonical bytes: the
-        // assembled envelope XDR digest (Stellar) or the typed-transaction
-        // digest (EVM), both adapter-derived.
         simulation_sha256,
-        expires_at_unix: 0,
+        expires_at_unix: now
+            .checked_add(900)
+            .ok_or_else(|| Error::Custody("proposal expiry overflow".into()))?,
         stellar: stellar_binding,
         evm: evm_binding,
         continuation_sha256: String::new(),
@@ -201,7 +206,7 @@ fn stellar_plan_binding(
             "derived environment mismatch: RPC passphrase differs from route identity".into(),
         ));
     }
-    let sender = route_owner(state, Vm::Stellar)?;
+    let sender = crate::layerzero::stellar_operation_authorizer(state, operation)?.to_string();
     let sequence = stellar.account_sequence(&sender)?;
     let ledger = stellar.latest_ledger()?;
     let weights = stellar.account_signers(&sender)?;
@@ -218,8 +223,8 @@ fn stellar_plan_binding(
     // RPC-backed simulation of the exact typed transaction this proposal
     // commits to; the adapter owns construction, simulation, assembly, and
     // auth-class qualification and refuses rather than fabricating.
-    let simulation =
-        stellar.simulate_transaction(operation, &sender, &sequence, min_ledger, max_ledger)?;
+    let simulation = stellar
+        .simulate_transaction(state, operation, &sender, &sequence, min_ledger, max_ledger)?;
     Ok(crate::domain::StellarPlanBindingV1 {
         network_passphrase: passphrase,
         source_account: sender,
@@ -241,33 +246,83 @@ fn evm_plan_binding(
     operation: &OperationV1,
     evm: &dyn crate::evm::EvmChain,
 ) -> Result<crate::domain::EvmPlanBindingV1> {
+    use std::str::FromStr as _;
     let chain_id = crate::block_on_result(evm.chain_id())?;
     if chain_id != state.identity.evm_chain_id {
         return Err(Error::Policy(
             "derived environment mismatch: RPC chain id differs from route identity".into(),
         ));
     }
-    let owner = route_owner(state, Vm::Evm)?;
+    let owner = crate::layerzero::evm_operation_authorizer(state, operation)?.to_string();
     let address = crate::evm::parse_address(&owner)?;
     let nonce = crate::block_on_result(evm.account_nonce(address))?;
-    let calldata = crate::layerzero::encode_calldata(operation)?;
-    let target = state.contracts.get("evm_oft").cloned().unwrap_or_default();
-    let target_address = crate::evm::parse_address(&target)?;
-    // Every v1 governance operation carries zero explicit value.
-    let value = alloy::primitives::U256::from(0u64);
-    // Live gas and fee policy for the exact typed transaction; the digest
-    // below binds these exact values. Estimation failure fails closed.
-    let estimate = crate::block_on_result(evm.estimate_transaction(
-        address,
-        target_address,
-        value,
-        calldata.clone(),
-    ))?;
+    let creation = matches!(operation, OperationV1::DeployEvmOft { .. });
+    let calldata = if creation {
+        evm.deployment_init_code(operation)?
+    } else {
+        crate::layerzero::encode_calldata_for_route(state, operation)?
+    };
+    if let OperationV1::DeployEvmOft {
+        nonce: reserved_nonce,
+        ..
+    } = operation
+    {
+        if nonce != *reserved_nonce {
+            return Err(Error::Conflict(format!(
+                "live EVM deployer nonce {nonce} differs from reserved nonce {reserved_nonce}"
+            )));
+        }
+    }
+    let target = if creation {
+        "create".to_string()
+    } else {
+        match operation {
+            OperationV1::CommitVerification {
+                vm: Vm::Evm,
+                message,
+            } => message.current_receive_library.clone(),
+            OperationV1::SetEvmSendLibrary { .. }
+            | OperationV1::SetEvmReceiveLibrary { .. }
+            | OperationV1::RemoveEvmReceiveLibraryTimeout { .. }
+            | OperationV1::SetEvmUlnConfig { .. }
+            | OperationV1::SetEvmExecutorConfig { .. }
+            | OperationV1::ContainOutbound { .. }
+            | OperationV1::RestoreOutbound { .. }
+            | OperationV1::ExecuteReceive { vm: Vm::Evm, .. } => {
+                state.identity.evm_endpoint.clone()
+            }
+            _ => state.contracts.get("evm_oft").cloned().unwrap_or_default(),
+        }
+    };
+    let value = match operation {
+        OperationV1::SendLeg {
+            vm: Vm::Evm,
+            intent,
+        } => alloy::primitives::U256::from_str(&intent.native_fee_raw).map_err(|error| {
+            Error::InvalidInput(format!("invalid EVM send native fee: {error}"))
+        })?,
+        _ => alloy::primitives::U256::ZERO,
+    };
+    let estimate = if creation {
+        crate::block_on_result(evm.estimate_creation(address, value, calldata.clone()))?
+    } else {
+        crate::block_on_result(evm.estimate_transaction(
+            address,
+            crate::evm::parse_address(&target)?,
+            value,
+            calldata.clone(),
+        ))?
+    };
     let safe_binding = match crate::block_on_result(evm.safe_state(address))? {
+        Some(_) if creation => {
+            return Err(Error::Policy(
+                "deploy_evm_oft requires a plain EOA; Safe CREATE is unsupported".into(),
+            ))
+        }
         Some((threshold, safe_nonce)) => {
             let safe = crate::domain::SafeTransactionV1 {
                 to: target.clone(),
-                value: "0".into(),
+                value: value.to_string(),
                 data: hex::encode(&calldata),
                 operation: 0,
                 safe_tx_gas: "0".into(),
@@ -277,8 +332,6 @@ fn evm_plan_binding(
                 refund_receiver: "0x0000000000000000000000000000000000000000".into(),
                 nonce: safe_nonce.clone(),
                 threshold,
-                // The Safe contract itself computes the digest over these
-                // exact fields through its `getTransactionHash` view.
                 safe_tx_hash: safe_tx_hash(evm, address, &target, &calldata, &safe_nonce)?,
             };
             Some(safe)
@@ -288,7 +341,7 @@ fn evm_plan_binding(
     let binding = crate::domain::EvmPlanBindingV1 {
         chain_id: chain_id.to_string(),
         target,
-        value: "0".into(),
+        value: value.to_string(),
         nonce: nonce.to_string(),
         calldata: format!("0x{}", hex::encode(&calldata)),
         gas_limit: estimate.gas_limit.to_string(),
@@ -340,18 +393,6 @@ fn safe_tx_hash(
         ));
     }
     Ok(format!("0x{}", hex::encode(&result)))
-}
-
-fn route_owner(state: &RouteStateV1, vm: Vm) -> Result<String> {
-    let key = match vm {
-        Vm::Stellar => "stellar_owner",
-        Vm::Evm => "evm_owner",
-    };
-    state.contracts.get(key).cloned().ok_or_else(|| {
-        Error::Custody(format!(
-            "route owner '{key}' not recorded; re-adopt the route with authority records"
-        ))
-    })
 }
 
 /// Recovery scenario the matrix classifies.
@@ -422,6 +463,51 @@ pub fn recovery_capability(vm: Vm, scenario: RecoveryScenario) -> RecoveryCapabi
     }
 }
 
+fn validate_operation(operation: &OperationV1) -> Result<()> {
+    match operation {
+        OperationV1::SetStellarUlnConfig {
+            config_sha256,
+            config,
+            ..
+        }
+        | OperationV1::SetEvmUlnConfig {
+            config_sha256,
+            config,
+            ..
+        } => {
+            let typed: crate::layerzero::UlnConfigType3V1 = serde_json::from_value(config.clone())
+                .map_err(|error| {
+                    Error::InvalidInput(format!("invalid typed ULN config: {error}"))
+                })?;
+            typed.validate()?;
+            if &crate::canonical_sha256(config)? != config_sha256 {
+                return Err(Error::Custody("ULN config digest mismatch".into()));
+            }
+        }
+        OperationV1::SetStellarExecutorConfig {
+            config_sha256,
+            config,
+            ..
+        }
+        | OperationV1::SetEvmExecutorConfig {
+            config_sha256,
+            config,
+            ..
+        } => {
+            let typed: crate::layerzero::ExecutorConfigType3V1 =
+                serde_json::from_value(config.clone()).map_err(|error| {
+                    Error::InvalidInput(format!("invalid typed executor config: {error}"))
+                })?;
+            typed.validate()?;
+            if &crate::canonical_sha256(config)? != config_sha256 {
+                return Err(Error::Custody("executor config digest mismatch".into()));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn validate_plan(plan: &ExecutablePlanV1) -> Result<()> {
     if plan.schema_name != "executable_plan" || plan.schema_version != SCHEMA_VERSION {
         return Err(Error::InvalidInput(
@@ -433,6 +519,7 @@ fn validate_plan(plan: &ExecutablePlanV1) -> Result<()> {
             "plan route_id must not be empty".into(),
         ));
     }
+    validate_operation(&plan.operation)?;
     if plan.simulation_sha256.trim().is_empty() {
         return Err(Error::InvalidInput(
             "plan must bind a simulation digest".into(),
@@ -478,6 +565,14 @@ fn validate_plan(plan: &ExecutablePlanV1) -> Result<()> {
     Ok(())
 }
 
+fn require_fresh_plan(plan: &ExecutablePlanV1) -> Result<()> {
+    let now = crate::now_unix()?;
+    if plan.expires_at_unix <= now {
+        return Err(Error::Conflict("proposal has expired".into()));
+    }
+    Ok(())
+}
+
 /// VM an operation mutates. Dual-sided containment follows the outbound
 /// direction; cross-VM recovery operations carry their explicit `vm`.
 pub fn operation_vm(operation: &crate::domain::OperationV1) -> Vm {
@@ -494,10 +589,13 @@ pub fn operation_vm(operation: &crate::domain::OperationV1) -> Vm {
         | OperationV1::SetEvmExecutorConfig { .. }
         | OperationV1::SetEvmReceiveOptions { .. } => Vm::Evm,
         OperationV1::CommitVerification { vm, .. } | OperationV1::ExecuteReceive { vm, .. } => *vm,
-        // Dual-sided containment is driven from the outbound VM first.
-        OperationV1::ContainOutbound { .. }
-        | OperationV1::RestoreOutbound { .. }
-        | OperationV1::InstallStellarWasm { .. }
+        OperationV1::ContainOutbound { snapshot } | OperationV1::RestoreOutbound { snapshot } => {
+            match snapshot.direction {
+                crate::domain::Direction::StellarToEvm => Vm::Stellar,
+                crate::domain::Direction::EvmToStellar => Vm::Evm,
+            }
+        }
+        OperationV1::InstallStellarWasm { .. }
         | OperationV1::DeployStellarOft { .. }
         | OperationV1::BeginStellarOwnershipTransfer { .. }
         | OperationV1::AcceptStellarOwnership
@@ -525,8 +623,8 @@ pub fn operation_vm(operation: &crate::domain::OperationV1) -> Vm {
         | OperationV1::RevokeRole { .. }
         | OperationV1::SetRoleAdmin { .. }
         | OperationV1::RemoveRoleAdmin { .. }
-        | OperationV1::SendLeg { .. }
         | OperationV1::RestoreFootprint { .. } => Vm::Stellar,
+        OperationV1::SendLeg { vm, .. } => *vm,
     }
 }
 
@@ -562,18 +660,65 @@ pub fn attach_signature(
     signature: &str,
 ) -> Result<ProposalV1> {
     require_testnet(environment)?;
-    if signer.trim().is_empty() {
-        return Err(Error::InvalidInput("signer must not be empty".into()));
-    }
-    if signature.trim().is_empty() {
-        return Err(Error::InvalidInput("signature must not be empty".into()));
-    }
     validate_plan(&proposal.plan)?;
+    require_fresh_plan(&proposal.plan)?;
+    verify_stellar_signature(proposal, signer, signature)?;
+    if let Some(existing) = proposal.signatures.get(signer) {
+        if existing == signature {
+            return Ok(proposal.clone());
+        }
+        return Err(Error::Conflict(format!(
+            "proposal already has a different signature for {signer}"
+        )));
+    }
     let mut attached = proposal.clone();
     attached
         .signatures
         .insert(signer.to_string(), signature.to_string());
     Ok(attached)
+}
+
+fn verify_stellar_signature(proposal: &ProposalV1, signer: &str, signature: &str) -> Result<u32> {
+    use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+    use stellar_baselib::{
+        keypair::KeypairBehavior as _,
+        transaction::{Transaction, TransactionBehavior as _},
+    };
+
+    let binding = proposal
+        .plan
+        .stellar
+        .as_ref()
+        .ok_or_else(|| Error::Policy("Stellar signatures require a Stellar proposal".into()))?;
+    let weight = *binding
+        .signer_weights
+        .get(signer)
+        .ok_or_else(|| Error::Policy(format!("{signer} is not an authorized Stellar signer")))?;
+    if weight == 0 {
+        return Err(Error::Policy(format!(
+            "{signer} has zero Stellar signer weight"
+        )));
+    }
+    let signature = hex::decode(signature.trim_start_matches("0x"))
+        .or_else(|_| BASE64_STANDARD.decode(signature))
+        .map_err(|_| Error::InvalidInput("Stellar signature must be hex or base64".into()))?;
+    if signature.len() != 64 {
+        return Err(Error::InvalidInput(
+            "Stellar signature must be exactly 64 bytes".into(),
+        ));
+    }
+    let keypair = stellar_baselib::keypair::Keypair::from_public_key(signer)
+        .map_err(|error| Error::InvalidInput(format!("invalid Stellar signer: {error}")))?;
+    let transaction = std::panic::catch_unwind(|| {
+        Transaction::from_xdr_envelope(&binding.envelope_xdr, &binding.network_passphrase)
+    })
+    .map_err(|_| Error::InvalidInput("proposal contains invalid Stellar envelope XDR".into()))?;
+    if !keypair.verify(&transaction.hash(), &signature) {
+        return Err(Error::Policy(format!(
+            "invalid Stellar signature for {signer}"
+        )));
+    }
+    Ok(weight)
 }
 
 /// Derives typed out-of-band signing material from a proposal's chain
@@ -585,6 +730,7 @@ pub fn signature_verification_data(
 ) -> Result<SignatureVerificationDataV1> {
     require_testnet(environment)?;
     validate_plan(&proposal.plan)?;
+    require_fresh_plan(&proposal.plan)?;
     let (vm, sender, sequence_or_nonce, unsigned_payload) =
         match (proposal.plan.stellar.as_ref(), proposal.plan.evm.as_ref()) {
             (Some(binding), None) => (
@@ -610,6 +756,22 @@ pub fn signature_verification_data(
             "proposal has no unsigned payload yet; construct the envelope via the qualified adapter".into(),
         ));
     }
+    let (attached_weight, required_weight) = if let Some(binding) = &proposal.plan.stellar {
+        let attached_weight =
+            proposal
+                .signatures
+                .iter()
+                .try_fold(0u32, |total, (signer, signature)| {
+                    verify_stellar_signature(proposal, signer, signature).and_then(|weight| {
+                        total
+                            .checked_add(weight)
+                            .ok_or_else(|| Error::Custody("Stellar signer weight overflow".into()))
+                    })
+                })?;
+        (attached_weight, binding.required_threshold_weight)
+    } else {
+        (0, 0)
+    };
     let unsigned_payload_sha256 = hex::encode(Sha256::digest(unsigned_payload.as_bytes()));
     let plan_sha256 = crate::canonical_sha256(&proposal.plan)?;
     Ok(SignatureVerificationDataV1 {
@@ -619,6 +781,9 @@ pub fn signature_verification_data(
         sequence_or_nonce,
         unsigned_payload,
         unsigned_payload_sha256,
+        attached_weight,
+        required_weight,
+        threshold_satisfied: required_weight > 0 && attached_weight >= required_weight,
         plan_sha256,
         expires_at_unix: proposal.plan.expires_at_unix,
     })
@@ -721,7 +886,7 @@ pub fn create_proposal(
             "draft does not bind to this route state".into(),
         ));
     }
-    let plan = with_live_adapters(stellar_rpc, evm_rpc, |stellar, evm| {
+    let plan = with_live_adapters(state_path, stellar_rpc, evm_rpc, |stellar, evm| {
         build_executable_plan(&state, &draft.operation, stellar, evm)
     })?;
     let operation_sha256 = crate::canonical_sha256(&draft.operation)?;
@@ -741,47 +906,340 @@ pub fn create_proposal(
 pub fn proposal_for_operation(
     state_path: &Path,
     operation: &crate::domain::OperationV1,
-    _out: &Path,
+    out: &Path,
     stellar_rpc: Option<&str>,
     evm_rpc: Option<&str>,
 ) -> Result<CommandData> {
-    let (state, _store) = route_environment(state_path)?;
+    let (state, store) = route_environment(state_path)?;
     crate::environment::require_testnet(&state.identity)?;
-    let plan = with_live_adapters(stellar_rpc, evm_rpc, |stellar, evm| {
+    let plan = with_live_adapters(state_path, stellar_rpc, evm_rpc, |stellar, evm| {
         build_executable_plan(&state, operation, stellar, evm)
     })?;
     let proposal = build_proposal(state.identity.environment, plan)?;
+    let operation_sha256 = crate::canonical_sha256(operation)?;
+    let relative = Path::new("proposals").join(
+        out.file_name()
+            .ok_or_else(|| Error::InvalidInput("proposal output must name a file".into()))?,
+    );
+    let artifact = store.write_proposal(&relative, &operation_sha256, &proposal)?;
     Ok(CommandData {
         result: serde_json::to_value(&proposal)?,
-        artifact: None,
+        artifact: Some(artifact),
     })
 }
 
 /// Builds the concrete HTTP adapter pair used to bind a proposal. Both RPC
 /// URLs are mandatory: chain-identity checks read both sides.
 fn with_live_adapters<T>(
+    state_path: &Path,
     stellar_rpc: Option<&str>,
     evm_rpc: Option<&str>,
     build: impl FnOnce(&dyn crate::stellar::StellarChain, &dyn crate::evm::EvmChain) -> Result<T>,
 ) -> Result<T> {
-    let stellar = crate::stellar::HttpStellarChain::new(require_url(stellar_rpc, "Stellar")?)?;
-    let evm = crate::evm::HttpEvmChain::new(require_url(evm_rpc, "EVM")?)?;
+    let stellar = crate::stellar::HttpStellarChain::new(require_url(stellar_rpc, "Stellar")?)?
+        .with_artifact_root(state_path);
+    let evm =
+        crate::evm::HttpEvmChain::new(require_url(evm_rpc, "EVM")?)?.with_artifact_root(state_path);
     build(&stellar, &evm)
 }
 
-/// `proposal ingest`: testnet only; execution evidence ingest requires a
-/// qualified live adapter and is fail-closed in v1.
+/// `proposal ingest`: verifies the finalized on-chain transaction against the
+/// exact closed proposal before optionally appending authoritative evidence.
 pub fn ingest_proposal(
     state_path: &Path,
-    _proposal_path: &Path,
-    _executed_tx: &str,
-    _write: bool,
+    proposal_path: &Path,
+    executed_tx: &str,
+    stellar_rpc: Option<&str>,
+    evm_rpc: Option<&str>,
+    write: bool,
 ) -> Result<CommandData> {
-    let (state, _store) = route_environment(state_path)?;
+    let state = RouteStore::open(state_path)?.load_state()?;
     crate::environment::require_testnet(&state.identity)?;
-    Err(Error::Chain(
-        "proposal ingest requires a qualified live execution-evidence adapter".into(),
-    ))
+    let stellar = stellar_rpc
+        .map(crate::stellar::HttpStellarChain::new)
+        .transpose()?;
+    let evm = evm_rpc.map(crate::evm::HttpEvmChain::new).transpose()?;
+    ingest_proposal_with_adapters(
+        state_path,
+        proposal_path,
+        executed_tx,
+        stellar
+            .as_ref()
+            .map(|chain| chain as &dyn crate::stellar::StellarChain),
+        evm.as_ref().map(|chain| chain as &dyn crate::evm::EvmChain),
+        write,
+    )
+}
+
+pub fn ingest_proposal_with_adapters(
+    state_path: &Path,
+    proposal_path: &Path,
+    executed_tx: &str,
+    stellar: Option<&dyn crate::stellar::StellarChain>,
+    evm: Option<&dyn crate::evm::EvmChain>,
+    write: bool,
+) -> Result<CommandData> {
+    let (state, store) = route_environment(state_path)?;
+    crate::environment::require_testnet(&state.identity)?;
+    let proposal: ProposalV1 = read_json(proposal_path)?;
+    validate_plan(&proposal.plan)?;
+    if proposal.plan.route_id != state.route_id
+        || proposal.plan.desired_sha256 != state.desired_sha256
+    {
+        return Err(Error::Conflict(
+            "proposal does not bind to this route state".into(),
+        ));
+    }
+    if proposal.plan.expires_at_unix
+        < crate::now_unix()?
+    {
+        return Err(Error::Conflict("proposal has expired".into()));
+    }
+    if let Some(opening) = &state.opening_custody {
+        if proposal.plan.artifact_lock_sha256 != opening.artifact_lock_sha256 {
+            return Err(Error::Conflict(
+                "proposal artifact lock differs from opening custody".into(),
+            ));
+        }
+    }
+
+    let evidence = match (&proposal.plan.stellar, &proposal.plan.evm) {
+        (Some(binding), None) => {
+            let chain = stellar.ok_or_else(|| {
+                Error::InvalidInput("Stellar RPC URL is required to ingest this proposal".into())
+            })?;
+            let status = chain.transaction_status(executed_tx)?;
+            if status.status != "success" || status.ledger.is_none() {
+                return Err(Error::Chain(format!(
+                    "Stellar transaction is not finalized successful: {}",
+                    status.status
+                )));
+            }
+            let executed_envelope = status.envelope_xdr.as_deref().ok_or_else(|| {
+                Error::Chain("Stellar transaction response omitted envelope XDR".into())
+            })?;
+            if crate::stellar::envelope_transaction_hash(
+                executed_envelope,
+                &binding.network_passphrase,
+            )? != crate::stellar::envelope_transaction_hash(
+                &binding.envelope_xdr,
+                &binding.network_passphrase,
+            )? {
+                return Err(Error::Conflict(
+                    "executed Stellar transaction differs from proposal".into(),
+                ));
+            }
+            serde_json::json!({
+                "chain": "stellar",
+                "transaction_hash": executed_tx,
+                "ledger": status.ledger,
+                "envelope_xdr": executed_envelope,
+            })
+        }
+        (None, Some(binding)) => {
+            let chain = evm.ok_or_else(|| {
+                Error::InvalidInput("EVM RPC URL is required to ingest this proposal".into())
+            })?;
+            let transaction = crate::block_on_result(chain.transaction_by_hash(executed_tx))?
+                .ok_or_else(|| Error::Chain("EVM transaction was not found".into()))?;
+            let safe_address =
+                crate::layerzero::evm_operation_authorizer(&state, &proposal.plan.operation)?;
+            verify_evm_transaction(binding, &transaction, safe_address)?;
+            let receipt = crate::block_on_result(chain.transaction_receipt(executed_tx))?
+                .ok_or_else(|| Error::Chain("EVM receipt was not found".into()))?;
+            if receipt.succeeded != Some(true) || receipt.block_number.is_none() {
+                return Err(Error::Chain(
+                    "EVM transaction is not finalized successful".into(),
+                ));
+            }
+            serde_json::json!({
+                "chain": "evm",
+                "transaction_hash": executed_tx,
+                "transaction": transaction,
+                "receipt": receipt,
+            })
+        }
+        _ => {
+            return Err(Error::InvalidInput(
+                "proposal must bind exactly one chain".into(),
+            ))
+        }
+    };
+
+    if write {
+        let stellar = stellar.ok_or_else(|| {
+            Error::InvalidInput("both chain adapters are required for proposal readback".into())
+        })?;
+        let evm = evm.ok_or_else(|| {
+            Error::InvalidInput("both chain adapters are required for proposal readback".into())
+        })?;
+        let _lock = store.lock()?;
+        let mut observed = store.load_state()?;
+        match crate::route::apply_live_readback(
+            stellar,
+            evm,
+            &mut observed,
+            &proposal.plan.operation,
+        ) {
+            Ok(()) => {}
+            Err(Error::InvalidInput(_)) => {
+                match crate::route::apply_management_readback(
+                    stellar,
+                    evm,
+                    &mut observed,
+                    &proposal.plan.operation,
+                ) {
+                    Ok(()) | Err(Error::InvalidInput(_)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        store.save_state(&observed)?;
+        store.append_operation(
+            crate::state::OperationEventV1 {
+                operation_id: crate::canonical_sha256(&proposal.plan.operation)?,
+                state: crate::state::OperationState::Confirmed,
+                detail: evidence.clone(),
+            },
+            None,
+        )?;
+    }
+    Ok(CommandData {
+        result: serde_json::json!({"verified": true, "written": write, "evidence": evidence}),
+        artifact: None,
+    })
+}
+
+fn verify_evm_transaction(
+    binding: &crate::domain::EvmPlanBindingV1,
+    transaction: &serde_json::Value,
+    expected_authorizer: &str,
+) -> Result<()> {
+    let field = |name: &str| {
+        transaction
+            .get(name)
+            .ok_or_else(|| Error::Chain(format!("EVM transaction omitted {name}")))
+    };
+    let actual_to = field("to")?
+        .as_str()
+        .ok_or_else(|| Error::Chain("EVM transaction target is not a string".into()))?;
+    let actual_input = transaction
+        .get("input")
+        .or_else(|| transaction.get("data"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Chain("EVM transaction omitted input".into()))?;
+    if let Some(safe) = binding.safe.as_ref() {
+        if !actual_to.eq_ignore_ascii_case(expected_authorizer) {
+            return Err(Error::Conflict(
+                "executed Safe transaction targets a different Safe".into(),
+            ));
+        }
+        return verify_safe_execution(safe, actual_input);
+    }
+    let actual_chain_id = json_uint(field("chainId")?)?;
+    let actual_nonce = json_uint(field("nonce")?)?;
+    let actual_value = json_uint(field("value")?)?;
+    let expected_to = &binding.target;
+    if actual_chain_id != binding.chain_id
+        || actual_nonce != binding.nonce
+        || actual_value != binding.value
+        || !actual_to.eq_ignore_ascii_case(expected_to)
+        || !actual_input.eq_ignore_ascii_case(&binding.calldata)
+    {
+        return Err(Error::Conflict(
+            "executed EVM transaction differs from proposal".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_safe_execution(safe: &crate::domain::SafeTransactionV1, input: &str) -> Result<()> {
+    let input = hex::decode(input.trim_start_matches("0x"))
+        .map_err(|_| Error::Chain("Safe execution calldata is not hex".into()))?;
+    let selector = &crate::evm::keccak256_of(
+        b"execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)",
+    )[..4];
+    if input.len() < 4 + 10 * 32 || input[..4] != *selector {
+        return Err(Error::Conflict(
+            "executed Safe transaction has the wrong selector or head".into(),
+        ));
+    }
+    let words = &input[4..4 + 10 * 32];
+    let word = |index: usize| &words[index * 32..(index + 1) * 32];
+    let address = |index: usize| {
+        crate::evm::canonical_address(alloy::primitives::Address::from_slice(&word(index)[12..]))
+    };
+    let uint = |index: usize| alloy::primitives::U256::from_be_slice(word(index)).to_string();
+    let offset = |index: usize| -> Result<usize> {
+        if word(index)[..24].iter().any(|byte| *byte != 0) {
+            return Err(Error::Chain("Safe dynamic offset exceeds usize".into()));
+        }
+        Ok(usize::from_be_bytes(word(index)[24..].try_into().map_err(
+            |_| Error::Chain("Safe dynamic offset is malformed".into()),
+        )?))
+    };
+    let dynamic = |offset: usize| -> Result<&[u8]> {
+        let start = 4usize
+            .checked_add(offset)
+            .ok_or_else(|| Error::Chain("Safe dynamic offset overflow".into()))?;
+        let length_end = start
+            .checked_add(32)
+            .filter(|end| *end <= input.len())
+            .ok_or_else(|| Error::Chain("Safe dynamic length is out of bounds".into()))?;
+        if input[start..start + 24].iter().any(|byte| *byte != 0) {
+            return Err(Error::Chain("Safe dynamic length exceeds usize".into()));
+        }
+        let length = usize::from_be_bytes(
+            input[start + 24..length_end]
+                .try_into()
+                .map_err(|_| Error::Chain("Safe dynamic length is malformed".into()))?,
+        );
+        let value_start = length_end;
+        let value_end = value_start
+            .checked_add(length)
+            .filter(|end| *end <= input.len())
+            .ok_or_else(|| Error::Chain("Safe dynamic value is out of bounds".into()))?;
+        Ok(&input[value_start..value_end])
+    };
+    let data = dynamic(offset(2)?)?;
+    let signatures = dynamic(offset(9)?)?;
+    if !address(0).eq_ignore_ascii_case(&safe.to)
+        || uint(1) != safe.value
+        || !hex::encode(data).eq_ignore_ascii_case(safe.data.trim_start_matches("0x"))
+        || word(3)[..31].iter().any(|byte| *byte != 0)
+        || word(3)[31] != safe.operation
+        || uint(4) != safe.safe_tx_gas
+        || uint(5) != safe.base_gas
+        || uint(6) != safe.gas_price
+        || !address(7).eq_ignore_ascii_case(&safe.gas_token)
+        || !address(8).eq_ignore_ascii_case(&safe.refund_receiver)
+        || signatures.is_empty()
+    {
+        return Err(Error::Conflict(
+            "executed Safe transaction differs from proposal".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn json_uint(value: &serde_json::Value) -> Result<String> {
+    use alloy::primitives::U256;
+    use std::str::FromStr as _;
+
+    if let Some(value) = value.as_u64() {
+        return Ok(value.to_string());
+    }
+    let value = value
+        .as_str()
+        .ok_or_else(|| Error::Chain("EVM integer field is not a string or integer".into()))?;
+    let parsed = if let Some(hex) = value.strip_prefix("0x") {
+        U256::from_str_radix(hex, 16)
+    } else {
+        U256::from_str(value)
+    }
+    .map_err(|error| Error::Chain(format!("invalid EVM integer field: {error}")))?;
+    Ok(parsed.to_string())
 }
 
 /// `proposal stellar-signature attach`: testnet only; writes a new proposal file.
@@ -815,16 +1273,111 @@ pub fn verify_stellar_proposal(state_path: &Path, proposal_path: &Path) -> Resul
     })
 }
 
-/// `proposal safe verify`: Safe threshold verification requires a live
-/// adapter and is fail-closed in v1.
+#[derive(Deserialize)]
+struct SafeExecutionEvidenceV1 {
+    #[serde(flatten)]
+    transaction: crate::domain::SafeTransactionV1,
+    confirmations: Vec<SafeConfirmationV1>,
+}
+
+#[derive(Deserialize)]
+struct SafeConfirmationV1 {
+    owner: String,
+    signature: String,
+}
+
+/// `proposal safe verify`: checks the exact Safe payload, current threshold
+/// and nonce, EOA signatures, and live Safe owner membership.
 pub fn verify_safe_proposal(
     state_path: &Path,
-    _proposal_path: &Path,
-    _safe_tx: &Path,
+    proposal_path: &Path,
+    safe_tx: &Path,
+    evm_rpc: Option<&str>,
 ) -> Result<CommandData> {
+    use crate::evm::EvmChain as _;
+    use alloy::sol_types::SolCall as _;
+    use std::str::FromStr as _;
+
     let (state, _store) = route_environment(state_path)?;
     crate::environment::require_testnet(&state.identity)?;
-    Err(Error::Chain(
-        "Safe proposal verification requires a qualified live Safe adapter".into(),
-    ))
+    let proposal: ProposalV1 = read_json(proposal_path)?;
+    validate_plan(&proposal.plan)?;
+    require_fresh_plan(&proposal.plan)?;
+    if proposal.plan.route_id != state.route_id
+        || proposal.plan.desired_sha256 != state.desired_sha256
+    {
+        return Err(Error::Conflict(
+            "proposal does not bind to this route state".into(),
+        ));
+    }
+    let binding = proposal
+        .plan
+        .evm
+        .as_ref()
+        .and_then(|binding| binding.safe.as_ref())
+        .ok_or_else(|| Error::Policy("proposal is not controlled by an EVM Safe".into()))?;
+    let evidence: SafeExecutionEvidenceV1 = read_json(safe_tx)?;
+    if &evidence.transaction != binding {
+        return Err(Error::Conflict(
+            "Safe transaction file differs from proposal".into(),
+        ));
+    }
+    let safe = crate::evm::parse_address(
+        state
+            .contracts
+            .get("evm_owner")
+            .ok_or_else(|| Error::Custody("route has no recorded EVM owner".into()))?,
+    )?;
+    let evm = crate::evm::HttpEvmChain::new(require_url(evm_rpc, "EVM")?)?;
+    let live = crate::block_on_result(evm.safe_state(safe))?
+        .ok_or_else(|| Error::Policy("recorded EVM owner is not a Safe".into()))?;
+    if live.0 != binding.threshold || live.1 != binding.nonce {
+        return Err(Error::Conflict(
+            "live Safe threshold or nonce differs from proposal".into(),
+        ));
+    }
+    let digest = alloy::primitives::B256::from_str(&binding.safe_tx_hash)
+        .map_err(|error| Error::InvalidInput(format!("invalid Safe transaction hash: {error}")))?;
+    let mut owners = std::collections::BTreeSet::new();
+    for confirmation in &evidence.confirmations {
+        let claimed = crate::evm::parse_address(&confirmation.owner)?;
+        let signature = alloy::primitives::Signature::from_str(&confirmation.signature)
+            .map_err(|error| Error::InvalidInput(format!("invalid Safe signature: {error}")))?;
+        let recovered = signature
+            .recover_address_from_prehash(&digest)
+            .map_err(|error| Error::Policy(format!("Safe signature recovery failed: {error}")))?;
+        if recovered != claimed {
+            return Err(Error::Policy(format!(
+                "Safe signature does not belong to {}",
+                confirmation.owner
+            )));
+        }
+        let result = crate::block_on_result(
+            evm.call(safe, Safe::isOwnerCall { owner: claimed }.abi_encode()),
+        )?;
+        if result.len() != 32 || result[31] != 1 {
+            return Err(Error::Policy(format!(
+                "{} is not a live Safe owner",
+                confirmation.owner
+            )));
+        }
+        owners.insert(claimed);
+    }
+    if owners.len() < binding.threshold as usize {
+        return Err(Error::Policy(format!(
+            "Safe threshold not met: {} of {} owners",
+            owners.len(),
+            binding.threshold
+        )));
+    }
+    Ok(CommandData {
+        result: serde_json::json!({
+            "verified": true,
+            "safe": safe.to_string(),
+            "safe_tx_hash": binding.safe_tx_hash,
+            "confirmed_owners": owners.len(),
+            "required_threshold": binding.threshold,
+        }),
+        artifact: None,
+    })
 }

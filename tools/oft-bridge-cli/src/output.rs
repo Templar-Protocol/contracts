@@ -54,7 +54,7 @@ pub fn failure(command: &str, effect: &'static str, error: &Error) -> Result<()>
         error: Some(ErrorBody {
             code: error.code(),
             message: error.to_string(),
-            context: serde_json::json!({}),
+            context: error.context(),
         }),
         warnings: Vec::new(),
         transactions: Vec::new(),
