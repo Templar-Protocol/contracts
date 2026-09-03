@@ -40,6 +40,7 @@ case "$NET" in
     REDSTONE="${REDSTONE:-CA7MY6TYNL5Z5H5FYGMN7YWSY3JIZG7LFY3DZ26EEGRBQ2UKTFWHD4ZJ}"
     REDSTONE_ASSET_DEFAULT='{"Stellar":"CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"}'
     RPC_URL="${RPC_URL:-https://soroban-testnet.stellar.org}"
+    PASSPHRASE="Test SDF Network ; September 2015"
     FEE_ARGS=()
     ;;
   mainnet)
@@ -49,6 +50,7 @@ case "$NET" in
     REDSTONE="${REDSTONE:-CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF}"
     REDSTONE_ASSET_DEFAULT='{"Stellar":"CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA"}'
     RPC_URL="${RPC_URL:-https://mainnet.sorobanrpc.com}"
+    PASSPHRASE="Public Global Stellar Network ; September 2015"
     # Mainnet ledgers run near capacity; base-fee bids get evicted.
     FEE_ARGS=(--fee "${FEE_STROOPS:-1000000}")
     ;;
@@ -77,9 +79,16 @@ run() {
   echo "$out" | grep -vE '^(ℹ️|🔗|✅|⚠️|🌎|📦|🔐|📝|  )' | tail -1
 }
 
-inv() { run contract invoke --network "$NET" --source "$SRC" "${FEE_ARGS[@]}" --id "$@"; }
-view() { run contract invoke --network "$NET" --source "$SRC" --send no --id "$@"; }
-deploy() { run contract deploy --network "$NET" --source "$SRC" "${FEE_ARGS[@]}" "$@"; }
+NET_ARGS=(--rpc-url "$RPC_URL" --network-passphrase "$PASSPHRASE" --source "$SRC")
+inv() { run contract invoke "${NET_ARGS[@]}" "${FEE_ARGS[@]}" --id "$@"; }
+view() { run contract invoke "${NET_ARGS[@]}" --send no --id "$@"; }
+deploy() { run contract deploy "${NET_ARGS[@]}" "${FEE_ARGS[@]}" "$@"; }
+# Deploy and record the id under `key`; a failed deploy aborts instead of storing "".
+deploy_into() {
+  local key="$1" id; shift
+  id="$(deploy "$@")" || return 1
+  state_set "$key" "$id"
+}
 
 src_address() { stellar keys address "$SRC"; }
 latest_ledger() {
@@ -95,16 +104,18 @@ phase_deploy() {
   for pkg in contract governance_contract sep40_adapter_contract pyth_lazer_source_contract batcher_contract; do
     name="hash_$pkg"
     [[ -n "$(state_get "$name")" ]] && continue
-    state_set "$name" "$(run contract upload --network "$NET" --source "$SRC" "${FEE_ARGS[@]}" --wasm "$WASM_DIR/templar_proxy_oracle_soroban_$pkg.optimized.wasm")"
-    echo "  $pkg -> $(state_get "$name")"
+    local hash
+    hash="$(run contract upload "${NET_ARGS[@]}" "${FEE_ARGS[@]}" --wasm "$WASM_DIR/templar_proxy_oracle_soroban_$pkg.optimized.wasm")" || return 1
+    state_set "$name" "$hash"
+    echo "  $pkg -> $hash"
   done
 
   echo "== runtime (bootstrap owner = $SRC)"
-  [[ -n "$(state_get runtime)" ]] || state_set runtime "$(deploy --wasm-hash "$(state_get hash_contract)" -- --governance "$admin" --base "$BASE_JSON")"
+  [[ -n "$(state_get runtime)" ]] || deploy_into runtime --wasm-hash "$(state_get hash_contract)" -- --governance "$admin" --base "$BASE_JSON"
   local rt; rt="$(state_get runtime)"; echo "  RT=$rt"
 
   echo "== governance (admin = $SRC, uniform ttl 0)"
-  [[ -n "$(state_get governance)" ]] || state_set governance "$(deploy --wasm-hash "$(state_get hash_governance_contract)" -- --admin "$admin" --proxy_oracle "$rt" --initial_uniform_ttl_ns 0)"
+  [[ -n "$(state_get governance)" ]] || deploy_into governance --wasm-hash "$(state_get hash_governance_contract)" -- --admin "$admin" --proxy_oracle "$rt" --initial_uniform_ttl_ns 0
   local gov; gov="$(state_get governance)"; echo "  GOV=$gov"
 
   echo "== hand runtime ownership to governance"
@@ -123,16 +134,16 @@ phase_deploy() {
   if [[ -z "$(state_get lazer_source)" ]]; then
     local config="{\"verifier\":\"$PYTH_VERIFIER\",\"base\":$BASE_JSON,\"decimals\":8,\"channel\":\"$LAZER_CHANNEL_VARIANT\",\"freshness\":{\"max_age_secs\":$MAX_AGE_SECS,\"max_ahead_secs\":5}}"
     local mappings="[{\"feed_id\":$LAZER_FEED_ID,\"asset\":$ASSET_JSON}]"
-    state_set lazer_source "$(deploy --wasm-hash "$(state_get hash_pyth_lazer_source_contract)" -- --owner "$admin" --config "$config" --feed_mappings "$mappings")"
+    deploy_into lazer_source --wasm-hash "$(state_get hash_pyth_lazer_source_contract)" -- --owner "$admin" --config "$config" --feed_mappings "$mappings"
   fi
   echo "  LZ=$(state_get lazer_source)"
 
   echo "== batcher"
-  [[ -n "$(state_get batcher)" ]] || state_set batcher "$(deploy --wasm-hash "$(state_get hash_batcher_contract)")"
+  [[ -n "$(state_get batcher)" ]] || deploy_into batcher --wasm-hash "$(state_get hash_batcher_contract)"
   echo "  BATCH=$(state_get batcher)"
 
   echo "== sep40 adapter ($ASSET_SYMBOL, decimals 8, resolution 1)"
-  [[ -n "$(state_get adapter)" ]] || state_set adapter "$(deploy --wasm-hash "$(state_get hash_sep40_adapter_contract)" -- --owner "$admin" --parent_oracle "$rt" --asset "$ASSET_JSON" --decimals 8 --resolution 1 --base "$BASE_JSON")"
+  [[ -n "$(state_get adapter)" ]] || deploy_into adapter --wasm-hash "$(state_get hash_sep40_adapter_contract)" -- --owner "$admin" --parent_oracle "$rt" --asset "$ASSET_JSON" --decimals 8 --resolution 1 --base "$BASE_JSON"
   echo "  AD=$(state_get adapter)"
 }
 
