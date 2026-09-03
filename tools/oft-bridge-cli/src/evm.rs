@@ -250,9 +250,11 @@ impl EvmChain for HttpEvmChain {
     }
 
     async fn call(&self, to: Address, calldata: Vec<u8>) -> Result<Vec<u8>> {
-        let mut transaction = TransactionRequest::default();
-        transaction.to = Some(TxKind::Call(to));
-        transaction.input = TransactionInput::new(Bytes::from(calldata));
+        let transaction = TransactionRequest {
+            to: Some(TxKind::Call(to)),
+            input: TransactionInput::new(Bytes::from(calldata)),
+            ..Default::default()
+        };
         self.provider
             .call(transaction)
             .await

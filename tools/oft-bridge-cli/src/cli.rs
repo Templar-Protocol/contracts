@@ -43,8 +43,17 @@ enum Command {
     Leg(LegArgs),
     Message(MessageArgs),
     Evidence(EvidenceArgs),
-    Reconcile(StateOnlyArgs),
+    Reconcile(ReconcileArgs),
     Health(StateOnlyArgs),
+}
+
+#[derive(Debug, Args)]
+struct ReconcileArgs {
+    #[arg(long)]
+    state: PathBuf,
+    /// Exit nonzero when custody reports any deficit.
+    #[arg(long)]
+    fail_on_deficit: bool,
 }
 
 #[derive(Debug, Args)]
@@ -437,6 +446,19 @@ enum StellarCommand {
     EmergencyUnpause(StateEffectArgs),
     RoleGrant(RoleArgs),
     RoleRevoke(RoleArgs),
+    RoleSetAdmin(RoleAdminArgs),
+}
+
+#[derive(Debug, Args)]
+struct RoleAdminArgs {
+    #[arg(long)]
+    state: PathBuf,
+    #[arg(long)]
+    role: String,
+    #[arg(long)]
+    admin_role: String,
+    #[command(flatten)]
+    effect: ChainEffectArgs,
 }
 #[derive(Debug, Args)]
 struct SetFeeArgs {
@@ -665,7 +687,7 @@ impl Cli {
 
     pub fn run(self) -> Result<CommandData> {
         match self.command {
-            Command::Init(args) => init(args),
+            Command::Init(args) => init(&args),
             Command::Adopt(args) => adopt(args),
             Command::Operation(args) => operation(args),
             Command::Proposal(args) => proposal(args),
@@ -678,7 +700,9 @@ impl Cli {
             Command::Leg(args) => leg(args),
             Command::Message(args) => message(args),
             Command::Evidence(args) => evidence(args),
-            Command::Reconcile(args) => crate::reconcile::run_command(&args.state),
+            Command::Reconcile(args) => {
+                crate::reconcile::run_command(&args.state, args.fail_on_deficit)
+            }
             Command::Health(args) => health(&args.state),
         }
     }
@@ -706,7 +730,7 @@ impl Command {
     }
 }
 
-fn init(args: InitArgs) -> Result<CommandData> {
+fn init(args: &InitArgs) -> Result<CommandData> {
     let desired = read_desired_precontext(&args.desired)?;
     environment::classify(&desired.identity)?;
     if !args.write {
@@ -714,7 +738,7 @@ fn init(args: InitArgs) -> Result<CommandData> {
             serde_json::json!({"preview": true, "desired_sha256": canonical_sha256(&desired)?}),
         );
     }
-    let (_, state) = RouteStore::create(&args.state, desired)?;
+    let (_, state) = RouteStore::create(&args.state, desired.clone())?;
     data(serde_json::to_value(state)?)
 }
 
@@ -1004,6 +1028,15 @@ fn generic_stellar(args: StellarArgs) -> Result<CommandData> {
             OperationV1::RevokeRole {
                 role: a.role,
                 address: a.address,
+            },
+            a.effect,
+        ),
+
+        StellarCommand::RoleSetAdmin(a) => chain_effect(
+            &a.state,
+            OperationV1::SetRoleAdmin {
+                role: a.role,
+                admin_role: a.admin_role,
             },
             a.effect,
         ),

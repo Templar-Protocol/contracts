@@ -98,11 +98,10 @@ pub fn aggregate(records: &[PacketRecord]) -> Result<StageDeltas> {
     Ok(deltas)
 }
 
-/// Computes the custody conservation report:
-/// `expected_lockbox = normalized_evm_supply + pending_reverse_after_burn
-/// + lockbox_retained_fee_or_dust + pending_forward_locked_not_minted`, with
-/// `deficit = max(0, expected - observed)` and `surplus = max(0, observed -
-/// expected)`.
+/// Computes the custody conservation report where the expected lockbox equals
+/// the sum of normalized EVM supply, pending reverse after burn, lockbox
+/// retained fee/dust, and pending forward locked-not-minted; deficit is
+/// `max(0, expected - observed)` and surplus is `max(0, observed - expected)`.
 pub fn reconcile(observed: &ObservedCustody, deltas: &StageDeltas) -> Result<ReconcileReport> {
     let expected_lockbox_raw = observed
         .normalized_evm_supply_raw
@@ -125,7 +124,10 @@ pub fn reconcile(observed: &ObservedCustody, deltas: &StageDeltas) -> Result<Rec
 
 /// `reconcile` command: verifies log integrity then reports custody from
 /// state-bound observations. Fails closed when opening custody is absent.
-pub fn run_command(state: &std::path::Path) -> Result<crate::output::CommandData> {
+pub fn run_command(
+    state: &std::path::Path,
+    fail_on_deficit: bool,
+) -> Result<crate::output::CommandData> {
     let store = crate::state::RouteStore::open(state)?;
     let route = store.load_state()?;
     store.verify_log::<crate::state::OperationEventV1>(&route.operations_log, "operations")?;
@@ -141,6 +143,12 @@ pub fn run_command(state: &std::path::Path) -> Result<crate::output::CommandData
         external_fee_reported_raw: 0,
     };
     let report = reconcile(&observed, &StageDeltas::default())?;
+    if fail_on_deficit && report.deficit_raw > 0 {
+        return Err(Error::Custody(format!(
+            "custody deficit {} raw; failing per --fail-on-deficit",
+            report.deficit_raw
+        )));
+    }
     Ok(crate::output::CommandData {
         result: serde_json::json!({
             "expected_lockbox_raw": report.expected_lockbox_raw.to_string(),

@@ -116,10 +116,10 @@ impl StellarSignerEvidenceV1 {
     /// Address of the signer implied by the evidence.
     pub fn signer(&self) -> &str {
         match self {
-            Self::OftRoleOperator { address, .. } => address,
-            Self::OwnerDerivedAuthorizer { owner } => owner,
-            Self::OAppDelegate { delegate } => delegate,
-            Self::AddressContract { address } => address,
+            Self::OftRoleOperator { address, .. }
+            | Self::OwnerDerivedAuthorizer { owner: address }
+            | Self::OAppDelegate { delegate: address }
+            | Self::AddressContract { address } => address,
         }
     }
 }
