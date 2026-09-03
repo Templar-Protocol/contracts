@@ -13856,6 +13856,7 @@ dependencies = [
  "serde_json_canonicalizer",
  "sha2 0.10.9",
  "soroban-client",
+ "stellar-baselib",
  "stellar-strkey 0.0.16",
  "tempfile",
  "thiserror 2.0.18",

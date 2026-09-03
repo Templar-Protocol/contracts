@@ -9,10 +9,12 @@ use serde::Serialize;
 use crate::{
     canonical_sha256,
     domain::{
-        AssetKind, DesiredRouteV1, Direction, OperationDraftV1, OperationV1, Vm, SCHEMA_VERSION,
+        AssetKind, DesiredRouteV1, Direction, Environment, OperationDraftV1, OperationV1, Vm,
+        SCHEMA_VERSION,
     },
     environment,
     error::{Error, Result},
+    evm::EvmChain as _,
     output::CommandData,
     state::{read_json, write_create_new_json, RouteStore},
 };
@@ -56,6 +58,16 @@ struct ReconcileArgs {
     fail_on_deficit: bool,
 }
 
+/// Resolves an RPC URL from a named environment variable. URLs never enter
+/// argv directly.
+fn rpc_url(env_var: Option<&String>) -> Result<Option<String>> {
+    env_var
+        .map(String::as_str)
+        .map(std::env::var)
+        .transpose()
+        .map_err(|error| Error::InvalidInput(format!("rpc env read failed: {error}")))
+}
+
 #[derive(Debug, Args)]
 struct InitArgs {
     #[arg(long)]
@@ -64,6 +76,16 @@ struct InitArgs {
     state: PathBuf,
     #[arg(long)]
     write: bool,
+    /// Operator assertion of the target environment; must equal the
+    /// identity-derived environment.
+    #[arg(long)]
+    network: Option<String>,
+    /// Environment variable holding the Stellar RPC URL (required for --write).
+    #[arg(long)]
+    stellar_rpc_env: Option<String>,
+    /// Environment variable holding the EVM RPC URL (required for --write).
+    #[arg(long)]
+    evm_rpc_env: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -101,8 +123,12 @@ enum OperationCommand {
 struct DraftArgs {
     #[arg(long)]
     state: PathBuf,
+    /// Closed operation command name (see OperationV1 variants, kebab-case).
     #[arg(long)]
-    operation: PathBuf,
+    command: String,
+    /// JSON file with the closed argument set for --command.
+    #[arg(long)]
+    args: PathBuf,
     #[arg(long)]
     out: PathBuf,
 }
@@ -129,6 +155,12 @@ struct ProposalCreateArgs {
     draft: PathBuf,
     #[arg(long)]
     out: PathBuf,
+    /// Environment variable holding the Stellar RPC URL.
+    #[arg(long)]
+    stellar_rpc_env: Option<String>,
+    /// Environment variable holding the EVM RPC URL.
+    #[arg(long)]
+    evm_rpc_env: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -207,8 +239,10 @@ struct ArtifactBuildArgs {
     out_dir: PathBuf,
     #[arg(long)]
     write: bool,
+    /// Digest-verified build dependency archive (npm package closure).
+    #[arg(long)]
+    deps_archive: Option<PathBuf>,
 }
-
 #[derive(Debug, Args)]
 struct AssetArgs {
     #[command(subcommand)]
@@ -222,16 +256,23 @@ enum AssetCommand {
 
 #[derive(Debug, Args)]
 struct WrapArgs {
+    /// Asset identifier, asserted against the bound route's asset.
     #[arg(long)]
     asset: String,
     #[arg(long, value_enum)]
     asset_kind: AssetKindArg,
     #[arg(long)]
-    state: Option<PathBuf>,
+    state: PathBuf,
+    /// Desired route JSON binding the operator topology and evidence.
     #[arg(long)]
-    name: Option<String>,
+    desired: PathBuf,
     #[arg(long)]
-    symbol: Option<String>,
+    name: String,
+    #[arg(long)]
+    symbol: String,
+    /// Reserved live EVM deployer nonce; fetched via --evm-rpc-env when absent.
+    #[arg(long)]
+    evm_nonce: Option<u64>,
     #[command(flatten)]
     effect: ChainEffectArgs,
 }
@@ -329,6 +370,9 @@ struct ConfigHashArgs {
     state: PathBuf,
     #[arg(long, value_enum)]
     vm: VmArg,
+    /// ULN config direction; required for set-uln, rejected for set-executor.
+    #[arg(long)]
+    direction: Option<String>,
     #[arg(long)]
     remote_eid: u32,
     #[arg(long)]
@@ -564,6 +608,9 @@ struct ContainOutboundArgs {
     state: PathBuf,
     #[arg(long, value_enum)]
     direction: DirectionArg,
+    /// Containment cap in base units; v1 supports only a full block (0).
+    #[arg(long)]
+    limit_raw: Option<u128>,
     #[command(flatten)]
     effect: ChainEffectArgs,
 }
@@ -642,6 +689,9 @@ struct MessageWatchArgs {
     state: PathBuf,
     #[arg(long)]
     guid: String,
+    /// Stop condition for the watch; v1 accepts only `terminal`.
+    #[arg(long)]
+    until: Option<String>,
 }
 #[derive(Debug, Args)]
 struct MessageRecoverArgs {
@@ -678,6 +728,12 @@ struct ChainEffectArgs {
     execute: bool,
     #[arg(long, conflicts_with = "execute")]
     proposal_out: Option<PathBuf>,
+    /// Environment variable holding the Stellar RPC URL for live-bound proposals.
+    #[arg(long)]
+    stellar_rpc_env: Option<String>,
+    /// Environment variable holding the EVM RPC URL for live-bound proposals.
+    #[arg(long)]
+    evm_rpc_env: Option<String>,
 }
 
 impl Cli {
@@ -708,6 +764,38 @@ impl Cli {
     }
 }
 
+/// Compile-time exhaustive effect classification over the whole CLI surface.
+/// Every new Clap variant must pick a class here; there are no wildcard
+/// arms, so adding a command without classifying it breaks the build.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandEffect {
+    /// Read-only state inspection.
+    LocalRead,
+    /// Local file or state preparation; no chain interaction.
+    LocalPrepare,
+    /// Constructs, signs, or ingests a chain mutation. Testnet-only in v1.
+    ChainMutation,
+    /// Evidence import into the custody ledger; no chain interaction.
+    EvidenceWrite,
+}
+
+impl CommandEffect {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalRead => "local_read",
+            Self::LocalPrepare => "local_prepare",
+            Self::ChainMutation => "chain_mutation",
+            Self::EvidenceWrite => "evidence_write",
+        }
+    }
+}
+
+impl Cli {
+    pub fn effect(&self) -> &'static str {
+        self.command.effect().as_str()
+    }
+}
+
 impl Command {
     const fn name(&self) -> &'static str {
         match self {
@@ -728,17 +816,186 @@ impl Command {
             Self::Health(_) => "health",
         }
     }
+
+    pub(crate) fn effect(&self) -> CommandEffect {
+        match self {
+            Self::Init(_) | Self::Adopt(_) => CommandEffect::LocalPrepare,
+            Self::Operation(args) => args.command.effect(),
+            Self::Proposal(args) => args.command.effect(),
+            Self::Artifact(args) => args.command.effect(),
+            Self::Asset(args) => args.command.effect(),
+            Self::Route(args) => args.command.effect(),
+            Self::Authority(args) => args.command.effect(),
+            Self::Stellar(args) => args.command.effect(),
+            Self::Contain(args) => args.command.effect(),
+            Self::Leg(args) => args.command.effect(),
+            Self::Message(args) => args.command.effect(),
+            Self::Evidence(args) => args.command.effect(),
+            Self::Reconcile(_) | Self::Health(_) => CommandEffect::LocalRead,
+        }
+    }
+}
+
+impl OperationCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::Draft(_) => CommandEffect::LocalPrepare,
+        }
+    }
+}
+
+impl ProposalCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::Create(_) | Self::Ingest(_) => CommandEffect::ChainMutation,
+            Self::StellarSignature(args) => match args.command {
+                ProposalSignatureCommand::Attach(_) => CommandEffect::LocalPrepare,
+                ProposalSignatureCommand::Verify(_) => CommandEffect::LocalRead,
+            },
+            Self::SafeVerify(_) => CommandEffect::LocalRead,
+        }
+    }
+}
+
+impl ArtifactCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::Verify(_) => CommandEffect::LocalRead,
+            Self::Build(_) => CommandEffect::LocalPrepare,
+        }
+    }
+}
+
+impl AssetCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::Wrap(_) => CommandEffect::ChainMutation,
+        }
+    }
+}
+
+impl RouteCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::DraftConfig(_) => CommandEffect::LocalPrepare,
+            Self::Inspect(_) => CommandEffect::LocalRead,
+            Self::SetPeer(_)
+            | Self::SetLibrary(_)
+            | Self::RemoveReceiveTimeout(_)
+            | Self::SetUln(_)
+            | Self::SetExecutor(_)
+            | Self::SetOptions(_) => CommandEffect::ChainMutation,
+        }
+    }
+}
+
+impl AuthorityCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::StellarBeginOwner(_)
+            | Self::StellarAcceptOwner(_)
+            | Self::StellarCancelOwner(_)
+            | Self::StellarSetDelegate(_)
+            | Self::EvmTransferOwner(_)
+            | Self::EvmSetDelegate(_) => CommandEffect::ChainMutation,
+        }
+    }
+}
+
+impl StellarCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::SetFee(_)
+            | Self::SetFeeDepositAddress(_)
+            | Self::SetMessageInspector(_)
+            | Self::SetRateLimit(_)
+            | Self::TtlSet(_)
+            | Self::TtlFreeze(_)
+            | Self::TtlExtendInstance(_)
+            | Self::EmergencyPause(_)
+            | Self::EmergencyUnpause(_)
+            | Self::RoleGrant(_)
+            | Self::RoleRevoke(_)
+            | Self::RoleSetAdmin(_) => CommandEffect::ChainMutation,
+        }
+    }
+}
+
+impl ContainCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::Inspect(_) => CommandEffect::LocalRead,
+            Self::Outbound(_) | Self::Restore(_) => CommandEffect::ChainMutation,
+        }
+    }
+}
+
+impl LegCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::Quote(_) => CommandEffect::LocalPrepare,
+            Self::Send(_) => CommandEffect::ChainMutation,
+        }
+    }
+}
+
+impl MessageCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::Watch(_) => CommandEffect::LocalRead,
+            Self::Recover(_) => CommandEffect::ChainMutation,
+        }
+    }
+}
+
+impl EvidenceCommand {
+    fn effect(&self) -> CommandEffect {
+        match self {
+            Self::Import(_) => CommandEffect::EvidenceWrite,
+        }
+    }
 }
 
 fn init(args: &InitArgs) -> Result<CommandData> {
     let desired = read_desired_precontext(&args.desired)?;
-    environment::classify(&desired.identity)?;
+    let environment = environment::classify(&desired.identity)?;
+    if let Some(network) = args.network.as_deref() {
+        let expected = match environment {
+            Environment::StellarTestnetSepolia => "stellar_testnet_sepolia",
+            Environment::StellarMainnetEthereum => "stellar_mainnet_ethereum",
+        };
+        if network != expected {
+            return Err(Error::InvalidInput(format!(
+                "network mismatch: {network} but identity binds {expected}"
+            )));
+        }
+    }
     if !args.write {
         return data(
             serde_json::json!({"preview": true, "desired_sha256": canonical_sha256(&desired)?}),
         );
     }
-    let (_, state) = RouteStore::create(&args.state, desired.clone())?;
+    environment::init_environment(
+        &desired.identity,
+        rpc_url(args.stellar_rpc_env.as_ref())?.as_deref(),
+        rpc_url(args.evm_rpc_env.as_ref())?.as_deref(),
+        true,
+    )?;
+    let (store, mut state) = RouteStore::create(&args.state, desired.clone())?;
+    // Route authority records: proposal construction binds owners from state.
+    state
+        .contracts
+        .insert("stellar_owner".into(), desired.stellar_owner.clone());
+    state
+        .contracts
+        .insert("stellar_delegate".into(), desired.stellar_delegate.clone());
+    state
+        .contracts
+        .insert("evm_owner".into(), desired.evm_owner.clone());
+    state
+        .contracts
+        .insert("evm_delegate".into(), desired.evm_delegate.clone());
+    store.save_state(&state)?;
     data(serde_json::to_value(state)?)
 }
 
@@ -750,7 +1007,19 @@ fn adopt(args: AdoptArgs) -> Result<CommandData> {
             serde_json::json!({"preview": true, "stellar_oft": args.stellar_oft, "evm_oft": args.evm_oft}),
         );
     }
-    let (store, mut state) = RouteStore::create(&args.state, desired)?;
+    let (store, mut state) = RouteStore::create(&args.state, desired.clone())?;
+    state
+        .contracts
+        .insert("stellar_owner".into(), desired.stellar_owner.clone());
+    state
+        .contracts
+        .insert("stellar_delegate".into(), desired.stellar_delegate.clone());
+    state
+        .contracts
+        .insert("evm_owner".into(), desired.evm_owner.clone());
+    state
+        .contracts
+        .insert("evm_delegate".into(), desired.evm_delegate.clone());
     state
         .contracts
         .insert("stellar_oft".into(), args.stellar_oft);
@@ -758,13 +1027,13 @@ fn adopt(args: AdoptArgs) -> Result<CommandData> {
     store.save_state(&state)?;
     data(serde_json::to_value(state)?)
 }
-
 fn operation(args: OperationArgs) -> Result<CommandData> {
     match args.command {
         OperationCommand::Draft(args) => {
             let store = RouteStore::open(&args.state)?;
             let state = store.load_state()?;
-            let operation: OperationV1 = read_json(&args.operation)?;
+            let value = read_json::<serde_json::Value>(&args.args)?;
+            let operation = draft_operation(&args.command, &value)?;
             let draft = OperationDraftV1 {
                 schema_name: "operation_draft".into(),
                 schema_version: SCHEMA_VERSION,
@@ -779,11 +1048,254 @@ fn operation(args: OperationArgs) -> Result<CommandData> {
     }
 }
 
+fn str_field(value: &serde_json::Value, name: &str) -> Result<String> {
+    value
+        .get(name)
+        .and_then(serde_json::Value::as_str)
+        .map(String::from)
+        .ok_or_else(|| Error::InvalidInput(format!("draft args: missing string field {name}")))
+}
+
+fn opt_str_field(value: &serde_json::Value, name: &str) -> Result<Option<String>> {
+    match value.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => Ok(Some(text.clone())),
+        Some(_) => Err(Error::InvalidInput(format!(
+            "draft args: field {name} must be a string or null"
+        ))),
+    }
+}
+fn num_field<T>(value: &serde_json::Value, name: &str) -> Result<T>
+where
+    T: TryFrom<u64>,
+{
+    let raw = value
+        .get(name)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| Error::InvalidInput(format!("draft args: missing numeric field {name}")))?;
+    T::try_from(raw)
+        .map_err(|_| Error::InvalidInput(format!("draft args: field {name} overflows its type")))
+}
+/// Closed dispatch from a kebab-case command name and checked JSON args to
+/// an OperationV1. No OperationV1 JSON is ever read directly.
+fn draft_operation(command: &str, value: &serde_json::Value) -> Result<OperationV1> {
+    match command {
+        "install-stellar-wasm" => Ok(OperationV1::InstallStellarWasm {
+            wasm_sha256: str_field(value, "wasm_sha256")?,
+        }),
+        "deploy-stellar-oft" => Ok(OperationV1::DeployStellarOft {
+            salt: str_field(value, "salt")?,
+        }),
+        "deploy-evm-oft" => Ok(OperationV1::DeployEvmOft {
+            deployer: str_field(value, "deployer")?,
+            nonce: num_field(value, "nonce")?,
+        }),
+        "begin-stellar-ownership-transfer" => Ok(OperationV1::BeginStellarOwnershipTransfer {
+            new_owner: str_field(value, "new_owner")?,
+            ttl: num_field(value, "ttl")?,
+        }),
+        "accept-stellar-ownership" => Ok(OperationV1::AcceptStellarOwnership),
+        "cancel-stellar-ownership-transfer" => Ok(OperationV1::CancelStellarOwnershipTransfer),
+        "transfer-evm-ownership" => Ok(OperationV1::TransferEvmOwnership {
+            new_owner: str_field(value, "new_owner")?,
+        }),
+        "set-stellar-delegate" => Ok(OperationV1::SetStellarDelegate {
+            delegate: str_field(value, "delegate")?,
+        }),
+        "set-evm-delegate" => Ok(OperationV1::SetEvmDelegate {
+            delegate: str_field(value, "delegate")?,
+        }),
+        "set-stellar-peer" => Ok(OperationV1::SetStellarPeer {
+            remote_eid: num_field(value, "remote_eid")?,
+            peer: str_field(value, "peer")?,
+        }),
+        "set-evm-peer" => Ok(OperationV1::SetEvmPeer {
+            remote_eid: num_field(value, "remote_eid")?,
+            peer: str_field(value, "peer")?,
+        }),
+        "set-stellar-send-library" => Ok(OperationV1::SetStellarSendLibrary {
+            remote_eid: num_field(value, "remote_eid")?,
+            library: str_field(value, "library")?,
+        }),
+        "set-stellar-receive-library" => Ok(OperationV1::SetStellarReceiveLibrary {
+            remote_eid: num_field(value, "remote_eid")?,
+            library: str_field(value, "library")?,
+            grace_period_seconds: num_field(value, "grace_period_seconds")?,
+        }),
+        "remove-stellar-receive-library-timeout" => {
+            Ok(OperationV1::RemoveStellarReceiveLibraryTimeout {
+                remote_eid: num_field(value, "remote_eid")?,
+            })
+        }
+        "set-evm-send-library" => Ok(OperationV1::SetEvmSendLibrary {
+            remote_eid: num_field(value, "remote_eid")?,
+            library: str_field(value, "library")?,
+        }),
+        "set-evm-receive-library" => Ok(OperationV1::SetEvmReceiveLibrary {
+            remote_eid: num_field(value, "remote_eid")?,
+            library: str_field(value, "library")?,
+            grace_period_seconds: num_field(value, "grace_period_seconds")?,
+        }),
+        "remove-evm-receive-library-timeout" => Ok(OperationV1::RemoveEvmReceiveLibraryTimeout {
+            remote_eid: num_field(value, "remote_eid")?,
+        }),
+        "set-stellar-uln-config" => Ok(OperationV1::SetStellarUlnConfig {
+            remote_eid: num_field(value, "remote_eid")?,
+            config_sha256: str_field(value, "config_sha256")?,
+        }),
+        "set-evm-uln-config" => Ok(OperationV1::SetEvmUlnConfig {
+            remote_eid: num_field(value, "remote_eid")?,
+            config_sha256: str_field(value, "config_sha256")?,
+        }),
+        _ => draft_operation_tail(command, value),
+    }
+}
+
+/// Second half of the closed draft dispatch (executor/economic/admin/
+/// containment commands).
+fn draft_operation_tail(command: &str, value: &serde_json::Value) -> Result<OperationV1> {
+    match command {
+        "set-stellar-executor-config" => Ok(OperationV1::SetStellarExecutorConfig {
+            remote_eid: num_field(value, "remote_eid")?,
+            config_sha256: str_field(value, "config_sha256")?,
+        }),
+        "set-evm-executor-config" => Ok(OperationV1::SetEvmExecutorConfig {
+            remote_eid: num_field(value, "remote_eid")?,
+            config_sha256: str_field(value, "config_sha256")?,
+        }),
+        "set-stellar-receive-options" => Ok(OperationV1::SetStellarReceiveOptions {
+            remote_eid: num_field(value, "remote_eid")?,
+            message_type: num_field(value, "message_type")?,
+            options: str_field(value, "options")?,
+        }),
+        "set-evm-receive-options" => Ok(OperationV1::SetEvmReceiveOptions {
+            remote_eid: num_field(value, "remote_eid")?,
+            message_type: num_field(value, "message_type")?,
+            options: str_field(value, "options")?,
+        }),
+        "set-default-fee" => Ok(OperationV1::SetDefaultFee {
+            bps: num_field(value, "bps")?,
+        }),
+        "set-destination-fee" => Ok(OperationV1::SetDestinationFee {
+            remote_eid: num_field(value, "remote_eid")?,
+            bps: num_field(value, "bps")?,
+        }),
+        "set-fee-recipient" => Ok(OperationV1::SetFeeRecipient {
+            recipient: str_field(value, "recipient")?,
+        }),
+        "set-message-inspector" => Ok(OperationV1::SetMessageInspector {
+            inspector: opt_str_field(value, "inspector")?,
+        }),
+        "set-inbound-rate-limit" => Ok(OperationV1::SetInboundRateLimit {
+            remote_eid: num_field(value, "remote_eid")?,
+            limit_raw: num_field(value, "limit_raw")?,
+            window_seconds: num_field(value, "window_seconds")?,
+            mode: str_field(value, "mode")?,
+        }),
+        "set-outbound-rate-limit" => Ok(OperationV1::SetOutboundRateLimit {
+            remote_eid: num_field(value, "remote_eid")?,
+            limit_raw: num_field(value, "limit_raw")?,
+            window_seconds: num_field(value, "window_seconds")?,
+            mode: str_field(value, "mode")?,
+        }),
+        _ => draft_operation_admin(command, value),
+    }
+}
+
+/// Third half of the closed draft dispatch (ttl/role/recovery/containment).
+fn draft_operation_admin(command: &str, value: &serde_json::Value) -> Result<OperationV1> {
+    match command {
+        "pause-emergency" => Ok(OperationV1::PauseEmergency),
+        "unpause-emergency" => Ok(OperationV1::UnpauseEmergency),
+        "set-ttl-config" => Ok(OperationV1::SetTtlConfig {
+            instance_threshold: num_field(value, "instance_threshold")?,
+            instance_extend_to: num_field(value, "instance_extend_to")?,
+            persistent_threshold: num_field(value, "persistent_threshold")?,
+            persistent_extend_to: num_field(value, "persistent_extend_to")?,
+        }),
+        "freeze-ttl-config" => Ok(OperationV1::FreezeTtlConfig {
+            acknowledgement: str_field(value, "acknowledgement")?,
+        }),
+        "extend-instance-ttl" => Ok(OperationV1::ExtendInstanceTtl {
+            ledgers: num_field(value, "ledgers")?,
+        }),
+        "grant-role" => Ok(OperationV1::GrantRole {
+            role: str_field(value, "role")?,
+            address: str_field(value, "address")?,
+        }),
+        "revoke-role" => Ok(OperationV1::RevokeRole {
+            role: str_field(value, "role")?,
+            address: str_field(value, "address")?,
+        }),
+        "set-role-admin" => Ok(OperationV1::SetRoleAdmin {
+            role: str_field(value, "role")?,
+            admin_role: str_field(value, "admin_role")?,
+        }),
+        "remove-role-admin" => Ok(OperationV1::RemoveRoleAdmin {
+            role: str_field(value, "role")?,
+            admin_role: str_field(value, "admin_role")?,
+        }),
+        "send-leg" => Ok(OperationV1::SendLeg {
+            intent_sha256: str_field(value, "intent_sha256")?,
+        }),
+        "commit-verification" => Ok(OperationV1::CommitVerification {
+            vm: match str_field(value, "vm")?.as_str() {
+                "stellar" => Vm::Stellar,
+                "evm" => Vm::Evm,
+                other => {
+                    return Err(Error::InvalidInput(format!(
+                        "draft args: unknown vm {other}"
+                    )))
+                }
+            },
+            guid: str_field(value, "guid")?,
+            packet_sha256: str_field(value, "packet_sha256")?,
+        }),
+        "execute-receive" => Ok(OperationV1::ExecuteReceive {
+            vm: match str_field(value, "vm")?.as_str() {
+                "stellar" => Vm::Stellar,
+                "evm" => Vm::Evm,
+                other => {
+                    return Err(Error::InvalidInput(format!(
+                        "draft args: unknown vm {other}"
+                    )))
+                }
+            },
+            guid: str_field(value, "guid")?,
+            packet_sha256: str_field(value, "packet_sha256")?,
+        }),
+        "contain-outbound" => Ok(OperationV1::ContainOutbound {
+            direction: match str_field(value, "direction")?.as_str() {
+                "stellar_to_evm" => Direction::StellarToEvm,
+                "evm_to_stellar" => Direction::EvmToStellar,
+                other => {
+                    return Err(Error::InvalidInput(format!(
+                        "draft args: unknown direction {other}"
+                    )))
+                }
+            },
+        }),
+        "restore-outbound" => Ok(OperationV1::RestoreOutbound {
+            snapshot_sha256: str_field(value, "snapshot_sha256")?,
+        }),
+        "restore-footprint" => Ok(OperationV1::RestoreFootprint {
+            original_operation_sha256: str_field(value, "original_operation_sha256")?,
+        }),
+        other => Err(Error::InvalidInput(format!(
+            "unknown draft command {other}"
+        ))),
+    }
+}
+
 fn proposal(args: ProposalArgs) -> Result<CommandData> {
     match args.command {
-        ProposalCommand::Create(args) => {
-            crate::governance::create_proposal(&args.state, &args.draft, &args.out)
-        }
+        ProposalCommand::Create(args) => crate::governance::create_proposal(
+            &args.state,
+            &args.draft,
+            &args.out,
+            rpc_url(args.stellar_rpc_env.as_ref())?.as_deref(),
+            rpc_url(args.evm_rpc_env.as_ref())?.as_deref(),
+        ),
         ProposalCommand::Ingest(args) => crate::governance::ingest_proposal(
             &args.state,
             &args.proposal,
@@ -811,28 +1323,84 @@ fn proposal(args: ProposalArgs) -> Result<CommandData> {
 fn artifact(args: ArtifactArgs) -> Result<CommandData> {
     match args.command {
         ArtifactCommand::Verify(args) => crate::artifacts::verify_command(&args.state),
-        ArtifactCommand::Build(args) => {
-            crate::artifacts::build_command(&args.state, &args.out_dir, args.write)
-        }
+        ArtifactCommand::Build(args) => crate::artifacts::build_command(
+            &args.state,
+            &args.out_dir,
+            args.write,
+            args.deps_archive.as_deref(),
+        ),
     }
 }
 
 fn asset(args: AssetArgs) -> Result<CommandData> {
     match args.command {
-        AssetCommand::Wrap(args) => {
-            let kind: AssetKind = args.asset_kind.into();
-            if kind == AssetKind::Usdc || crate::domain::is_known_usdc(&args.asset) {
-                return Err(Error::Policy("unsupported_use_cctp".into()));
-            }
-            let state = args.state.ok_or_else(|| {
-                Error::InvalidInput("--state is required for non-USDC assets".into())
-            })?;
-            let operation = OperationV1::DeployStellarOft {
-                salt: canonical_sha256(&(args.asset, args.name, args.symbol))?,
-            };
-            chain_effect(&state, operation, args.effect)
-        }
+        AssetCommand::Wrap(args) => wrap(args),
     }
+}
+
+fn wrap(args: WrapArgs) -> Result<CommandData> {
+    // Pre-dispatch USDC boundary before any state, artifact, or signer access.
+    let kind: AssetKind = args.asset_kind.into();
+    if kind == AssetKind::Usdc || crate::domain::is_known_usdc(&args.asset) {
+        return Err(Error::Policy("unsupported_use_cctp".into()));
+    }
+    let desired = read_desired_precontext(&args.desired)?;
+    let store = RouteStore::open(&args.state)?;
+    let state = store.load_state()?;
+    if state.asset.kind != kind || state.asset.asset_id != args.asset {
+        return Err(Error::InvalidInput(
+            "wrap asset must equal the bound route asset".into(),
+        ));
+    }
+    if desired.route_id != state.route_id || canonical_sha256(&desired)? != state.desired_sha256 {
+        return Err(Error::Conflict(
+            "desired route does not bind to this route state".into(),
+        ));
+    }
+    let require_evidence =
+        environment::classify(&state.identity)? == Environment::StellarMainnetEthereum;
+    let nonce = if let Some(nonce) = args.evm_nonce {
+        nonce
+    } else {
+        let url = rpc_url(args.effect.evm_rpc_env.as_ref())?.ok_or_else(|| {
+            Error::InvalidInput(
+                "live_environment_required: EVM RPC URL is required without --evm-nonce".into(),
+            )
+        })?;
+        let evm = crate::evm::HttpEvmChain::new(&url)?;
+        let deployer = crate::evm::parse_address(&desired.evm_owner)?;
+        crate::block_on_result(evm.account_nonce(deployer))?
+    };
+    let plan = crate::wrap::plan_wrap(
+        &desired,
+        &state.desired_sha256,
+        &args.name,
+        &args.symbol,
+        nonce,
+        require_evidence,
+    )?;
+    if args.effect.execute {
+        return Err(Error::Chain(
+            "wrap execution requires a qualified live adapter; use --proposal-out".into(),
+        ));
+    }
+    if let Some(out) = args.effect.proposal_out {
+        // v1 emits a proposal for the first plan node; the remaining nodes
+        // are driven by the granular commands in plan order.
+        let first = plan
+            .operations
+            .first()
+            .cloned()
+            .ok_or_else(|| Error::InvalidInput("wrap plan has no operations".into()))?;
+        return crate::governance::proposal_for_operation(
+            &args.state,
+            &first,
+            &out,
+            rpc_url(args.effect.stellar_rpc_env.as_ref())?.as_deref(),
+            rpc_url(args.effect.evm_rpc_env.as_ref())?.as_deref(),
+        );
+    }
+    data(serde_json::to_value(&plan)?)
 }
 
 fn route(args: RouteArgs) -> Result<CommandData> {
@@ -846,7 +1414,7 @@ fn route(args: RouteArgs) -> Result<CommandData> {
                 Vm::Stellar => OperationV1::SetStellarPeer { remote_eid, peer },
                 Vm::Evm => OperationV1::SetEvmPeer { remote_eid, peer },
             };
-            chain_effect(&args.state, operation, args.effect)
+            chain_effect(&args.state, &operation, args.effect)
         }
         RouteCommand::SetLibrary(args) => {
             let direction = match args.direction.as_str() {
@@ -865,7 +1433,7 @@ fn route(args: RouteArgs) -> Result<CommandData> {
                 args.library,
                 args.grace_period_seconds,
             )?;
-            chain_effect(&args.state, operation, args.effect)
+            chain_effect(&args.state, &operation, args.effect)
         }
         RouteCommand::RemoveReceiveTimeout(args) => {
             let remote_eid = args.remote_eid;
@@ -873,7 +1441,7 @@ fn route(args: RouteArgs) -> Result<CommandData> {
                 Vm::Stellar => OperationV1::RemoveStellarReceiveLibraryTimeout { remote_eid },
                 Vm::Evm => OperationV1::RemoveEvmReceiveLibraryTimeout { remote_eid },
             };
-            chain_effect(&args.state, operation, args.effect)
+            chain_effect(&args.state, &operation, args.effect)
         }
         RouteCommand::SetUln(args) => config_hash_effect(args, true),
         RouteCommand::SetExecutor(args) => config_hash_effect(args, false),
@@ -893,7 +1461,7 @@ fn route(args: RouteArgs) -> Result<CommandData> {
                     options,
                 },
             };
-            chain_effect(&args.state, operation, args.effect)
+            chain_effect(&args.state, &operation, args.effect)
         }
     }
 }
@@ -902,42 +1470,65 @@ fn generic_authority(args: AuthorityArgs) -> Result<CommandData> {
     match args.command {
         AuthorityCommand::StellarBeginOwner(a) => chain_effect(
             &a.state,
-            OperationV1::BeginStellarOwnershipTransfer {
+            &OperationV1::BeginStellarOwnershipTransfer {
                 new_owner: a.new_owner,
                 ttl: a.ttl,
             },
             a.effect,
         ),
         AuthorityCommand::StellarAcceptOwner(a) => {
-            chain_effect(&a.state, OperationV1::AcceptStellarOwnership, a.effect)
+            chain_effect(&a.state, &OperationV1::AcceptStellarOwnership, a.effect)
         }
         AuthorityCommand::StellarCancelOwner(a) => chain_effect(
             &a.state,
-            OperationV1::CancelStellarOwnershipTransfer,
+            &OperationV1::CancelStellarOwnershipTransfer,
             a.effect,
         ),
         AuthorityCommand::StellarSetDelegate(a) => chain_effect(
             &a.state,
-            OperationV1::SetStellarDelegate {
+            &OperationV1::SetStellarDelegate {
                 delegate: a.delegate,
             },
             a.effect,
         ),
         AuthorityCommand::EvmTransferOwner(a) => chain_effect(
             &a.state,
-            OperationV1::TransferEvmOwnership {
+            &OperationV1::TransferEvmOwnership {
                 new_owner: a.new_owner,
             },
             a.effect,
         ),
         AuthorityCommand::EvmSetDelegate(a) => chain_effect(
             &a.state,
-            OperationV1::SetEvmDelegate {
+            &OperationV1::SetEvmDelegate {
                 delegate: a.delegate,
             },
             a.effect,
         ),
     }
+}
+
+fn chain_effect(
+    state_path: &Path,
+    operation: &OperationV1,
+    effect: ChainEffectArgs,
+) -> Result<CommandData> {
+    let store = RouteStore::open(state_path)?;
+    let state = store.load_state()?;
+    environment::require_testnet(&state.identity)?;
+    if !effect.execute && effect.proposal_out.is_none() {
+        return data(serde_json::json!({"preview": true, "operation": operation}));
+    }
+    if let Some(out) = effect.proposal_out {
+        return crate::governance::proposal_for_operation(
+            state_path,
+            operation,
+            &out,
+            rpc_url(effect.stellar_rpc_env.as_ref())?.as_deref(),
+            rpc_url(effect.evm_rpc_env.as_ref())?.as_deref(),
+        );
+    }
+    Err(Error::Chain("native execution requires a qualified live adapter; use --proposal-out until qualification succeeds".into()))
 }
 
 fn generic_stellar(args: StellarArgs) -> Result<CommandData> {
@@ -950,18 +1541,18 @@ fn generic_stellar(args: StellarArgs) -> Result<CommandData> {
                 },
                 None => OperationV1::SetDefaultFee { bps: a.bps },
             };
-            chain_effect(&a.state, operation, a.effect)
+            chain_effect(&a.state, &operation, a.effect)
         }
         StellarCommand::SetFeeDepositAddress(a) => chain_effect(
             &a.state,
-            OperationV1::SetFeeRecipient {
+            &OperationV1::SetFeeRecipient {
                 recipient: a.recipient,
             },
             a.effect,
         ),
         StellarCommand::SetMessageInspector(a) => chain_effect(
             &a.state,
-            OperationV1::SetMessageInspector {
+            &OperationV1::SetMessageInspector {
                 inspector: a.inspector,
             },
             a.effect,
@@ -985,11 +1576,11 @@ fn generic_stellar(args: StellarArgs) -> Result<CommandData> {
                     mode,
                 },
             };
-            chain_effect(&a.state, operation, a.effect)
+            chain_effect(&a.state, &operation, a.effect)
         }
         StellarCommand::TtlSet(a) => chain_effect(
             &a.state,
-            OperationV1::SetTtlConfig {
+            &OperationV1::SetTtlConfig {
                 instance_threshold: a.instance_threshold,
                 instance_extend_to: a.instance_extend_to,
                 persistent_threshold: a.persistent_threshold,
@@ -999,25 +1590,25 @@ fn generic_stellar(args: StellarArgs) -> Result<CommandData> {
         ),
         StellarCommand::TtlFreeze(a) => chain_effect(
             &a.state,
-            OperationV1::FreezeTtlConfig {
+            &OperationV1::FreezeTtlConfig {
                 acknowledgement: "typed".into(),
             },
             a.effect,
         ),
         StellarCommand::TtlExtendInstance(a) => chain_effect(
             &a.state,
-            OperationV1::ExtendInstanceTtl { ledgers: a.ledgers },
+            &OperationV1::ExtendInstanceTtl { ledgers: a.ledgers },
             a.effect,
         ),
         StellarCommand::EmergencyPause(a) => {
-            chain_effect(&a.state, OperationV1::PauseEmergency, a.effect)
+            chain_effect(&a.state, &OperationV1::PauseEmergency, a.effect)
         }
         StellarCommand::EmergencyUnpause(a) => {
-            chain_effect(&a.state, OperationV1::UnpauseEmergency, a.effect)
+            chain_effect(&a.state, &OperationV1::UnpauseEmergency, a.effect)
         }
         StellarCommand::RoleGrant(a) => chain_effect(
             &a.state,
-            OperationV1::GrantRole {
+            &OperationV1::GrantRole {
                 role: a.role,
                 address: a.address,
             },
@@ -1025,7 +1616,7 @@ fn generic_stellar(args: StellarArgs) -> Result<CommandData> {
         ),
         StellarCommand::RoleRevoke(a) => chain_effect(
             &a.state,
-            OperationV1::RevokeRole {
+            &OperationV1::RevokeRole {
                 role: a.role,
                 address: a.address,
             },
@@ -1034,7 +1625,7 @@ fn generic_stellar(args: StellarArgs) -> Result<CommandData> {
 
         StellarCommand::RoleSetAdmin(a) => chain_effect(
             &a.state,
-            OperationV1::SetRoleAdmin {
+            &OperationV1::SetRoleAdmin {
                 role: a.role,
                 admin_role: a.admin_role,
             },
@@ -1081,6 +1672,25 @@ fn library_operation(
 }
 
 fn config_hash_effect(args: ConfigHashArgs, uln: bool) -> Result<CommandData> {
+    if uln {
+        match args.direction.as_deref() {
+            Some("send" | "receive") => {}
+            Some(other) => {
+                return Err(Error::InvalidInput(format!(
+                    "uln direction must be send or receive, got {other}"
+                )))
+            }
+            None => {
+                return Err(Error::InvalidInput(
+                    "set-uln requires --direction send|receive".into(),
+                ))
+            }
+        }
+    } else if args.direction.is_some() {
+        return Err(Error::InvalidInput(
+            "set-executor has no --direction".into(),
+        ));
+    }
     let hash = file_sha256(&args.config)?;
     let remote_eid = args.remote_eid;
     let config_sha256 = hash;
@@ -1102,22 +1712,31 @@ fn config_hash_effect(args: ConfigHashArgs, uln: bool) -> Result<CommandData> {
             config_sha256,
         },
     };
-    chain_effect(&args.state, operation, args.effect)
+    chain_effect(&args.state, &operation, args.effect)
 }
 
 fn contain(args: ContainArgs) -> Result<CommandData> {
     match args.command {
         ContainCommand::Inspect(args) => crate::layerzero::containment_status(&args.state),
-        ContainCommand::Outbound(args) => chain_effect(
-            &args.state,
-            OperationV1::ContainOutbound {
-                direction: args.direction.into(),
-            },
-            args.effect,
-        ),
+        ContainCommand::Outbound(args) => {
+            if let Some(limit) = args.limit_raw {
+                if limit != 0 {
+                    return Err(Error::InvalidInput(
+                        "v1 containment is zero-cap only: --limit-raw must be 0".into(),
+                    ));
+                }
+            }
+            chain_effect(
+                &args.state,
+                &OperationV1::ContainOutbound {
+                    direction: args.direction.into(),
+                },
+                args.effect,
+            )
+        }
         ContainCommand::Restore(args) => chain_effect(
             &args.state,
-            OperationV1::RestoreOutbound {
+            &OperationV1::RestoreOutbound {
                 snapshot_sha256: args.snapshot,
             },
             args.effect,
@@ -1140,13 +1759,25 @@ fn leg(args: LegArgs) -> Result<CommandData> {
             args.allow_additional_obligation,
             args.effect.execute,
             args.effect.proposal_out.as_deref(),
+            rpc_url(args.effect.stellar_rpc_env.as_ref())?.as_deref(),
+            rpc_url(args.effect.evm_rpc_env.as_ref())?.as_deref(),
         ),
     }
 }
 
 fn message(args: MessageArgs) -> Result<CommandData> {
     match args.command {
-        MessageCommand::Watch(args) => crate::canary::watch(&args.state, &args.guid),
+        MessageCommand::Watch(args) => {
+            match args.until.as_deref() {
+                None | Some("terminal") => {}
+                Some(other) => {
+                    return Err(Error::InvalidInput(format!(
+                        "watch --until accepts only terminal, got {other}"
+                    )))
+                }
+            }
+            crate::canary::watch(&args.state, &args.guid)
+        }
         MessageCommand::Recover(args) => crate::canary::recover(
             &args.state,
             &args.guid,
@@ -1162,23 +1793,6 @@ fn evidence(args: EvidenceArgs) -> Result<CommandData> {
             crate::canary::import_evidence(&args.state, &args.bundle, args.write)
         }
     }
-}
-
-fn chain_effect(
-    state_path: &Path,
-    operation: OperationV1,
-    effect: ChainEffectArgs,
-) -> Result<CommandData> {
-    let store = RouteStore::open(state_path)?;
-    let state = store.load_state()?;
-    environment::require_testnet(&state.identity)?;
-    if !effect.execute && effect.proposal_out.is_none() {
-        return data(serde_json::json!({"preview": true, "operation": operation}));
-    }
-    if let Some(out) = effect.proposal_out {
-        return crate::governance::proposal_for_operation(state_path, operation, &out);
-    }
-    Err(Error::Chain("native execution requires a qualified live adapter; use --proposal-out until qualification succeeds".into()))
 }
 
 fn draft_config(state_path: &Path, out: &Path) -> Result<CommandData> {

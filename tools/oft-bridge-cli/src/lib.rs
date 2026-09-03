@@ -13,8 +13,11 @@ pub mod process;
 pub mod reconcile;
 pub mod state;
 pub mod stellar;
+pub mod wrap;
 
+use std::future::Future;
 use std::process::ExitCode;
+use std::sync::LazyLock;
 
 use clap::Parser as _;
 
@@ -23,18 +26,49 @@ use crate::{cli::Cli, error::Error};
 pub fn main_entry() -> ExitCode {
     let cli = Cli::parse();
     let command = cli.command_name();
+    let effect = cli.effect();
     match cli.run() {
-        Ok(data) => match output::success(&command, data) {
+        Ok(data) => match output::success(&command, effect, data) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => error.exit_code(),
         },
         Err(error) => {
-            if let Err(output_error) = output::failure(&command, &error) {
+            if let Err(output_error) = output::failure(&command, effect, &error) {
                 eprintln!("failed to emit error envelope: {output_error}");
             }
             error.exit_code()
         }
     }
+}
+
+/// Runs one adapter future on the shared crate runtime. Only adapter reads
+/// use this; no command holds a runtime across user interaction.
+pub(crate) fn block_on<F: Future>(future: F) -> error::Result<F::Output> {
+    static RUNTIME: LazyLock<error::Result<tokio::runtime::Runtime>> = LazyLock::new(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .map_err(|error| error::Error::Chain(format!("tokio runtime unavailable: {error}")))
+    });
+    match &*RUNTIME {
+        Ok(runtime) => Ok(runtime.block_on(future)),
+        Err(_) => Err(error::Error::Chain("tokio runtime unavailable".into())),
+    }
+}
+
+/// Runs an adapter future whose output is already a crate [`Result`],
+/// flattening the nested boundary in one place.
+pub(crate) fn block_on_result<T, F>(future: F) -> error::Result<T>
+where
+    F: Future<Output = error::Result<T>>,
+{
+    block_on(future).and_then(|inner| inner)
+}
+
+/// Canonical JSON bytes for hashing boundaries.
+pub(crate) fn canonical_bytes<T: serde::Serialize>(value: &T) -> error::Result<Vec<u8>> {
+    Ok(serde_json_canonicalizer::to_vec(value)?)
 }
 
 pub fn canonical_sha256<T: serde::Serialize>(value: &T) -> error::Result<String> {

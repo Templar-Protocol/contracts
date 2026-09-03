@@ -10,7 +10,10 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{
     canonical_sha256,
-    domain::{ArtifactRefV1, DesiredRouteV1, RouteStateV1, SCHEMA_VERSION},
+    domain::{
+        ArtifactRefV1, DesiredRouteV1, MessageRecordV1, MessageStageV1, MessageStatusEventV1,
+        RouteStateV1, SCHEMA_VERSION,
+    },
     error::{Error, Result},
 };
 
@@ -137,6 +140,7 @@ impl RouteStore {
         validate_relative_file(&state.messages_log)?;
         validate_relative_file(&state.lock_file)?;
         store.verify_log::<OperationEventV1>(&state.operations_log, "operations")?;
+        store.verify_log::<MessageRecordV1>(&state.messages_log, "messages")?;
         Ok(store)
     }
 
@@ -167,6 +171,116 @@ impl RouteStore {
             payload,
             companion_artifact_sha256,
         )
+    }
+
+    /// Appends a brand-new packet record. Identity is the append-only key
+    /// `(source_eid, sender, nonce, guid)`; duplicates are conflicts.
+    pub fn append_message(&self, mut record: MessageRecordV1) -> Result<()> {
+        if record.status_events.is_empty() {
+            return Err(Error::InvalidInput(
+                "message record requires an initial status event".into(),
+            ));
+        }
+        if record
+            .status_events
+            .iter()
+            .any(|event| event.stage == MessageStageV1::Reobserved)
+        {
+            return Err(Error::InvalidInput(
+                "initial message status must be an observed stage, not reobserved".into(),
+            ));
+        }
+        if record.packet_sha256.trim().is_empty() || record.payload_sha256.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "message record requires packet and payload digests".into(),
+            ));
+        }
+        if self.find_message(&record.identity())?.is_some() {
+            return Err(Error::Conflict(format!(
+                "message identity already recorded: guid {}",
+                record.guid
+            )));
+        }
+        record.schema_name = "message_record".into();
+        record.schema_version = SCHEMA_VERSION;
+        self.append_log(MESSAGES_FILE, "messages", record, None)?;
+        Ok(())
+    }
+
+    /// Appends a status event to an existing packet. The ledger is
+    /// append-only: history is never rewritten, the event lands as a new
+    /// chained record carrying the updated snapshot. Immutable fields
+    /// (packet/payload/config digests, amounts, coordinates) must not change.
+    pub fn append_message_event(
+        &self,
+        identity: &(u32, String, String, String),
+        event: MessageStatusEventV1,
+    ) -> Result<()> {
+        let mut latest = self
+            .find_message(identity)?
+            .ok_or_else(|| Error::Conflict("message identity not recorded".into()))?;
+        let last = &latest
+            .status_events
+            .last()
+            .ok_or_else(|| Error::Custody("recorded message lacks status events".into()))?
+            .stage;
+        if event.stage != MessageStageV1::Reobserved && &event.stage <= last {
+            return Err(Error::InvalidInput(format!(
+                "non-monotonic message status {:?} after {:?}",
+                event.stage, last
+            )));
+        }
+        latest.status_events.push(event);
+        self.append_log(MESSAGES_FILE, "messages", latest, None)?;
+        Ok(())
+    }
+
+    /// Loads every packet record folded to its latest snapshot, verifying the
+    /// hash chain and identity uniqueness across history.
+    pub fn load_messages(&self) -> Result<Vec<MessageRecordV1>> {
+        let records = self.verify_log::<MessageRecordV1>(Path::new(MESSAGES_FILE), "messages")?;
+        let mut folded: Vec<MessageRecordV1> = Vec::new();
+        for record in records {
+            let payload = record.payload;
+            match folded
+                .iter()
+                .position(|existing| existing.identity() == payload.identity())
+            {
+                Some(index) => {
+                    let existing = &folded[index];
+                    if existing.packet_sha256 != payload.packet_sha256
+                        || existing.payload_sha256 != payload.payload_sha256
+                        || existing.config_snapshot_sha256 != payload.config_snapshot_sha256
+                        || existing.amount_raw != payload.amount_raw
+                        || existing.source_transaction != payload.source_transaction
+                    {
+                        return Err(Error::Custody(format!(
+                            "immutable fields changed for guid {}",
+                            payload.guid
+                        )));
+                    }
+                    if payload.status_events.len() != existing.status_events.len() + 1 {
+                        return Err(Error::Custody(format!(
+                            "status history is not append-only for guid {}",
+                            payload.guid
+                        )));
+                    }
+                    folded[index] = payload;
+                }
+                None => folded.push(payload),
+            }
+        }
+        Ok(folded)
+    }
+
+    fn find_message(
+        &self,
+        identity: &(u32, String, String, String),
+    ) -> Result<Option<MessageRecordV1>> {
+        Ok(self
+            .load_messages()?
+            .into_iter()
+            .find(|record| &record.identity() == identity))
     }
 
     pub fn write_proposal<T: Serialize>(

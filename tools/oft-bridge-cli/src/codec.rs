@@ -63,6 +63,77 @@ pub fn bytes32_to_strkey_contract(bytes: &[u8; BYTES32_LEN]) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Stellar contract address derivation (official XDR preimage rules)
+// ---------------------------------------------------------------------------
+
+/// Hashes an official `HashIdPreimage` to the 32-byte contract identifier.
+fn contract_id_from_preimage(preimage: &stellar_baselib::xdr::HashIdPreimage) -> Result<[u8; 32]> {
+    use sha2::Digest as _;
+    use stellar_baselib::xdr::{Limits, WriteXdr};
+    let encoded = preimage
+        .to_xdr(Limits::none())
+        .map_err(|error| Error::InvalidInput(format!("xdr encode failed: {error}")))?;
+    let digest = sha2::Sha256::digest(encoded);
+    let mut bytes = [0u8; 32];
+    bytes.copy_from_slice(&digest);
+    Ok(bytes)
+}
+
+/// Deterministic native SAC contract identifier for `passphrase`:
+/// `SHA-256(HashIdPreimage::ContractId { network_id, Asset::Native })`.
+pub fn derive_native_sac_contract(passphrase: &str) -> Result<String> {
+    use sha2::Digest as _;
+    use stellar_baselib::xdr::{
+        Asset, ContractIdPreimage, Hash, HashIdPreimage, HashIdPreimageContractId,
+    };
+    if passphrase.trim().is_empty() {
+        return Err(Error::InvalidInput(
+            "network passphrase must not be empty".into(),
+        ));
+    }
+    let network_id: [u8; 32] = sha2::Sha256::digest(passphrase.as_bytes()).into();
+    let id = contract_id_from_preimage(&HashIdPreimage::ContractId(HashIdPreimageContractId {
+        network_id: Hash(network_id),
+        contract_id_preimage: ContractIdPreimage::Asset(Asset::Native),
+    }))?;
+    bytes32_to_strkey_contract(&id)
+}
+
+/// Deterministic `create_contract_v2` address for `deployer` (`G...`) and a
+/// 32-byte salt: `SHA-256(HashIdPreimage::ContractId { network_id,
+/// FromAddress(ScAddress::Account(deployer), salt) })`.
+pub fn derive_stellar_contract_address(
+    passphrase: &str,
+    deployer: &str,
+    salt: &[u8; 32],
+) -> Result<String> {
+    use sha2::Digest as _;
+    use stellar_baselib::xdr::{
+        AccountId, ContractIdPreimage, ContractIdPreimageFromAddress, Hash, HashIdPreimage,
+        HashIdPreimageContractId, PublicKey, ScAddress, Uint256,
+    };
+    let deployer_bytes = match Strkey::from_str(deployer) {
+        Ok(Strkey::PublicKeyEd25519(key)) => key.0,
+        _ => {
+            return Err(Error::InvalidInput(
+                "deployer must be a classic Stellar account (G...)".into(),
+            ))
+        }
+    };
+    let network_id: [u8; 32] = sha2::Sha256::digest(passphrase.as_bytes()).into();
+    let id = contract_id_from_preimage(&HashIdPreimage::ContractId(HashIdPreimageContractId {
+        network_id: Hash(network_id),
+        contract_id_preimage: ContractIdPreimage::Address(ContractIdPreimageFromAddress {
+            address: ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+                deployer_bytes,
+            )))),
+            salt: Uint256(*salt),
+        }),
+    }))?;
+    bytes32_to_strkey_contract(&id)
+}
+
+// ---------------------------------------------------------------------------
 // EVM address <-> bytes32
 // ---------------------------------------------------------------------------
 

@@ -336,3 +336,154 @@ pub fn containment_status(state: &std::path::Path) -> Result<crate::output::Comm
         artifact: None,
     })
 }
+
+fn calldata_word_u32(value: u32) -> Vec<u8> {
+    let mut word = vec![0u8; 32];
+    word[28..32].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn calldata_word_u64(value: u64) -> Vec<u8> {
+    let mut word = vec![0u8; 32];
+    word[24..32].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn calldata_word_u16(value: u16) -> Vec<u8> {
+    let mut word = vec![0u8; 32];
+    word[30..32].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn calldata_selector(signature: &str) -> Vec<u8> {
+    crate::evm::keccak256_of(signature.as_bytes())[..4].to_vec()
+}
+
+fn calldata_word_address(address: &str) -> Result<Vec<u8>> {
+    let parsed = crate::evm::parse_address(address)?;
+    let mut word = vec![0u8; 12];
+    word.extend_from_slice(parsed.as_slice());
+    Ok(word)
+}
+
+fn calldata_word_peer(peer: &str) -> Result<Vec<u8>> {
+    let hex_body = peer
+        .strip_prefix("0x")
+        .ok_or_else(|| Error::InvalidInput("peer must be 0x-prefixed".into()))?;
+    // A peer is the full LayerZero bytes32: either a raw 32-byte value
+    // (Stellar contract) or a 20-byte EVM address left-padded.
+    match hex_body.len() {
+        64 => hex::decode(hex_body)
+            .map_err(|error| Error::InvalidInput(format!("invalid peer hex: {error}"))),
+        40 => Ok(calldata_word_address(peer)?),
+        other => Err(Error::InvalidInput(format!(
+            "peer must be 40 or 64 hex characters, got {other}"
+        ))),
+    }
+}
+fn calldata_bytes_element(data: &[u8]) -> Vec<u8> {
+    let mut element = vec![0u8; 24];
+    element.extend_from_slice(&(data.len() as u64).to_be_bytes());
+    element.extend_from_slice(data);
+    let padding = (32 - data.len() % 32) % 32;
+    element.extend(std::iter::repeat_n(0u8, padding));
+    element
+}
+
+/// Encodes the typed EVM calldata for an operation. Selectors are computed
+/// at runtime from canonical signatures. Config-hash operations and
+/// deployment/restore operations have no honest single-call encoding in v1
+/// and fail closed.
+pub fn encode_calldata(operation: &OperationV1) -> Result<Vec<u8>> {
+    match operation {
+        OperationV1::SetEvmPeer { remote_eid, peer } => {
+            let mut calldata = calldata_selector("setPeer(uint32,bytes32)");
+            calldata.extend(calldata_word_u32(*remote_eid));
+            calldata.extend(calldata_word_peer(peer)?);
+            Ok(calldata)
+        }
+        OperationV1::SetEvmSendLibrary {
+            remote_eid,
+            library,
+        } => {
+            let mut calldata = calldata_selector("setSendLibrary(uint32,address)");
+            calldata.extend(calldata_word_u32(*remote_eid));
+            calldata.extend(calldata_word_address(library)?);
+            Ok(calldata)
+        }
+        OperationV1::SetEvmReceiveLibrary {
+            remote_eid,
+            library,
+            grace_period_seconds,
+        } => {
+            let mut calldata = calldata_selector("setReceiveLibrary(uint32,address,uint256)");
+            calldata.extend(calldata_word_u32(*remote_eid));
+            calldata.extend(calldata_word_address(library)?);
+            calldata.extend(calldata_word_u64(*grace_period_seconds));
+            Ok(calldata)
+        }
+        OperationV1::RemoveEvmReceiveLibraryTimeout { remote_eid } => {
+            let mut calldata = calldata_selector("removeReceiveLibraryTimeout(uint32)");
+            calldata.extend(calldata_word_u32(*remote_eid));
+            Ok(calldata)
+        }
+        OperationV1::SetEvmReceiveOptions {
+            remote_eid,
+            message_type,
+            options,
+        } => {
+            let options_hex = options.strip_prefix("0x").unwrap_or(options).trim();
+            if options_hex.is_empty() {
+                return Err(Error::InvalidInput(
+                    "enforced options must not be empty".into(),
+                ));
+            }
+            let decoded = hex::decode(options_hex)
+                .map_err(|error| Error::InvalidInput(format!("invalid options hex: {error}")))?;
+            if decoded.len() < 2 {
+                return Err(Error::InvalidInput(
+                    "enforced options must carry at least a worker id and size".into(),
+                ));
+            }
+            // Official IOAppOptionsType3:
+            // setEnforcedOptions(EnforcedOptionParam[]) with
+            // EnforcedOptionParam = (uint32 eid, uint16 msgType, bytes options).
+            let mut calldata = calldata_selector("setEnforcedOptions((uint32,uint16,bytes)[])");
+            // Head: single dynamic argument offset.
+            calldata.extend(calldata_word_u64(32));
+            // Array body: length 1, then the element offset relative to the
+            // array body start.
+            calldata.extend(calldata_word_u64(1));
+            calldata.extend(calldata_word_u64(32));
+            // Tuple body: eid, msgType, offset to bytes relative to tuple
+            // start (three head words), then the bytes payload.
+            calldata.extend(calldata_word_u32(*remote_eid));
+            calldata.extend(calldata_word_u16(*message_type));
+            calldata.extend(calldata_word_u64(3 * 32));
+            calldata.extend(calldata_bytes_element(&decoded));
+            Ok(calldata)
+        }
+        OperationV1::TransferEvmOwnership { new_owner } => {
+            let mut calldata = calldata_selector("transferOwnership(address)");
+            calldata.extend(calldata_word_address(new_owner)?);
+            Ok(calldata)
+        }
+        OperationV1::SetEvmDelegate { delegate } => {
+            let mut calldata = calldata_selector("setDelegate(address)");
+            calldata.extend(calldata_word_address(delegate)?);
+            Ok(calldata)
+        }
+        OperationV1::DeployEvmOft { .. } => Err(Error::InvalidInput(
+            "deployment_operation: EVM deployment binds init code, not call calldata".into(),
+        )),
+        OperationV1::SetEvmUlnConfig { .. } | OperationV1::SetEvmExecutorConfig { .. } => {
+            Err(Error::InvalidInput(
+                "config_hash_only_operation: calldata requires the full typed config, not a digest"
+                    .into(),
+            ))
+        }
+        _ => Err(Error::InvalidInput(
+            "stellar_only_operation: no EVM calldata exists for this operation".into(),
+        )),
+    }
+}

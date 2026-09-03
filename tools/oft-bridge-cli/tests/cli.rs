@@ -18,6 +18,12 @@ fn usdc_refusal_precedes_state_access() {
             "usdc",
             "--state",
             "/unreachable/secret-state",
+            "--desired",
+            "/unreachable/secret-desired.json",
+            "--name",
+            "Wrapped USDC",
+            "--symbol",
+            "wUSDC",
             "--execute",
         ])
         .output()

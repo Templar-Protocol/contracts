@@ -171,13 +171,21 @@ use crate::output::CommandData;
 use crate::state::RouteStore;
 use std::path::Path;
 
-fn route_environment(state_path: &Path) -> Result<crate::domain::RouteStateV1> {
+/// Read-only route access: allowed on mainnet (inspection/drafting).
+fn route_read(state_path: &Path) -> Result<crate::domain::RouteStateV1> {
     let state = RouteStore::open(state_path)?.load_state()?;
+    crate::environment::classify(&state.identity)?;
+    Ok(state)
+}
+
+/// Mutation route access: testnet only in v1.
+fn route_environment(state_path: &Path) -> Result<crate::domain::RouteStateV1> {
+    let state = route_read(state_path)?;
     crate::environment::require_testnet(&state.identity)?;
     Ok(state)
 }
 
-/// `leg quote`: writes a non-authoritative leg intent; no nonce reservation.
+/// `leg quote`: writes a typed, route-bound leg intent; no nonce reservation.
 pub fn quote(
     state_path: &Path,
     direction: Direction,
@@ -185,48 +193,69 @@ pub fn quote(
     to: &str,
     out: &Path,
 ) -> Result<CommandData> {
-    let state = route_environment(state_path)?;
-    if amount_raw == 0 {
-        return Err(Error::InvalidInput(
-            "amount_raw must be greater than zero".into(),
-        ));
+    let state = route_read(state_path)?;
+    let intent = crate::domain::LegIntentV1 {
+        schema_name: "leg_intent".into(),
+        schema_version: crate::domain::SCHEMA_VERSION,
+        route_id: state.route_id.clone(),
+        desired_sha256: state.desired_sha256.clone(),
+        direction,
+        amount_raw: amount_raw.to_string(),
+        to: to.to_string(),
     }
-    if to.trim().is_empty() {
-        return Err(Error::InvalidInput("destination must not be empty".into()));
-    }
-    let intent = serde_json::json!({
-        "schema_name": "leg_intent",
-        "schema_version": 1,
-        "route_id": state.route_id,
-        "direction": direction,
-        "amount_raw": amount_raw.to_string(),
-        "to": to
-    });
+    .parse()?;
     crate::state::write_create_new_json(out, &intent)?;
     Ok(CommandData {
-        result: intent,
+        result: serde_json::to_value(&intent)?,
         artifact: None,
     })
 }
 
-/// `leg send`: broadcasting requires a qualified live adapter; fail-closed.
+/// `leg send`: binds the quoted intent digest into a `SendLeg` operation and
+/// routes it through the live-bound proposal path. Broadcasting requires a
+/// qualified live adapter and stays fail-closed in v1.
 pub fn send(
     state_path: &Path,
-    intent: &Path,
+    intent_path: &Path,
     _allow_additional_obligation: bool,
-    _execute: bool,
-    _proposal_out: Option<&Path>,
+    execute: bool,
+    proposal_out: Option<&Path>,
+    stellar_rpc: Option<&str>,
+    evm_rpc: Option<&str>,
 ) -> Result<CommandData> {
-    let _state = route_environment(state_path)?;
-    let _intent: serde_json::Value = crate::state::read_json(intent)?;
-    Err(Error::Chain(
-        "leg send requires a qualified live adapter; quote artifacts are non-authoritative".into(),
-    ))
+    let state = route_environment(state_path)?;
+    let intent: crate::domain::LegIntentV1 = crate::state::read_json(intent_path)?;
+    let intent = intent.parse()?;
+    if intent.route_id != state.route_id || intent.desired_sha256 != state.desired_sha256 {
+        return Err(Error::Conflict(
+            "leg intent does not bind to this route state".into(),
+        ));
+    }
+    let intent_sha256 = crate::canonical_sha256(&intent)?;
+    let operation = crate::domain::OperationV1::SendLeg { intent_sha256 };
+    if execute {
+        return Err(Error::Chain(
+            "leg execution requires a qualified live adapter; use --proposal-out".into(),
+        ));
+    }
+    match proposal_out {
+        Some(out) => crate::governance::proposal_for_operation(
+            state_path,
+            &operation,
+            out,
+            stellar_rpc,
+            evm_rpc,
+        ),
+        None => Ok(CommandData {
+            result: serde_json::to_value(&operation)?,
+            artifact: None,
+        }),
+    }
 }
 
 /// `message watch`: read-only observation requires a live Scan client.
 pub fn watch(state_path: &Path, guid: &str) -> Result<CommandData> {
-    let _state = route_environment(state_path)?;
+    let _state = route_read(state_path)?;
     if guid.trim().is_empty() {
         return Err(Error::InvalidInput("guid must not be empty".into()));
     }
@@ -253,7 +282,7 @@ pub fn recover(
 
 /// `evidence import`: validates an evidence bundle against route binding.
 pub fn import_evidence(state_path: &Path, bundle: &Path, write: bool) -> Result<CommandData> {
-    let state = route_environment(state_path)?;
+    let state = route_read(state_path)?;
     let bundle_value: serde_json::Value = crate::state::read_json(bundle)?;
     let bundle_route = bundle_value
         .get("route_id")
@@ -270,6 +299,7 @@ pub fn import_evidence(state_path: &Path, bundle: &Path, write: bool) -> Result<
             artifact: None,
         });
     }
+    crate::environment::require_testnet(&state.identity)?;
     Err(Error::Chain(
         "durable evidence import requires a qualified custody adapter".into(),
     ))

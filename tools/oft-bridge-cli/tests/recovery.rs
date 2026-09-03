@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use sha2::Digest;
 use templar_oft_bridge_cli::domain::Vm;
 use templar_oft_bridge_cli::domain::{Environment, ExecutablePlanV1, ProposalV1, SCHEMA_VERSION};
 use templar_oft_bridge_cli::error::Error;
@@ -20,11 +21,25 @@ fn plan() -> ExecutablePlanV1 {
         operation: templar_oft_bridge_cli::domain::OperationV1::SendLeg {
             intent_sha256: "intent".to_string(),
         },
-        sender: "GSENDER".to_string(),
-        nonce_or_sequence: 7,
-        unsigned_payload: "payload-bytes".to_string(),
+        artifact_lock_sha256: "artifact-lock".to_string(),
         simulation_sha256: "sim".to_string(),
         expires_at_unix: 900,
+        stellar: Some(templar_oft_bridge_cli::domain::StellarPlanBindingV1 {
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            source_account: "GSENDER".to_string(),
+            sequence: "7".to_string(),
+            min_ledger: 1,
+            max_ledger: 100,
+            auth_entries: Vec::new(),
+            envelope_xdr: "payload-bytes".to_string(),
+            envelope_sha256: hex::encode(sha2::Sha256::digest(b"payload-bytes")),
+            simulation_ledger: 50,
+            signer_weights: BTreeMap::new(),
+            required_threshold_weight: 1,
+            threshold_level: "medium".to_string(),
+        }),
+        evm: None,
+        continuation_sha256: String::new(),
     }
 }
 
@@ -143,7 +158,7 @@ fn testnet_proposal_attach_and_verification_are_deterministic() {
     assert_eq!(data, repeated);
     assert_eq!(data.route_id, "route-recovery");
     assert_eq!(data.sender, "GSENDER");
-    assert_eq!(data.nonce_or_sequence, 7);
+    assert_eq!(data.sequence_or_nonce, "7");
     assert_eq!(data.unsigned_payload, "payload-bytes");
     assert_eq!(data.unsigned_payload_sha256.len(), 64);
     assert_eq!(data.plan_sha256.len(), 64);

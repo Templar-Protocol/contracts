@@ -331,5 +331,94 @@ pub fn role_drift(
             observed: delegate,
         });
     }
+
     drift
+}
+/// Typed marker a qualified simulation returns when the source account's
+/// Soroban footprint needs restoration before the original transaction can
+/// proceed.
+pub const RESTORATION_REQUIRED: &str = "restoration_required";
+
+/// Observable Stellar chain boundary for proposal construction. Live reads
+/// beyond passphrase/ledger/sequence remain pending the native-mutation
+/// qualification gate and fail closed with a typed refusal — never a
+/// fabricated value.
+pub trait StellarChain {
+    /// RPC-reported network passphrase.
+    fn network_passphrase(&self) -> Result<String>;
+    /// Live EndpointV2 `eid()` view for the configured endpoint.
+    fn endpoint_eid(&self, endpoint: &str) -> Result<u32>;
+    /// Current account sequence as a decimal string.
+    fn account_sequence(&self, account: &str) -> Result<String>;
+    /// Live signer weights for `account`, keyed by public key.
+    fn account_signers(&self, account: &str) -> Result<std::collections::BTreeMap<String, u32>>;
+    /// Required threshold weight for `level` (`low`/`medium`/`high`).
+    fn account_threshold(&self, account: &str, level: &str) -> Result<u32>;
+    /// Sequence number of the latest ledger known to the RPC.
+    fn latest_ledger(&self) -> Result<u32>;
+}
+
+/// Live Soroban RPC implementation of [`StellarChain`] over
+/// `soroban-client 0.5.5`. Read methods with direct RPC support are
+/// implemented; account-entry decoding (signers/thresholds) and endpoint
+/// views wait on the pinned qualification gate.
+pub struct HttpStellarChain {
+    server: soroban_client::Server,
+}
+
+impl HttpStellarChain {
+    pub fn new(url: &str) -> Result<Self> {
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|error| Error::InvalidInput(format!("invalid Stellar RPC URL: {error}")))?;
+        if parsed.scheme() != "https" {
+            return Err(Error::InvalidInput(
+                "Stellar RPC URL must be https in v1".into(),
+            ));
+        }
+        let server = soroban_client::Server::new(url, soroban_client::Options::default())
+            .map_err(|error| Error::Chain(format!("stellar rpc connect failed: {error}")))?;
+        Ok(Self { server })
+    }
+}
+
+fn rpc<T>(result: std::result::Result<T, soroban_client::error::Error>) -> Result<T> {
+    result.map_err(|error| Error::Chain(format!("stellar rpc call failed: {error:?}")))
+}
+
+fn pending_qualification(what: &str) -> Error {
+    Error::Chain(format!(
+        "stellar live read '{what}' is disabled pending the native-mutation qualification gate"
+    ))
+}
+
+impl StellarChain for HttpStellarChain {
+    fn network_passphrase(&self) -> Result<String> {
+        let response = rpc(crate::block_on(self.server.get_network())?)?;
+        response
+            .passphrase
+            .ok_or_else(|| Error::Chain("stellar rpc omitted network passphrase".into()))
+    }
+
+    fn endpoint_eid(&self, _endpoint: &str) -> Result<u32> {
+        Err(pending_qualification("endpoint_eid"))
+    }
+
+    fn account_sequence(&self, account: &str) -> Result<String> {
+        use stellar_baselib::account::AccountBehavior as _;
+        let loaded = rpc(crate::block_on(self.server.get_account(account))?)?;
+        Ok(loaded.sequence_number())
+    }
+
+    fn account_signers(&self, _account: &str) -> Result<std::collections::BTreeMap<String, u32>> {
+        Err(pending_qualification("account_signers"))
+    }
+
+    fn account_threshold(&self, _account: &str, _level: &str) -> Result<u32> {
+        Err(pending_qualification("account_threshold"))
+    }
+
+    fn latest_ledger(&self) -> Result<u32> {
+        let response = rpc(crate::block_on(self.server.get_latest_ledger())?)?;
+        Ok(response.sequence)
+    }
 }

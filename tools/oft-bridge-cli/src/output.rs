@@ -12,6 +12,8 @@ pub struct Envelope<T: Serialize> {
     pub version: u32,
     pub ok: bool,
     pub command: String,
+    /// Exhaustive command-effect classification from the CLI surface.
+    pub effect: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -25,22 +27,24 @@ pub struct CommandData {
     pub artifact: Option<ArtifactRefV1>,
 }
 
-pub fn success(command: &str, data: CommandData) -> Result<()> {
+pub fn success(command: &str, effect: &'static str, data: CommandData) -> Result<()> {
     write_envelope(&Envelope {
         version: 1,
         ok: true,
         command: command.to_owned(),
+        effect,
         data: Some(data),
         error: None,
         warnings: Vec::new(),
     })
 }
 
-pub fn failure(command: &str, error: &Error) -> Result<()> {
+pub fn failure(command: &str, effect: &'static str, error: &Error) -> Result<()> {
     write_envelope(&Envelope::<serde_json::Value> {
         version: 1,
         ok: false,
         command: command.to_owned(),
+        effect,
         data: None,
         error: Some(ErrorBody {
             code: error.code(),

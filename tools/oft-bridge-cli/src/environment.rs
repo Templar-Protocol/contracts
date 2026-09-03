@@ -1,6 +1,8 @@
 use crate::{
     domain::{ChainIdentityV1, Environment},
     error::{Error, Result},
+    evm::EvmChain,
+    stellar::StellarChain,
 };
 
 pub const STELLAR_TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
@@ -58,6 +60,56 @@ pub fn classify(identity: &ChainIdentityV1) -> Result<Environment> {
 pub fn require_testnet(identity: &ChainIdentityV1) -> Result<()> {
     if classify(identity)?.is_mainnet() {
         return Err(Error::Policy("production_mutation_unsupported_v1".into()));
+    }
+    Ok(())
+}
+
+/// Derives live chain facts and requires them to match the desired identity.
+///
+/// Preview (`write == false`) validates the desired identity offline. A
+/// write additionally requires live RPC URLs and compares every fact the
+/// qualified adapters can honestly derive: the Stellar passphrase, the EVM
+/// chain ID, and the live EVM endpoint EID. The Stellar endpoint EID view
+/// is part of the pending native-mutation qualification gate and is bound
+/// by the desired-identity equality instead.
+pub fn init_environment(
+    identity: &ChainIdentityV1,
+    stellar_rpc: Option<&str>,
+    evm_rpc: Option<&str>,
+    write: bool,
+) -> Result<()> {
+    classify(identity)?;
+    if !write {
+        return Ok(());
+    }
+    let stellar_rpc = stellar_rpc.ok_or_else(|| {
+        Error::Chain("live_environment_required: --stellar-rpc-env is required for --write".into())
+    })?;
+    let evm_rpc = evm_rpc.ok_or_else(|| {
+        Error::Chain("live_environment_required: --evm-rpc-env is required for --write".into())
+    })?;
+    let stellar = crate::stellar::HttpStellarChain::new(stellar_rpc)?;
+    let evm = crate::evm::HttpEvmChain::new(evm_rpc)?;
+    let live_passphrase = stellar.network_passphrase()?;
+    if live_passphrase != identity.stellar_passphrase {
+        return Err(Error::Chain(format!(
+            "stellar passphrase mismatch: desired {} but rpc reports {live_passphrase}",
+            identity.stellar_passphrase
+        )));
+    }
+    let live_chain_id = crate::block_on_result(evm.chain_id())?;
+    if live_chain_id != identity.evm_chain_id {
+        return Err(Error::Chain(format!(
+            "evm chain id mismatch: desired {} but rpc reports {live_chain_id}",
+            identity.evm_chain_id
+        )));
+    }
+    let live_eid = crate::block_on_result(evm.endpoint_eid(&identity.evm_endpoint))?;
+    if live_eid != identity.evm_eid {
+        return Err(Error::Chain(format!(
+            "evm endpoint eid mismatch: desired {} but rpc reports {live_eid}",
+            identity.evm_eid
+        )));
     }
     Ok(())
 }

@@ -213,8 +213,13 @@ pub trait EvmChain: Send + Sync {
     async fn code(&self, address: Address) -> Result<Vec<u8>>;
     /// `eth_call` against the latest state; returns raw return bytes.
     async fn call(&self, to: Address, calldata: Vec<u8>) -> Result<Vec<u8>>;
+    /// Live EndpointV2 `eid()` view.
+    async fn endpoint_eid(&self, endpoint: &str) -> Result<u32>;
+    /// Pending account nonce for the transaction sender.
+    async fn account_nonce(&self, address: Address) -> Result<u64>;
+    /// Safe `getThreshold()` and `nonce()` when `safe` is a Safe proxy.
+    async fn safe_state(&self, safe: Address) -> Result<Option<(u32, String)>>;
 }
-
 /// HTTP JSON-RPC implementation of [`EvmChain`].
 pub struct HttpEvmChain {
     provider: RootProvider<Ethereum>,
@@ -229,6 +234,11 @@ impl HttpEvmChain {
             .disable_recommended_fillers()
             .connect_http(url);
         Ok(Self { provider })
+    }
+
+    /// Contract-name alias used by the adapter boundary contract.
+    pub fn new(url: &str) -> Result<Self> {
+        Self::connect_http(url)
     }
 }
 
@@ -261,6 +271,59 @@ impl EvmChain for HttpEvmChain {
             .map(|data| data.to_vec())
             .map_err(|error| Error::Chain(format!("evm call failed: {error}")))
     }
+
+    async fn endpoint_eid(&self, endpoint: &str) -> Result<u32> {
+        let target = parse_address(endpoint)?;
+        let data = self.call(target, selector("eid()")).await?;
+        decode_u32_word(&data)
+    }
+
+    async fn account_nonce(&self, address: Address) -> Result<u64> {
+        self.provider
+            .get_transaction_count(address)
+            .await
+            .map_err(|error| Error::Chain(format!("evm nonce read failed: {error}")))
+    }
+
+    async fn safe_state(&self, safe: Address) -> Result<Option<(u32, String)>> {
+        let threshold = match self.call(safe, selector("getThreshold()")).await {
+            Ok(data) => decode_u32_word(&data)?,
+            Err(_) => return Ok(None),
+        };
+        let nonce_word = match self.call(safe, selector("nonce()")).await {
+            Ok(data) => decode_u256_word(&data)?,
+            Err(_) => return Ok(None),
+        };
+        let nonce_bytes: [u8; 16] = nonce_word[16..32]
+            .try_into()
+            .map_err(|_| Error::Chain("short safe nonce word".to_string()))?;
+        Ok(Some((
+            threshold,
+            u128::from_be_bytes(nonce_bytes).to_string(),
+        )))
+    }
+}
+/// ABI selector for a canonical function signature, computed at runtime so
+/// no memorized constant can drift.
+fn selector(signature: &str) -> Vec<u8> {
+    keccak256(signature.as_bytes())[..4].to_vec()
+}
+fn decode_u32_word(data: &[u8]) -> Result<u32> {
+    if data.len() < 32 {
+        return Err(Error::Chain("evm view returned a short word".to_string()));
+    }
+    let mut word = [0u8; 4];
+    word.copy_from_slice(&data[28..32]);
+    Ok(u32::from_be_bytes(word))
+}
+
+fn decode_u256_word(data: &[u8]) -> Result<[u8; 32]> {
+    if data.len() < 32 {
+        return Err(Error::Chain("evm view returned a short word".to_string()));
+    }
+    let mut word = [0u8; 32];
+    word.copy_from_slice(&data[..32]);
+    Ok(word)
 }
 
 /// keccak256 helper used for init-code hashing once the wrapper is built.

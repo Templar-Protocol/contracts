@@ -356,6 +356,45 @@ pub enum LocalPreparationV1 {
     ImportEvidence { evidence_sha256: String },
 }
 
+/// Typed, route-bound leg intent produced by `leg quote` and consumed by
+/// `leg send`. Amounts are decimal strings per the schema rule.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LegIntentV1 {
+    pub schema_name: String,
+    pub schema_version: u32,
+    pub route_id: String,
+    pub desired_sha256: String,
+    pub direction: Direction,
+    pub amount_raw: String,
+    pub to: String,
+}
+
+impl LegIntentV1 {
+    pub fn parse(self) -> Result<Self> {
+        if self.schema_name != "leg_intent" || self.schema_version != SCHEMA_VERSION {
+            return Err(Error::InvalidInput("unsupported leg intent schema".into()));
+        }
+        if self.route_id.trim().is_empty() || self.desired_sha256.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "leg intent must bind a route and desired digest".into(),
+            ));
+        }
+        let amount: u128 = self
+            .amount_raw
+            .parse()
+            .map_err(|_| Error::InvalidInput("amount_raw must be a decimal string".into()))?;
+        if amount == 0 {
+            return Err(Error::InvalidInput(
+                "amount_raw must be greater than zero".into(),
+            ));
+        }
+        if self.to.trim().is_empty() {
+            return Err(Error::InvalidInput("destination must not be empty".into()));
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OperationDraftV1 {
     pub schema_name: String,
@@ -367,17 +406,134 @@ pub struct OperationDraftV1 {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StellarPlanBindingV1 {
+    pub network_passphrase: String,
+    pub source_account: String,
+    /// Decimal string per schema rule for sequences.
+    pub sequence: String,
+    pub min_ledger: u32,
+    pub max_ledger: u32,
+    /// Soroban authorization entries; v1 only allows source-account entries.
+    pub auth_entries: Vec<String>,
+    /// Base64 transaction envelope XDR; empty until a live adapter constructs it.
+    pub envelope_xdr: String,
+    pub envelope_sha256: String,
+    pub simulation_ledger: u32,
+    /// Live signer weights keyed by public key.
+    pub signer_weights: BTreeMap<String, u32>,
+    pub required_threshold_weight: u32,
+    pub threshold_level: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SafeTransactionV1 {
+    pub to: String,
+    /// Decimal string wei value.
+    pub value: String,
+    pub data: String,
+    pub operation: u8,
+    pub safe_tx_gas: String,
+    pub base_gas: String,
+    pub gas_price: String,
+    pub gas_token: String,
+    pub refund_receiver: String,
+    /// Decimal string Safe nonce.
+    pub nonce: String,
+    pub threshold: u32,
+    pub safe_tx_hash: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EvmPlanBindingV1 {
+    /// Decimal string chain ID.
+    pub chain_id: String,
+    pub target: String,
+    /// Decimal string wei value.
+    pub value: String,
+    /// Decimal string account nonce.
+    pub nonce: String,
+    pub calldata: String,
+    pub gas_limit: String,
+    pub max_fee_per_gas_wei: String,
+    pub max_priority_fee_per_gas_wei: String,
+    pub transaction_digest: String,
+    #[serde(default)]
+    pub safe: Option<SafeTransactionV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ExecutablePlanV1 {
     pub schema_name: String,
     pub schema_version: u32,
     pub route_id: String,
     pub desired_sha256: String,
     pub operation: OperationV1,
-    pub sender: String,
-    pub nonce_or_sequence: u64,
-    pub unsigned_payload: String,
+    pub artifact_lock_sha256: String,
     pub simulation_sha256: String,
     pub expires_at_unix: u64,
+    #[serde(default)]
+    pub stellar: Option<StellarPlanBindingV1>,
+    #[serde(default)]
+    pub evm: Option<EvmPlanBindingV1>,
+    /// Digest of the journal checkpoint naming the next safe continuation.
+    pub continuation_sha256: String,
+}
+
+/// Monotonic packet lifecycle stage. Only `Reobserved` may revisit evidence.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageStageV1 {
+    ForwardSourceAccepted,
+    ForwardLocked,
+    ForwardMinted,
+    ReverseSourceAccepted,
+    ReverseBurned,
+    ReverseUnlocked,
+    Reobserved,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MessageStatusEventV1 {
+    pub stage: MessageStageV1,
+    pub observed_at_unix: u64,
+    pub evidence_sha256: String,
+}
+
+/// Append-only packet record keyed by `(source_eid, sender, nonce, guid)`.
+/// Packet header/message bytes and the effective security-stack snapshot at
+/// send time are immutable; only status events append.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MessageRecordV1 {
+    pub schema_name: String,
+    pub schema_version: u32,
+    pub source_eid: u32,
+    pub sender: String,
+    /// Decimal string packet nonce.
+    pub nonce: String,
+    pub guid: String,
+    pub direction: Direction,
+    /// Decimal string raw amount in shared units.
+    pub amount_raw: String,
+    pub packet_sha256: String,
+    pub payload_sha256: String,
+    pub origin: String,
+    pub receiver: String,
+    /// Effective config snapshot at send time; immutable after append.
+    pub config_snapshot_sha256: String,
+    pub source_transaction: String,
+    pub destination_transaction: Option<String>,
+    pub status_events: Vec<MessageStatusEventV1>,
+}
+
+impl MessageRecordV1 {
+    pub fn identity(&self) -> (u32, String, String, String) {
+        (
+            self.source_eid,
+            self.sender.clone(),
+            self.nonce.clone(),
+            self.guid.clone(),
+        )
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
