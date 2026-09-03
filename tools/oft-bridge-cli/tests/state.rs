@@ -2,7 +2,7 @@ use std::fs;
 
 use std::collections::BTreeMap;
 use templar_oft_bridge_cli::{
-    domain::{AssetKind, AssetPolicyV1, ChainIdentityV1, DesiredRouteV1, Environment},
+    domain::{AssetKind, AssetPolicyV1, ChainIdentityV1, DesiredRouteV1, Environment, Vm},
     state::{OperationEventV1, OperationState, RouteStore},
 };
 
@@ -38,6 +38,14 @@ fn desired() -> DesiredRouteV1 {
         evm_delegate: "0x0000000000000000000000000000000000000001".into(),
         config: BTreeMap::default(),
     }
+}
+
+const SENDER: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+fn operations_root(directory: &std::path::Path) -> std::path::PathBuf {
+    let root = directory.join("ops");
+    assert!(fs::create_dir(&root).is_ok(), "operations root");
+    root
 }
 
 #[test]
@@ -98,4 +106,281 @@ fn route_lock_excludes_second_writer() {
     assert!(error.to_string().contains("busy"));
     drop(first);
     store.lock().expect("lock after release");
+}
+
+#[test]
+fn domain_lock_excludes_second_route_in_same_domain() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let operations_root = operations_root(directory.path());
+    let root_a = directory.path().join("route-a");
+    let root_b = directory.path().join("route-b");
+    let (store_a, _) = RouteStore::create(&root_a, desired()).expect("create a");
+    let (store_b, _) = RouteStore::create(&root_b, desired()).expect("create b");
+    let binding_a = store_a
+        .derive_phase_a_binding(Vm::Stellar, SENDER)
+        .expect("phase a");
+    let binding_b = store_b
+        .derive_phase_a_binding(Vm::Stellar, SENDER)
+        .expect("phase a b");
+    assert_eq!(
+        binding_a.domain_sha256(),
+        binding_b.domain_sha256(),
+        "same environment/vm/sender must share the authority domain"
+    );
+    let guard = store_a
+        .acquire_mutation(&binding_a, &operations_root)
+        .expect("acquire a");
+    let error = store_b
+        .acquire_mutation(&binding_b, &operations_root)
+        .expect_err("second route in the same domain must be excluded");
+    assert!(error.to_string().contains("busy"));
+    drop(guard);
+    store_b
+        .acquire_mutation(&binding_b, &operations_root)
+        .expect("acquire b after release");
+}
+
+#[test]
+fn stale_phase_a_binding_is_rejected_and_locks_released() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let operations_root = operations_root(directory.path());
+    let root = directory.path().join("route");
+    let (store, _) = RouteStore::create(&root, desired()).expect("create");
+    let binding = store
+        .derive_phase_a_binding(Vm::Stellar, SENDER)
+        .expect("phase a");
+    let mut state = store.load_state().expect("load state");
+    state.identity.environment = Environment::StellarMainnetEthereum;
+    store
+        .save_state(&state)
+        .expect("mutate state between phase a and acquire");
+    let error = store
+        .acquire_mutation(&binding, &operations_root)
+        .expect_err("stale binding must be rejected");
+    assert!(error.to_string().contains("stale"));
+    assert!(!root.join(".lock").exists(), "route lock released on stale");
+    assert!(
+        !operations_root
+            .join(".authority")
+            .join(format!("{}.lock", binding.domain_sha256()))
+            .exists(),
+        "authority-domain lock released on stale"
+    );
+    let fresh = store
+        .derive_phase_a_binding(Vm::Stellar, SENDER)
+        .expect("re-derive after state changed");
+    store
+        .acquire_mutation(&fresh, &operations_root)
+        .expect("restart with a fresh binding succeeds");
+}
+
+#[test]
+fn submission_guard_holds_locks_through_checkpoint() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let operations_root = operations_root(directory.path());
+    let root = directory.path().join("route");
+    let (store, _) = RouteStore::create(&root, desired()).expect("create");
+    let binding = store
+        .derive_phase_a_binding(Vm::Stellar, SENDER)
+        .expect("phase a");
+    let guard = store
+        .acquire_mutation(&binding, &operations_root)
+        .expect("acquire");
+    assert!(
+        store.acquire_mutation(&binding, &operations_root).is_err(),
+        "authority-domain lock held while checkpointing"
+    );
+    assert!(store.lock().is_err(), "route lock held while checkpointing");
+    guard
+        .submission_pending("op-send", "0xdeadbeef")
+        .expect("checkpoint appended under both locks");
+    let records = guard
+        .store()
+        .verify_log::<OperationEventV1>(std::path::Path::new("operations.jsonl"), "operations")
+        .expect("verify");
+    let last = records.last().expect("record");
+    assert_eq!(last.payload.state, OperationState::SubmissionPending);
+    assert_eq!(last.payload.operation_id, "op-send");
+    drop(guard);
+    store.lock().expect("route lock released after guard drop");
+    store
+        .acquire_mutation(&binding, &operations_root)
+        .expect("domain lock released after guard drop");
+}
+
+fn pending_proposal(
+    operation_id: &str,
+    relative: &std::path::Path,
+    sha256: &str,
+) -> OperationEventV1 {
+    OperationEventV1 {
+        operation_id: operation_id.into(),
+        state: OperationState::ProposalPrepared,
+        detail: serde_json::json!({"path": relative, "sha256": sha256}),
+    }
+}
+
+#[test]
+fn recovers_prepared_proposal_from_matching_final() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = directory.path().join("route");
+    let (store, _) = RouteStore::create(&root, desired()).expect("create");
+    let relative = std::path::Path::new("proposals/set-peer.json");
+    let payload = serde_json::json!({"kind": "set_peer", "remote_eid": 40161});
+    let sha256 = templar_oft_bridge_cli::canonical_sha256(&payload).expect("sha256");
+    let final_path = root.join(relative);
+    let temporary = final_path.with_extension("tmp");
+    fs::create_dir_all(final_path.parent().expect("parent")).expect("parent dir");
+    templar_oft_bridge_cli::state::write_create_new_json(&final_path, &payload).expect("final");
+    templar_oft_bridge_cli::state::write_create_new_json(&temporary, &payload).expect("temp");
+    store
+        .append_operation(
+            pending_proposal("op-recover", relative, &sha256),
+            Some(sha256.clone()),
+        )
+        .expect("prepared checkpoint");
+    let _lock = store.lock().expect("route lock");
+    store.recover_pending_proposal().expect("recover");
+    assert!(!temporary.exists(), "orphan temporary removed");
+    store.recover_pending_proposal().expect("recover again");
+    let records = store
+        .verify_log::<OperationEventV1>(std::path::Path::new("operations.jsonl"), "operations")
+        .expect("verify");
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[1].payload.state, OperationState::ProposalCommitted);
+    assert_eq!(records[1].payload.operation_id, "op-recover");
+    assert_eq!(
+        records[1].companion_artifact_sha256.as_deref(),
+        Some(sha256.as_str())
+    );
+}
+
+#[test]
+fn recovers_prepared_proposal_from_matching_temporary() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = directory.path().join("route");
+    let (store, _) = RouteStore::create(&root, desired()).expect("create");
+    let relative = std::path::Path::new("proposals/set-peer.json");
+    let payload = serde_json::json!({"kind": "set_peer", "remote_eid": 40161});
+    let sha256 = templar_oft_bridge_cli::canonical_sha256(&payload).expect("sha256");
+    let final_path = root.join(relative);
+    let temporary = final_path.with_extension("tmp");
+    fs::create_dir_all(final_path.parent().expect("parent")).expect("parent dir");
+    templar_oft_bridge_cli::state::write_create_new_json(&temporary, &payload).expect("temp");
+    store
+        .append_operation(
+            pending_proposal("op-recover", relative, &sha256),
+            Some(sha256),
+        )
+        .expect("prepared checkpoint");
+    let _lock = store.lock().expect("route lock");
+    store.recover_pending_proposal().expect("recover");
+    assert!(!temporary.exists(), "temporary consumed by rename");
+    let recovered: serde_json::Value =
+        templar_oft_bridge_cli::state::read_json(&final_path).expect("final artifact");
+    assert_eq!(recovered, payload);
+    store.recover_pending_proposal().expect("recover again");
+}
+
+#[test]
+fn mismatched_prepared_proposal_fails_closed() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = directory.path().join("route");
+    let (store, _) = RouteStore::create(&root, desired()).expect("create");
+    let relative = std::path::Path::new("proposals/set-peer.json");
+    let payload = serde_json::json!({"kind": "set_peer", "remote_eid": 40161});
+    let other = serde_json::json!({"kind": "set_peer", "remote_eid": 30102});
+    let sha256 = templar_oft_bridge_cli::canonical_sha256(&payload).expect("sha256");
+    let final_path = root.join(relative);
+    let temporary = final_path.with_extension("tmp");
+    fs::create_dir_all(final_path.parent().expect("parent")).expect("parent dir");
+    templar_oft_bridge_cli::state::write_create_new_json(&final_path, &other).expect("final");
+    templar_oft_bridge_cli::state::write_create_new_json(&temporary, &payload)
+        .expect("matching temp");
+    store
+        .append_operation(
+            pending_proposal("op-recover", relative, &sha256),
+            Some(sha256),
+        )
+        .expect("prepared checkpoint");
+    let _lock = store.lock().expect("route lock");
+    let error = store
+        .recover_pending_proposal()
+        .expect_err("mismatched final must fail closed");
+    assert!(error.to_string().contains("proposal_write_failed"));
+    let on_disk: serde_json::Value =
+        templar_oft_bridge_cli::state::read_json(&final_path).expect("final untouched");
+    assert_eq!(on_disk, other);
+    assert!(temporary.exists(), "matching temporary preserved");
+    let records = store
+        .verify_log::<OperationEventV1>(std::path::Path::new("operations.jsonl"), "operations")
+        .expect("verify");
+    assert_eq!(records.len(), 1, "no committed checkpoint appended");
+    assert_eq!(records[0].payload.state, OperationState::ProposalPrepared);
+}
+
+#[test]
+fn two_process_domain_exclusion() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let operations_root = operations_root(directory.path());
+    let root = directory.path().join("route");
+    let (store, _) = RouteStore::create(&root, desired()).expect("create");
+    let binding = store
+        .derive_phase_a_binding(Vm::Stellar, SENDER)
+        .expect("phase a");
+    let held = directory.path().join("HELD");
+    let release = directory.path().join("RELEASE");
+    let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .arg("--exact")
+        .arg("two_process_domain_exclusion_hold_child")
+        .env("TWO_PROCESS_DOMAIN_ROOT", &root)
+        .env("TWO_PROCESS_DOMAIN_OPS", &operations_root)
+        .env("TWO_PROCESS_DOMAIN_HELD", &held)
+        .env("TWO_PROCESS_DOMAIN_RELEASE", &release)
+        .spawn()
+        .expect("spawn child");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !held.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "child never acquired the domain lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let error = store
+        .acquire_mutation(&binding, &operations_root)
+        .expect_err("parent must observe the child-held domain lock");
+    assert!(error.to_string().contains("busy"));
+    fs::write(&release, b"release").expect("release marker");
+    let status = child.wait().expect("child exit");
+    assert!(status.success(), "child harness must pass");
+    store
+        .acquire_mutation(&binding, &operations_root)
+        .expect("parent acquires after child release");
+}
+
+#[test]
+fn two_process_domain_exclusion_hold_child() {
+    let Ok(root) = std::env::var("TWO_PROCESS_DOMAIN_ROOT") else {
+        return;
+    };
+    let ops = std::env::var("TWO_PROCESS_DOMAIN_OPS").expect("ops env");
+    let held = std::env::var("TWO_PROCESS_DOMAIN_HELD").expect("held env");
+    let release = std::env::var("TWO_PROCESS_DOMAIN_RELEASE").expect("release env");
+    let store = RouteStore::open(std::path::Path::new(&root)).expect("child open");
+    let binding = store
+        .derive_phase_a_binding(Vm::Stellar, SENDER)
+        .expect("child phase a");
+    let _guard = store
+        .acquire_mutation(&binding, std::path::Path::new(&ops))
+        .expect("child acquire");
+    fs::write(&held, b"held").expect("held marker");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !std::path::Path::new(&release).exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "child timed out waiting for release"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }

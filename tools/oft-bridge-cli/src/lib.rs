@@ -20,13 +20,22 @@ use std::future::Future;
 use std::process::ExitCode;
 use std::sync::LazyLock;
 
-use clap::Parser as _;
+use clap::{error::ErrorKind, Parser as _};
 
 use crate::{cli::Cli, error::Error};
 pub fn main_entry() -> ExitCode {
     let json_requested = std::env::args_os().any(|argument| argument == "--json");
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
+        Err(parse_error)
+            if matches!(
+                parse_error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) =>
+        {
+            let _ = parse_error.print();
+            return ExitCode::SUCCESS;
+        }
         Err(parse_error) if json_requested => {
             let error = Error::InvalidInput(parse_error.to_string());
             if let Err(output_error) = output::failure("parse", "local_read", &error) {

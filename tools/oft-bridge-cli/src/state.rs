@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{BufRead as _, BufReader, Write as _},
+    io::{BufRead as _, BufReader, Read as _, Write as _},
     path::{Component, Path, PathBuf},
 };
 
@@ -11,8 +11,8 @@ use sha2::{Digest as _, Sha256};
 use crate::{
     canonical_sha256,
     domain::{
-        ArtifactRefV1, DesiredRouteV1, MessageRecordV1, MessageStageV1, MessageStatusEventV1,
-        RouteStateV1, SCHEMA_VERSION,
+        ArtifactRefV1, DesiredRouteV1, Environment, MessageRecordV1, MessageStageV1,
+        MessageStatusEventV1, RouteStateV1, Vm, SCHEMA_VERSION,
     },
     error::{Error, Result},
 };
@@ -21,6 +21,7 @@ const STATE_FILE: &str = "route.json";
 const OPERATIONS_FILE: &str = "operations.jsonl";
 const MESSAGES_FILE: &str = "messages.jsonl";
 const LOCK_FILE: &str = ".lock";
+const AUTHORITY_LOCK_DIR: &str = ".authority";
 
 #[derive(Debug)]
 pub struct RouteLock {
@@ -49,6 +50,183 @@ impl RouteLock {
 impl Drop for RouteLock {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+/// Non-authoritative Phase-A binding: the `{environment, vm, sender}`
+/// authority-domain key plus the canonical route state path, each with a
+/// digest, captured from a plain state-file read before any lock is taken.
+/// It reserves no nonce and trusts no mutable decision; `acquire_mutation`
+/// re-derives the same binding under both locks and rejects it if the
+/// underlying state changed in between.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PhaseABinding {
+    route_canonical_path: PathBuf,
+    environment: Environment,
+    vm: Vm,
+    sender: String,
+    domain_sha256: String,
+    route_path_sha256: String,
+}
+
+impl PhaseABinding {
+    fn derive(route_path: &Path, environment: Environment, vm: Vm, sender: &str) -> Result<Self> {
+        #[derive(Serialize)]
+        struct DomainBindingKey<'a> {
+            environment: Environment,
+            vm: Vm,
+            sender: &'a str,
+        }
+        let route_canonical_path = fs::canonicalize(route_path).map_err(|_| {
+            Error::InvalidInput(format!(
+                "phase-a binding requires an existing state directory: {}",
+                route_path.display()
+            ))
+        })?;
+        let domain_sha256 = canonical_sha256(&DomainBindingKey {
+            environment,
+            vm,
+            sender,
+        })?;
+        let route_path_sha256 = route_path_sha256_digest(&route_canonical_path);
+        Ok(Self {
+            route_canonical_path,
+            environment,
+            vm,
+            sender: sender.to_owned(),
+            domain_sha256,
+            route_path_sha256,
+        })
+    }
+
+    /// Canonical route state directory this binding was derived from.
+    pub fn route_canonical_path(&self) -> &Path {
+        &self.route_canonical_path
+    }
+
+    pub fn environment(&self) -> Environment {
+        self.environment
+    }
+
+    pub fn vm(&self) -> Vm {
+        self.vm
+    }
+
+    pub fn sender(&self) -> &str {
+        &self.sender
+    }
+
+    /// Digest of the `{environment, vm, sender}` authority-domain key. The
+    /// domain lock lives under the operation-store root at
+    /// `.authority/<domain_sha256>.lock`, which is why different route files
+    /// cannot bypass the sender-domain fence.
+    pub fn domain_sha256(&self) -> &str {
+        &self.domain_sha256
+    }
+
+    /// Digest of the canonical route state path.
+    pub fn route_path_sha256(&self) -> &str {
+        &self.route_path_sha256
+    }
+}
+
+/// Sender-domain fence: a create-new lock file under the operation-store
+/// root keyed by the `{environment, vm, sender}` digest. Acquired before the
+/// route lock; every route in the same authority domain serializes here,
+/// and a busy result is typed — stale locks are never deleted.
+#[derive(Debug)]
+struct AuthorityDomainLock {
+    path: PathBuf,
+    _file: File,
+}
+
+impl AuthorityDomainLock {
+    fn acquire(operations_root: &Path, domain_sha256: &str) -> Result<Self> {
+        let metadata = fs::symlink_metadata(operations_root).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Error::InvalidInput(format!(
+                    "operation-store root does not exist: {}",
+                    operations_root.display()
+                ))
+            } else {
+                Error::Io(error)
+            }
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(Error::InvalidInput(format!(
+                "operation-store root must be a real directory: {}",
+                operations_root.display()
+            )));
+        }
+        let directory = operations_root.join(AUTHORITY_LOCK_DIR);
+        fs::create_dir_all(&directory)?;
+        set_directory_mode(&directory)?;
+        let path = directory.join(format!("{domain_sha256}.lock"));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let file = options.open(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                Error::Conflict(format!("authority domain is busy: {}", path.display()))
+            } else {
+                Error::Io(error)
+            }
+        })?;
+        Ok(Self { path, _file: file })
+    }
+}
+
+impl Drop for AuthorityDomainLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Both mutation locks held — authority-domain first, then route — with the
+/// authoritative logs replayed and the Phase-A binding re-verified under
+/// them. Hold this guard through the `submission_pending` checkpoint; after
+/// it the route lock may be released for long confirmation waits while the
+/// authority-domain reservation stays pending in the journal.
+#[derive(Debug)]
+pub struct SubmissionGuard {
+    store: RouteStore,
+    _route_lock: RouteLock,
+    _authority_lock: AuthorityDomainLock,
+    state: RouteStateV1,
+}
+
+impl SubmissionGuard {
+    /// Authoritative store reopened under both locks.
+    pub fn store(&self) -> &RouteStore {
+        &self.store
+    }
+
+    /// Authoritative state snapshot re-read under both locks.
+    pub fn state(&self) -> &RouteStateV1 {
+        &self.state
+    }
+
+    /// Appends the `submission_pending` checkpoint with the signed
+    /// transaction/envelope digest while both locks are held. The guard must
+    /// not be dropped before this returns.
+    pub fn submission_pending(
+        &self,
+        operation_id: &str,
+        signed_transaction_sha256: &str,
+    ) -> Result<LogRecordV1<OperationEventV1>> {
+        self.store.append_operation(
+            OperationEventV1 {
+                operation_id: operation_id.into(),
+                state: OperationState::SubmissionPending,
+                detail: serde_json::json!({
+                    "signed_transaction_sha256": signed_transaction_sha256,
+                }),
+            },
+            None,
+        )
     }
 }
 
@@ -410,6 +588,201 @@ impl RouteStore {
         file.write_all(b"\n")?;
         file.sync_all()?;
         Ok(record)
+    }
+
+    /// Phase A: non-authoritative, read-only derivation of the authority
+    /// binding from the current state file: `{environment, vm, sender}`
+    /// plus the canonical route path, with digests. Verifies no log,
+    /// reserves no nonce, and trusts no mutable decision;
+    /// `acquire_mutation` re-derives the same binding under both locks and
+    /// rejects it if anything changed in between.
+    pub fn derive_phase_a_binding(&self, vm: Vm, sender: &str) -> Result<PhaseABinding> {
+        let state = self.load_state()?;
+        PhaseABinding::derive(&self.root, state.identity.environment, vm, sender)
+    }
+
+    /// Fixed mutation lock order: authority-domain lock under
+    /// `operations_root` first, then the route lock. Under both locks the
+    /// authoritative logs are replayed, state is re-read, and the Phase-A
+    /// binding must be unchanged; a stale binding releases every lock and
+    /// errors so the caller restarts Phase A. The returned guard must be
+    /// held through the `submission_pending` checkpoint.
+    pub fn acquire_mutation(
+        &self,
+        binding: &PhaseABinding,
+        operations_root: &Path,
+    ) -> Result<SubmissionGuard> {
+        let authority_lock =
+            AuthorityDomainLock::acquire(operations_root, binding.domain_sha256())?;
+        let route_lock = RouteLock::acquire(binding.route_canonical_path())?;
+        let store = RouteStore::open(binding.route_canonical_path())?;
+        let state = store.load_state()?;
+        let rederived = PhaseABinding::derive(
+            binding.route_canonical_path(),
+            state.identity.environment,
+            binding.vm(),
+            binding.sender(),
+        )?;
+        if &rederived != binding {
+            return Err(Error::Conflict(format!(
+                "phase-a binding is stale: state changed since derivation (domain {})",
+                binding.domain_sha256()
+            )));
+        }
+        Ok(SubmissionGuard {
+            store,
+            _route_lock: route_lock,
+            _authority_lock: authority_lock,
+            state,
+        })
+    }
+
+    /// Restart recovery for a `proposal_prepared` checkpoint that has no
+    /// matching `proposal_committed`. The caller must hold the route lock.
+    /// Replays the authoritative operations log to find pending prepared
+    /// records, then for each: a final artifact whose SHA-256 matches
+    /// completes the commit record; with no valid final, a matching
+    /// temporary is atomically renamed over the final path and the directory
+    /// fsynced; a mismatched or non-regular occupant of the final path (or a
+    /// missing artifact entirely) fails closed with `proposal_write_failed`
+    /// and appends nothing. The committed checkpoint is detected from the
+    /// log after each append, so re-running recovery is idempotent and never
+    /// processed.
+    pub fn recover_pending_proposal(&self) -> Result<()> {
+        let records =
+            self.verify_log::<OperationEventV1>(Path::new(OPERATIONS_FILE), "operations")?;
+        for (index, record) in records.iter().enumerate() {
+            if record.payload.state != OperationState::ProposalPrepared {
+                continue;
+            }
+            let Some((relative_path, expected_sha256)) = proposal_write_target(&record.payload)
+            else {
+                // A prepared record without artifact coordinates is a journal
+                // checkpoint, not a recoverable proposal write.
+                continue;
+            };
+            let already_committed = records[index + 1..].iter().any(|later| {
+                later.payload.state == OperationState::ProposalCommitted
+                    && later.payload.operation_id == record.payload.operation_id
+                    && proposal_write_target(&later.payload)
+                        .is_some_and(|(path, _)| path == relative_path)
+            });
+            if already_committed {
+                continue;
+            }
+            self.complete_proposal_write(
+                relative_path,
+                &record.payload.operation_id,
+                expected_sha256,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn complete_proposal_write(
+        &self,
+        relative_path: &Path,
+        operation_id: &str,
+        expected_sha256: &str,
+    ) -> Result<()> {
+        let final_path = self.root.join(relative_path);
+        let temporary = final_path.with_extension("tmp");
+        match regular_file_state(&final_path)? {
+            FilePresence::Regular(sha256) if sha256 == expected_sha256 => {
+                remove_orphan_temporary(&temporary)?;
+                self.append_proposal_committed(relative_path, operation_id, expected_sha256)?;
+                Ok(())
+            }
+            FilePresence::Regular(_) => Err(Error::Conflict(format!(
+                "proposal_write_failed: final artifact {} does not match recorded sha256 {expected_sha256}",
+                final_path.display()
+            ))),
+            FilePresence::NonRegular => Err(Error::Conflict(format!(
+                "proposal_write_failed: final path occupied by a non-regular file: {}",
+                final_path.display()
+            ))),
+            FilePresence::Absent => match regular_file_state(&temporary)? {
+                FilePresence::Regular(sha256) if sha256 == expected_sha256 => {
+                    fs::rename(&temporary, &final_path)?;
+                    if let Some(parent) = final_path.parent() {
+                        sync_directory(parent)?;
+                    }
+                    self.append_proposal_committed(relative_path, operation_id, expected_sha256)?;
+                    Ok(())
+                }
+                _ => Err(Error::Custody(format!(
+                    "proposal_write_failed: no artifact matches recorded sha256 {expected_sha256} \
+                     (final {} and temporary {} absent or mismatched)",
+                    final_path.display(),
+                    temporary.display()
+                ))),
+            },
+        }
+    }
+
+    fn append_proposal_committed(
+        &self,
+        relative_path: &Path,
+        operation_id: &str,
+        expected_sha256: &str,
+    ) -> Result<()> {
+        self.append_operation(
+            OperationEventV1 {
+                operation_id: operation_id.into(),
+                state: OperationState::ProposalCommitted,
+                detail: serde_json::json!({"path": relative_path, "sha256": expected_sha256}),
+            },
+            Some(expected_sha256.into()),
+        )?;
+        Ok(())
+    }
+}
+
+fn route_path_sha256_digest(path: &Path) -> String {
+    hex::encode(Sha256::digest(path.as_os_str().as_encoded_bytes()))
+}
+
+fn proposal_write_target(event: &OperationEventV1) -> Option<(&Path, &str)> {
+    let path = event.detail.get("path")?.as_str()?;
+    let digest = event.detail.get("sha256")?.as_str()?;
+    Some((Path::new(path), digest))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FilePresence {
+    Absent,
+    Regular(String),
+    NonRegular,
+}
+
+fn regular_file_state(path: &Path) -> Result<FilePresence> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_file() => {
+            Ok(FilePresence::NonRegular)
+        }
+        Ok(_) => {
+            let mut reader = File::open(path)?;
+            let mut hasher = Sha256::new();
+            let mut buffer = [0u8; 8192];
+            loop {
+                let count = reader.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..count]);
+            }
+            Ok(FilePresence::Regular(hex::encode(hasher.finalize())))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(FilePresence::Absent),
+        Err(error) => Err(Error::Io(error)),
+    }
+}
+
+fn remove_orphan_temporary(temporary: &Path) -> Result<()> {
+    match fs::remove_file(temporary) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::Io(error)),
     }
 }
 

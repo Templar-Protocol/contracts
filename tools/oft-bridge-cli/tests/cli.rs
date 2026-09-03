@@ -129,3 +129,38 @@ fn mainnet_mutation_is_hard_disabled() {
     );
     assert!(!directory.path().join("proposal.json").exists());
 }
+
+#[test]
+fn json_parse_errors_use_the_stable_envelope() {
+    let output = binary()
+        .args(["--json", "not-a-command"])
+        .output()
+        .expect("run CLI");
+    assert_eq!(output.status.code(), Some(2));
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("JSON output");
+    assert_eq!(envelope["status"], "error");
+    assert_eq!(envelope["command"], "parse");
+    assert_eq!(envelope["effect"], "local_read");
+    assert_eq!(envelope["transactions"], serde_json::json!([]));
+    assert_eq!(envelope["error"]["code"], "invalid_input");
+}
+
+#[test]
+fn rpc_environment_and_file_providers_are_mutually_exclusive() {
+    let output = binary()
+        .args([
+            "init",
+            "--desired",
+            "desired.json",
+            "--state",
+            "state",
+            "--stellar-rpc-env",
+            "STELLAR_RPC_URL",
+            "--stellar-rpc-file",
+            "rpc.txt",
+        ])
+        .output()
+        .expect("run CLI");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+}

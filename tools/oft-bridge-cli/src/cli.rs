@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::{
     canonical_sha256,
+    config::SecretProvider,
     domain::{
         AssetKind, DesiredRouteV1, Direction, Environment, OperationDraftV1, OperationV1, Vm,
         SCHEMA_VERSION,
@@ -62,14 +63,48 @@ struct ReconcileArgs {
     fail_on_deficit: bool,
 }
 
-/// Resolves an RPC URL from a named environment variable. URLs never enter
-/// argv directly.
-fn rpc_url(env_var: Option<&String>) -> Result<Option<String>> {
-    env_var
-        .map(String::as_str)
-        .map(std::env::var)
-        .transpose()
-        .map_err(|error| Error::InvalidInput(format!("rpc env read failed: {error}")))
+#[derive(Debug, Args)]
+struct RpcArgs {
+    /// Environment variable holding the Stellar RPC URL.
+    #[arg(long)]
+    stellar_rpc_env: Option<String>,
+    /// Mode-0600 non-symlink file holding the Stellar RPC URL.
+    #[arg(long, conflicts_with = "stellar_rpc_env")]
+    stellar_rpc_file: Option<PathBuf>,
+    /// Environment variable holding the EVM RPC URL.
+    #[arg(long)]
+    evm_rpc_env: Option<String>,
+    /// Mode-0600 non-symlink file holding the EVM RPC URL.
+    #[arg(long, conflicts_with = "evm_rpc_env")]
+    evm_rpc_file: Option<PathBuf>,
+}
+
+impl RpcArgs {
+    fn stellar_url(&self) -> Result<Option<String>> {
+        rpc_url(
+            self.stellar_rpc_env.as_ref(),
+            self.stellar_rpc_file.as_ref(),
+        )
+    }
+
+    fn evm_url(&self) -> Result<Option<String>> {
+        rpc_url(self.evm_rpc_env.as_ref(), self.evm_rpc_file.as_ref())
+    }
+}
+
+/// Resolves an RPC URL from one credential-safe provider. Values never enter
+/// argv or durable state.
+fn rpc_url(env_var: Option<&String>, file: Option<&PathBuf>) -> Result<Option<String>> {
+    match (env_var, file) {
+        (Some(name), None) => SecretProvider::Environment(name.clone())
+            .read()
+            .map(|value| Some(value.to_string())),
+        (None, Some(path)) => SecretProvider::File(path.clone())
+            .read()
+            .map(|value| Some(value.to_string())),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => unreachable!("clap enforces provider exclusivity"),
+    }
 }
 
 #[derive(Debug, Args)]
@@ -84,12 +119,8 @@ struct InitArgs {
     /// identity-derived environment.
     #[arg(long)]
     network: Option<String>,
-    /// Environment variable holding the Stellar RPC URL (required for --write).
-    #[arg(long)]
-    stellar_rpc_env: Option<String>,
-    /// Environment variable holding the EVM RPC URL (required for --write).
-    #[arg(long)]
-    evm_rpc_env: Option<String>,
+    #[command(flatten)]
+    rpc: RpcArgs,
 }
 
 #[derive(Debug, Args)]
@@ -159,12 +190,8 @@ struct ProposalCreateArgs {
     draft: PathBuf,
     #[arg(long)]
     out: PathBuf,
-    /// Environment variable holding the Stellar RPC URL.
-    #[arg(long)]
-    stellar_rpc_env: Option<String>,
-    /// Environment variable holding the EVM RPC URL.
-    #[arg(long)]
-    evm_rpc_env: Option<String>,
+    #[command(flatten)]
+    rpc: RpcArgs,
 }
 
 #[derive(Debug, Args)]
@@ -732,12 +759,8 @@ struct ChainEffectArgs {
     execute: bool,
     #[arg(long, conflicts_with = "execute")]
     proposal_out: Option<PathBuf>,
-    /// Environment variable holding the Stellar RPC URL for live-bound proposals.
-    #[arg(long)]
-    stellar_rpc_env: Option<String>,
-    /// Environment variable holding the EVM RPC URL for live-bound proposals.
-    #[arg(long)]
-    evm_rpc_env: Option<String>,
+    #[command(flatten)]
+    rpc: RpcArgs,
 }
 
 impl Cli {
@@ -981,8 +1004,8 @@ fn init(args: &InitArgs) -> Result<CommandData> {
     }
     environment::init_environment(
         &desired.identity,
-        rpc_url(args.stellar_rpc_env.as_ref())?.as_deref(),
-        rpc_url(args.evm_rpc_env.as_ref())?.as_deref(),
+        args.rpc.stellar_url()?.as_deref(),
+        args.rpc.evm_url()?.as_deref(),
         true,
     )?;
     let (store, mut state) = RouteStore::create(&args.state, desired.clone())?;
@@ -1297,8 +1320,8 @@ fn proposal(args: ProposalArgs) -> Result<CommandData> {
             &args.state,
             &args.draft,
             &args.out,
-            rpc_url(args.stellar_rpc_env.as_ref())?.as_deref(),
-            rpc_url(args.evm_rpc_env.as_ref())?.as_deref(),
+            args.rpc.stellar_url()?.as_deref(),
+            args.rpc.evm_url()?.as_deref(),
         ),
         ProposalCommand::Ingest(args) => crate::governance::ingest_proposal(
             &args.state,
@@ -1366,7 +1389,7 @@ fn wrap(args: WrapArgs) -> Result<CommandData> {
     let nonce = if let Some(nonce) = args.evm_nonce {
         nonce
     } else {
-        let url = rpc_url(args.effect.evm_rpc_env.as_ref())?.ok_or_else(|| {
+        let url = args.effect.rpc.evm_url()?.ok_or_else(|| {
             Error::InvalidInput(
                 "live_environment_required: EVM RPC URL is required without --evm-nonce".into(),
             )
@@ -1400,8 +1423,8 @@ fn wrap(args: WrapArgs) -> Result<CommandData> {
             &args.state,
             &first,
             &out,
-            rpc_url(args.effect.stellar_rpc_env.as_ref())?.as_deref(),
-            rpc_url(args.effect.evm_rpc_env.as_ref())?.as_deref(),
+            args.effect.rpc.stellar_url()?.as_deref(),
+            args.effect.rpc.evm_url()?.as_deref(),
         );
     }
     data(serde_json::to_value(&plan)?)
@@ -1528,8 +1551,8 @@ fn chain_effect(
             state_path,
             operation,
             &out,
-            rpc_url(effect.stellar_rpc_env.as_ref())?.as_deref(),
-            rpc_url(effect.evm_rpc_env.as_ref())?.as_deref(),
+            effect.rpc.stellar_url()?.as_deref(),
+            effect.rpc.evm_url()?.as_deref(),
         );
     }
     Err(Error::Chain("native execution requires a qualified live adapter; use --proposal-out until qualification succeeds".into()))
@@ -1763,8 +1786,8 @@ fn leg(args: LegArgs) -> Result<CommandData> {
             args.allow_additional_obligation,
             args.effect.execute,
             args.effect.proposal_out.as_deref(),
-            rpc_url(args.effect.stellar_rpc_env.as_ref())?.as_deref(),
-            rpc_url(args.effect.evm_rpc_env.as_ref())?.as_deref(),
+            args.effect.rpc.stellar_url()?.as_deref(),
+            args.effect.rpc.evm_url()?.as_deref(),
         ),
     }
 }
