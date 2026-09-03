@@ -1,0 +1,25 @@
+{
+  "schema_name": "artifact_lock",
+  "schema_version": 1,
+  "layerzero_source": {
+    "remote": "https://github.com/LayerZero-Labs/monorepo-external",
+    "commit": "a877e3fb45f3a0629e8332073f9d7a41260a9b08",
+    "source_archive_sha256": null
+  },
+  "stellar": {
+    "rust_toolchain": "1.90.0",
+    "target": "wasm32v1-none",
+    "soroban_cli": "25.1.1",
+    "oft_wasm_sha256": "ae7116b1f3f5e32bebc416d2441756fc79a50e3f67ab90ab96898b78c2f81ca2"
+  },
+  "evm": {
+    "oft_evm_version": "4.0.1",
+    "solc": "0.8.23",
+    "optimizer": true,
+    "optimizer_runs": 200,
+    "wrapper_source_sha256": "b3197d3ef37764da82edb50770a92b35f999653528a1b3f4998912a3cca31497",
+    "package_json_sha256": "5ea4979026782846a93b86bf7791521ebdf2f2a59521a861dc0d323ec9dbaf1f",
+    "creation_bytecode_sha256": null,
+    "runtime_bytecode_sha256": null
+  }
+}
