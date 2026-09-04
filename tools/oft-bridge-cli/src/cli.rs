@@ -3223,4 +3223,39 @@ mod recovery_integrity_tests {
                 .is_err()
         );
     }
+
+    /// Guards the top-level `--stellar-rpc-env` global: it must NOT be
+    /// accepted-then-dropped. clap global propagation decides whether a
+    /// top-level value reaches a subcommand's own flattened RpcArgs; this
+    /// asserts the intended delivery contract stays true.
+    #[test]
+    fn global_rpc_flag_delivers_to_subcommand_or_is_dropped() {
+        use super::{Cli, Command};
+        use clap::Parser as _;
+        let cli = Cli::try_parse_from([
+            "prog",
+            "--stellar-rpc-env",
+            "MY_STELLAR_URL",
+            "init",
+            "--desired",
+            "desired.json",
+            "--state",
+            "state",
+            "--write",
+        ])
+        .expect("parse with top-level global rpc flag");
+        assert_eq!(
+            cli.rpc.stellar_rpc_env.as_deref(),
+            Some("MY_STELLAR_URL"),
+            "top-level flatten must hold the value"
+        );
+        match cli.command {
+            Command::Init(args) => assert_eq!(
+                args.rpc.stellar_rpc_env.as_deref(),
+                Some("MY_STELLAR_URL"),
+                "clap must propagate the global value into the subcommand RpcArgs"
+            ),
+            _ => unreachable!(),
+        }
+    }
 }

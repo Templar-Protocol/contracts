@@ -907,7 +907,7 @@ pub fn build_stellar_operation(operation: &OperationV1) -> Result<StellarInvocat
             ])?;
             let fee = map(vec![
                 (
-                    symbol("lz_token_fee")?,
+                    symbol("zro_fee")?,
                     ScVal::I128(Int128Parts { hi: 0, lo: 0 }),
                 ),
                 (symbol("native_fee")?, i128_val(&intent.native_fee_raw)?),
