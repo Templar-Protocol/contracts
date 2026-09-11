@@ -69,6 +69,8 @@ wasm_fns! {
     pyth_lazer_adapter => PythLazerAdapter,
     patch_state => PatchState,
     vault => Vault,
+    mock_signer => MockSigner,
+    mock_dao => MockDao,
 }
 
 /// Bytes of a specific *released* version of a contract, for migration and

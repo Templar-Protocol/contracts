@@ -168,6 +168,8 @@ mod tests {
                 ArtifactId::MockOracle,
                 ArtifactId::MockRefFinance,
                 ArtifactId::MockReceiver,
+                ArtifactId::MockSigner,
+                ArtifactId::MockDao,
             ]
         );
     }

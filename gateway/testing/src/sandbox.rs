@@ -718,6 +718,44 @@ impl SandboxHarness {
         Ok(id)
     }
 
+    /// Deploy the mock MPC signer, whose derived keys and signatures the test configures.
+    pub async fn deploy_mock_signer(&self, label: &str) -> Result<AccountId> {
+        let (id, signer) = self
+            .create_account(label, NearToken::from_near(100))
+            .await?;
+        deploy_contract(
+            &self.network,
+            id.clone(),
+            signer,
+            crate::wasm::mock_signer().await.to_vec(),
+            "new",
+            serde_json::json!({}),
+        )
+        .await?;
+        Ok(id)
+    }
+
+    /// Deploy the mock Sputnik DAO with the given proposal bond and return its id.
+    pub async fn deploy_mock_dao(
+        &self,
+        label: &str,
+        proposal_bond: NearToken,
+    ) -> Result<AccountId> {
+        let (id, signer) = self
+            .create_account(label, NearToken::from_near(100))
+            .await?;
+        deploy_contract(
+            &self.network,
+            id.clone(),
+            signer,
+            crate::wasm::mock_dao().await.to_vec(),
+            "new",
+            serde_json::json!({ "proposal_bond": proposal_bond }),
+        )
+        .await?;
+        Ok(id)
+    }
+
     /// Deploy a standalone mock fungible token (NEP-141) and return its id.
     pub async fn deploy_ft(&self, label: &str, name: &str, symbol: &str) -> Result<AccountId> {
         let (id, signer) = self
