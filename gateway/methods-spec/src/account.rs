@@ -86,6 +86,13 @@ pub enum AccessKeyPermission {
     },
 }
 
+/// Add a full-access key to the signing account.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "account.addKey")]
+pub struct AddKey {
+    pub public_key: PublicKey,
+}
+
 /// Delete a managed account and send remaining funds to a beneficiary.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "account.delete")]

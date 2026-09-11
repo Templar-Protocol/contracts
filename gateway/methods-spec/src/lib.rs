@@ -146,6 +146,7 @@ macro_rules! for_each_read_method {
 #[macro_export]
 macro_rules! for_each_write_method {
     ($callback:ident) => {
+        $callback!($crate::account::AddKey);
         $callback!($crate::account::Delete);
         $callback!($crate::ft::Transfer);
         $callback!($crate::ft::TransferCall);
