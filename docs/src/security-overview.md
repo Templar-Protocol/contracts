@@ -175,7 +175,7 @@ The **templarfi.org** domain is protected by:
 
 - **No private key handling**: the frontend never requests, stores, or transmits private keys; signing is delegated to the user's wallet.
 - **Strict input validation** before any contract interaction.
-- **HTTPS enforced**: all traffic is served over TLS, and the hosting platform redirects plain HTTP and sets HTTP Strict Transport Security headers on every response by default, preventing protocol downgrade.
+- **HTTPS enforced**: all traffic is served over TLS and plain HTTP is redirected to HTTPS. HTTP Strict Transport Security is a deployment requirement satisfied by the hosting platform's configuration rather than by headers set in the application code.
 - **Minimal, pinned dependencies** to reduce supply-chain risk.
 - **Transparent transactions**: parameters are constructed so users can verify the contract call and arguments in their wallet before signing.
 
