@@ -141,6 +141,12 @@ Templar maintains role-segmented [emergency runbooks](https://github.com/Templar
 
 Templar coordinates with the NEAR Foundation and the Stellar Development Foundation security functions during ecosystem-level incidents.
 
+## Insurance and Recovery
+
+Templar does not currently carry insurance cover for smart contract or oracle failure, and there is no on-chain insurance fund that backstops bad debt; options are under evaluation (**Input needed**: the options being evaluated and the decision timeline). Depositors should assume that losses from an exploited contract or an unrecoverable bad-debt event are borne by the affected market's suppliers, and that markets are isolated so such losses do not spread to other markets.
+
+Recovery from a protocol-level incident follows the [incident response](#incident-response) process: contain through the oracle layer and the bots, preserve user exits, and migrate to a patched, audited market version. For incidents at the infrastructure layer (NEAR Intents, bridges, stablecoin issuers), Templar coordinates with the NEAR Foundation and the Stellar Development Foundation security functions, following the recovery precedents those ecosystems have established. **Input needed**: whether any treasury-backed remediation policy applies, and its limits.
+
 ## Frontend Security
 
 The application at **app.templarfi.org** is the interface most users sign transactions through, so it is hardened as a first-class attack surface.
@@ -163,7 +169,7 @@ The **templarfi.org** domain is protected by:
 - **Immutable deployments**: every deployment produces an immutable, content-addressed build; any unauthorized change can be identified and rolled back instantly.
 - **Build verification**: production deployments originate only from reviewed and approved changes in a branch-protected repository.
 - **No third-party scripts**: the application loads no scripts or stylesheets from external origins. Everything is bundled into content-hashed assets from the immutable build, so there is no external resource whose integrity would need to be pinned.
-- **Framing protection**: every response carries `X-Frame-Options: SAMEORIGIN` and a Content Security Policy of `frame-ancestors 'none'`, so the application cannot be embedded in another site to trick users into signing (clickjacking). The policy does not currently restrict script or style sources; the absence of third-party scripts limits the injection surface such a restriction would cover.
+- **Framing protection**: every response carries `X-Frame-Options: SAMEORIGIN` and a Content Security Policy of `frame-ancestors 'none'`, so the application cannot be embedded in another site to trick users into signing (clickjacking). The policy does not currently restrict script or style sources; the absence of third-party scripts limits the injection surface such a restriction would cover. A policy restricting `script-src` and `style-src` to the application's own origin is a planned hardening (**Input needed**: owner and timing; the frontend is maintained in a separate repository).
 
 ### Intrusion Detection and Monitoring
 
