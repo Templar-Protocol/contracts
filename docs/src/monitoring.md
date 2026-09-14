@@ -110,17 +110,17 @@ has been deployed or upgraded.
 
 ### Oracle Health
 
-Markets read prices from the oracle account in their configuration, which for current markets is a [proxy oracle](./oracles.md#proxy-oracle). Check the proxy first, then the underlying adapters.
+Markets read prices from the oracle account in their configuration. Newer markets read a [proxy oracle](./oracles.md#proxy-oracle); some older markets still read `pyth-oracle.near` or `lst.oracle.tmplr.near` directly (for example `ibtc-iethusdc.v1.tmplr.near` and `stnear-usdc-1.v1.tmplr.near`), so check the market's `get_configuration` output first. For a proxy-backed market, check the proxy first, then the underlying adapters. The example below uses `ixlmdejaaa-ixlmusdc-2.v1.tmplr.near`, whose configuration points to `proxy-oracle-ixlmdejaaa-ixlmusdc-2.v1.tmplr.near`; take the price identifiers from that configuration.
 
 ```bash
 # Latest cached price for a feed and its status (accepted, blocked, stale, failed)
-near contract call-function as-read-only proxy-oracle-<market>.v1.tmplr.near get_cached_proxy_price json-args '{"id": "<price-id>"}' network-config mainnet now
+near contract call-function as-read-only proxy-oracle-ixlmdejaaa-ixlmusdc-2.v1.tmplr.near get_cached_proxy_price json-args '{"id": "<price-id>"}' network-config mainnet now
 
 # Circuit breaker state and accepted price history for a feed
-near contract call-function as-read-only proxy-oracle-<market>.v1.tmplr.near get_proxy_circuit_breaker_set json-args '{"id": "<price-id>"}' network-config mainnet now
+near contract call-function as-read-only proxy-oracle-ixlmdejaaa-ixlmusdc-2.v1.tmplr.near get_proxy_circuit_breaker_set json-args '{"id": "<price-id>"}' network-config mainnet now
 
 # What the market will actually see: accepted prices no older than <age> seconds
-near contract call-function as-read-only proxy-oracle-<market>.v1.tmplr.near list_ema_prices_no_older_than json-args '{"price_ids": ["<price-id>"], "age": 60}' network-config mainnet now
+near contract call-function as-read-only proxy-oracle-ixlmdejaaa-ixlmusdc-2.v1.tmplr.near list_ema_prices_no_older_than json-args '{"price_ids": ["<price-id>"], "age": 60}' network-config mainnet now
 
 # Underlying sources
 near contract call-function as-read-only pyth-oracle.near get_price json-args '{"price_identifier": "<pyth-price-id>"}' network-config mainnet now
