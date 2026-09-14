@@ -86,10 +86,18 @@ pub enum AccessKeyPermission {
     },
 }
 
-/// Add a full-access key to the signing account.
+/// Add an access key to the signing account.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "account.addKey")]
 pub struct AddKey {
+    pub public_key: PublicKey,
+    pub permission: AccessKeyPermission,
+}
+
+/// Delete an access key from the signing account.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "account.deleteKey")]
+pub struct DeleteKey {
     pub public_key: PublicKey,
 }
 

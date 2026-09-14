@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use near_api::types::transaction::actions::{
     AccessKey, AccessKeyPermission as NearAccessKeyPermission, Action, AddKeyAction,
-    DeleteAccountAction,
+    DeleteAccountAction, DeleteKeyAction, FunctionCallPermission,
 };
 use templar_gateway_core::{
     GatewayError, {DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite},
@@ -35,6 +35,22 @@ fn permission_view(
             }
         }
     })
+}
+
+/// The inverse of [`permission_view`], for the key a write installs.
+fn permission_action(permission: account::AccessKeyPermission) -> NearAccessKeyPermission {
+    match permission {
+        account::AccessKeyPermission::FullAccess => NearAccessKeyPermission::FullAccess,
+        account::AccessKeyPermission::FunctionCall {
+            allowance,
+            receiver_id,
+            method_names,
+        } => NearAccessKeyPermission::FunctionCall(FunctionCallPermission {
+            allowance,
+            receiver_id: receiver_id.to_string(),
+            method_names: method_names.into_iter().map(|name| name.0).collect(),
+        }),
+    }
 }
 
 #[async_trait]
@@ -139,8 +155,24 @@ impl<C: Send + 'static> PlanWrite<account::AddKey, C> for Dispatch {
                 // The runtime assigns the real nonce on creation; the value here is ignored.
                 access_key: AccessKey {
                     nonce: 0.into(),
-                    permission: NearAccessKeyPermission::FullAccess,
+                    permission: permission_action(request.body.permission),
                 },
+            }))],
+        ))
+    }
+}
+
+#[async_trait]
+impl<C: Send + 'static> PlanWrite<account::DeleteKey, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<account::DeleteKey>,
+        _context: C,
+    ) -> GatewayResult<OperationPlan> {
+        Ok(OperationPlan::execute(
+            request.signer_account_id.clone(),
+            request.signer_account_id.0,
+            vec![Action::DeleteKey(Box::new(DeleteKeyAction {
+                public_key: request.body.public_key.into(),
             }))],
         ))
     }
@@ -170,7 +202,7 @@ mod tests {
     use near_api::types::NearToken;
     use templar_gateway_methods_spec::account;
 
-    use super::permission_view;
+    use super::{permission_action, permission_view};
 
     #[test]
     fn full_access_maps_through() {
@@ -206,6 +238,25 @@ mod tests {
             }
             account::AccessKeyPermission::FullAccess => panic!("expected FunctionCall"),
         }
+    }
+
+    #[test]
+    fn permission_round_trips_through_the_action_form() {
+        let permission = account::AccessKeyPermission::FunctionCall {
+            allowance: None,
+            receiver_id: "market.near".parse().expect("valid"),
+            method_names: vec![templar_gateway_types::ContractMethodName::from(
+                "borrow".to_owned(),
+            )],
+        };
+        assert_eq!(
+            permission_view(permission_action(permission.clone())).expect("maps back"),
+            permission
+        );
+        assert!(matches!(
+            permission_action(account::AccessKeyPermission::FullAccess),
+            NearAccessKeyPermission::FullAccess
+        ));
     }
 
     #[test]
