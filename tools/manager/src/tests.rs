@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use clap::{error::ErrorKind, CommandFactory, Parser};
 
@@ -418,21 +418,33 @@ fn signer_env_satisfies_write_credentials() {
 
 /// Run `f` with `SIGNER_ID` and `SECRET_KEY` set to exactly the given values
 /// (cleared when `None`), environment mutation serialized, then restore the
-/// original values.
+/// original values — on panic too, so one failing test cannot leak a
+/// credential into the next.
 fn with_credential_env<T>(
     signer_id: Option<&str>,
     secret: Option<&str>,
     f: impl FnOnce() -> T,
 ) -> T {
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let original_signer = std::env::var_os("SIGNER_ID");
-    let original_secret = std::env::var_os("SECRET_KEY");
+    let _guard = ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let _restore = RestoreEnv {
+        signer_id: std::env::var_os("SIGNER_ID"),
+        secret: std::env::var_os("SECRET_KEY"),
+    };
     set_env("SIGNER_ID", signer_id.map(OsString::from));
     set_env("SECRET_KEY", secret.map(OsString::from));
-    let result = f();
-    set_env("SIGNER_ID", original_signer);
-    set_env("SECRET_KEY", original_secret);
-    result
+    f()
+}
+
+struct RestoreEnv {
+    signer_id: Option<OsString>,
+    secret: Option<OsString>,
+}
+
+impl Drop for RestoreEnv {
+    fn drop(&mut self) {
+        set_env("SIGNER_ID", self.signer_id.take());
+        set_env("SECRET_KEY", self.secret.take());
+    }
 }
 
 fn set_env(key: &str, value: Option<OsString>) {
