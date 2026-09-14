@@ -11,7 +11,7 @@ Templar Protocol is built on a defence-in-depth model: immutable, isolated marke
 - **Professional curators** manage vault lending risk under timelocked governance with an independent Sentinel.
 - **Real-time monitoring** of markets, proxy oracles, and vaults with [Hypernative](https://www.hypernative.io/) and custom alerts, a [public alerts channel](https://t.me/+CcqXyt01lsljZmQx), and a [live risk dashboard](https://data.templarfi.org/).
 - **AI security-focused code scanning** (Octane, Almanax, GPT Cyber) alongside nightly formal proofs and fuzzing in CI.
-- **2-of-3 multisig** for every mutable NEAR component, with per-action timelocks; Stellar vaults are governed per vault by a governance admin, curator, and Sentinel under their own timelocks.
+- **2-of-3 DAO multisig** for every mutable NEAR component; timelocks and immediate actions follow each component's policy (proxy oracle governance is timelocked per method, the registry uses two-step finalization, and breaker operation is immediate). Stellar vaults are governed per vault by a governance admin, curator, and Sentinel under configurable timelocks. See [Protocol Governance](./governance.md).
 - **Hardened frontend and DNS**.
 
 ## Audits and Formal Verification
@@ -85,7 +85,7 @@ Oracle failure and manipulation is the dominant cause of lending-protocol losses
 - **Weighted-median aggregation** across sources with a configurable fresh-source quorum. The standard production configuration uses a quorum of one with Pyth weighted above RedStone, so the higher-weighted source determines the price while both are fresh and a single fresh source carries the feed when the other is stale. That configuration favours liveness; the freshness filter and enforced circuit breakers, not the aggregation, are the primary defence against a single compromised provider, and quorum and weights can be raised per feed as more providers come online.
 - **Circuit breakers** compare against accepted history, so an attacker cannot first poison the reference sample and then pass a deviation check.
 - **Fail-closed reads**: a blocked, failed, or stale feed reads as no price, never as the last known price.
-- **Timelocked governance** on every feed change, with only risk-reducing actions (trips, re-arms) immediate.
+- **Timelocked governance** on every feed configuration change and contract upgrade. Circuit breaker operation (trip and untrip, re-arm, enforcement on or off) is role-gated and immediate in both directions; those roles sit with the multisig and every use is alerted.
 - **Independently audited** by Halborn (August 2026).
 
 Source: [`contract/proxy-oracle`](https://github.com/Templar-Protocol/contracts/tree/dev/contract/proxy-oracle).

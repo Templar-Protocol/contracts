@@ -18,7 +18,7 @@ market, see [Deploying a market](./deployments.md).
 | Contract | Account ID | Notes |
 |---|---|---|
 | Proxy oracle (per market) | `proxy-oracle-<market>.v1.tmplr.near` | Aggregated, circuit-breaker-protected feed for `<market>.v1.tmplr.near` |
-| Proxy oracle governance (per market) | `proxy-gov-<market>.v1.tmplr.near` | Timelocked governance for the matching proxy oracle |
+| Proxy oracle governance (per market) | `proxy-gov-<market>.v1.tmplr.near` | Timelocked governance for the matching proxy oracle. A market that reads a separately deployed proxy does not necessarily follow this pattern; the authoritative governance account is the proxy's owner, returned by its `own_get_owner` view |
 | Pyth Lazer adapter | [`pyth-lazer.v1.tmplr.near`](https://nearblocks.io/address/pyth-lazer.v1.tmplr.near) | Verifies and serves signed Pyth Lazer prices |
 | RedStone adapter | [`redstone-adapter.v1.tmplr.near`](https://nearblocks.io/address/redstone-adapter.v1.tmplr.near) | Verifies and serves signed RedStone prices |
 | Pyth (classic) | [`pyth-oracle.near`](https://nearblocks.io/address/pyth-oracle.near) | Pyth's own contract; read directly by older markets |
