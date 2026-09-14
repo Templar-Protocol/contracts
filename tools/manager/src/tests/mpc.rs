@@ -5,6 +5,7 @@ use crate::cli::{Cli, Command};
 use crate::commands::account::AccountNs;
 use crate::commands::mpc::MpcNs;
 use crate::mpc::payload::PayloadKind;
+use templar_gateway_methods_spec::account as spec;
 
 const PROPOSE: [&str; 8] = [
     "tmplrmgr",
@@ -151,6 +152,71 @@ fn add_key_takes_a_literal_key_or_a_derivation_but_needs_one() {
     )
     .expect_err("--mpc-path alone");
     assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+}
+
+const KEY: &str = "ed25519:6phW8vfVNMmktunyZV576gGomMurYvg4ZkQHMdbGSiXd";
+
+#[test]
+fn add_key_defaults_to_full_access_and_restricts_with_receiver_id() {
+    let base = ["tmplrmgr", "account", "add-key", "--key", KEY];
+    let parse = |extra: &[&str]| {
+        let Command::Account {
+            command: AccountNs::AddKey(add_key),
+        } = Cli::try_parse_from(base.into_iter().chain(extra.iter().copied()).chain(CREDS))
+            .expect("parses")
+            .command
+        else {
+            panic!("expected Account::AddKey")
+        };
+        add_key.permission()
+    };
+
+    assert_eq!(parse(&[]), spec::AccessKeyPermission::FullAccess);
+    assert_eq!(
+        parse(&[
+            "--receiver-id",
+            "market.testnet",
+            "--method-name",
+            "borrow",
+            "--method-name",
+            "repay",
+            "--allowance",
+            "1 NEAR",
+        ]),
+        spec::AccessKeyPermission::FunctionCall {
+            allowance: Some(templar_gateway_types::NearToken::from_near(1)),
+            receiver_id: "market.testnet".parse().expect("valid"),
+            method_names: vec![
+                templar_gateway_types::ContractMethodName::from("borrow".to_owned()),
+                templar_gateway_types::ContractMethodName::from("repay".to_owned()),
+            ],
+        }
+    );
+
+    let error = Cli::try_parse_from(
+        base.into_iter()
+            .chain(["--method-name", "borrow"])
+            .chain(CREDS),
+    )
+    .expect_err("--method-name without --receiver-id");
+    assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+}
+
+#[test]
+fn delete_key_parses() {
+    let Command::Account {
+        command: AccountNs::DeleteKey(delete_key),
+    } = Cli::try_parse_from(
+        ["tmplrmgr", "account", "delete-key", "--key", KEY]
+            .into_iter()
+            .chain(CREDS),
+    )
+    .expect("parses")
+    .command
+    else {
+        panic!("expected Account::DeleteKey")
+    };
+    assert_eq!(delete_key.into_spec().public_key.0.to_string(), KEY);
 }
 
 /// The whole operator flow against a mock MPC signer and a mock DAO: install

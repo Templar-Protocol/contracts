@@ -84,11 +84,13 @@ pub(super) async fn add_key(ctx: CliContext, args: AddKey) -> anyhow::Result<()>
             .literal_public_key()
             .context("--key or --mpc-dao is required")?,
     };
-    tracing::info!(%public_key, "adding full-access key");
+    let permission = args.permission();
+    tracing::info!(%public_key, ?permission, "adding access key");
     ctx.write(
         args.signer,
         account::AddKey {
             public_key: public_key.into(),
+            permission,
         },
     )
     .await

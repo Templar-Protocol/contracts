@@ -2,7 +2,7 @@ mod add_key;
 mod delete;
 mod get;
 
-pub use add_key::AddKey;
+pub use add_key::{AddKey, DeleteKey};
 pub use delete::Delete;
 pub use get::Get;
 
@@ -13,8 +13,10 @@ use clap::Subcommand;
 pub enum AccountNs {
     /// Read an account's on-chain details.
     Get(Get),
-    /// Add a full-access key to the signer account.
+    /// Add an access key to the signer account.
     AddKey(AddKey),
+    /// Delete an access key from the signer account.
+    DeleteKey(DeleteKey),
     /// Delete the signer account, sweeping its balance to a beneficiary.
     Delete(Delete),
 }

@@ -102,6 +102,7 @@ async fn account(ctx: CliContext, ns: AccountNs) -> anyhow::Result<()> {
     match ns {
         AccountNs::Get(a) => ctx.read(a.into_spec()).await,
         AccountNs::AddKey(a) => mpc::add_key(ctx, a).await,
+        AccountNs::DeleteKey(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
         AccountNs::Delete(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
     }
 }
