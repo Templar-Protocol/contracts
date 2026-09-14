@@ -177,8 +177,19 @@ coverage:
 coverage-lcov:
     ./script/coverage.sh lcov '{{ fast_filter }}'
 
+# Regenerate the generated tables in docs/src (risk parameters, release log).
+docs-generate:
+    python3 script/docs/gen-risk-parameters.py
+    python3 script/docs/gen-release-log.py
+
+# Fail if a generated docs table is stale.
+docs-check:
+    python3 script/docs/gen-risk-parameters.py --self-test
+    python3 script/docs/gen-risk-parameters.py --check
+    python3 script/docs/gen-release-log.py --check
+
 # Build the docs.
-docs:
+docs: docs-check
     ./script/build-docs.sh
 
 # Warm the shared cache of released contract WASM.
