@@ -32,6 +32,14 @@ At the account level, the registry adds the deployer's full-access key to each n
 near account list-keys <market-address> network-config mainnet now
 ```
 
+### Deployer Key Retention
+
+When the registry deploys a market (or a proxy oracle and its governance contract), it adds the deploying signer's full-access key to the new account and logs a warning that it has done so; `tmplrmgr` includes that key by default and lists every key each account will receive in the deployment plan. The key exists so that contract storage can be repaired through the reviewed [patch process](./deployments.md#patching-contract-storage) while a market is new; it was used in August 2026 to migrate legacy markets to proxy oracles. The key is held by the DAO multisig, never by an individual, and a patch cannot be applied without a DAO proposal and a sandbox replay.
+
+**Policy**: retained deployer keys are deleted after a bake-in period. The bake-in period for a market ends once the curators allocating to it and the issuers of its assets have signed off on the deployment; the DAO then removes the key, and the account becomes immutable at the account level as well as at the contract level. After deletion, no storage patch is possible and any fix requires a new market version and user migration. **Input needed**: where each key deletion is recorded (the [Deployment and Version Log](./release-log.md) is the natural place) and the current status per market.
+
+Anyone can check whether a market still carries an access key with the `near account list-keys` command above; an empty list means the key has been deleted.
+
 New market versions are deployed to new account IDs through the registry; old versions cannot be overwritten. When a new version of the market contract is available, it is uploaded to the registry contract and new markets are deployed from it. Existing markets are not upgraded and funds are not automatically migrated, so users migrate their positions individually.
 
 Because a market cannot be paused, the emergency control for a market that reads a proxy oracle is its oracle: tripping the [circuit breaker](./oracles.md#circuit-breakers) on the feed freezes borrowing, collateral withdrawal against debt, and liquidations on that market, while supply withdrawals and repayments continue. Older markets that read Pyth's contract directly have no such control.
