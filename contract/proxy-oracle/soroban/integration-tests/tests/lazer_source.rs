@@ -8,8 +8,9 @@ use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig, RefreshStatus, Sou
 use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 use templar_proxy_oracle_soroban_pyth_lazer_source_contract::{
+    feed_asset,
     testutils::{payload_at, MockVerifier, MICROS_PER_SEC},
-    Config, FeedMapping, FreshnessConfig, LazerChannel, PythLazerSource, PythLazerSourceClient,
+    Config, FreshnessConfig, LazerChannel, PythLazerSource, PythLazerSourceClient,
 };
 
 const BTC_FEED: u32 = 1;
@@ -23,7 +24,8 @@ struct Wired {
     source: PythLazerSourceClient<'static>,
 }
 
-/// Runtime configured with two mock upstreams plus the real Lazer source.
+/// Runtime configured with two mock upstreams plus the real Lazer source. The
+/// proxy stays keyed by `asset_btc`; the Lazer source entry is keyed by feed id.
 fn wired() -> Wired {
     let b = Bootstrap::new();
     let config = Config {
@@ -36,21 +38,12 @@ fn wired() -> Wired {
             max_ahead_secs: 5,
         },
     };
-    let mappings = Vec::from_array(
-        &b.env,
-        [FeedMapping {
-            feed_id: BTC_FEED,
-            asset: b.asset_btc.clone(),
-        }],
-    );
-    let source_id = b
-        .env
-        .register(PythLazerSource, (&b.admin, config, mappings));
+    let source_id = b.env.register(PythLazerSource, (&b.admin, config));
     let mut sources = b.source_configs(&b.asset_btc);
     sources.pop_back();
     sources.push_back(SourceConfig {
         oracle: source_id.clone(),
-        asset: b.asset_btc.clone(),
+        asset: feed_asset(&b.env, BTC_FEED),
     });
     b.submit_and_execute(
         &b.admin,

@@ -98,18 +98,18 @@ stellar contract deploy --network $NET --source $SRC --wasm-hash <ADAPTER_HASH> 
   --decimals 8 --resolution 1 --base '{"Other":"USD"}'
 ```
 
-Deploy the Pyth Lazer source once, mapping every Lazer feed id to the asset key
-the proxy config will use for it (mainnet verifier
+Deploy the Pyth Lazer source once (mainnet verifier
 `CACZ3GBAKUPIAFRILUFO27J5RUH5GJ2VSJ46LP6GJYSKGDRTQ5MS3HCH`, testnet
-`CAYFT5JE3UQTKT4Q6ZOZK4FXVYVT6RE3MFC7STA4UB6WAEGBT65MRU52`; feed ids XLM 23,
-USDC 7, EURC 240), and the stateless batcher with no arguments:
+`CAYFT5JE3UQTKT4Q6ZOZK4FXVYVT6RE3MFC7STA4UB6WAEGBT65MRU52`) and the stateless
+batcher with no arguments. The source serves every Lazer feed under
+`{"Other":"<feed id>"}` (XLM 23, USDC 7, EURC 240); the proxy's `SetProxy`
+picks which feed backs which asset:
 
 ```bash
 stellar contract deploy --network $NET --source $SRC --wasm-hash <LAZER_HASH> -- \
   --owner <OWNER> \
   --config '{"verifier":"<PYTH_VERIFIER>","base":{"Other":"USD"},"decimals":8,
-             "channel":"FixedRate200ms","freshness":{"max_age_secs":120,"max_ahead_secs":5}}' \
-  --feed_mappings '[{"feed_id":23,"asset":{"Other":"XLM"}},{"feed_id":7,"asset":{"Other":"USDC"}}]'
+             "channel":"FixedRate200ms","freshness":{"max_age_secs":120,"max_ahead_secs":5}}'
 stellar contract deploy --network $NET --source $SRC --wasm-hash <BATCHER_HASH>
 ```
 
@@ -163,14 +163,14 @@ the `--action` JSON).
 {"SetProxy": [{"Other":"XLM"}, {
   "sources": [{"oracle":"CAFJZQWSED6YAWZU3GWRTOCNPPCGBN32L7QV43XX5LZLFTK6JLN34DLN","asset":{"Other":"XLM"}},
               {"oracle":"CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF","asset":{"Stellar":"CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA"}},
-              {"oracle":"<LZ>","asset":{"Other":"XLM"}}],
+              {"oracle":"<LZ>","asset":{"Other":"23"}}],
   "min_sources": 3, "max_age_secs": 600, "max_clock_drift_secs": 60 }]}
 ```
 
 3–16 sources; `min_sources ∈ [3, n]`; no duplicate oracle address; both
 freshness bounds are required. `max_age_secs` is capped at 604800 (seven days)
 and `max_clock_drift_secs` at 3600 (one hour). The asset key is per source
-(Reflector keys by symbol, RedStone by SAC address). Size `max_age_secs` to the
+(Reflector keys by symbol, RedStone by SAC address, the Lazer source by feed id). Size `max_age_secs` to the
 slowest source: Reflector buckets `lastprice` timestamps to its 300s
 resolution, so anything ≤ 300 drops it on most refreshes; RedStone updates on
 0.2% deviation or a 12h heartbeat, so pegged assets (USDC, EURC) need ~46800
@@ -219,9 +219,11 @@ inv --id $BATCH -- refresh_many --oracle $RT --assets '[{"Other":"XLM"},{"Other"
 ```
 
 A Lazer-backed proxy needs the source fed first: fetch a `leEcdsa`-format update
-covering every mapped feed (one subscription, one payload) and push it with
+covering every feed in use (one subscription, one payload), requesting the
+`price`, `exponent` and `feedUpdateTimestamp` properties — the source skips any
+feed missing one of them — and push it with
 `inv --id $LZ -- update_price_feeds --payload <hex>`; the return value is the
-number of feeds stored (0 means nothing advanced).
+number of feeds stored (0 means nothing advanced or nothing qualified).
 
 Returns `RefreshStatus`: `Accepted` (cache updated), `Blocked` (breaker),
 `ResolveFailed` (aggregation or internal storage state), `SourceUnavailable` (no

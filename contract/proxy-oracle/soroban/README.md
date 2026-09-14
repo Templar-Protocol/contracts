@@ -48,20 +48,23 @@ runtime. Official adapters are listed in the release manifest.
 Pyth's Lazer contract on Stellar is a stateless verifier: `verify_update(Bytes) -> Bytes`
 proves a payload was signed by a trusted signer and returns it, with no replay protection,
 ordering, or freshness check. `PythLazerSource` owns all of that and serves the result as
-SEP-40. It is `Ownable`, binds one immutable `(verifier, base)`, and holds a `feed_id ↔ Asset`
-map so a single instance can back every asset's proxy.
+SEP-40, keyed by the Lazer feed id itself: feed 23 is `Asset::Other("23")`. Which feed backs
+which proxy asset is therefore decided in the runtime's governed `SetProxy` (whose per-source
+asset key is free), not by an owner of this contract. It is `Ownable` and binds one immutable
+`(verifier, base)`; a single instance serves every feed Pyth publishes.
 
 - `update_price_feeds(payload)` — permissionless. Verifies through the configured verifier,
-  requires the configured channel and a payload timestamp inside the freshness window, caps the
-  feed count, then stores every mapped feed whose per-feed publish time strictly advances (the
-  anti-replay guard). Feeds without a positive price, an exponent, or a feed update timestamp, or whose feed update time falls outside the window, are skipped. Returns the
-  number of feeds stored. One payload covering all subscribed feeds updates every asset.
+  requires the configured channel, then stores every feed whose own update time is inside the
+  freshness window and strictly advances (the anti-replay guard). Feeds without a positive
+  price, an exponent, or an update timestamp are skipped. Returns the number of feeds stored, so
+  a keeper sees `0` when nothing advanced. One payload covering all subscribed feeds updates
+  every asset. Stored feeds are not allowlisted or enumerated (`assets()` is empty); the pusher
+  pays rent for whatever it pushes, and each stored feed renews its own TTL on every push.
 - `lastprice(asset)` rescales the stored `(mantissa, expo)` to the contract's `decimals` and
   keeps the second-precision publish time; `resolution` is 1 and `price` / `prices` serve only
   the latest record (no history is kept).
-- Owner entrypoints: `add_feed` / `remove_feed` (dropping the stored price), `set_freshness`,
-  `set_decimals`, `upgrade(new_wasm_hash, operator)`. Permissionless `extend_ttl()` renews the
-  instance and every stored price. Views: `config`, `feed_mappings`, `stored_price`.
+- Owner entrypoints: `set_freshness`, `set_decimals`, `upgrade(new_wasm_hash, operator)`.
+  Permissionless `extend_ttl()` renews the instance. Views: `config`, `stored_price(feed_id)`.
 
 The payload parser and verifier client are Pyth's own `pyth-lazer-stellar-sdk` 0.3.0, vendored
 into the `Templar-Protocol/pyth-lazer-public` fork on soroban-sdk 25 (crates.io 0.3.0 requires

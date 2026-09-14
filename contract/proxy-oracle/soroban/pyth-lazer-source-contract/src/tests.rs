@@ -43,7 +43,7 @@ fn vector_payload(env: &Env) -> Bytes {
 
 const BTC_FEED: u32 = 1;
 const ETH_FEED: u32 = 2;
-const XLM_FEED: u32 = 23;
+const SOL_FEED: u32 = 112;
 
 struct Harness {
     env: Env,
@@ -62,29 +62,14 @@ fn freshness() -> FreshnessConfig {
     }
 }
 
-fn symbol_asset(env: &Env, symbol: &str) -> Asset {
-    Asset::Other(Symbol::new(env, symbol))
-}
-
-fn mapping(env: &Env, feed_id: u32, symbol: &str) -> FeedMapping {
-    FeedMapping {
-        feed_id,
-        asset: symbol_asset(env, symbol),
-    }
-}
-
-fn harness_with(channel: LazerChannel, mappings: &[(u32, &str)]) -> Harness {
+fn harness_with(channel: LazerChannel) -> Harness {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger()
         .set_timestamp(VECTOR_TIMESTAMP_US / MICROS_PER_SEC + 10);
     let owner = Address::generate(&env);
-    let base = symbol_asset(&env, "USD");
+    let base = Asset::Other(Symbol::new(&env, "USD"));
     let verifier_id = env.register(MockVerifier, ());
-    let mut feed_mappings = Vec::new(&env);
-    for (feed_id, symbol) in mappings {
-        feed_mappings.push_back(mapping(&env, *feed_id, symbol));
-    }
     let config = Config {
         verifier: verifier_id.clone(),
         base: base.clone(),
@@ -92,12 +77,12 @@ fn harness_with(channel: LazerChannel, mappings: &[(u32, &str)]) -> Harness {
         channel,
         freshness: freshness(),
     };
-    let source_id = env.register(PythLazerSource, (&owner, config, feed_mappings));
+    let source_id = env.register(PythLazerSource, (&owner, config));
     Harness {
         verifier: MockVerifierClient::new(&env, &verifier_id),
         source: PythLazerSourceClient::new(&env, &source_id),
-        btc: symbol_asset(&env, "BTC"),
-        eth: symbol_asset(&env, "ETH"),
+        btc: feed_asset(&env, BTC_FEED),
+        eth: feed_asset(&env, ETH_FEED),
         env,
         owner,
         base,
@@ -105,51 +90,19 @@ fn harness_with(channel: LazerChannel, mappings: &[(u32, &str)]) -> Harness {
 }
 
 fn harness() -> Harness {
-    harness_with(
-        LazerChannel::FixedRate200ms,
-        &[(BTC_FEED, "BTC"), (ETH_FEED, "ETH")],
-    )
+    harness_with(LazerChannel::FixedRate200ms)
 }
 
 fn stored_btc(h: &Harness) -> StoredPrice {
-    h.source.stored_price(&h.btc).expect("btc stored")
+    h.source.stored_price(&BTC_FEED).expect("btc stored")
 }
 
-#[derive(Clone, Copy)]
-enum MappingSet {
-    One,
-    DuplicateFeed,
-    DuplicateAsset,
-    TooMany,
-}
-
-fn mappings(env: &Env, set: MappingSet) -> Vec<FeedMapping> {
-    match set {
-        MappingSet::One => Vec::from_array(env, [mapping(env, BTC_FEED, "BTC")]),
-        MappingSet::DuplicateFeed => Vec::from_array(
-            env,
-            [mapping(env, BTC_FEED, "BTC"), mapping(env, BTC_FEED, "ETH")],
-        ),
-        MappingSet::DuplicateAsset => Vec::from_array(
-            env,
-            [mapping(env, BTC_FEED, "BTC"), mapping(env, ETH_FEED, "BTC")],
-        ),
-        MappingSet::TooMany => {
-            let mut all = Vec::new(env);
-            for feed_id in 0..=MAX_FEED_MAPPINGS {
-                all.push_back(mapping(env, feed_id, &std::format!("A{feed_id}")));
-            }
-            all
-        }
-    }
-}
-
-fn construct(decimals: u32, max_age_secs: u64, set: MappingSet) {
+fn construct(decimals: u32, max_age_secs: u64) {
     let env = Env::default();
     let owner = Address::generate(&env);
     let config = Config {
         verifier: env.register(MockVerifier, ()),
-        base: symbol_asset(&env, "USD"),
+        base: Asset::Other(Symbol::new(&env, "USD")),
         decimals,
         channel: LazerChannel::FixedRate200ms,
         freshness: FreshnessConfig {
@@ -157,31 +110,35 @@ fn construct(decimals: u32, max_age_secs: u64, set: MappingSet) {
             max_ahead_secs: 5,
         },
     };
-    env.register(PythLazerSource, (&owner, config, mappings(&env, set)));
+    env.register(PythLazerSource, (&owner, config));
 }
 
 #[rstest]
 #[should_panic]
-#[case::decimals_above_max(19, 60, MappingSet::One)]
+#[case::decimals_above_max(19, 60)]
 #[should_panic]
-#[case::zero_max_age(8, 0, MappingSet::One)]
-#[should_panic]
-#[case::duplicate_feed(8, 60, MappingSet::DuplicateFeed)]
-#[should_panic]
-#[case::duplicate_asset(8, 60, MappingSet::DuplicateAsset)]
-#[should_panic]
-#[case::too_many_mappings(8, 60, MappingSet::TooMany)]
-fn constructor_rejects_invalid_config(
-    #[case] decimals: u32,
-    #[case] max_age_secs: u64,
-    #[case] set: MappingSet,
-) {
-    construct(decimals, max_age_secs, set);
+#[case::zero_max_age(8, 0)]
+fn constructor_rejects_invalid_config(#[case] decimals: u32, #[case] max_age_secs: u64) {
+    construct(decimals, max_age_secs);
 }
 
 #[test]
 fn constructor_accepts_boundary_config() {
-    construct(MAX_SEP40_DECIMALS, 1, MappingSet::One);
+    construct(MAX_SEP40_DECIMALS, 1);
+}
+
+#[rstest]
+#[case(0, "0")]
+#[case(7, "7")]
+#[case(23, "23")]
+#[case(240, "240")]
+#[case(u32::MAX, "4294967295")]
+fn feed_asset_is_the_decimal_id(#[case] feed_id: u32, #[case] text: &str) {
+    let env = Env::default();
+    assert_eq!(
+        feed_asset(&env, feed_id),
+        Asset::Other(Symbol::new(&env, text))
+    );
 }
 
 #[test]
@@ -190,24 +147,20 @@ fn exposes_sep40_metadata_and_config() {
     assert_eq!(h.source.base(), h.base);
     assert_eq!(h.source.decimals(), 8);
     assert_eq!(h.source.resolution(), 1);
-    let assets = h.source.assets();
-    assert_eq!(assets.len(), 2);
-    assert!(assets.contains(&h.btc));
-    assert!(assets.contains(&h.eth));
+    assert_eq!(h.source.assets().len(), 0);
     let config = h.source.config().expect("config");
     assert_eq!(config.channel, LazerChannel::FixedRate200ms);
     assert_eq!(config.freshness, freshness());
-    assert_eq!(h.source.feed_mappings().len(), 2);
     assert_eq!(h.source.get_owner(), Some(h.owner.clone()));
     assert_eq!(h.source.lastprice(&h.btc), None);
 }
 
 #[test]
-fn stores_mapped_feeds_from_pyth_vector_and_ignores_unmapped() {
+fn stores_every_feed_in_the_pyth_vector_under_its_id() {
     let h = harness();
-    assert_eq!(h.source.update_price_feeds(&vector_payload(&h.env)), 2);
+    assert_eq!(h.source.update_price_feeds(&vector_payload(&h.env)), 3);
     let updates = h.env.events().all().filter_by_contract(&h.source.address);
-    assert_eq!(updates.events().len(), 2);
+    assert_eq!(updates.events().len(), 3);
 
     assert_eq!(
         h.source.lastprice(&h.btc),
@@ -220,6 +173,7 @@ fn stores_mapped_feeds_from_pyth_vector_and_ignores_unmapped() {
         h.source.lastprice(&h.eth).map(|p| p.price),
         Some(i128::from(VECTOR_ETH_PRICE))
     );
+    assert!(h.source.stored_price(&SOL_FEED).is_some());
     assert_eq!(
         stored_btc(&h),
         StoredPrice {
@@ -228,7 +182,11 @@ fn stores_mapped_feeds_from_pyth_vector_and_ignores_unmapped() {
             publish_time_us: VECTOR_TIMESTAMP_US,
         }
     );
-    assert_eq!(h.source.stored_price(&symbol_asset(&h.env, "SOL")), None);
+    assert_eq!(
+        h.source
+            .lastprice(&Asset::Other(Symbol::new(&h.env, "BTC"))),
+        None
+    );
 }
 
 #[test]
@@ -253,7 +211,7 @@ fn rescales_to_configured_decimals() {
 
 #[test]
 fn rejects_channel_mismatch() {
-    let h = harness_with(LazerChannel::RealTime, &[(BTC_FEED, "BTC")]);
+    let h = harness_with(LazerChannel::RealTime);
     assert_eq!(
         h.source.try_update_price_feeds(&vector_payload(&h.env)),
         Err(Ok(LazerSourceError::ChannelMismatch))
@@ -268,26 +226,21 @@ fn rejects_channel_mismatch() {
 }
 
 #[test]
-fn enforces_payload_freshness_window() {
+fn feeds_outside_the_window_are_skipped_not_rejected() {
     let h = harness();
     let now = h.env.ledger().timestamp();
     let at = |secs: u64| payload_at(&h.env, secs * MICROS_PER_SEC, &[(BTC_FEED, 5)]);
-    assert_eq!(
-        h.source.try_update_price_feeds(&at(now - 61)),
-        Err(Ok(LazerSourceError::PayloadTooOld))
-    );
-    assert_eq!(
-        h.source.try_update_price_feeds(&at(now + 6)),
-        Err(Ok(LazerSourceError::PayloadTooFarAhead))
-    );
+    assert_eq!(h.source.update_price_feeds(&at(now - 61)), 0);
+    assert_eq!(h.source.update_price_feeds(&at(now + 6)), 0);
+    assert_eq!(h.source.lastprice(&h.btc), None);
     assert_eq!(h.source.update_price_feeds(&at(now - 60)), 1);
 }
 
 #[test]
-fn publish_time_must_strictly_advance_per_asset() {
+fn publish_time_must_strictly_advance_per_feed() {
     let h = harness();
     let vector = vector_payload(&h.env);
-    assert_eq!(h.source.update_price_feeds(&vector), 2);
+    assert_eq!(h.source.update_price_feeds(&vector), 3);
     assert_eq!(h.source.update_price_feeds(&vector), 0);
 
     let older = payload_at(&h.env, VECTOR_TIMESTAMP_US - 1, &[(BTC_FEED, 7)]);
@@ -371,33 +324,6 @@ fn malformed_verified_bytes_are_invalid_payload() {
 }
 
 #[test]
-fn feed_mapping_admin() {
-    let h = harness();
-    let xlm = symbol_asset(&h.env, "XLM");
-    let xlm_payload = payload_at(&h.env, VECTOR_TIMESTAMP_US, &[(XLM_FEED, 17_000_000)]);
-    assert_eq!(h.source.update_price_feeds(&xlm_payload), 0);
-
-    h.source.add_feed(&mapping(&h.env, XLM_FEED, "XLM"));
-    assert_eq!(h.source.update_price_feeds(&xlm_payload), 1);
-    assert_eq!(h.source.lastprice(&xlm).expect("xlm").price, 17_000_000);
-    assert_eq!(h.source.assets().len(), 3);
-
-    assert_eq!(
-        h.source.try_add_feed(&mapping(&h.env, 99, "XLM")),
-        Err(Ok(LazerSourceError::DuplicateMapping))
-    );
-
-    h.source.remove_feed(&XLM_FEED);
-    assert_eq!(h.source.lastprice(&xlm), None);
-    assert_eq!(h.source.stored_price(&xlm), None);
-    assert_eq!(h.source.assets().len(), 2);
-    assert_eq!(
-        h.source.try_remove_feed(&XLM_FEED),
-        Err(Ok(LazerSourceError::UnknownFeed))
-    );
-}
-
-#[test]
 fn set_freshness_validates_and_applies() {
     let h = harness();
     assert_eq!(
@@ -411,10 +337,7 @@ fn set_freshness_validates_and_applies() {
         max_age_secs: 5,
         max_ahead_secs: 0,
     });
-    assert_eq!(
-        h.source.try_update_price_feeds(&vector_payload(&h.env)),
-        Err(Ok(LazerSourceError::PayloadTooOld))
-    );
+    assert_eq!(h.source.update_price_feeds(&vector_payload(&h.env)), 0);
     assert_eq!(
         h.source.config().expect("config").freshness.max_ahead_secs,
         0
@@ -423,7 +346,7 @@ fn set_freshness_validates_and_applies() {
 
 #[test]
 fn price_and_prices_serve_only_the_latest_record() {
-    let h = harness_with(LazerChannel::FixedRate200ms, &[(BTC_FEED, "BTC")]);
+    let h = harness();
     h.source
         .update_price_feeds(&payload_at(&h.env, VECTOR_TIMESTAMP_US, &[(BTC_FEED, 5)]));
     let last = h.source.lastprice(&h.btc).expect("btc");
@@ -453,9 +376,9 @@ fn upgrade_is_owner_gated_and_rejects_zero_hash() {
 }
 
 #[test]
-fn extend_ttl_is_permissionless_and_covers_stored_prices() {
+fn extend_ttl_is_permissionless() {
     let h = harness();
     h.source.update_price_feeds(&vector_payload(&h.env));
     h.source.extend_ttl();
-    assert!(h.source.stored_price(&h.btc).is_some());
+    assert!(h.source.stored_price(&BTC_FEED).is_some());
 }

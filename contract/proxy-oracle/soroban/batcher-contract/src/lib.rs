@@ -10,7 +10,9 @@ use templar_proxy_oracle_soroban_common::{
 
 /// Stateless fan-out so a keeper can service every asset in one Soroban
 /// operation. Holds no authority: every call it forwards is permissionless on
-/// the target.
+/// the target. An archived instance or code entry, or a non-contract address,
+/// fails the whole operation at the ledger level (nothing here can catch it);
+/// restore such targets before batching them.
 #[contract]
 pub struct ProxyOracleBatcher;
 
@@ -42,7 +44,8 @@ impl ProxyOracleBatcher {
     }
 
     /// Renew each contract's instance and code, then call its argument-less
-    /// `extend_ttl()` for its persistent entries; `false` marks a failed call.
+    /// `extend_ttl()` for its persistent entries; `false` marks a failed
+    /// `extend_ttl()` invocation.
     pub fn extend_ttl_contracts(env: Env, contracts: Vec<Address>) -> Vec<bool> {
         extend_self(&env);
         let extend_ttl = Symbol::new(&env, "extend_ttl");

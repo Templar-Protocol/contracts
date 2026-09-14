@@ -21,6 +21,7 @@ ASSET_SYMBOL="${ASSET_SYMBOL:-XLM}"
 ASSET_JSON="{\"Other\":\"$ASSET_SYMBOL\"}"
 BASE_JSON='{"Other":"USD"}'
 LAZER_FEED_ID="${LAZER_FEED_ID:-23}"
+LAZER_ASSET_JSON="{\"Other\":\"$LAZER_FEED_ID\"}"
 MAX_AGE_SECS="${MAX_AGE_SECS:-600}"
 MAX_CLOCK_DRIFT_SECS="${MAX_CLOCK_DRIFT_SECS:-60}"
 LAZER_CHANNEL="${LAZER_CHANNEL:-fixed_rate@200ms}"
@@ -133,8 +134,7 @@ phase_deploy() {
   echo "== pyth lazer source"
   if [[ -z "$(state_get lazer_source)" ]]; then
     local config="{\"verifier\":\"$PYTH_VERIFIER\",\"base\":$BASE_JSON,\"decimals\":8,\"channel\":\"$LAZER_CHANNEL_VARIANT\",\"freshness\":{\"max_age_secs\":$MAX_AGE_SECS,\"max_ahead_secs\":5}}"
-    local mappings="[{\"feed_id\":$LAZER_FEED_ID,\"asset\":$ASSET_JSON}]"
-    deploy_into lazer_source --wasm-hash "$(state_get hash_pyth_lazer_source_contract)" -- --owner "$admin" --config "$config" --feed_mappings "$mappings"
+    deploy_into lazer_source --wasm-hash "$(state_get hash_pyth_lazer_source_contract)" -- --owner "$admin" --config "$config"
   fi
   echo "  LZ=$(state_get lazer_source)"
 
@@ -157,9 +157,9 @@ phase_configure() {
   echo "== source sanity (base / decimals / lastprice)"
   sanity "$REFLECTOR" "$ASSET_JSON"
   sanity "$REDSTONE" "$REDSTONE_ASSET_JSON"
-  sanity "$lz" "$ASSET_JSON"
+  sanity "$lz" "$LAZER_ASSET_JSON"
   echo "== SetProxy($ASSET_SYMBOL): reflector + redstone + lazer, min 3, max_age $MAX_AGE_SECS"
-  local config="{\"sources\":[{\"oracle\":\"$REFLECTOR\",\"asset\":$ASSET_JSON},{\"oracle\":\"$REDSTONE\",\"asset\":$REDSTONE_ASSET_JSON},{\"oracle\":\"$lz\",\"asset\":$ASSET_JSON}],\"min_sources\":3,\"max_age_secs\":$MAX_AGE_SECS,\"max_clock_drift_secs\":$MAX_CLOCK_DRIFT_SECS}"
+  local config="{\"sources\":[{\"oracle\":\"$REFLECTOR\",\"asset\":$ASSET_JSON},{\"oracle\":\"$REDSTONE\",\"asset\":$REDSTONE_ASSET_JSON},{\"oracle\":\"$lz\",\"asset\":$LAZER_ASSET_JSON}],\"min_sources\":3,\"max_age_secs\":$MAX_AGE_SECS,\"max_clock_drift_secs\":$MAX_CLOCK_DRIFT_SECS}"
   local id; id="$(view "$gov" -- next_proposal_id)"
   inv "$gov" -- create_proposal --caller "$admin" --id "$id" --operation "{\"SetProxy\":[$ASSET_JSON,$config]}" --requested_ttl 0 >/dev/null
   inv "$gov" -- execute_proposal --caller "$admin" --id "$id" >/dev/null
@@ -185,8 +185,8 @@ phase_push() {
   echo "  ${#payload} hex chars"
   echo "== update_price_feeds"
   echo "  stored feeds: $(inv "$lz" -- update_price_feeds --payload "$payload")"
-  echo "  stored_price: $(view "$lz" -- stored_price --asset "$ASSET_JSON")"
-  echo "  lastprice:    $(view "$lz" -- lastprice --asset "$ASSET_JSON")"
+  echo "  stored_price: $(view "$lz" -- stored_price --feed_id "$LAZER_FEED_ID")"
+  echo "  lastprice:    $(view "$lz" -- lastprice --asset "$LAZER_ASSET_JSON")"
 }
 
 phase_refresh() {

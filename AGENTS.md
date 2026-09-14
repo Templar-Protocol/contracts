@@ -59,7 +59,7 @@ Use this section as an execution checklist: read the local docs first, preserve 
   Read first: `contract/proxy-oracle/soroban/README.md` (PythLazerSource section), `contract/proxy-oracle/soroban/AUDIT.md`.
   Read/inspect: `contract/proxy-oracle/soroban/pyth-lazer-source-contract/src/lib.rs`.
   Why it matters: it is a SEP-40 source in the Soroban proxy oracle's price path. Pyth's on-chain verifier only checks the signature; replay, ordering, and freshness are enforced here, so a gap ships a stale or replayed price into aggregation. The payload parser is Pyth's `pyth-lazer-stellar-sdk` vendored into the `pyth-lazer-public` fork and pinned by fork tag (Cargo.lock records the commit); bumps are security-sensitive.
-  Watch for: the per-asset strictly-advancing publish time, the payload freshness window and channel filter, the positive-price / exponent-present skip rules, the `decimals` rescale in `lastprice`, and the 32 KiB size budget.
+  Watch for: the per-feed strictly-advancing publish time, the per-feed freshness window and channel filter, the positive-price / exponent-present skip rules, the feed-id key (`feed_asset`), the `decimals` rescale in `lastprice`, and the 32 KiB size budget.
   Minimum verification: `cargo test -p templar-proxy-oracle-soroban-pyth-lazer-source-contract --features testutils`; `cargo test -p templar-proxy-oracle-soroban-integration-tests --test lazer_source`.
 - `gateway/*` (the Templar gateway: `templar-gateway-*`)
   Read first: `gateway/README.md` (RPC naming) and `gateway/METHODS.md` (the generated catalog of every method: kind, input → output, summary).

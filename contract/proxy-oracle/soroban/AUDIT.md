@@ -25,9 +25,9 @@ for NEAR parity, and `RUNBOOK.md` for operations.
    decimals, fails closed after decommission or parent-base drift, and emits
    telemetry for decommission and upgrade actions.
 4. **Pyth Lazer source** (`pyth-lazer-source-contract/src/lib.rs`) — SEP-40 source over
-   Pyth's stateless verifier: channel filter, payload freshness window, per-asset
-   strictly-advancing publish time (anti-replay), feed-count cap, `feed_id ↔ Asset`
-   map, owner-gated mapping/freshness/decimals/upgrade, permissionless
+   Pyth's stateless verifier: channel filter, per-feed freshness window, per-feed
+   strictly-advancing publish time (anti-replay), feeds served under their Lazer id
+   (`Asset::Other("23")`), owner-gated freshness/decimals/upgrade, permissionless
    `update_price_feeds` and `extend_ttl`.
 5. **Batcher** (`batcher-contract/src/lib.rs`) — stateless fan-out of the runtime's
    permissionless `refresh` / `extend_ttl` and sibling `extend_ttl()` calls, plus
@@ -55,7 +55,11 @@ keepers / refresh bots, and monitoring infrastructure.
 - Ledger timestamps are accurate within Soroban's resolution; extreme clock skew
   is out of model.
 - An off-chain keeper calls `extend_ttl` at least weekly; eviction from missed
-  TTL calls is an operational risk, not a contract bug.
+  TTL calls is an operational risk, not a contract bug. The Lazer source's stored
+  feeds are renewed only by pushes (its `extend_ttl` covers the instance), so a
+  feed that stops being pushed archives after the persistent TTL; if it is still
+  a configured source, that asset's refresh then needs a restore rather than
+  degrading to `SourceUnavailable`.
 - Deploy/upgrade tooling runs in a trusted environment with no hostile inputs.
 
 ## Safety topics
