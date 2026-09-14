@@ -30,7 +30,7 @@ jobs:
     outputs:
       matrix: ${{ steps.list.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Install nightly Rust
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
@@ -84,7 +84,7 @@ jobs:
       # 5 minutes per target on the nightly cadence. Override via workflow_dispatch.
       DURATION_SECONDS: ${{ github.event.inputs.duration_seconds || '300' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Install nightly Rust
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
@@ -104,7 +104,7 @@ jobs:
       # separate from the main test workflow's cache (fuzz builds use different,
       # sanitizer RUSTFLAGS). Only the default branch writes the cache.
       - name: Cache fuzz build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: ". -> target"
           shared-key: "fuzz"
@@ -115,7 +115,7 @@ jobs:
       # branch's corpus for the same target (helps PR branches inherit dev's
       # corpus when triggered manually).
       - name: Restore corpus
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.ref_name }}-${{ github.sha }}
@@ -155,7 +155,7 @@ jobs:
 
       - name: Save updated corpus
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.ref_name }}-${{ github.sha }}
@@ -180,7 +180,7 @@ jobs:
           # artifact. Handle fuzz findings with care.
       - name: Upload crash artifacts
         if: failure() && steps.fuzz.conclusion == 'failure' && steps.crash.outputs.found == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: fuzz-crash-${{ matrix.target }}
           path: |
@@ -194,7 +194,7 @@ jobs:
 
       - name: Open issue on crash
         if: failure() && steps.fuzz.conclusion == 'failure' && steps.crash.outputs.found == 'true' && github.event_name == 'schedule'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         env:
           TARGET: ${{ matrix.target }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
