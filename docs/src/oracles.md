@@ -116,7 +116,7 @@ The proxy oracle is a **pull** design: someone must refresh it before a price-de
 2. Call `update_prices` on the proxy oracle with the price identifiers the market uses. The proxy fetches the sources, runs the pipeline above, and caches the result.
 3. Perform the market action.
 
-Templar's relayer and liquidation bots do this automatically ahead of the actions they submit, and the Templar gateway exposes `oracle.updatePrices` to perform every required update for a market in one call. Integrators submitting their own transactions must do the same; reading the underlying Pyth or RedStone contracts directly bypasses the aggregation and circuit-breaker guarantees and is not the price the market will use.
+Templar's relayer and liquidation bots do this automatically ahead of the actions they submit, and the Templar gateway exposes `oracle.updatePrices` to perform every required update for a market in one call. Integrators submitting their own transactions must do the same. For a market configured with a proxy oracle, reading the underlying Pyth or RedStone contracts directly bypasses the aggregation and circuit-breaker guarantees and is not the price the market will use; for a legacy market that reads `pyth-oracle.near` or the LST adapter directly, that configured contract is the market price.
 
 ### Inspecting a Proxy Oracle
 

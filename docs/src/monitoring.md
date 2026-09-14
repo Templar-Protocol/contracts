@@ -1,6 +1,6 @@
 # Monitoring and Risk Management
 
-Templar Protocol monitors every deployed contract in real time and publishes its risk data openly. This page describes the monitoring and alerting stack, the public risk dashboard, the operational bots, how to run protocol health checks yourself, and how risk is managed and contained.
+Templar Protocol runs real-time monitoring on its NEAR markets and proxy oracles and on its Stellar curated vaults, and publishes its risk data openly. This page describes the monitoring and alerting stack, the public risk dashboard, the operational bots, how to run protocol health checks yourself, and how risk is managed and contained.
 
 ## Real-Time Monitoring and Alerting
 

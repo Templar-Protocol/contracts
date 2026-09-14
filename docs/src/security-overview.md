@@ -9,9 +9,9 @@ Templar Protocol is built on a defence-in-depth model: immutable, isolated marke
 - **Isolated markets**: one collateral asset and one borrow asset per contract; no cross-asset contagion.
 - **Proxy oracles** aggregating Pyth and RedStone with freshness filters and **circuit breakers**, the emergency brake for immutable markets.
 - **Professional curators** manage vault lending risk under timelocked governance with an independent Sentinel.
-- **Real-time monitoring** with [Hypernative](https://www.hypernative.io/) and custom alerts, a [public alerts channel](https://t.me/+CcqXyt01lsljZmQx), and a [live risk dashboard](https://data.templarfi.org/).
+- **Real-time monitoring** of markets, proxy oracles, and vaults with [Hypernative](https://www.hypernative.io/) and custom alerts, a [public alerts channel](https://t.me/+CcqXyt01lsljZmQx), and a [live risk dashboard](https://data.templarfi.org/).
 - **AI security-focused code scanning** (Octane, Almanax, GPT Cyber) alongside nightly formal proofs and fuzzing in CI.
-- **2-of-3 multisig** for every mutable component, with per-action timelocks.
+- **2-of-3 multisig** for every mutable NEAR component, with per-action timelocks; Stellar vaults are governed per vault by a governance admin, curator, and Sentinel under their own timelocks.
 - **Hardened frontend and DNS**.
 
 ## Audits and Formal Verification
@@ -45,7 +45,7 @@ Templar's cross-chain flows rely on NEAR infrastructure that is audited independ
 
 ### Immutable Markets
 
-Market contracts have **no administrative functions**: no owner, no upgrade method, no pause switch, and no method to modify collateralization ratios, interest rate curves, fees, or oracle configuration after launch. Nothing in the contract's code lets anyone change the terms a user relied on when opening a position.
+Market contracts have **no administrative functions**: no owner, no upgrade method, no pause switch, and no method to modify collateralization ratios, interest rate curves, fees, or oracle configuration after launch. Nothing in the contract's code lets anyone change the configured market parameters a user relied on when opening a position. (Interest rates move with utilization along the fixed curve, and valuations follow the oracle; the curve and the oracle configuration themselves cannot change.)
 
 One qualification applies at the account level rather than the contract level. A market account whose deployer full-access key has been removed cannot be changed by anyone. Where that key is still held (by the multisig that deployed the market), contract storage can be modified through the reviewed, sandbox-replayed patch process described in [Deploying a market](./deployments.md#patching-contract-storage); this is how legacy markets were migrated from direct Pyth reads to proxy oracles. Whether a market account holds any access keys is visible on-chain:
 
@@ -162,8 +162,8 @@ The **templarfi.org** domain is protected by:
 
 - **Immutable deployments**: every deployment produces an immutable, content-addressed build; any unauthorized change can be identified and rolled back instantly.
 - **Build verification**: production deployments originate only from reviewed and approved changes in a branch-protected repository.
-- **Subresource Integrity**: external resources use integrity hashes where applicable so tampered third-party scripts and stylesheets are rejected.
-- **Content Security Policy**: HTTP security headers restrict the sources from which scripts, styles, and other resources may load, mitigating cross-site scripting and injection.
+- **No third-party scripts**: the application loads no scripts or stylesheets from external origins. Everything is bundled into content-hashed assets from the immutable build, so there is no external resource whose integrity would need to be pinned.
+- **Framing protection**: every response carries `X-Frame-Options: SAMEORIGIN` and a Content Security Policy of `frame-ancestors 'none'`, so the application cannot be embedded in another site to trick users into signing (clickjacking). The policy does not currently restrict script or style sources; the absence of third-party scripts limits the injection surface such a restriction would cover.
 
 ### Intrusion Detection and Monitoring
 
@@ -175,7 +175,7 @@ The **templarfi.org** domain is protected by:
 
 - **No private key handling**: the frontend never requests, stores, or transmits private keys; signing is delegated to the user's wallet.
 - **Strict input validation** before any contract interaction.
-- **HTTPS enforced** with HTTP Strict Transport Security to prevent protocol downgrade.
+- **HTTPS enforced**: all traffic is served over TLS, and the hosting platform redirects plain HTTP and sets HTTP Strict Transport Security headers on every response by default, preventing protocol downgrade.
 - **Minimal, pinned dependencies** to reduce supply-chain risk.
 - **Transparent transactions**: parameters are constructed so users can verify the contract call and arguments in their wallet before signing.
 
