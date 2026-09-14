@@ -32,12 +32,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install nightly Rust
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-11-25
       - name: Install cargo-fuzz
         # Prebuilt binary (seconds) instead of `cargo install` (compiles from source).
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2025-11-25
         with:
-          tool: cargo-fuzz
+          tool: cargo-fuzz@0.13.2
       - id: list
         name: Build target matrix
         working-directory: fuzz
@@ -51,7 +55,7 @@ jobs:
           # space-separated subset. Validate each requested token against the
           # real target list so an unknown/crafted token can't reach the matrix.
           requested="${REQUESTED_TARGETS:-}"
-          available="$(cargo +nightly fuzz list)"
+          available="$(cargo +nightly-2025-11-25 fuzz list)"
           if [[ -n "$requested" ]]; then
             for target in $requested; do
               grep -Fxq -- "$target" <<<"$available" || {
@@ -83,13 +87,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install nightly Rust
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-11-25
 
       - name: Install cargo-fuzz
         # Prebuilt binary (seconds) instead of `cargo install` (compiles from source).
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2025-11-25
         with:
-          tool: cargo-fuzz
+          tool: cargo-fuzz@0.13.2
 
       # Cache the sanitizer build of the dependency tree + target dir so each
       # nightly run doesn't recompile everything. Dedicated `shared-key` keeps it
@@ -128,8 +136,9 @@ jobs:
           [ -d "seeds/${{ matrix.target }}" ] && seed_arg=("seeds/${{ matrix.target }}")
           # `-rss_limit_mb=2048` matches workflow runner memory; some targets
           # decode untrusted bytes and could otherwise OOM the runner.
+          set -o pipefail
           set +e
-          cargo +nightly fuzz run "${{ matrix.target }}" \
+          cargo +nightly-2025-11-25 fuzz run --target x86_64-unknown-linux-gnu "${{ matrix.target }}" \
             "corpus/${{ matrix.target }}" "${seed_arg[@]}" \
             -- \
             -max_total_time="${DURATION_SECONDS}" \
@@ -140,7 +149,7 @@ jobs:
           set -e
           echo "exit_status=${status}" >> "$GITHUB_OUTPUT"
           if [[ "$status" -ne 0 ]]; then
-            echo "Fuzz target ${{ matrix.target }} found a crash (exit ${status})."
+            echo "Fuzz target ${{ matrix.target }} failed (exit ${status})."
             exit "$status"
           fi
 
@@ -151,23 +160,10 @@ jobs:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.ref_name }}-${{ github.sha }}
 
-      - name: Upload crash artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fuzz-crash-${{ matrix.target }}
-          path: |
-            fuzz/artifacts/${{ matrix.target }}/
-            fuzz/fuzz-output.log
-          if-no-files-found: warn
-          # The crash input + full log. This artifact is the only copy of the
-          # reproducer (it is intentionally not embedded in the public issue),
-          # so keep a long retention for triage.
-          retention-days: 90
 
       - name: Collect crash input
         id: crash
-        if: failure() && github.event_name == 'schedule'
+        if: failure() && steps.fuzz.conclusion == 'failure'
         working-directory: fuzz
         run: |
           # libFuzzer writes the reproducer to artifacts/<target>/crash-*.
@@ -182,9 +178,22 @@ jobs:
           echo "size=$size" >> "$GITHUB_OUTPUT"
           # Deliberately not embedded here; leave the reproducer to the
           # artifact. Handle fuzz findings with care.
+      - name: Upload crash artifacts
+        if: failure() && steps.fuzz.conclusion == 'failure' && steps.crash.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+            fuzz/fuzz-output.log
+          if-no-files-found: error
+          # The crash input + full log. This artifact is the only copy of the
+          # reproducer (it is intentionally not embedded in the public issue),
+          # so keep a long retention for triage.
+          retention-days: 90
 
       - name: Open issue on crash
-        if: failure() && github.event_name == 'schedule'
+        if: failure() && steps.fuzz.conclusion == 'failure' && steps.crash.outputs.found == 'true' && github.event_name == 'schedule'
         uses: actions/github-script@v7
         env:
           TARGET: ${{ matrix.target }}
@@ -215,7 +224,7 @@ jobs:
               ``,
               `- Workflow run: ${RUN_URL}`,
               `- Commit: \`${SHA}\``,
-              `- Crash input: \`${CRASH_NAME || 'unknown'}\`${CRASH_SIZE ? ` (${CRASH_SIZE} bytes)` : ''}`,
+              `- Crash input: \`${CRASH_NAME}\` (${CRASH_SIZE} bytes)`,
               ``,
             ];
 
