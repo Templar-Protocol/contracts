@@ -18,7 +18,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 ## C
 
-**Circuit Breaker**: A rule on a [proxy oracle](./oracles.md#circuit-breakers) price feed that blocks the feed when accepted prices move in a way the rule forbids (for example, a single step larger than a configured percentage). A tripped feed fails closed: markets reading it cannot borrow, withdraw collateral against debt, or liquidate until an operator re-arms it. Feeds can also be tripped manually with no timelock.
+**Circuit Breaker**: A rule on a [proxy oracle](./oracles.md#circuit-breakers) price feed that trips when accepted prices move in a way the rule forbids (for example, a single step larger than a configured percentage). When an *enforced* breaker trips, the feed is blocked and fails closed: markets reading it cannot borrow, withdraw collateral against debt, or liquidate until an operator re-arms it. A breaker in observe-only mode records and alerts on a trip without blocking. Feeds can also be tripped manually with no timelock.
 
 **Collateral Asset**: The token deposited by borrowers to secure their loans. Must be worth more than the borrowed amount due to over-collateralization requirements.
 

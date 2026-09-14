@@ -45,9 +45,15 @@ Templar's cross-chain flows rely on NEAR infrastructure that is audited independ
 
 ### Immutable Markets
 
-Market contracts are locked at deployment. They have **no administrative functions**: no owner, no upgrade path, no pause switch, and no way to modify collateralization ratios, interest rate curves, fees, or oracle configuration after launch. Every parameter a user relied on when opening a position holds for the life of that position.
+Market contracts have **no administrative functions**: no owner, no upgrade method, no pause switch, and no method to modify collateralization ratios, interest rate curves, fees, or oracle configuration after launch. Nothing in the contract's code lets anyone change the terms a user relied on when opening a position.
 
-When a new market version is released, it is registered in the [registry](./contract/registry.md) and deployed to a new account; existing markets keep running unchanged and users migrate voluntarily. This removes the largest single risk class in DeFi lending, a compromised or misused admin key draining or re-parameterizing live markets, at the cost of making incident response rely on the oracle layer and on migration rather than on in-place patches. See [Protocol Governance](./governance.md).
+One qualification applies at the account level rather than the contract level. A market account whose deployer full-access key has been removed cannot be changed by anyone. Where that key is still held (by the multisig that deployed the market), contract storage can be modified through the reviewed, sandbox-replayed patch process described in [Deploying a market](./deployments.md#patching-contract-storage); this is how legacy markets were migrated from direct Pyth reads to proxy oracles. Whether a market account holds any access keys is visible on-chain:
+
+```bash
+near account list-keys <market-address> network-config mainnet now
+```
+
+When a new market version is released, it is registered in the [registry](./contract/registry.md) and deployed to a new account; existing markets keep running unchanged and users migrate voluntarily. This removes the largest single risk class in DeFi lending, a compromised or misused admin key draining or re-parameterizing live markets through the contract itself, at the cost of making incident response rely on the oracle layer and on migration rather than on in-place upgrades. See [Protocol Governance](./governance.md).
 
 ### Isolated Markets
 
@@ -55,7 +61,9 @@ Each market pairs exactly one collateral asset with one borrow asset in its own 
 
 ### Circuit Breakers as the Emergency Brake
 
-Because markets cannot be paused, Templar puts the emergency control where the risk enters: the price feed. Every market reads a [proxy oracle](./oracles.md#proxy-oracle) whose feeds carry [circuit breakers](./oracles.md#circuit-breakers). Automatic rules block sudden jumps, staged ramps, and cumulative drift, and an operator can trip a feed manually with no timelock. While a feed is blocked, borrowing, collateral withdrawal against debt, and liquidations on that market stop; supply withdrawals, repayments, and collateral withdrawals from debt-free positions continue. This gives the team an immediate, reversible containment action that cannot be used to seize funds or change market terms.
+Because markets cannot be paused, Templar puts the emergency control where the risk enters: the price feed. Markets configured with a [proxy oracle](./oracles.md#proxy-oracle) (every new market, and the legacy markets that have been migrated) read feeds that carry [circuit breakers](./oracles.md#circuit-breakers). Automatic rules block sudden jumps, staged ramps, and cumulative drift, and an operator can trip a feed manually with no timelock. While a feed is blocked, borrowing, collateral withdrawal against debt, and liquidations on that market stop; supply withdrawals, repayments, and collateral withdrawals from debt-free positions continue. This gives the team an immediate, reversible containment action that cannot be used to seize funds or change market terms.
+
+A small number of older markets still read Pyth's contract directly and have no trip mechanism; for those, the containment options are halting Templar's bots and migrating users to a replacement market. Which oracle a market reads is visible in its `get_configuration` output.
 
 ### Defensive Valuation and Conservative Parameters
 
@@ -74,7 +82,7 @@ Oracle failure and manipulation is the dominant cause of lending-protocol losses
 
 - **Multiple sources**: Pyth (Lazer and classic) and RedStone are live; Chainlink and Atlas are being added. Sources, weights, and the fresh-source quorum are configured per feed.
 - **Freshness filters** drop stale and future-dated prices before aggregation.
-- **Weighted-median aggregation** means a single compromised or halted provider cannot set the price alone.
+- **Weighted-median aggregation** across sources with a configurable fresh-source quorum. The standard production configuration uses a quorum of one with Pyth weighted above RedStone, so the higher-weighted source determines the price while both are fresh and a single fresh source carries the feed when the other is stale. That configuration favours liveness; the freshness filter and enforced circuit breakers, not the aggregation, are the primary defence against a single compromised provider, and quorum and weights can be raised per feed as more providers come online.
 - **Circuit breakers** compare against accepted history, so an attacker cannot first poison the reference sample and then pass a deviation check.
 - **Fail-closed reads**: a blocked, failed, or stale feed reads as no price, never as the last known price.
 - **Timelocked governance** on every feed change, with only risk-reducing actions (trips, re-arms) immediate.
@@ -115,7 +123,7 @@ Details, including how to run the same health checks yourself, are on the [Monit
 ## Operational Security and Key Management
 
 - **Multisig control**: every mutable Templar contract on NEAR (the registry, proxy oracle governance, and adapters) is administered by [`templar.sputnik-dao.near`](https://nearblocks.io/address/templar.sputnik-dao.near), a Sputnik DAO with three signers on its council at a 2-of-3 threshold. Adding or removing a signer is itself a governed DAO proposal.
-- **Timelocks**: proxy oracle governance typically applies 24-hour to 168-hour timelocks depending on the action (the exact policy is set per contract), and vault governance applies configurable per-action timelocks; only risk-reducing emergency actions are immediate. See [Protocol Governance](./governance.md) for the full table.
+- **Timelocks**: proxy oracle governance typically applies 24-hour to 168-hour timelocks to configuration and upgrades (the exact policy is set per contract), and vault governance applies configurable per-action timelocks. Circuit breaker operation (trip and untrip, re-arm, enforcement on or off) is immediate in both directions, so those operator roles are held as tightly as the admin role and every use is alerted. See [Protocol Governance](./governance.md) for the full table.
 - **Least privilege**: proxy oracle governance separates the `ManualTripper`, `CircuitBreakerOperator`, `ProxyConfigurationManager`, and `Admin` roles so that the account able to hit the emergency brake need not be able to reconfigure feeds or upgrade code.
 - **Key hygiene**: privileged keys are held on hardware devices with geographically distributed cold backups; infrastructure and vendor accounts require MFA and have at least two administrators for continuity.
 - **Security policy**: Templar maintains a written organizational security policy (access control, key management, SDLC, monitoring, incident response, vendor risk, business continuity) reviewed quarterly and shared with counterparties on request.
@@ -126,7 +134,7 @@ Templar maintains role-segmented [emergency runbooks](https://github.com/Templar
 
 1. **Detect and page**: a Hypernative or custom alert reaches the on-call responder.
 2. **War room**: the responder opens a war room, names an incident lead, communications lead, and scribe, and classifies severity.
-3. **Contain with the smallest reversible action**: halt Templar's own bots; trip the relevant proxy oracle feed to freeze price-dependent operations on immutable markets; on vaults, Sentinel pause or restriction tightening, allocator abort, and curator cap-to-zero, in that order of escalation.
+3. **Contain with the smallest reversible action**: halt Templar's own bots; trip the relevant proxy oracle feed to freeze price-dependent operations on markets that read a proxy oracle; on vaults, Sentinel pause or restriction tightening, allocator abort, and curator cap-to-zero, in that order of escalation.
 4. **Preserve user exits**: no role can disable supply withdrawal requests or repayments at the market boundary.
 5. **Recover**: a patched market version is audited, registered, and deployed through the registry; users migrate. There is no in-place hotfix.
 6. **Stand down and learn**: stand-down requires sign-off from at least two roles; every user-affecting incident produces a post-mortem, published where appropriate.

@@ -162,7 +162,7 @@ Provider status pages: [Pyth Network Price Feeds](https://insights.pyth.network/
   of a larger request. Existing eligibility checks still apply, and other
   withdrawals can consume the shared pool before execution.
 
-- **Current Interest Rate**: Monitor the current yield rate for supply positions
+- **Last Yield Rate**: `get_last_yield_rate` returns the most recently computed supply yield rate. It is an *expected average over time*, not a spot rate; supply positions earn yield the instant it is distributed.
   ```bash
   near contract call-function as-read-only <market-address> get_last_yield_rate json-args {} network-config mainnet now
   ```
@@ -202,7 +202,7 @@ Templar's cross-chain collateral and stablecoin flows depend on NEAR infrastruct
 Templar's response to an alert follows the public [emergency runbooks](https://github.com/Templar-Protocol/blend-contracts-v2/tree/main/docs/emergency-runbooks):
 
 1. Whoever spots an alert opens a war room, classifies severity, and takes the smallest reversible mitigation for their role.
-2. **Containment ladder**: halt Templar's own bots; trip the affected proxy oracle feed (freezing borrows, collateral withdrawals against debt, and liquidations on immutable markets); on vaults, Sentinel pause or restriction tightening, allocator abort or rebalance, then curator cap-to-zero or market removal.
+2. **Containment ladder**: halt Templar's own bots; trip the affected proxy oracle feed (freezing borrows, collateral withdrawals against debt, and liquidations on markets that read a proxy oracle); on vaults, Sentinel pause or restriction tightening, allocator abort or rebalance, then curator cap-to-zero or market removal.
 3. **User exits are preserved**: no role can disable supply withdrawal requests or repayments.
 4. **Recovery** uses a patched market deployed through the registry and voluntary migration, never an in-place upgrade.
 5. **Stand-down** requires sign-off from at least two roles, and user-affecting incidents produce a post-mortem.

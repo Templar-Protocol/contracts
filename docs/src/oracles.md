@@ -57,10 +57,10 @@ For each proxied price identifier, an update runs through the following stages:
 1. **Sources.** The proxy fetches each configured source asynchronously. A source is a Pyth Lazer feed, a classic Pyth feed, a RedStone feed, or a *transformer* (for example, a liquid-staking-token normalization that multiplies an underlying price by an on-chain redemption rate).
 2. **Freshness filter.** Prices older than the configured `max_age` or timestamped further in the future than `max_clock_drift` are discarded before aggregation, so a stale or pre-manufactured price can never be replayed into the aggregate.
 3. **Aggregation.** Surviving prices are combined by the proxy's aggregator. The production configuration uses a **weighted median**: `median_low` for collateral assets and `median_high` for borrow assets, so that any tie or ambiguity resolves to the valuation that is safer for the protocol. A `min_sources` quorum is enforced; if fewer fresh sources than the quorum survive, the update fails and nothing is cached. A priority aggregator (first fresh source wins) is also available.
-4. **Circuit breakers.** The aggregated candidate is checked against the feed's [circuit breaker set](#circuit-breakers). A tripped breaker blocks the feed.
+4. **Circuit breakers.** The aggregated candidate is checked against the feed's [circuit breaker set](#circuit-breakers). An enforced breaker that trips blocks the feed; a breaker running in observe-only mode records the trip and emits an event without blocking.
 5. **Cache.** The accepted price is cached with its status. Markets read only accepted, fresh cached prices; a missing, blocked, failed, or stale cache entry reads as *no price*, and the market operation fails closed.
 
-Standard mainnet feeds are configured with a Pyth Lazer source at weight 8 and a RedStone source at weight 2 with `min_sources = 1`. With that weighting the Pyth price determines the aggregate while both sources are fresh, and RedStone keeps the feed alive if Pyth is stale or unavailable. Weights, quorum, and sources are governed per feed and can be rebalanced as additional providers come online.
+Standard mainnet feeds are configured with a Pyth Lazer source at weight 8 and a RedStone source at weight 2 with `min_sources = 1`. With that weighting the Pyth price determines the aggregate while both sources are fresh, and RedStone keeps the feed alive if Pyth is stale or unavailable. Because the quorum is one, a single fresh source can determine the price when the other is stale, and the higher-weighted source determines it while both are fresh: this quorum provides liveness, not manipulation resistance. For a feed configured this way, the freshness filter and the enforced circuit breakers are the defence against a compromised provider. Weights, quorum, and sources are governed per feed and can be raised (for example to a quorum of two once a third provider is live) as additional providers come online.
 
 ### Circuit Breakers
 
@@ -81,7 +81,7 @@ Every configuration change, trip, re-arm, and enforcement change emits an on-cha
 
 ### Governance and Timelocks
 
-Each proxy oracle is owned by its own governance contract. Nothing about a feed can be changed by a single transaction: every change is a proposal that matures under a per-method timelock and can only be executed by an account holding the role that method requires.
+Each proxy oracle is owned by its own governance contract. Feed configuration (sources, weights, aggregator, freshness filter, circuit breaker rules) and contract upgrades change only through proposals that mature under a per-method timelock and can only be executed by an account holding the role that method requires. Circuit breaker *operation* is different: tripping and untripping a feed, re-arming a breaker, and switching enforcement on or off are role-gated actions with no delay.
 
 Timelocks and roles are configured per governance contract. The table below is the typical production setup; it is not guaranteed to apply to every proxy oracle, so confirm the policy in force on a specific contract as shown at the end of this section.
 
@@ -96,7 +96,7 @@ Timelocks and roles are configured per governance contract. The table below is t
 | Change the governance policy (timelocks, roles) | 48 hours | `Admin` |
 | Upgrade the governance contract itself | 168 hours | `Admin` |
 
-Only actions that *reduce* risk (tripping, re-arming under operator control, enforcement toggles) are immediate. A proposal's timelock is fixed when it is created, and shortening any timelock must itself mature under the timelock being shortened, so governance cannot be weakened faster than it currently protects. The `Admin` role is held by Templar's 2-of-3 multisig; see [Protocol Governance](./governance.md).
+The immediate actions include their risk-increasing inverses: a `ManualTripper` can untrip a feed and a `CircuitBreakerOperator` can disable enforcement without delay. Those roles are therefore held by the same multisig as `Admin`, every use emits an on-chain event that monitoring alerts on, and a change to a breaker's *rules* still waits out the configuration timelock. A proposal's timelock is fixed when it is created, and shortening any timelock must itself mature under the timelock being shortened, so governance cannot be weakened faster than it currently protects. The `Admin` role is held by Templar's 2-of-3 multisig; see [Protocol Governance](./governance.md).
 
 The policy in force on a specific proxy oracle can be read from its governance contract:
 
@@ -148,14 +148,14 @@ near contract call-function as-read-only \
 
 | Contract | Account ID | Purpose |
 |---|---|---|
-| Proxy oracle (one per market) | `proxy-oracle-<market>.v1.tmplr.near` | Aggregated, circuit-breaker-protected feed read by the market `<market>.v1.tmplr.near`. Example: [`proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near). |
+| Proxy oracle (one per market) | `proxy-oracle-<market>.v1.tmplr.near` | Aggregated, circuit-breaker-protected feed read by the market `<market>.v1.tmplr.near`. Example: [`proxy-oracle-ixlmdejaaa-ixlmusdc-2.v1.tmplr.near`](https://nearblocks.io/address/proxy-oracle-ixlmdejaaa-ixlmusdc-2.v1.tmplr.near). |
 | Proxy oracle governance (one per proxy) | `proxy-gov-<market>.v1.tmplr.near` | Timelocked governance for the matching proxy oracle. Example: [`proxy-gov-ixlmdejaaa-ixlmusdc-2.v1.tmplr.near`](https://nearblocks.io/address/proxy-gov-ixlmdejaaa-ixlmusdc-2.v1.tmplr.near). |
 | Pyth Lazer adapter | [`pyth-lazer.v1.tmplr.near`](https://nearblocks.io/address/pyth-lazer.v1.tmplr.near) | Verifies signed Pyth Lazer payloads (ed25519, trusted signer set, freshness window, per-feed anti-replay) and serves them by Lazer feed ID. Updates are permissionless because authenticity is cryptographic. |
 | RedStone adapter | [`redstone-adapter.v1.tmplr.near`](https://nearblocks.io/address/redstone-adapter.v1.tmplr.near) | Verifies RedStone signed data packages against the configured signer threshold and serves them by feed ID. |
 | Pyth (classic pull oracle) | [`pyth-oracle.near`](https://nearblocks.io/address/pyth-oracle.near) | Pyth's own contract. Read directly by markets deployed before the proxy oracle, and usable as a proxy source. |
 | LST oracle adapter | [`lst.oracle.tmplr.near`](https://nearblocks.io/address/lst.oracle.tmplr.near) | Legacy adapter deriving liquid-staking-token prices; see below. |
 
-The exact oracle account and price identifiers a market uses are always available from the market's `get_configuration` view; see [Smart Contract Addresses](./addresses.md) for the market list.
+The exact oracle account and price identifiers a market uses are always available from the market's `get_configuration` view; see [Smart Contract Addresses](./addresses.md) for the market list. A market can also read a proxy oracle that was deployed separately from it (for example `ixlmustry-ixlmusdc.v1.tmplr.near` reads `proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near`, deployed on its own), so the governance account is not always `proxy-gov-<market>`; the authoritative link is the proxy oracle's owner, returned by its `own_get_owner` view.
 
 ### Testnet
 
@@ -186,7 +186,7 @@ Markets validate price freshness before use. If no fresh, accepted price is avai
 
 ## Oracle Security Measures
 
-- **Multiple independent sources**: Pyth and RedStone are aggregated per feed with a configurable quorum, so no single provider outage or compromise determines a price on its own.
+- **Multiple independent sources**: Pyth and RedStone are aggregated per feed with a configurable quorum. With the standard quorum of one this guarantees liveness through a single-provider outage; raising the quorum trades liveness for manipulation resistance.
 - **Freshness filters**: Stale and future-dated source prices are discarded before aggregation.
 - **Conservative aggregation**: Weighted median, biased low for collateral and high for liabilities.
 - **Confidence intervals**: Pyth prices include confidence bands. The lower bound is used for collateral valuations and the upper bound for liability valuations.
@@ -212,6 +212,6 @@ Markets validate price freshness before use. If no fresh, accepted price is avai
 
 ### Price Manipulation Attack
 
-- An attacker must compromise enough sources to move the weighted median, survive the freshness filter, and pass every enforced breaker in the same update.
+- An attacker who controls a source must move the weighted median (with the standard weighting the Pyth feed determines it, and a lone fresh source determines it while the other is stale), survive the freshness filter, and pass every enforced breaker in the same update. The breakers compare against accepted history, so a manipulated prior sample does not weaken them.
 - Markets reject stale prices automatically, and defensive valuations (lower bound for collateral, upper bound for liabilities) protect solvency in most cases.
 - The required maintenance collateralization ratio protects borrowers from unexpected liquidation in most cases.

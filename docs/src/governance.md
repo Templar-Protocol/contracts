@@ -6,7 +6,7 @@ This document outlines the administrative structure and governance controls of T
 
 | Component | Mutability | Controlled by | Timelock |
 |---|---|---|---|
-| Market contracts (NEAR) | **Immutable**. No admin functions, no upgrade, no pause, no parameter changes. | Nobody | n/a |
+| Market contracts (NEAR) | No admin functions, no upgrade method, no pause. Storage can be patched only while the deployer's full-access key is retained (see below). | Nobody through the contract; the DAO multisig while a deployer key is retained | n/a |
 | Proxy oracles | Feed configuration and code upgradeable through a dedicated governance contract | Templar DAO multisig (2-of-3) and role holders | 24h to 168h by action; emergency trips immediate |
 | Registry | Owned. Owner can register versions, deploy new contracts, and upgrade the registry's own code. Cannot touch deployed markets. | Templar DAO multisig (2-of-3) | Two-step finalize |
 | Oracle adapters (Pyth Lazer, RedStone) | Owned; signer sets and configuration are admin-managed | Templar DAO multisig (2-of-3) | n/a |
@@ -20,15 +20,21 @@ Changing the signer set is itself a governed policy change: a council member sub
 
 ## Market Contracts
 
-Market contracts are immutable once deployed and locked. The configuration is immutable after deployment. Market contracts have **no administrative functions**:
+Market contracts have **no administrative functions**:
 
-- They operate autonomously based on their initial configuration.
-- There is no ability to pause, upgrade, or modify market parameters.
+- They operate autonomously based on their initial configuration, which is immutable after deployment.
+- There is no method to pause, upgrade, or modify market parameters.
 - There is no privileged access to user funds.
+
+At the account level, the registry adds the deployer's full-access key to each new market account. While that key is retained (by the DAO multisig), contract storage can be modified through the reviewed, sandbox-replayed patch process in [Deploying a market](./deployments.md#patching-contract-storage); this is how legacy markets were migrated to proxy oracles. A market account with no access keys cannot be changed by anyone. Check a market's keys with:
+
+```bash
+near account list-keys <market-address> network-config mainnet now
+```
 
 New market versions are deployed to new account IDs through the registry; old versions cannot be overwritten. When a new version of the market contract is available, it is uploaded to the registry contract and new markets are deployed from it. Existing markets are not upgraded and funds are not automatically migrated, so users migrate their positions individually.
 
-Because a market cannot be paused, the emergency control for a market is its oracle: tripping the [circuit breaker](./oracles.md#circuit-breakers) on the proxy oracle feed a market reads freezes borrowing, collateral withdrawal against debt, and liquidations on that market, while supply withdrawals and repayments continue.
+Because a market cannot be paused, the emergency control for a market that reads a proxy oracle is its oracle: tripping the [circuit breaker](./oracles.md#circuit-breakers) on the feed freezes borrowing, collateral withdrawal against debt, and liquidations on that market, while supply withdrawals and repayments continue. Older markets that read Pyth's contract directly have no such control.
 
 ## Proxy Oracle Governance
 
@@ -44,7 +50,7 @@ Each [proxy oracle](./oracles.md#proxy-oracle) is owned by its own governance co
 | Change governance policy (timelocks, roles) | 48 hours | `Admin` |
 | Upgrade the governance contract itself | 168 hours | `Admin` |
 
-Shortening a timelock must itself mature under the timelock being shortened, so the policy cannot be weakened faster than it currently protects. The `Admin` role is held by the DAO multisig. Always confirm the policy in force on a specific proxy oracle with `get_governance_policy` on its governance contract, and pending proposals with `list_proposals`.
+The immediate operator actions include their risk-increasing inverses (untripping a feed, disabling enforcement); those roles are held by the DAO multisig and every use is alerted. Shortening a timelock must itself mature under the timelock being shortened, so the policy cannot be weakened faster than it currently protects. The `Admin` role is held by the DAO multisig. Always confirm the policy in force on a specific proxy oracle with `get_governance_policy` on its governance contract, and pending proposals with `list_proposals`.
 
 ## Registry Contract
 
@@ -65,7 +71,7 @@ Stellar vaults are governed by a per-vault governance contract with per-action t
 
 Markets are immutable once deployed. If a bug is discovered:
 
-1. Price-dependent operations on affected markets can be frozen immediately by tripping the proxy oracle circuit breaker, and Templar's bots are halted.
+1. Price-dependent operations on affected markets that read a proxy oracle can be frozen immediately by tripping the circuit breaker, and Templar's bots are halted.
 2. A patched version of the code is audited, registered in the registry, and deployed to new market accounts.
 3. Users migrate their funds individually. Supply withdrawal requests and repayments on the old market remain available throughout.
 

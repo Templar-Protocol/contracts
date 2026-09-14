@@ -39,6 +39,8 @@ near contract call-function as-read-only v1.tmplr.near list_deployments \
     json-args '{"offset": 0, "count": 100}' network-config mainnet now
 ```
 
+The call is paginated: `count` caps the page size, so if a page comes back full, request the next one with `offset` advanced by the page size (`{"offset": 100, "count": 100}`) and repeat until a page contains fewer than `count` entries.
+
 A selection of available markets:
 
 | Account ID | Collateral Asset | Borrow Asset |
@@ -81,4 +83,4 @@ INFO The code obtained from the contract account ID and the code calculated from
 |    Build Command:	cargo near build non-reproducible-wasm --locked
 ```
 
-The verification compares the on-chain code hash with a build from the commit recorded in the contract's NEP-330 metadata, so it establishes that the deployed bytecode matches published, audited source. Released contract artifacts and their SHA-256 digests are recorded under [`contract/artifacts/releases/`](https://github.com/Templar-Protocol/contracts/tree/dev/contract/artifacts/releases).
+The verification compares the on-chain code hash with a build from the commit recorded in the contract's NEP-330 metadata, so it establishes that the deployed bytecode matches the published source commit. Whether that commit is covered by an audit must be checked separately against the audit reports. Released contract artifacts and their SHA-256 digests are recorded under [`contract/artifacts/releases/`](https://github.com/Templar-Protocol/contracts/tree/dev/contract/artifacts/releases).
