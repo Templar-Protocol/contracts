@@ -35,4 +35,4 @@ Important security notices will be posted on the official Discord server, Telegr
 
 Audit reports and the formal verification report are available in the [Templar audits folder](https://drive.google.com/drive/folders/14Q6iysMotto5fqpu6LRxjWBqeXElzkyF?usp=sharing). A summary of each engagement is on the [Security](./security-overview.md#audits-and-formal-verification) page.
 
-The [audits directory in the contracts repository](https://github.com/Templar-Protocol/contracts/tree/dev/audits) contains auditor-facing notes and the known-issues register (findings acknowledged or fixed after a report was issued).
+The [audits directory in the contracts repository](https://github.com/Templar-Protocol/contracts/tree/dev/audits) contains auditor-facing notes and the known-issues register (findings acknowledged or fixed after a report was issued). Audits of the NEAR infrastructure Templar depends on (nearcore, NEAR Intents, Omnibridge, Chain Signatures) are in the [NEAR dependency audits folder](https://drive.google.com/drive/folders/1_6MPZLrWxLTWpCi5caYC2IWKP-8sW1uP?usp=sharing).

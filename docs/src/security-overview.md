@@ -37,6 +37,10 @@ Beyond the external engagements, verification runs continuously inside the repos
 - **Fuzzing**: twenty libFuzzer targets covering borrow, supply, liquidation, interest and fee math, decimal arithmetic, snapshots, market creation, the vault state machine, and Stellar storage codecs run nightly, with committed regression seeds ([fuzz targets](https://github.com/Templar-Protocol/contracts/tree/dev/fuzz)).
 - **Independent process review**: DeFiSafety's [Process Quality Review of Templar](https://drive.google.com/file/d/1rXVCHI-7XjCcyPAuoO44Kbs1kfwmxXkv/view?usp=sharing) scored the protocol 94% (PASS).
 
+### Dependency Audits
+
+Templar's cross-chain flows rely on NEAR infrastructure that is audited independently of Templar: NEAR Intents (deposits and withdrawals), the Omnibridge, Chain Signatures (the MPC network), and nearcore. Those reports are collected in the [NEAR dependency audits folder](https://drive.google.com/drive/folders/1_6MPZLrWxLTWpCi5caYC2IWKP-8sW1uP?usp=sharing): nearcore assessments by Trail of Bits and Sigma Prime; NEAR Intents reviews by Hacken, Guvenkaya, zkSecurity, and Aurora Labs; Omnibridge audit reports; and the NEAR One reports on the MPC Chain Signatures network. Contingency procedures for a dependency incident are part of the [incident response](#incident-response) runbooks.
+
 ## Smart Contract Architecture
 
 ### Immutable Markets
@@ -92,9 +96,9 @@ See the [Stellar Vault Curator Guide](./curator-guide.md) for the full operating
 
 ## Monitoring, Alerting, and Risk Dashboard
 
-- **Live risk dashboard**: [data.templarfi.org](https://data.templarfi.org/) shows real-time coverage and liquidation analytics across markets, so anyone can see collateralization, utilization, and liquidation risk without trusting the team's reporting.
-- **Alerting**: [Hypernative](https://www.hypernative.io/) monitors the Stellar vaults for exploit detection, invariant checks, and privileged-call anomalies. Custom alerts on the NEAR markets and proxy oracles cover oracle divergence, oracle downtime, circuit breaker events, large positions, executed liquidations, bad-debt creation, utilization crossing critical thresholds, governance actions, and compliance signals. Alerts are published to the public [Templar alerts Telegram channel](https://t.me/+CcqXyt01lsljZmQx).
-- **24/7 coverage**: the three co-founders are distributed across US, EU, and Asia time zones, so a responder is always within working hours.
+- **Live risk dashboard**: [data.templarfi.org](https://data.templarfi.org/) shows, in real time and per market, collateral coverage, liquidation proximity with drawdown scenarios, oracle health per feed, TVL and revenue, utilization and rates, borrower and supplier concentration, supply-side flows, positions by risk tier, a ledger of events, and post-withdrawal transfers through NEAR Intents, so anyone can assess the protocol's risk without relying on the team's reporting.
+- **Alerting**: [Hypernative](https://www.hypernative.io/) monitors the Stellar vaults for exploit detection, invariant checks, and privileged-call anomalies. Custom alerts cover the NEAR markets and proxy oracles. Together the alerting covers oracle failure or price deviation beyond threshold, positions approaching liquidation, liquidations executed, large position events (whale alerts), bad debt creation, utilization crossing critical thresholds, and smart contract pauses or emergency admin actions. Alerts are published to the public [Templar alerts Telegram channel](https://t.me/+CcqXyt01lsljZmQx).
+- **24/7 coverage**: the multisig signers are distributed across multiple time zones, so a responder is always within working hours.
 - **Compliance screening**: on-chain sanctions and risk signals from [Predicate](https://predicate.io/) and [TRM Labs](https://www.trmlabs.com/) flag SEVERE-labelled accounts interacting with Templar contracts.
 
 Details, including how to run the same health checks yourself, are on the [Monitoring and Risk Management](./monitoring.md) page.
@@ -110,17 +114,17 @@ Details, including how to run the same health checks yourself, are on the [Monit
 
 ## Operational Security and Key Management
 
-- **Multisig control**: every mutable Templar contract on NEAR (the registry, proxy oracle governance, and adapters) is administered by [`templar.sputnik-dao.near`](https://nearblocks.io/address/templar.sputnik-dao.near), a Sputnik DAO with the three co-founders on its council at a 2-of-3 threshold. Adding or removing a signer is itself a governed DAO proposal.
-- **Timelocks**: proxy oracle governance applies 24-hour to 168-hour timelocks depending on the action, and vault governance applies configurable per-action timelocks; only risk-reducing emergency actions are immediate. See [Protocol Governance](./governance.md) for the full table.
+- **Multisig control**: every mutable Templar contract on NEAR (the registry, proxy oracle governance, and adapters) is administered by [`templar.sputnik-dao.near`](https://nearblocks.io/address/templar.sputnik-dao.near), a Sputnik DAO with three signers on its council at a 2-of-3 threshold. Adding or removing a signer is itself a governed DAO proposal.
+- **Timelocks**: proxy oracle governance typically applies 24-hour to 168-hour timelocks depending on the action (the exact policy is set per contract), and vault governance applies configurable per-action timelocks; only risk-reducing emergency actions are immediate. See [Protocol Governance](./governance.md) for the full table.
 - **Least privilege**: proxy oracle governance separates the `ManualTripper`, `CircuitBreakerOperator`, `ProxyConfigurationManager`, and `Admin` roles so that the account able to hit the emergency brake need not be able to reconfigure feeds or upgrade code.
-- **Key hygiene**: privileged keys are held on hardware devices with geographically distributed cold backups; infrastructure and vendor accounts require MFA and have at least two co-founder administrators for continuity.
+- **Key hygiene**: privileged keys are held on hardware devices with geographically distributed cold backups; infrastructure and vendor accounts require MFA and have at least two administrators for continuity.
 - **Security policy**: Templar maintains a written organizational security policy (access control, key management, SDLC, monitoring, incident response, vendor risk, business continuity) reviewed quarterly and shared with counterparties on request.
 
 ## Incident Response
 
 Templar maintains role-segmented [emergency runbooks](https://github.com/Templar-Protocol/blend-contracts-v2/tree/main/docs/emergency-runbooks) covering markets, vaults, oracles, NEAR Intents, bridges, and stablecoin issuers. The process from detection to resolution:
 
-1. **Detect and page**: a Hypernative or custom alert reaches the on-call founder.
+1. **Detect and page**: a Hypernative or custom alert reaches the on-call responder.
 2. **War room**: the responder opens a war room, names an incident lead, communications lead, and scribe, and classifies severity.
 3. **Contain with the smallest reversible action**: halt Templar's own bots; trip the relevant proxy oracle feed to freeze price-dependent operations on immutable markets; on vaults, Sentinel pause or restriction tightening, allocator abort, and curator cap-to-zero, in that order of escalation.
 4. **Preserve user exits**: no role can disable supply withdrawal requests or repayments at the market boundary.

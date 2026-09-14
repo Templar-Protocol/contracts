@@ -14,7 +14,7 @@ This document outlines the administrative structure and governance controls of T
 
 ## Administrative Multisig
 
-All mutable Templar contracts on NEAR are administered by [`templar.sputnik-dao.near`](https://nearblocks.io/address/templar.sputnik-dao.near), a [Sputnik DAO](https://github.com/near-daos/sputnik-dao-contract) (v2) whose sole council role holds the three co-founders at a **2-of-3** threshold. Administrative actions are executed as DAO function-call proposals against the target contract; no co-founder can act alone.
+All mutable Templar contracts on NEAR are administered by [`templar.sputnik-dao.near`](https://nearblocks.io/address/templar.sputnik-dao.near), a [Sputnik DAO](https://github.com/near-daos/sputnik-dao-contract) (v2) whose sole council role holds three signers at a **2-of-3** threshold. Administrative actions are executed as DAO function-call proposals against the target contract; no signer can act alone.
 
 Changing the signer set is itself a governed policy change: a council member submits a `ChangePolicy` (or `AddMemberToRole` / `RemoveMemberFromRole`) proposal, the remaining members vote, and the DAO applies the change to itself when the threshold is reached. Signer additions and removals are announced on the official channels.
 
@@ -32,7 +32,7 @@ Because a market cannot be paused, the emergency control for a market is its ora
 
 ## Proxy Oracle Governance
 
-Each [proxy oracle](./oracles.md#proxy-oracle) is owned by its own governance contract (`proxy-gov-<market>.v1.tmplr.near`). Every change is a proposal that matures under a per-method timelock and can only be created and executed by an account holding the required role:
+Each [proxy oracle](./oracles.md#proxy-oracle) is owned by its own governance contract (`proxy-gov-<market>.v1.tmplr.near`). Every change is a proposal that matures under a per-method timelock and can only be created and executed by an account holding the required role. The policy is set per governance contract; the table below is the typical production setup, not a guarantee for every contract:
 
 | Action | Timelock | Required role |
 |---|---|---|
@@ -44,7 +44,7 @@ Each [proxy oracle](./oracles.md#proxy-oracle) is owned by its own governance co
 | Change governance policy (timelocks, roles) | 48 hours | `Admin` |
 | Upgrade the governance contract itself | 168 hours | `Admin` |
 
-Shortening a timelock must itself mature under the timelock being shortened, so the policy cannot be weakened faster than it currently protects. The `Admin` role is held by the DAO multisig. The policy in force on any proxy oracle can be read with `get_governance_policy` on its governance contract, and pending proposals with `list_proposals`.
+Shortening a timelock must itself mature under the timelock being shortened, so the policy cannot be weakened faster than it currently protects. The `Admin` role is held by the DAO multisig. Always confirm the policy in force on a specific proxy oracle with `get_governance_policy` on its governance contract, and pending proposals with `list_proposals`.
 
 ## Registry Contract
 

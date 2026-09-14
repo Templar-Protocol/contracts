@@ -83,6 +83,8 @@ Every configuration change, trip, re-arm, and enforcement change emits an on-cha
 
 Each proxy oracle is owned by its own governance contract. Nothing about a feed can be changed by a single transaction: every change is a proposal that matures under a per-method timelock and can only be executed by an account holding the role that method requires.
 
+Timelocks and roles are configured per governance contract. The table below is the typical production setup; it is not guaranteed to apply to every proxy oracle, so confirm the policy in force on a specific contract as shown at the end of this section.
+
 | Action | Timelock | Required role |
 |---|---|---|
 | Trip or untrip a feed manually | none (immediate) | `ManualTripper` |
@@ -96,7 +98,7 @@ Each proxy oracle is owned by its own governance contract. Nothing about a feed 
 
 Only actions that *reduce* risk (tripping, re-arming under operator control, enforcement toggles) are immediate. A proposal's timelock is fixed when it is created, and shortening any timelock must itself mature under the timelock being shortened, so governance cannot be weakened faster than it currently protects. The `Admin` role is held by Templar's 2-of-3 multisig; see [Protocol Governance](./governance.md).
 
-The policy in force on any proxy oracle can be read from its governance contract:
+The policy in force on a specific proxy oracle can be read from its governance contract:
 
 ```bash
 near contract call-function as-read-only \
