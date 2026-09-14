@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use near_api::types::transaction::actions::{
-    AccessKeyPermission as NearAccessKeyPermission, Action, DeleteAccountAction,
+    AccessKey, AccessKeyPermission as NearAccessKeyPermission, Action, AddKeyAction,
+    DeleteAccountAction,
 };
 use templar_gateway_core::{
     GatewayError, {DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite},
@@ -121,6 +122,27 @@ impl<C: HasNearClient> DispatchRead<account::GetAccessKey, C> for Dispatch {
             nonce: key.nonce.0,
             permission: permission_view(key.permission)?,
         })
+    }
+}
+
+#[async_trait]
+impl<C: Send + 'static> PlanWrite<account::AddKey, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<account::AddKey>,
+        _context: C,
+    ) -> GatewayResult<OperationPlan> {
+        Ok(OperationPlan::execute(
+            request.signer_account_id.clone(),
+            request.signer_account_id.0,
+            vec![Action::AddKey(Box::new(AddKeyAction {
+                public_key: request.body.public_key.into(),
+                // The runtime assigns the real nonce on creation; the value here is ignored.
+                access_key: AccessKey {
+                    nonce: 0.into(),
+                    permission: NearAccessKeyPermission::FullAccess,
+                },
+            }))],
+        ))
     }
 }
 

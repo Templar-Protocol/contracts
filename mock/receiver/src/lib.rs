@@ -1,8 +1,9 @@
 // This mock implements the NEP token-receiver callbacks but ignores their
 // params. They are required to be taken by value (and are read by the
-// `#[near]`-generated wrappers), which trips `needless_pass_by_value` and
-// `used_underscore_binding`.
-#![allow(clippy::needless_pass_by_value, clippy::used_underscore_binding)]
+// `#[near]`-generated wrappers), which trips `needless_pass_by_value`. The
+// names are the JSON field names the wrapper deserializes, so they cannot be
+// underscore-prefixed.
+#![allow(clippy::needless_pass_by_value, unused_variables)]
 
 use near_sdk::{json_types::U128, near, AccountId, PanicOnDefault, PromiseOrValue};
 
@@ -36,9 +37,9 @@ impl Contract {
 impl Contract {
     pub fn ft_on_transfer(
         &mut self,
-        _sender_id: AccountId,
-        _amount: U128,
-        _msg: String,
+        sender_id: AccountId,
+        amount: U128,
+        msg: String,
     ) -> PromiseOrValue<U128> {
         self.ft_calls += 1;
         PromiseOrValue::Value(U128(0))
@@ -46,11 +47,11 @@ impl Contract {
 
     pub fn mt_on_transfer(
         &mut self,
-        _sender_id: AccountId,
-        _previous_owner_ids: Vec<AccountId>,
-        _token_ids: Vec<String>,
+        sender_id: AccountId,
+        previous_owner_ids: Vec<AccountId>,
+        token_ids: Vec<String>,
         amounts: Vec<U128>,
-        _msg: String,
+        msg: String,
     ) -> PromiseOrValue<Vec<U128>> {
         self.mt_calls += 1;
         PromiseOrValue::Value(vec![U128(0); amounts.len()])
