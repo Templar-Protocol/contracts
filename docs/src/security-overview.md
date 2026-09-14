@@ -5,7 +5,7 @@ Templar Protocol is built on a defence-in-depth model: immutable, isolated marke
 ## At a Glance
 
 - **Five independent audits plus formal verification** by Guvenkaya, Thesis Defense, Certora, and Halborn (twice). All critical and high-severity findings remediated. [Reports](https://drive.google.com/drive/folders/14Q6iysMotto5fqpu6LRxjWBqeXElzkyF?usp=sharing).
-- **Immutable markets**: no admin keys, no upgrade path, no pause function, no parameter changes after deployment.
+- **Immutable market contracts**: no contract-level admin functions, upgrade method, pause function, or parameter mutators. Retained deployer keys on some market accounts are a separate, documented storage-patch exception (see [Immutable Markets](#immutable-markets)).
 - **Isolated markets**: one collateral asset and one borrow asset per contract; no cross-asset contagion.
 - **Proxy oracles** aggregating Pyth and RedStone with freshness filters and **circuit breakers**, the emergency brake for immutable markets.
 - **Professional curators** manage vault lending risk under timelocked governance with an independent Sentinel.
@@ -106,7 +106,7 @@ See the [Stellar Vault Curator Guide](./curator-guide.md) for the full operating
 
 - **Live risk dashboard**: [data.templarfi.org](https://data.templarfi.org/) shows, in real time and per market, collateral coverage, liquidation proximity with drawdown scenarios, oracle health per feed, TVL and revenue, utilization and rates, borrower and supplier concentration, supply-side flows, positions by risk tier, a ledger of events, and post-withdrawal transfers through NEAR Intents, so anyone can assess the protocol's risk without relying on the team's reporting.
 - **Alerting**: [Hypernative](https://www.hypernative.io/) monitors the Stellar vaults for exploit detection, invariant checks, and privileged-call anomalies. Custom alerts cover the NEAR markets and proxy oracles. Together the alerting covers oracle failure or price deviation beyond threshold, positions approaching liquidation, liquidations executed, large position events (whale alerts), bad debt creation, utilization crossing critical thresholds, and smart contract pauses or emergency admin actions. Alerts are published to the public [Templar alerts Telegram channel](https://t.me/+CcqXyt01lsljZmQx).
-- **24/7 coverage**: the multisig signers are distributed across multiple time zones, so a responder is always within working hours.
+- **24/7 coverage**: Templar's written security policy defines an on-call rotation among the multisig signers, who are distributed across multiple time zones, so that a responder is within working hours at all times and alerts page the current on-call directly.
 - **Compliance screening**: on-chain sanctions and risk signals from [Predicate](https://predicate.io/) and [TRM Labs](https://www.trmlabs.com/) flag SEVERE-labelled accounts interacting with Templar contracts.
 
 Details, including how to run the same health checks yourself, are on the [Monitoring and Risk Management](./monitoring.md) page.

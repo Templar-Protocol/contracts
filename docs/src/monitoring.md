@@ -25,7 +25,7 @@ The alerting covers:
 
 ### Coverage and Escalation
 
-The multisig signers are distributed across multiple time zones so that a responder is always within working hours. Every alert is classified by severity; critical alerts page all signers and open a war room following the [emergency runbooks](https://github.com/Templar-Protocol/blend-contracts-v2/tree/main/docs/emergency-runbooks). See [Incident Response](#incident-response) below.
+Templar's security policy defines an on-call rotation among the multisig signers, who are distributed across multiple time zones, so that a responder is within working hours at all times. Every alert is classified by severity; critical alerts page all signers and open a war room following the [emergency runbooks](https://github.com/Templar-Protocol/blend-contracts-v2/tree/main/docs/emergency-runbooks). See [Incident Response](#incident-response) below.
 
 ### Compliance Screening
 
