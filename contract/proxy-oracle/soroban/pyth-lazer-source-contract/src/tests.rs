@@ -229,11 +229,31 @@ fn rejects_channel_mismatch() {
 fn feeds_outside_the_window_are_skipped_not_rejected() {
     let h = harness();
     let now = h.env.ledger().timestamp();
-    let at = |secs: u64| payload_at(&h.env, secs * MICROS_PER_SEC, &[(BTC_FEED, 5)]);
-    assert_eq!(h.source.update_price_feeds(&at(now - 61)), 0);
-    assert_eq!(h.source.update_price_feeds(&at(now + 6)), 0);
+    let at = |us: u64| payload_at(&h.env, us, &[(BTC_FEED, 5)]);
+    assert_eq!(
+        h.source
+            .update_price_feeds(&at((now - 61) * MICROS_PER_SEC)),
+        0
+    );
+    assert_eq!(
+        h.source.update_price_feeds(&at((now + 6) * MICROS_PER_SEC)),
+        0
+    );
+    assert_eq!(
+        h.source
+            .update_price_feeds(&at((now + 5) * MICROS_PER_SEC + 1)),
+        0
+    );
     assert_eq!(h.source.lastprice(&h.btc), None);
-    assert_eq!(h.source.update_price_feeds(&at(now - 60)), 1);
+    assert_eq!(
+        h.source
+            .update_price_feeds(&at((now - 60) * MICROS_PER_SEC)),
+        1
+    );
+    assert_eq!(
+        h.source.update_price_feeds(&at((now + 5) * MICROS_PER_SEC)),
+        1
+    );
 }
 
 #[test]

@@ -23,6 +23,8 @@ BASE_JSON='{"Other":"USD"}'
 LAZER_FEED_ID="${LAZER_FEED_ID:-23}"
 LAZER_ASSET_JSON="{\"Other\":\"$LAZER_FEED_ID\"}"
 MAX_AGE_SECS="${MAX_AGE_SECS:-600}"
+# The Lazer source's own ingest window; independent of the runtime's per-asset window above.
+LAZER_MAX_AGE_SECS="${LAZER_MAX_AGE_SECS:-600}"
 MAX_CLOCK_DRIFT_SECS="${MAX_CLOCK_DRIFT_SECS:-60}"
 LAZER_CHANNEL="${LAZER_CHANNEL:-fixed_rate@200ms}"
 case "$LAZER_CHANNEL" in
@@ -97,8 +99,19 @@ latest_ledger() {
     -d '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['sequence'])"
 }
 
+# Fail with a message; used for result assertions so a bad run cannot exit 0.
+expect() {
+  local what="$1" got="$2" pattern="$3"
+  [[ "$got" =~ $pattern ]] || { echo "FAIL: $what = $got (expected /$pattern/)" >&2; exit 1; }
+}
+
 phase_deploy() {
   local admin; admin="$(src_address)"
+  local recorded; recorded="$(state_get admin)"
+  if [[ -n "$recorded" && "$recorded" != "$admin" ]]; then
+    echo "state at $STATE was deployed by $recorded; refusing to resume as $admin" >&2
+    exit 1
+  fi
   state_set admin "$admin"
   echo "== upload wasms"
   local name pkg
@@ -133,7 +146,7 @@ phase_deploy() {
 
   echo "== pyth lazer source"
   if [[ -z "$(state_get lazer_source)" ]]; then
-    local config="{\"verifier\":\"$PYTH_VERIFIER\",\"base\":$BASE_JSON,\"decimals\":8,\"channel\":\"$LAZER_CHANNEL_VARIANT\",\"freshness\":{\"max_age_secs\":$MAX_AGE_SECS,\"max_ahead_secs\":5}}"
+    local config="{\"verifier\":\"$PYTH_VERIFIER\",\"base\":$BASE_JSON,\"decimals\":8,\"channel\":\"$LAZER_CHANNEL_VARIANT\",\"freshness\":{\"max_age_secs\":$LAZER_MAX_AGE_SECS,\"max_ahead_secs\":5}}"
     deploy_into lazer_source --wasm-hash "$(state_get hash_pyth_lazer_source_contract)" -- --owner "$admin" --config "$config"
   fi
   echo "  LZ=$(state_get lazer_source)"
@@ -171,8 +184,11 @@ fetch_lazer_payload() {
     PYTH_LAZER_API_KEY="$(tr -d '[:space:]' < "$PYTH_LAZER_API_KEY_FILE")"
   fi
   : "${PYTH_LAZER_API_KEY:?Pyth Lazer API key required for the push phase (PYTH_LAZER_API_KEY or PYTH_LAZER_API_KEY_FILE)}"
+  local headers; headers="$(mktemp)"; chmod 600 "$headers"
+  trap 'rm -f "$headers"' RETURN
+  printf 'Authorization: Bearer %s\n' "$PYTH_LAZER_API_KEY" > "$headers"
   curl -sf -X POST "$LAZER_REST" \
-    -H "Authorization: Bearer $PYTH_LAZER_API_KEY" -H 'Content-Type: application/json' \
+    -H "@$headers" -H 'Content-Type: application/json' \
     -d "{\"priceFeedIds\":[$LAZER_FEED_ID],\"properties\":[\"price\",\"exponent\",\"feedUpdateTimestamp\"],\"formats\":[\"leEcdsa\"],\"channel\":\"$LAZER_CHANNEL\",\"jsonBinaryEncoding\":\"hex\"}" \
     | tee "$OUT/lazer_response.json" \
     | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['leEcdsa']['data'])"
@@ -184,21 +200,41 @@ phase_push() {
   local payload; payload="$(fetch_lazer_payload)"
   echo "  ${#payload} hex chars"
   echo "== update_price_feeds"
-  echo "  stored feeds: $(inv "$lz" -- update_price_feeds --payload "$payload")"
+  local stored; stored="$(inv "$lz" -- update_price_feeds --payload "$payload")"
+  echo "  stored feeds: $stored"
+  expect "stored feeds" "$stored" '^[1-9][0-9]*$'
+  local price; price="$(view "$lz" -- lastprice --asset "$LAZER_ASSET_JSON")"
   echo "  stored_price: $(view "$lz" -- stored_price --feed_id "$LAZER_FEED_ID")"
-  echo "  lastprice:    $(view "$lz" -- lastprice --asset "$LAZER_ASSET_JSON")"
+  echo "  lastprice:    $price"
+  expect "lastprice" "$price" '"price"'
+  echo "  push OK"
 }
 
 phase_refresh() {
   local rt ad batch; rt="$(state_get runtime)"; ad="$(state_get adapter)"; batch="$(state_get batcher)"
+  local status latest served
   echo "== refresh via runtime"
-  echo "  refresh:           $(inv "$rt" -- refresh --asset "$ASSET_JSON")"
-  echo "  aggregated_latest: $(view "$rt" -- aggregated_latest --asset "$ASSET_JSON")"
-  echo "  adapter lastprice: $(view "$ad" -- lastprice --asset "$ASSET_JSON")"
+  status="$(inv "$rt" -- refresh --asset "$ASSET_JSON")"
+  latest="$(view "$rt" -- aggregated_latest --asset "$ASSET_JSON")"
+  served="$(view "$ad" -- lastprice --asset "$ASSET_JSON")"
+  echo "  refresh:           $status"
+  echo "  aggregated_latest: $latest"
+  echo "  adapter lastprice: $served"
+  expect "refresh" "$status" '"Accepted"'
+  expect "aggregated_latest" "$latest" '"mantissa"'
+  expect "adapter lastprice" "$served" '"price"'
   echo "== batcher"
-  echo "  refresh_many:         $(inv "$batch" -- refresh_many --oracle "$rt" --assets "[$ASSET_JSON]")"
-  echo "  extend_ttl_many:      $(inv "$batch" -- extend_ttl_many --oracle "$rt" --assets "[$ASSET_JSON]")"
-  echo "  extend_ttl_contracts: $(inv "$batch" -- extend_ttl_contracts --contracts "[\"$(state_get governance)\",\"$ad\",\"$(state_get lazer_source)\"]")"
+  local many ttl_many ttl_contracts
+  many="$(inv "$batch" -- refresh_many --oracle "$rt" --assets "[$ASSET_JSON]")"
+  ttl_many="$(inv "$batch" -- extend_ttl_many --oracle "$rt" --assets "[$ASSET_JSON]")"
+  ttl_contracts="$(inv "$batch" -- extend_ttl_contracts --contracts "[\"$(state_get governance)\",\"$ad\",\"$(state_get lazer_source)\"]")"
+  echo "  refresh_many:         $many"
+  echo "  extend_ttl_many:      $ttl_many"
+  echo "  extend_ttl_contracts: $ttl_contracts"
+  expect "refresh_many" "$many" '^\[\{"Accepted"'
+  expect "extend_ttl_many" "$ttl_many" '^\[true\]$'
+  expect "extend_ttl_contracts" "$ttl_contracts" '^\[true,true,true\]$'
+  echo "  refresh OK"
 }
 
 case "$PHASE" in

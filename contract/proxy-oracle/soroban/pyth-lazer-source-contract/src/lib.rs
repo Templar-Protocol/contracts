@@ -184,8 +184,12 @@ impl PythLazerSource {
             return Err(LazerSourceError::ChannelMismatch);
         }
         let now = env.ledger().timestamp();
-        let oldest_allowed_secs = now.saturating_sub(config.freshness.max_age_secs);
-        let latest_allowed_secs = now.saturating_add(config.freshness.max_ahead_secs);
+        let oldest_allowed_us = now
+            .saturating_sub(config.freshness.max_age_secs)
+            .saturating_mul(MICROS_PER_SEC);
+        let latest_allowed_us = now
+            .saturating_add(config.freshness.max_ahead_secs)
+            .saturating_mul(MICROS_PER_SEC);
 
         let mut stored = 0;
         for feed in &update.feeds {
@@ -194,10 +198,9 @@ impl PythLazerSource {
             else {
                 continue;
             };
-            let publish_secs = publish_time_us / MICROS_PER_SEC;
             if mantissa <= 0
-                || publish_secs < oldest_allowed_secs
-                || publish_secs > latest_allowed_secs
+                || publish_time_us < oldest_allowed_us
+                || publish_time_us > latest_allowed_us
             {
                 continue;
             }

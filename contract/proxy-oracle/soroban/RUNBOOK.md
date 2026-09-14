@@ -157,7 +157,10 @@ inv --id $GOV -- cancel_proposal  --caller <ADDR> --id <ID>   # frees a slot
 Wrap each action in `create_proposal` + `execute_proposal` (examples show only
 the `--action` JSON).
 
-**Sources** — `SetProxy` / `RemoveProxy`:
+**Sources** — `SetProxy` / `RemoveProxy` (mainnet ids; on testnet use Reflector
+`CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63`, RedStone
+`CA7MY6TYNL5Z5H5FYGMN7YWSY3JIZG7LFY3DZ26EEGRBQ2UKTFWHD4ZJ` with its XLM SAC
+`CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`):
 
 ```json
 {"SetProxy": [{"Other":"XLM"}, {
@@ -329,9 +332,18 @@ stellar contract install --network $NET --source $SRC --wasm <new>.optimized.was
 inv --id $RT --source <gov-signer> -- upgrade --new_wasm_hash <HASH> --operator $GOV
 # or: create_proposal {"Upgrade":"<HASH>"} (Admin) → execute_proposal after maturity
 
-# adapter — owner-gated:
+# adapter and Lazer source — owner-gated, same shape:
 inv --id $AD -- upgrade --new_wasm_hash <HASH> --operator <OWNER>
+inv --id $LZ -- upgrade --new_wasm_hash <HASH> --operator <OWNER>
+
+# batcher — stateless and ownerless, so it is replaced rather than upgraded:
+stellar contract deploy --network $NET --source $SRC --wasm-hash <BATCHER_HASH>   # returns new $BATCH
+# then point the keeper at the new address; the old instance simply expires.
 ```
+
+The Lazer source's stored prices survive its upgrade (persistent storage is
+untouched); a new version must keep reading `StoredPrice` as stored. Rolling it
+back is the same call with the previous hash.
 
 ## 12. Rollback
 

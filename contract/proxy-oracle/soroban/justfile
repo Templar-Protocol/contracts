@@ -115,15 +115,14 @@ build: build-runtime build-governance build-sep40-adapter build-lazer-source bui
 # artifact is copied out, leaving the unoptimized build intact.
 _optimize package wasm optimized label:
     @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{package}}"
-    @staging="$(mktemp -d)"; \
+    @set -e; staging="$(mktemp -d)"; trap 'rm -rf "$staging"' EXIT; \
     RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
         --profile release-soroban-checked \
         --manifest-path "{{root}}/Cargo.toml" \
         --package "{{package}}" \
         --optimize \
-        --out-dir "$staging"; \
-    cp "$staging/$(echo '{{package}}' | tr - _).wasm" "{{optimized}}"; \
-    rm -rf "$staging"
+        --out-dir "$staging" && \
+    cp "$staging/$(echo '{{package}}' | tr - _).wasm" "{{optimized}}"
     @python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
         --wasm "{{wasm}}" \
         --optimized "{{optimized}}" \
@@ -154,26 +153,29 @@ optimize: optimize-runtime optimize-governance optimize-sep40-adapter optimize-l
 # =============================================================================
 
 # Enforce optimized-WASM size budgets (runtime/governance 128 KiB; adapter, Lazer source, batcher 32 KiB).
+# The report is written only after every budget check passes, so it never records a false PASS.
 size-check: optimize
     @echo "Running size gate..."
     @mkdir -p "{{evidence_dir}}"
-    @{ \
+    @set -e; report="$(mktemp)"; trap 'rm -f "$report"' EXIT; \
+    { \
         echo "# Proxy-Oracle Soroban Size Gate"; \
         echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
         echo "limits: {{size_limit}} bytes (runtime, governance); {{small_size_limit}} bytes (sep40-adapter, lazer-source, batcher)"; \
-        for row in \
-            "runtime:{{runtime_wasm}}:{{runtime_opt}}:{{size_limit}}" \
-            "governance:{{governance_wasm}}:{{governance_opt}}:{{size_limit}}" \
-            "sep40-adapter:{{adapter_wasm}}:{{adapter_opt}}:{{small_size_limit}}" \
-            "lazer-source:{{lazer_wasm}}:{{lazer_opt}}:{{small_size_limit}}" \
-            "batcher:{{batcher_wasm}}:{{batcher_opt}}:{{small_size_limit}}"; do \
-            label=${row%%:*}; rest=${row#*:}; wasm=${rest%%:*}; rest=${rest#*:}; opt=${rest%%:*}; limit=${rest#*:}; \
-            echo ""; echo "## $label"; \
-            python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" --wasm "$wasm" --optimized "$opt" --label "$label"; \
-            python3 "{{shared_scripts_dir}}/check_wasm_budget.py" --wasm "$opt" --max-bytes "$limit"; \
-        done; \
-        echo ""; echo "## Result: PASS"; \
-    } | tee "{{evidence_dir}}/size-check.txt"
+    } > "$report"; \
+    printf '%s\n' \
+        "runtime:{{runtime_wasm}}:{{runtime_opt}}:{{size_limit}}" \
+        "governance:{{governance_wasm}}:{{governance_opt}}:{{size_limit}}" \
+        "sep40-adapter:{{adapter_wasm}}:{{adapter_opt}}:{{small_size_limit}}" \
+        "lazer-source:{{lazer_wasm}}:{{lazer_opt}}:{{small_size_limit}}" \
+        "batcher:{{batcher_wasm}}:{{batcher_opt}}:{{small_size_limit}}" \
+    | while IFS=: read -r label wasm opt limit; do \
+        { echo ""; echo "## $label"; } >> "$report"; \
+        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" --wasm "$wasm" --optimized "$opt" --label "$label" | tee -a "$report"; \
+        python3 "{{shared_scripts_dir}}/check_wasm_budget.py" --wasm "$opt" --max-bytes "$limit" || exit 1; \
+    done; \
+    { echo ""; echo "## Result: PASS"; } >> "$report"; \
+    cp "$report" "{{evidence_dir}}/size-check.txt"
     @echo "✓ Size gate passed — evidence: {{evidence_dir}}/size-check.txt"
 
 # =============================================================================
