@@ -1,0 +1,381 @@
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::should_panic_without_expect)]
+
+use super::*;
+
+use rstest::rstest;
+use soroban_sdk::{
+    testutils::{Address as _, Events as _, Ledger},
+    Address, Bytes, Env, Symbol,
+};
+
+use crate::testutils::{
+    encode_payload, feed, payload_at, FeedSpec, MockVerifier, MockVerifierClient, CHANNEL_200MS,
+    CHANNEL_REAL_TIME,
+};
+
+/// Pyth's shared Sui/Stellar test vector: BTC (1), ETH (2), SOL (112) on
+/// `fixed_rate@200ms` at 1_771_252_161_800_000 µs.
+const VECTOR_TIMESTAMP_US: u64 = 1_771_252_161_800_000;
+const VECTOR_BTC_PRICE: i64 = 6_828_284_601_313;
+const VECTOR_ETH_PRICE: i64 = 195_892_878_231;
+
+fn vector_payload(env: &Env) -> Bytes {
+    Bytes::from_slice(
+        env,
+        &hex_literal::hex!(
+            "75d3c7934067e9c7f14a06000303010000000b00e1637ad5"
+            "35060000015a2507d335060000027f8bfdf53506000004f8"
+            "ff0600070008000900000a601299cd3e0600000bc07595c7"
+            "3e0600000c014067e9c7f14a0600020000000b00971b209c"
+            "2d0000000144056b9b2d0000000298fb6b9c2d00000004f8"
+            "ff0600070008000900000a284444f92d0000000b480c07f9"
+            "2d0000000c014067e9c7f14a0600700000000b0020d85dd2"
+            "d78df30001000000000000000002000000000000000004f4"
+            "ff060130f80bfeffffffff0701b8ab7057ec4a0600080100"
+            "209db4060000000900000a00000000000000000b00000000"
+            "000000000c014067e9c7f14a0600"
+        ),
+    )
+}
+
+const BTC_FEED: u32 = 1;
+const ETH_FEED: u32 = 2;
+const SOL_FEED: u32 = 112;
+
+struct Harness {
+    env: Env,
+    owner: Address,
+    verifier: MockVerifierClient<'static>,
+    source: PythLazerSourceClient<'static>,
+    base: Asset,
+    btc: Asset,
+    eth: Asset,
+}
+
+fn freshness() -> FreshnessConfig {
+    FreshnessConfig {
+        max_age_secs: 60,
+        max_ahead_secs: 5,
+    }
+}
+
+fn symbol_asset(env: &Env, symbol: &str) -> Asset {
+    Asset::Other(Symbol::new(env, symbol))
+}
+
+fn config(env: &Env, channel: LazerChannel, decimals: u32, max_age_secs: u64) -> Config {
+    Config {
+        verifier: env.register(MockVerifier, ()),
+        base: symbol_asset(env, "USD"),
+        decimals,
+        channel,
+        freshness: FreshnessConfig {
+            max_age_secs,
+            max_ahead_secs: 5,
+        },
+    }
+}
+
+fn harness_with(channel: LazerChannel) -> Harness {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger()
+        .set_timestamp(VECTOR_TIMESTAMP_US / MICROS_PER_SEC + 10);
+    let owner = Address::generate(&env);
+    let config = config(&env, channel, 8, 60);
+    let verifier_id = config.verifier.clone();
+    let base = config.base.clone();
+    let source_id = env.register(PythLazerSource, (&owner, config));
+    Harness {
+        verifier: MockVerifierClient::new(&env, &verifier_id),
+        source: PythLazerSourceClient::new(&env, &source_id),
+        btc: feed_asset(&env, BTC_FEED),
+        eth: feed_asset(&env, ETH_FEED),
+        env,
+        owner,
+        base,
+    }
+}
+
+fn harness() -> Harness {
+    harness_with(LazerChannel::FixedRate200ms)
+}
+
+fn stored_btc(h: &Harness) -> StoredPrice {
+    h.source.stored_price(&BTC_FEED).expect("btc stored")
+}
+
+fn construct(decimals: u32, max_age_secs: u64) {
+    let env = Env::default();
+    let owner = Address::generate(&env);
+    let config = config(&env, LazerChannel::FixedRate200ms, decimals, max_age_secs);
+    env.register(PythLazerSource, (&owner, config));
+}
+
+#[rstest]
+#[should_panic]
+#[case::decimals_above_max(19, 60)]
+#[should_panic]
+#[case::zero_max_age(8, 0)]
+fn constructor_rejects_invalid_config(#[case] decimals: u32, #[case] max_age_secs: u64) {
+    construct(decimals, max_age_secs);
+}
+
+#[test]
+fn constructor_accepts_boundary_config() {
+    construct(MAX_SEP40_DECIMALS, 1);
+}
+
+#[rstest]
+#[case(0, "0")]
+#[case(7, "7")]
+#[case(23, "23")]
+#[case(240, "240")]
+#[case(u32::MAX, "4294967295")]
+fn feed_asset_is_the_decimal_id(#[case] feed_id: u32, #[case] text: &str) {
+    let env = Env::default();
+    assert_eq!(
+        feed_asset(&env, feed_id),
+        Asset::Other(Symbol::new(&env, text))
+    );
+}
+
+#[test]
+fn exposes_sep40_metadata_and_config() {
+    let h = harness();
+    assert_eq!(h.source.base(), h.base);
+    assert_eq!(h.source.decimals(), 8);
+    assert_eq!(h.source.resolution(), 1);
+    assert_eq!(h.source.assets().len(), 0);
+    let config = h.source.config().expect("config");
+    assert_eq!(config.channel, LazerChannel::FixedRate200ms);
+    assert_eq!(config.freshness, freshness());
+    assert_eq!(h.source.get_owner(), Some(h.owner.clone()));
+    assert_eq!(h.source.lastprice(&h.btc), None);
+}
+
+#[test]
+fn stores_every_feed_in_the_pyth_vector_under_its_id() {
+    let h = harness();
+    assert_eq!(h.source.update_price_feeds(&vector_payload(&h.env)), 3);
+    let updates = h.env.events().all().filter_by_contract(&h.source.address);
+    assert_eq!(updates.events().len(), 3);
+
+    assert_eq!(
+        h.source.lastprice(&h.btc),
+        Some(PriceData {
+            price: i128::from(VECTOR_BTC_PRICE),
+            timestamp: VECTOR_TIMESTAMP_US / MICROS_PER_SEC,
+        })
+    );
+    assert_eq!(
+        h.source.lastprice(&h.eth).map(|p| p.price),
+        Some(i128::from(VECTOR_ETH_PRICE))
+    );
+    assert!(h.source.stored_price(&SOL_FEED).is_some());
+    assert_eq!(
+        stored_btc(&h),
+        StoredPrice {
+            mantissa: VECTOR_BTC_PRICE,
+            expo: -8,
+            publish_time_us: VECTOR_TIMESTAMP_US,
+        }
+    );
+    assert_eq!(h.source.lastprice(&symbol_asset(&h.env, "BTC")), None);
+}
+
+#[test]
+fn rescales_to_configured_decimals() {
+    let h = harness();
+    h.source.update_price_feeds(&vector_payload(&h.env));
+    h.source.set_decimals(&6);
+    assert_eq!(
+        h.source.lastprice(&h.btc).expect("btc").price,
+        i128::from(VECTOR_BTC_PRICE / 100)
+    );
+    h.source.set_decimals(&10);
+    assert_eq!(
+        h.source.lastprice(&h.btc).expect("btc").price,
+        i128::from(VECTOR_BTC_PRICE) * 100
+    );
+    assert_eq!(
+        h.source.try_set_decimals(&(MAX_SEP40_DECIMALS + 1)),
+        Err(Ok(LazerSourceError::InvalidInput))
+    );
+}
+
+#[test]
+fn rejects_channel_mismatch() {
+    let h = harness_with(LazerChannel::RealTime);
+    assert_eq!(
+        h.source.try_update_price_feeds(&vector_payload(&h.env)),
+        Err(Ok(LazerSourceError::ChannelMismatch))
+    );
+    let real_time = encode_payload(
+        &h.env,
+        VECTOR_TIMESTAMP_US,
+        CHANNEL_REAL_TIME,
+        &[feed(BTC_FEED, 5, VECTOR_TIMESTAMP_US)],
+    );
+    assert_eq!(h.source.update_price_feeds(&real_time), 1);
+}
+
+/// Window is `max_age_secs` 60 back to `max_ahead_secs` 5 ahead, checked in µs.
+#[rstest]
+#[case::too_old(-61_000_000, 0)]
+#[case::oldest(-60_000_000, 1)]
+#[case::newest(5_000_000, 1)]
+#[case::just_ahead(5_000_001, 0)]
+#[case::ahead(6_000_000, 0)]
+fn feeds_outside_the_window_are_skipped_not_rejected(#[case] offset_us: i64, #[case] stored: u32) {
+    let h = harness();
+    let now_us = h.env.ledger().timestamp() * MICROS_PER_SEC;
+    let at_us = now_us.checked_add_signed(offset_us).expect("in range");
+    assert_eq!(
+        h.source
+            .update_price_feeds(&payload_at(&h.env, at_us, &[(BTC_FEED, 5)])),
+        stored
+    );
+    assert_eq!(h.source.lastprice(&h.btc).is_some(), stored == 1);
+}
+
+#[test]
+fn publish_time_must_strictly_advance_per_feed() {
+    let h = harness();
+    let vector = vector_payload(&h.env);
+    assert_eq!(h.source.update_price_feeds(&vector), 3);
+    assert_eq!(h.source.update_price_feeds(&vector), 0);
+
+    let older = payload_at(&h.env, VECTOR_TIMESTAMP_US - 1, &[(BTC_FEED, 7)]);
+    assert_eq!(h.source.update_price_feeds(&older), 0);
+    assert_eq!(stored_btc(&h).mantissa, VECTOR_BTC_PRICE);
+
+    let newer = payload_at(&h.env, VECTOR_TIMESTAMP_US + 1, &[(BTC_FEED, 7)]);
+    assert_eq!(h.source.update_price_feeds(&newer), 1);
+    assert_eq!(stored_btc(&h).mantissa, 7);
+    assert_eq!(stored_btc(&h).publish_time_us, VECTOR_TIMESTAMP_US + 1);
+}
+
+#[test]
+fn feed_update_time_is_the_stored_clock_and_is_window_checked() {
+    let h = harness();
+    let now = h.env.ledger().timestamp();
+    let payload_us = now * MICROS_PER_SEC;
+    let at = |spec: FeedSpec| encode_payload(&h.env, payload_us, CHANNEL_200MS, &[spec]);
+
+    let earlier = payload_us - 5_000_000;
+    assert_eq!(
+        h.source.update_price_feeds(&at(feed(BTC_FEED, 9, earlier))),
+        1
+    );
+    assert_eq!(stored_btc(&h).publish_time_us, earlier);
+
+    let no_feed_time = FeedSpec {
+        feed_update_timestamp: None,
+        ..feed(ETH_FEED, 11, payload_us)
+    };
+    assert_eq!(h.source.update_price_feeds(&at(no_feed_time)), 0);
+
+    assert_eq!(h.source.lastprice(&h.eth), None);
+    assert_eq!(stored_btc(&h).mantissa, 9);
+}
+
+#[test]
+fn skips_feeds_without_a_positive_price_or_an_exponent() {
+    let h = harness();
+    let payload = encode_payload(
+        &h.env,
+        VECTOR_TIMESTAMP_US,
+        CHANNEL_200MS,
+        &[
+            feed(BTC_FEED, 0, VECTOR_TIMESTAMP_US),
+            feed(ETH_FEED, -1, VECTOR_TIMESTAMP_US),
+            FeedSpec {
+                exponent: None,
+                ..feed(BTC_FEED, 5, VECTOR_TIMESTAMP_US)
+            },
+        ],
+    );
+    assert_eq!(h.source.update_price_feeds(&payload), 0);
+    assert_eq!(h.source.lastprice(&h.btc), None);
+    assert_eq!(h.source.lastprice(&h.eth), None);
+}
+
+#[test]
+fn verifier_rejection_fails_the_update() {
+    let h = harness();
+    h.verifier.set_reject(&true);
+    assert!(h
+        .source
+        .try_update_price_feeds(&vector_payload(&h.env))
+        .is_err());
+    assert_eq!(h.source.lastprice(&h.btc), None);
+}
+
+#[test]
+fn malformed_verified_bytes_are_invalid_payload() {
+    let h = harness();
+    let garbage = Bytes::from_slice(&h.env, &[1, 2, 3]);
+    assert_eq!(
+        h.source.try_update_price_feeds(&garbage),
+        Err(Ok(LazerSourceError::InvalidPayload))
+    );
+}
+
+#[test]
+fn set_freshness_validates_and_applies() {
+    let h = harness();
+    assert_eq!(
+        h.source.try_set_freshness(&FreshnessConfig {
+            max_age_secs: 0,
+            ..freshness()
+        }),
+        Err(Ok(LazerSourceError::InvalidInput))
+    );
+    h.source.set_freshness(&FreshnessConfig {
+        max_age_secs: 5,
+        max_ahead_secs: 0,
+    });
+    assert_eq!(h.source.update_price_feeds(&vector_payload(&h.env)), 0);
+    assert_eq!(
+        h.source.config().expect("config").freshness.max_ahead_secs,
+        0
+    );
+}
+
+#[test]
+fn price_and_prices_serve_only_the_latest_record() {
+    let h = harness();
+    h.source
+        .update_price_feeds(&payload_at(&h.env, VECTOR_TIMESTAMP_US, &[(BTC_FEED, 5)]));
+    let last = h.source.lastprice(&h.btc).expect("btc");
+    assert_eq!(h.source.price(&h.btc, &last.timestamp), Some(last.clone()));
+    assert_eq!(h.source.price(&h.btc, &(last.timestamp - 1)), None);
+    assert_eq!(h.source.prices(&h.btc, &0), None);
+    assert_eq!(
+        h.source.prices(&h.btc, &5),
+        Some(Vec::from_array(&h.env, [last]))
+    );
+}
+
+#[test]
+fn upgrade_is_owner_gated_and_rejects_zero_hash() {
+    let h = harness();
+    let hash = BytesN::from_array(&h.env, &[7_u8; 32]);
+    let stranger = Address::generate(&h.env);
+    assert_eq!(
+        h.source.try_upgrade(&hash, &stranger),
+        Err(Ok(LazerSourceError::Unauthorized))
+    );
+    assert_eq!(
+        h.source
+            .try_upgrade(&BytesN::from_array(&h.env, &[0_u8; 32]), &h.owner),
+        Err(Ok(LazerSourceError::InvalidInput))
+    );
+}
+
+#[test]
+fn extend_ttl_is_permissionless() {
+    harness().source.extend_ttl();
+}
