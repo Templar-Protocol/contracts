@@ -7,14 +7,13 @@ This document outlines the administrative structure and governance controls of T
 | Component | Mutability | Controlled by | Timelock |
 |---|---|---|---|
 | Market contracts (NEAR) | No admin functions, no upgrade method, no pause. Storage can be patched only while the deployer's full-access key is retained (see below). | Nobody through the contract; the DAO multisig while a deployer key is retained | n/a |
-| Proxy oracles | Feed configuration and code upgradeable through a dedicated governance contract | Templar DAO multisig (2-of-3) and role holders | 24h to 168h by action; emergency trips immediate |
+| Proxy oracles | Feed configuration and code upgradeable through a dedicated governance contract | Either the vault curators or the Templar DAO multisig (2-of-3), per proxy oracle | 24h to 168h by action; emergency trips immediate |
 | Registry | Owned. Owner can register versions, deploy new contracts, and upgrade the registry's own code. Cannot touch deployed markets. | Templar DAO multisig (2-of-3) | Two-step finalize |
-| Oracle adapters (Pyth Lazer, RedStone) | Owned; signer sets and configuration are admin-managed | Templar DAO multisig (2-of-3) | n/a |
 | Curated vaults (Stellar) | Governed; runtime upgradeable through the vault governance contract | Vault governance admin, curator, and Sentinel per vault | Configurable per action; risk-reducing actions immediate |
 
 ## Administrative Multisig
 
-All mutable Templar contracts on NEAR are administered by [`templar.sputnik-dao.near`](https://nearblocks.io/address/templar.sputnik-dao.near), a [Sputnik DAO](https://github.com/near-daos/sputnik-dao-contract) (v2) whose sole council role holds three signers at a **2-of-3** threshold. Administrative actions are executed as DAO function-call proposals against the target contract; no signer can act alone.
+Mutable Templar contracts on NEAR are by default administered by [`templar.sputnik-dao.near`](https://nearblocks.io/address/templar.sputnik-dao.near), a [Sputnik DAO](https://github.com/near-daos/sputnik-dao-contract) (v2) whose sole council role holds three signers at a **2-of-3** threshold. Administrative actions are executed as DAO function-call proposals against the target contract; no signer can act alone.
 
 Changing the signer set is itself a governed policy change: a council member submits a `ChangePolicy` (or `AddMemberToRole` / `RemoveMemberFromRole`) proposal, the remaining members vote, and the DAO applies the change to itself when the threshold is reached. Signer additions and removals are announced on the official channels.
 
