@@ -6,11 +6,14 @@ set -euo pipefail
 # corpus/<target> — libFuzzer writes new units to the FIRST dir (corpus/), so
 # seeds/ never grows here.
 cd "$(dirname "$0")"
+readonly FUZZ_TOOLCHAIN=nightly-2025-11-25
+readonly FUZZ_TARGET=x86_64-unknown-linux-gnu
 
-for t in $(cargo +nightly fuzz list); do
+
+for t in $(cargo +"$FUZZ_TOOLCHAIN" fuzz list); do
   echo "=== Running $t ==="
   mkdir -p "corpus/$t"
   seed_arg=()
   [ -d "seeds/$t" ] && seed_arg=("seeds/$t")
-  cargo +nightly fuzz run "$t" "corpus/$t" "${seed_arg[@]}" -- -max_total_time=120
+  cargo +"$FUZZ_TOOLCHAIN" fuzz run --target "$FUZZ_TARGET" "$t" "corpus/$t" "${seed_arg[@]}" -- -max_total_time=120
 done
