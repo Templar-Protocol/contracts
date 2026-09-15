@@ -53,7 +53,8 @@ which proxy asset is therefore decided in the runtime's governed `SetProxy` (who
 asset key is free), not by an owner of this contract. It is `Ownable` and binds one immutable
 `(verifier, base)`; a single instance serves every feed Pyth publishes.
 
-- `update_price_feeds(payload)` — permissionless. Verifies through the configured verifier,
+- `update_price_feeds(payload)` — permissionless. Verifies through the configured verifier (a
+  rejected signature traps the call; only a malformed verified payload returns `InvalidPayload`),
   requires the configured channel, then stores every feed whose own update time is inside the
   freshness window and strictly advances (the anti-replay guard). Feeds without a positive
   price, an exponent, or an update timestamp are skipped. Returns the number of feeds stored, so

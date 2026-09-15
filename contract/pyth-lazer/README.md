@@ -4,7 +4,8 @@ A push-style NEAR oracle that ingests [Pyth Lazer](https://docs.pyth.network/laz
 payloads and re-serves them by their native Lazer `u32` feed id. It is **Lazer-native**: consume it
 by wrapping it in a **proxy oracle** as a `Lazer` source (addressed by feed id), not by pointing a
 market/proxy `Pyth` source directly at it. The proxy-oracle owns the `PriceIdentifier ↔ feed_id`
-mapping.
+mapping. The Soroban counterpart is `contract/proxy-oracle/soroban/pyth-lazer-source-contract`,
+which delegates signature verification to Pyth's on-chain Stellar contract.
 
 > **Naming:** Pyth now markets this product as **Pyth Pro** (formerly Pyth Lazer). We standardize on
 > **Pyth Lazer** / `lazer` internally.
