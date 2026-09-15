@@ -91,12 +91,61 @@ stellar contract invoke --id <vault-4626-proxy-id> --network mainnet -- max_with
 
 Governance state (the proposal queue, timelocks, and roles) is read from the vault's governance contract; the curator guide shows the `tmplr-soroban-vault governance queue` and `governance explain` commands for that. Vault events (deposits, withdrawals, allocations, fee accruals, pauses) are emitted on chain and are part of the [monitoring](./monitoring.md) coverage.
 
-## Live Example: Bizantine Labs Vaults
+## Live Example: Bizantine Labs tBizUSDC-CORE
 
-[Bizantine Labs](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview) curates vaults built on the Templar vault stack. Their **tBIZUSDC Core** vault documentation is the reference for what a published vault page should contain: an overview of the strategy, a [Roles and addresses](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview#roles-and-addresses) table naming the governance admin, curator, allocator, and Sentinel, and a [Protocol address appendix](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview#protocol-address-appendix) listing every contract in the deployed stack.
+[Bizantine Labs](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview) publishes a complete specification for **tBizUSDC-CORE**, a USDC vault on Stellar built on Templar's Soroban vault framework. Its configuration illustrates useful vault controls: a separate Sentinel and NAV reporter, explicit withdrawal and refresh cooldowns, directional governance timelocks, and caps for every route.
 
-| Vault | Asset | Curator | Management fee | Performance fee | Governance timelocks | Sentinel | Contract IDs |
-|---|---|---|---|---|---|---|---|
-| tBIZUSDC Core | USDC on Stellar (**Input needed**: confirm) | Bizantine Labs | **Input needed** | **Input needed** | **Input needed** | **Input needed** | **Input needed**: vault runtime, share token, governance, ERC-4626 proxy, curator proxy, adapters, from the [protocol address appendix](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview#protocol-address-appendix) |
+The values below are the configuration Bizantine publishes. Verify the live contracts before depositing. Bizantine also discloses that the combined admin, curator, and adapter-admin role is currently a single Fordefi-custodied key, adapter upgrades have no on-chain timelock, and independent reconciliation of the full address set remains a pre-funding gate.
 
-The cells marked **Input needed** are published in the Bizantine Labs documentation linked above and should be copied here once confirmed against the chain. Additional curated vaults are added to this table as their curators publish them.
+### Configuration
+
+| Parameter | Published value |
+|---|---|
+| Deposit asset | USDC on Stellar |
+| Management fee | 0% |
+| Performance fee | 15% |
+| Growth-rate cap | 10% per year |
+| Queued-withdrawal cooldown | 1 hour |
+| Idle-resync cooldown | 120 seconds |
+| Governance timelock | 24 hours, directional: risk-increasing changes wait; risk-reducing changes are immediate |
+| Restrictions | None; deposits are open, so the $1 million pilot cap is an operational limit rather than an on-chain deposit cap |
+| Target allocation | 10% idle, 20% Blend, 40% BTC, 25% XLM, 2.5% XRP, 2.5% ZEC |
+| Aggregate Templar-market cap | 70% of NAV |
+
+Source: Bizantine's [Core Parameters](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview#core-parameters), [Sleeve Design](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview#sleeve-design), and [Operating Controls](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview#operating-controls).
+
+### Roles
+
+| Role | Stellar account | Published control |
+|---|---|---|
+| Admin, curator, and adapter admin | `GAXHOW2QMS2R3OD6MPSWMBE3XVYZEL5BFGG2BBPTINP4D37MGF64IM2P` | Single Fordefi-custodied key; governance proposals, allocation policy, and adapter administration |
+| Sentinel | `GAHJUZUQ6D3YUJTY4LPMMQCPNEJW46LA3GUNSOUWPDF5EZLDI3AMKPTW` | Separately custodied; may pause and tighten restrictions, but cannot relax them or control adapter upgrades |
+| Custodian and NAV reporter | `GBCF7WMYE6KUOKU5DHCZBIWHD6UANXI6XR25FNKPKSVKBDZUHV3MEBGK` | Separate Fordefi vault; reports assets for the custodial routes |
+| Allocator | `GBZCCMTR4I3MOIQM4TOLDU3PNONUQLWXTIZGZ5FVOZDNMJ7UG7RMKTUE` | Executes allocator and rebalancer transactions; shares the admin's Fordefi vault |
+| TTL keeper | `GC4JT5SKX5MKDYMCXNPXQCTZ73FRCCBTKMQRUJ7MYZXJR46WFRDHDMD3` | Low-privilege account used only to extend contract TTLs |
+
+Source: Bizantine's [Roles and Addresses](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview#roles-and-addresses).
+
+### Core Contracts
+
+| Contract | Stellar contract ID |
+|---|---|
+| Vault | `CBH7TKSKKYF2AXSMRUCM5RATSB22PVZPBVWN6ZDCHCH37TKR3DKE4XAA` |
+| Share token | `CCZF6EUIP2ZYSDX6SXMJCIYDQBXKJWMFJ6OJCYBGFZVT4RSK67JIQ2GW` |
+| Governance | `CBPN2FYGGUFUYL73NAIQOJTVGGDZLHW6D4L3M2ING4NPYPHPZS2QK3TU` |
+| ERC-4626 proxy | `CB6XEPVIX4GGQC7M7WU3JI4VCJEDH43SCIWZY6265S3LMZQGOXDUTGX5` |
+| Curator proxy | `CCBFW24W4K3D6M6IXE4PDYN262B3H4FKJ3YDGJVDQREGNFZ6ICCB7GGV` |
+| USDC asset contract | `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75` |
+| Blend Capital USDC pool | `CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD` |
+
+### Routes and Caps
+
+| Route | Adapter contract | Target allocation | Published cap |
+|---|---|---|---|
+| Blend Capital USDC | `CDWB5P44ESHPS47F4USHICZ4O2IPKCBCRTDDWFXVZZDP7H43MTBQQQZO` | 20% | 400,000 USDC and 40% of NAV |
+| Templar BTC/USDC | `CBGZL4EHE77GJ23VD47WDRC4XBXTNFQPG3PSXTQJBGPVTK4WYPRWFVDP` | 40% | 400,000 USDC and 40% of NAV |
+| Templar XLM/USDC | `CC2WFNZPXZHKTPFCPWLFXGDLEV2YD344MEN72XGUUMXUHY7PDDTCA5TV` | 25% | 250,000 USDC and 25% of NAV |
+| Templar XRP/USDC | `CCWURNFYN4OHUYDKQGLOCBZ4ABX2ILMVFGT6V4UJ2SGF3FY7ZNPO7IWH` | 2.5% | 25,000 USDC and 2.5% of NAV |
+| Templar ZEC/USDC | `CAVFJ5AETBAC52ZNUGIWJSLOHPT43S2HPP4OAFWNBPYINOK4IOTFWR7K` | 2.5% | 25,000 USDC and 2.5% of NAV |
+
+The four Templar routes use custodial adapters: assets away from Stellar are represented by signed NAV reports, so the custodian and reporting process remain inside the trust boundary. Source: Bizantine's [Protocol Address Appendix](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview#protocol-address-appendix) and [Sleeve Design](https://docs.bizantinelabs.xyz/vaults/tbizusdc-core/overview#sleeve-design).
