@@ -1,3 +1,18 @@
+//! Fuzz the custodial adapter's production partial-withdrawal accounting.
+//! `simulate_progress_withdrawal` is a test-only shim over the private
+//! `withdrawal_result`, which `progress_withdrawal` calls before transferring
+//! assets and storing the new reported balance.
+//!
+//! The oracle checks its externally relevant contract: invalid values map to
+//! the documented errors; successful withdrawals are positive, never exceed
+//! reported, idle, or requested assets; and reported assets decrease by the
+//! exact amount transferred.
+//!
+//! MUTATION-CHECK (P5): in `withdrawal_result`, replace the inner
+//! `min_i128(reported, idle_balance)` with `max_i128(reported, idle_balance)`.
+//! A case with `reported > idle_balance` then returns more than the idle
+//! balance, and the `actual <= idle_balance` assertion below must fire.
+
 #![no_main]
 
 use arbitrary::Arbitrary;

@@ -42,11 +42,15 @@ fn try_create_market_config(
     withdrawal_max: Option<u128>,
     same_asset: bool,
 ) -> Option<MarketConfiguration> {
-    // Create decimals (divide by 1000 to get values in [0, ~340_282])
+    // Scale the two fractional fields into the real validation domains:
+    // usage ratio [0, 1] and liquidation spread [0, 0.999]. Keeping their
+    // raw integer values made almost every generated configuration fail these
+    // early validation checks before the remaining configuration rules ran.
+    let scale = Decimal::from(1_000u32);
     let mcr_maintenance = Decimal::from(mcr_maintenance_num);
     let mcr_liquidation = Decimal::from(mcr_liquidation_num);
-    let usage_ratio = Decimal::from(usage_ratio_num % 1001); // [0, 1]
-    let liquidation_spread = Decimal::from(liquidation_spread_num % 1000); // [0, 0.999]
+    let usage_ratio = Decimal::from(usage_ratio_num % 1001) / scale;
+    let liquidation_spread = Decimal::from(liquidation_spread_num % 1000) / scale;
 
     let borrow_asset = FungibleAsset::nep141(create_account_id(1));
     let collateral_asset = if same_asset {
