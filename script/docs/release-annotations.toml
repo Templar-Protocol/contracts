@@ -13,7 +13,7 @@
 
 ["market@1.3.0"]
 registry_key = "v1.3.0"
-note = "The version `deployments/profiles/mainnet.toml` deploys new markets from."
+note = "The `deployments/profiles/mainnet.toml` profile selects version `v1.3.0` for new market deployments."
 
 ["market@1.0.0"]
 note = "Listed by the registry's `list_versions` as `v1.0.0` in an earlier version of this guide; confirm on chain."
