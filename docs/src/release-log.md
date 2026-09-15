@@ -70,25 +70,29 @@ This page records every contract build Templar has released, how to tie a deploy
 
 ## Verifying a Deployed Contract Against the Catalog
 
-1. Read the deployment record from the registry, which includes the version key and the code hash recorded at deployment:
+The catalog's SHA-256 is the digest of the released WASM bytes. NEAR identifies deployed code by the same digest (base58-encoded as the account's code hash), and the registry records that digest at deployment, so a deployed contract is matched to a catalog row by comparing digests. Reproducible-build verification is a separate check: it proves the bytes correspond to the source commit in the contract's own metadata, not that they are a cataloged release.
+
+1. Read the deployment record from the registry. `code_hash` is the SHA-256 of the deployed bytes, base58-encoded, and `version_key` names the registered version:
 
    ```bash
    near contract call-function as-read-only v1.tmplr.near get_deployment json-args '{"account_id": "<market-address>"}' network-config mainnet now
    ```
 
-2. Verify the on-chain code against the source commit in its NEP-330 metadata, as described in [Contract Verification](./addresses.md#contract-verification):
+2. Read the code hash of the contract as it is on chain now, in hex, from the account summary (`Contract code SHA-256 checksum (hex)` in the output). This is the value to compare; the registry record shows what was deployed, the account shows what runs:
+
+   ```bash
+   near account view-account-summary <market-address> network-config mainnet now
+   ```
+
+3. Compare that hex digest with the **SHA-256** column of the catalog row for the version named by `version_key`. A match establishes that the account runs exactly the reviewed release build for that row. No match means the account was deployed from bytes that are not a cataloged release (for example a build from a commit that was never released), and the row must not be cited for it.
+
+4. Optionally, verify the bytes against their source commit as described in [Contract Verification](./addresses.md#contract-verification):
 
    ```bash
    near contract verify deployed-at <market-address> mainnet now
    ```
 
-3. To match the bytes to a catalog row, download the release asset from the row's release tag and compare its digest with the SHA-256 column:
-
-   ```bash
-   sha256sum templar_market_contract-1.3.0.wasm
-   ```
-
-   The catalog's byte length and SHA-256 are the pins the repository's own tooling verifies every fetched artifact against, so a matching digest establishes that the deployed bytes are the reviewed release build.
+   This confirms the deployed bytes reproduce from the commit in the contract's NEP-330 metadata. It does not by itself tie the deployment to a catalog row; step 3 does.
 
 ## Audit Coverage by Version
 
