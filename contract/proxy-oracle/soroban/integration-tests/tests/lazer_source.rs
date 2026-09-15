@@ -9,8 +9,8 @@ use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 use templar_proxy_oracle_soroban_pyth_lazer_source_contract::{
     feed_asset,
-    testutils::{payload_at, MockVerifier, MICROS_PER_SEC},
-    Config, FreshnessConfig, LazerChannel, PythLazerSource, PythLazerSourceClient,
+    testutils::{payload_at, MockVerifier},
+    Config, FreshnessConfig, LazerChannel, PythLazerSource, PythLazerSourceClient, MICROS_PER_SEC,
 };
 
 const BTC_FEED: u32 = 1;

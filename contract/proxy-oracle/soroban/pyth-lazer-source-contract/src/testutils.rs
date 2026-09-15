@@ -7,8 +7,6 @@ use alloc::vec::Vec;
 
 use soroban_sdk::{contract, contracterror, contractimpl, symbol_short, Bytes, Env, Symbol};
 
-pub use crate::MICROS_PER_SEC;
-
 pub const PAYLOAD_MAGIC: u32 = 0x93C7_D375;
 pub const CHANNEL_REAL_TIME: u8 = 1;
 pub const CHANNEL_200MS: u8 = 3;

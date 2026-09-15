@@ -137,20 +137,22 @@ pub struct SourceUpgraded {
 }
 
 /// The SEP-40 key a Lazer feed is served under: its id as a decimal symbol.
+/// Hand-rolled because `format!` would link `core::fmt` into a 32 KiB wasm budget.
 #[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::expect_used)]
 pub fn feed_asset(env: &Env, feed_id: u32) -> Asset {
     let mut digits = [0_u8; 10];
     let mut start = digits.len();
     let mut rest = feed_id;
     loop {
         start -= 1;
-        digits[start] = b'0' + u8::try_from(rest % 10).unwrap_or(0);
+        digits[start] = b'0' + (rest % 10) as u8;
         rest /= 10;
         if rest == 0 {
             break;
         }
     }
-    let text = core::str::from_utf8(&digits[start..]).unwrap_or("0");
+    let text = core::str::from_utf8(&digits[start..]).expect("ascii digits");
     Asset::Other(Symbol::new(env, text))
 }
 

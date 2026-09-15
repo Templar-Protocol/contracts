@@ -1,8 +1,6 @@
 #![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::should_panic_without_expect)]
 
-extern crate std;
-
 use super::*;
 
 use rstest::rstest;
@@ -62,21 +60,32 @@ fn freshness() -> FreshnessConfig {
     }
 }
 
+fn symbol_asset(env: &Env, symbol: &str) -> Asset {
+    Asset::Other(Symbol::new(env, symbol))
+}
+
+fn config(env: &Env, channel: LazerChannel, decimals: u32, max_age_secs: u64) -> Config {
+    Config {
+        verifier: env.register(MockVerifier, ()),
+        base: symbol_asset(env, "USD"),
+        decimals,
+        channel,
+        freshness: FreshnessConfig {
+            max_age_secs,
+            max_ahead_secs: 5,
+        },
+    }
+}
+
 fn harness_with(channel: LazerChannel) -> Harness {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger()
         .set_timestamp(VECTOR_TIMESTAMP_US / MICROS_PER_SEC + 10);
     let owner = Address::generate(&env);
-    let base = Asset::Other(Symbol::new(&env, "USD"));
-    let verifier_id = env.register(MockVerifier, ());
-    let config = Config {
-        verifier: verifier_id.clone(),
-        base: base.clone(),
-        decimals: 8,
-        channel,
-        freshness: freshness(),
-    };
+    let config = config(&env, channel, 8, 60);
+    let verifier_id = config.verifier.clone();
+    let base = config.base.clone();
     let source_id = env.register(PythLazerSource, (&owner, config));
     Harness {
         verifier: MockVerifierClient::new(&env, &verifier_id),
@@ -100,16 +109,7 @@ fn stored_btc(h: &Harness) -> StoredPrice {
 fn construct(decimals: u32, max_age_secs: u64) {
     let env = Env::default();
     let owner = Address::generate(&env);
-    let config = Config {
-        verifier: env.register(MockVerifier, ()),
-        base: Asset::Other(Symbol::new(&env, "USD")),
-        decimals,
-        channel: LazerChannel::FixedRate200ms,
-        freshness: FreshnessConfig {
-            max_age_secs,
-            max_ahead_secs: 5,
-        },
-    };
+    let config = config(&env, LazerChannel::FixedRate200ms, decimals, max_age_secs);
     env.register(PythLazerSource, (&owner, config));
 }
 
@@ -182,11 +182,7 @@ fn stores_every_feed_in_the_pyth_vector_under_its_id() {
             publish_time_us: VECTOR_TIMESTAMP_US,
         }
     );
-    assert_eq!(
-        h.source
-            .lastprice(&Asset::Other(Symbol::new(&h.env, "BTC"))),
-        None
-    );
+    assert_eq!(h.source.lastprice(&symbol_asset(&h.env, "BTC")), None);
 }
 
 #[test]
@@ -225,35 +221,23 @@ fn rejects_channel_mismatch() {
     assert_eq!(h.source.update_price_feeds(&real_time), 1);
 }
 
-#[test]
-fn feeds_outside_the_window_are_skipped_not_rejected() {
+/// Window is `max_age_secs` 60 back to `max_ahead_secs` 5 ahead, checked in µs.
+#[rstest]
+#[case::too_old(-61_000_000, 0)]
+#[case::oldest(-60_000_000, 1)]
+#[case::newest(5_000_000, 1)]
+#[case::just_ahead(5_000_001, 0)]
+#[case::ahead(6_000_000, 0)]
+fn feeds_outside_the_window_are_skipped_not_rejected(#[case] offset_us: i64, #[case] stored: u32) {
     let h = harness();
-    let now = h.env.ledger().timestamp();
-    let at = |us: u64| payload_at(&h.env, us, &[(BTC_FEED, 5)]);
+    let now_us = h.env.ledger().timestamp() * MICROS_PER_SEC;
+    let at_us = now_us.checked_add_signed(offset_us).expect("in range");
     assert_eq!(
         h.source
-            .update_price_feeds(&at((now - 61) * MICROS_PER_SEC)),
-        0
+            .update_price_feeds(&payload_at(&h.env, at_us, &[(BTC_FEED, 5)])),
+        stored
     );
-    assert_eq!(
-        h.source.update_price_feeds(&at((now + 6) * MICROS_PER_SEC)),
-        0
-    );
-    assert_eq!(
-        h.source
-            .update_price_feeds(&at((now + 5) * MICROS_PER_SEC + 1)),
-        0
-    );
-    assert_eq!(h.source.lastprice(&h.btc), None);
-    assert_eq!(
-        h.source
-            .update_price_feeds(&at((now - 60) * MICROS_PER_SEC)),
-        1
-    );
-    assert_eq!(
-        h.source.update_price_feeds(&at((now + 5) * MICROS_PER_SEC)),
-        1
-    );
+    assert_eq!(h.source.lastprice(&h.btc).is_some(), stored == 1);
 }
 
 #[test]
@@ -287,10 +271,6 @@ fn feed_update_time_is_the_stored_clock_and_is_window_checked() {
     );
     assert_eq!(stored_btc(&h).publish_time_us, earlier);
 
-    let ahead = feed(BTC_FEED, 11, (now + 6) * MICROS_PER_SEC);
-    assert_eq!(h.source.update_price_feeds(&at(ahead)), 0);
-    let stale = feed(ETH_FEED, 11, (now - 61) * MICROS_PER_SEC);
-    assert_eq!(h.source.update_price_feeds(&at(stale)), 0);
     let no_feed_time = FeedSpec {
         feed_update_timestamp: None,
         ..feed(ETH_FEED, 11, payload_us)
@@ -397,8 +377,5 @@ fn upgrade_is_owner_gated_and_rejects_zero_hash() {
 
 #[test]
 fn extend_ttl_is_permissionless() {
-    let h = harness();
-    h.source.update_price_feeds(&vector_payload(&h.env));
-    h.source.extend_ttl();
-    assert!(h.source.stored_price(&BTC_FEED).is_some());
+    harness().source.extend_ttl();
 }

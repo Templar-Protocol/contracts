@@ -121,7 +121,7 @@ _optimize package wasm optimized label:
         --manifest-path "{{root}}/Cargo.toml" \
         --package "{{package}}" \
         --optimize \
-        --out-dir "$staging" && \
+        --out-dir "$staging"; \
     cp "$staging/$(echo '{{package}}' | tr - _).wasm" "{{optimized}}"
     @python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
         --wasm "{{wasm}}" \
@@ -164,17 +164,18 @@ size-check: optimize
         echo "limits: {{size_limit}} bytes (runtime, governance); {{small_size_limit}} bytes (sep40-adapter, lazer-source, batcher)"; \
     } > "$report"; \
     printf '%s\n' \
-        "runtime:{{runtime_wasm}}:{{runtime_opt}}:{{size_limit}}" \
-        "governance:{{governance_wasm}}:{{governance_opt}}:{{size_limit}}" \
-        "sep40-adapter:{{adapter_wasm}}:{{adapter_opt}}:{{small_size_limit}}" \
-        "lazer-source:{{lazer_wasm}}:{{lazer_opt}}:{{small_size_limit}}" \
-        "batcher:{{batcher_wasm}}:{{batcher_opt}}:{{small_size_limit}}" \
-    | while IFS=: read -r label wasm opt limit; do \
-        { echo ""; echo "## $label"; } >> "$report"; \
+        "runtime:{{runtime_wasm}}:{{size_limit}}" \
+        "governance:{{governance_wasm}}:{{size_limit}}" \
+        "sep40-adapter:{{adapter_wasm}}:{{small_size_limit}}" \
+        "lazer-source:{{lazer_wasm}}:{{small_size_limit}}" \
+        "batcher:{{batcher_wasm}}:{{small_size_limit}}" \
+    | while IFS=: read -r label wasm limit; do \
+        opt="${wasm%.wasm}.optimized.wasm"; \
+        printf '\n## %s\n' "$label" | tee -a "$report"; \
         python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" --wasm "$wasm" --optimized "$opt" --label "$label" | tee -a "$report"; \
         python3 "{{shared_scripts_dir}}/check_wasm_budget.py" --wasm "$opt" --max-bytes "$limit" || exit 1; \
     done; \
-    { echo ""; echo "## Result: PASS"; } >> "$report"; \
+    printf '\n## Result: PASS\n' | tee -a "$report"; \
     cp "$report" "{{evidence_dir}}/size-check.txt"
     @echo "✓ Size gate passed — evidence: {{evidence_dir}}/size-check.txt"
 
