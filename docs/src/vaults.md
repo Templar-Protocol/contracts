@@ -53,7 +53,7 @@ The curator sets a per-market cap on how much of the vault may be allocated to e
 
 ## Roles and Addresses
 
-Every vault has four roles. The addresses that hold them are specific to each vault and published in that vault's own documentation (see the [live example](#live-example-bizantine-labs-vaults) below); verify them on chain before relying on them.
+Every vault has four roles. The addresses that hold them are specific to each vault and published in that vault's own documentation (see the [live example](#live-example-bizantine-labs-tbizusdc-core) below); verify them on chain before relying on them.
 
 | Role | Can | Cannot | Address |
 |---|---|---|---|
