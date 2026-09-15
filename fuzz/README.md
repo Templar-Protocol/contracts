@@ -17,15 +17,18 @@ durable regression seed.
 ## Running
 
 ```bash
-# List enabled targets
-cargo +nightly fuzz list
+# List enabled targets with the CI-pinned toolchain
+cargo +nightly-2025-11-25 fuzz list
 
-# Run one target (also feed the committed seeds when present)
-cargo +nightly fuzz run <target> corpus/<target> seeds/<target> -- -max_total_time=120
+# Run one target with AddressSanitizer, matching CI. Also feed committed seeds.
+cargo +nightly-2025-11-25 fuzz run --target x86_64-unknown-linux-gnu <target> corpus/<target> seeds/<target> -- -max_total_time=120
 
 # Run every enabled target for 2 minutes each (CI-style smoke)
 ./run_fuzzing.sh
 ```
+Use the pinned toolchain and GNU target when reproducing CI locally. They avoid
+the incompatible current-nightly build and static-libc sanitizer paths.
+
 
 ### Corpus vs. seeds
 
