@@ -32,6 +32,6 @@ For definitions of key terms and concepts, refer to the [Glossary](./glossary.md
 ## Additional Resources
 
 - **[Implementation Notes](./notes.md)** - Technical implementation details
-- **[API Reference](./api-reference.md)** - Generated Rust API documentation and the gateway method catalog
+- **[API Reference](./api-reference.md)** - The backend HTTP API, generated Rust API documentation, and the gateway method catalog
 - **[Live risk dashboard](https://data.templarfi.org/)** - Real-time coverage and liquidation analytics across markets
 - **[Source code](https://github.com/Templar-Protocol/contracts)** - Contracts, services, and tooling

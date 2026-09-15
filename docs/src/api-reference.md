@@ -1,10 +1,18 @@
 # API Reference
 
-This guide describes the protocol in prose. The generated Rust API documentation, built from the contract sources with `cargo doc`, is published alongside it and is the authoritative reference for every type, method, argument, and error.
+Templar exposes three programmatic surfaces. The **backend HTTP API** is the main reference for applications and integrators; the **gateway JSON-RPC** service and **direct contract calls** are lower-level paths for those who need them. The generated Rust documentation covers the contract types every surface returns.
+
+## Backend HTTP API
+
+The backend HTTP API is the primary way to read protocol data and drive user flows without handling contract calls yourself: a conventional web API over HTTPS with JSON request and response bodies. Its interactive documentation is the authoritative catalogue of endpoints, parameters, and schemas:
+
+**[api.templarfi.org/docs](https://api.templarfi.org/docs)**
+
+The API is maintained outside this repository, so the endpoint list is not reproduced in this guide; consult the interactive documentation for the current surface, and use this guide for what the returned values mean (for example, [Risk Parameters](./risk-parameters.md) for market configuration fields and [Oracles](./oracles.md) for price provenance). **Input needed**: the backend's authentication, rate-limit, and versioning policy, and where its changelog is published.
 
 ## Rust API Documentation
 
-The API docs are served under [`/doc/`](/doc/templar_common/index.html) on this site. Useful entry points:
+The generated Rust API documentation, built from the contract sources with `cargo doc`, is the authoritative reference for every contract type, method, argument, and error. It is served under [`/doc/`](/doc/templar_common/index.html) on this site. Useful entry points:
 
 | Crate | What it documents | Entry point |
 |---|---|---|
@@ -21,7 +29,7 @@ The `/doc/` links resolve on the published site ([docs.templarfi.org](https://do
 
 ## Gateway JSON-RPC
 
-Integrators who do not want to sign NEAR transactions directly can use the gateway service, a JSON-RPC API in front of the contracts. Its method catalog, generated from the service's own method registry, is at [`gateway/METHODS.md`](https://github.com/Templar-Protocol/contracts/blob/dev/gateway/METHODS.md).
+Integrators who need transaction-level control without signing NEAR transactions directly can use the gateway service, a JSON-RPC API in front of the contracts. Its method catalog, generated from the service's own method registry, is at [`gateway/METHODS.md`](https://github.com/Templar-Protocol/contracts/blob/dev/gateway/METHODS.md).
 
 ## Calling Contracts Directly
 

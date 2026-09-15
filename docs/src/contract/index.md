@@ -4,4 +4,4 @@
 - [**Registry**](./registry.html)
 - [**Proxy Oracle**](../oracles.html#proxy-oracle)
 - [**LST Oracle**](./lst-oracle.html)
-- [**API Reference**](../api-reference.html) (generated Rust documentation)
+- [**API Reference**](../api-reference.html) (backend HTTP API and generated Rust documentation)
