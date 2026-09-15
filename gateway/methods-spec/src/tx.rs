@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::{
     common::{ContractArgs, TxExecutionStatus},
+    operation::ReceiptStatus,
     ActionInput, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
     SignedDelegateActionInput,
 };
@@ -58,6 +59,21 @@ pub struct GetResult {
     /// `ft_resolve_transfer`) still shows `Succeeded` here; a consumer that
     /// requires every receipt to have succeeded must check this is empty.
     pub failed_receipts: Vec<AccountId>,
+    /// Every receipt the transaction produced, in execution order, with the
+    /// value it returned. The top-level `return_value` is the final receipt's
+    /// only; a value an inner receipt returned is found here.
+    #[serde(default)]
+    pub receipts: Vec<ReceiptRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ReceiptRecord {
+    pub executor_id: AccountId,
+    pub status: ReceiptStatus,
+    /// Present when the receipt succeeded with a value (not a promise) that the
+    /// requested `encoding` could represent.
+    pub return_value: Option<ReturnValue>,
+    pub logs: Vec<String>,
 }
 
 /// Submit a single function-call transaction.

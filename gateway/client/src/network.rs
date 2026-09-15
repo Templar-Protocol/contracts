@@ -52,6 +52,18 @@ impl Network {
         .parse()
         .expect("Hermes endpoint constants must be valid URLs")
     }
+
+    /// The NEAR MPC signer contract (chain signatures) on this network.
+    #[allow(clippy::expect_used)]
+    #[must_use]
+    pub fn mpc_contract_id(self) -> near_api::AccountId {
+        match self {
+            Network::Mainnet => "v1.signer",
+            Network::Testnet => "v1.signer-prod.testnet",
+        }
+        .parse()
+        .expect("MPC contract id constants must be valid account ids")
+    }
 }
 
 impl fmt::Display for Network {

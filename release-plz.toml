@@ -97,6 +97,14 @@ release = false
 name = "mock-ref"
 release = false
 
+[[package]]
+name = "mock-signer"
+release = false
+
+[[package]]
+name = "mock-dao"
+release = false
+
 # ---------------------------------------------------------------------------
 # Changelog rendering. Groups mirror the commit types the PR-title lint accepts
 # (.github/workflows/pr-title.yml) — keep the two in sync.

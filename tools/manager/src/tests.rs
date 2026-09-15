@@ -13,6 +13,7 @@ mod deploy_script;
 mod export;
 mod ft;
 mod market;
+mod mpc;
 mod oracle;
 mod patch;
 mod plan;
@@ -33,6 +34,7 @@ fn help_lists_all_top_level_commands() {
         "storage",
         "ft",
         "market",
+        "mpc",
         "oracle",
         "proxy-oracle",
         "owner",

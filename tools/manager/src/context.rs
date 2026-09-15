@@ -225,8 +225,12 @@ impl CliContext {
     /// carrying every step's hash, still goes to stdout).
     pub(crate) fn report_tx(&self, result: &WriteOperationResult) {
         if let Some(tx_hash) = result.operation.latest_tx_hash() {
-            tracing::info!("tx: {}{}", self.transaction_url_prefix, tx_hash);
+            self.report_tx_hash(tx_hash);
         }
+    }
+
+    pub(crate) fn report_tx_hash(&self, tx_hash: templar_gateway_types::CryptoHash) {
+        tracing::info!("tx: {}{}", self.transaction_url_prefix, tx_hash);
     }
 
     /// Report an intermediate write's tx link, then fail if it reverted — the
@@ -343,7 +347,7 @@ pub(crate) fn single_transaction(plan: OperationPlan) -> anyhow::Result<PlannedT
     Ok(transaction)
 }
 
-fn sputnik_function_call(
+pub(crate) fn sputnik_function_call(
     transaction: PlannedTransaction,
 ) -> anyhow::Result<sputnikdao2::ProposalKind> {
     let actions = transaction

@@ -2,11 +2,12 @@ use async_trait::async_trait;
 use near_api::types::transaction::actions::{
     Action, DeployContractAction, FunctionCallAction, TransferAction,
 };
+use near_api::types::transaction::result::{ExecutionOutcome, ValueOrReceiptId};
 use templar_gateway_core::{
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::tx;
-use templar_gateway_types::protocol::MAX_ACTIONS_PER_RECEIPT;
+use templar_gateway_types::{operation::ReceiptStatus, protocol::MAX_ACTIONS_PER_RECEIPT};
 
 use crate::Dispatch;
 
@@ -33,7 +34,15 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
                 acc.saturating_add(item)
             });
 
+        let receipts = result
+            .receipt_outcomes()
+            .iter()
+            .cloned()
+            .map(|outcome| receipt_record(outcome, request.encoding))
+            .collect();
+
         Ok(tx::GetResult {
+            receipts,
             status: if result.is_success() {
                 tx::Status::Succeeded
             } else if result.is_pending() {
@@ -63,6 +72,31 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
                     .map(|b| tx::ReturnValue::Base64(b.into())),
             },
         })
+    }
+}
+
+fn receipt_record(outcome: ExecutionOutcome, encoding: tx::ValueEncoding) -> tx::ReceiptRecord {
+    let executor_id = outcome.executor_id.clone();
+    let logs = outcome.logs.clone();
+    let (status, return_value) = match outcome.into_result() {
+        Ok(ValueOrReceiptId::Value(value)) => {
+            let return_value = match encoding {
+                tx::ValueEncoding::Json => value.json().ok().map(tx::ReturnValue::Json),
+                tx::ValueEncoding::Base64 => value
+                    .raw_bytes()
+                    .ok()
+                    .map(|bytes| tx::ReturnValue::Base64(bytes.into())),
+            };
+            (ReceiptStatus::Succeeded, return_value)
+        }
+        Ok(ValueOrReceiptId::ReceiptId(_)) => (ReceiptStatus::Succeeded, None),
+        Err(_) => (ReceiptStatus::Failed, None),
+    };
+    tx::ReceiptRecord {
+        executor_id,
+        status,
+        return_value,
+        logs,
     }
 }
 

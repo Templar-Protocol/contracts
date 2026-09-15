@@ -43,7 +43,7 @@ async fn ft_transfer_call_endpoint_works_against_sandbox() -> Result<()> {
         templar_gateway_types::OperationStatus::Succeeded
     );
 
-    let _ = stack
+    let transfer_call_tx = stack
         .controller
         .request::<tx::Get>(&tx::Get {
             tx_hash: tx_hash(&result),
@@ -52,6 +52,25 @@ async fn ft_transfer_call_endpoint_works_against_sandbox() -> Result<()> {
             encoding: tx::ValueEncoding::Json,
         })
         .await?;
+
+    // The receiver's `ft_on_transfer` is an inner receipt: its return value is
+    // only reachable per receipt, never as the transaction's final value.
+    let on_transfer = transfer_call_tx
+        .receipts
+        .iter()
+        .find(|receipt| receipt.executor_id == receiver_id)
+        .expect("receiver executed a receipt");
+    assert_eq!(
+        on_transfer.status,
+        templar_gateway_types::operation::ReceiptStatus::Succeeded,
+        "{:?}",
+        transfer_call_tx.receipts
+    );
+    assert_eq!(
+        on_transfer.return_value,
+        Some(tx::ReturnValue::Json(serde_json::json!("0")))
+    );
+    assert!(transfer_call_tx.failed_receipts.is_empty());
 
     stack.shutdown().await;
     Ok(())
