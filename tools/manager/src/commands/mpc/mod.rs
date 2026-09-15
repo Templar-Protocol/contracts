@@ -22,6 +22,8 @@ pub const DEFAULT_ADD_PROPOSAL_TGAS: u64 = 30;
 pub enum MpcNs {
     /// Show the key the MPC derives for a DAO controlling an account.
     DeriveKey(DeriveKey),
+    /// Add the key the MPC derives for a DAO as a full-access key on the signer.
+    InstallKey(InstallKey),
     /// Propose that the DAO have the MPC sign a planned transaction.
     Propose(Propose),
     /// Decode and verify what an MPC signing proposal would sign.
@@ -79,6 +81,17 @@ pub struct DeriveKey {
     /// The account the derived key controls (names the default path).
     #[arg(long, value_name = "ACCOUNT_ID")]
     pub account_id: AccountId,
+}
+
+#[derive(Args, Debug)]
+pub struct InstallKey {
+    #[command(flatten)]
+    pub mpc: MpcContractArgs,
+    #[command(flatten)]
+    pub derivation: DerivationArgs,
+    /// The account the key is installed on, signing with a key it already holds.
+    #[command(flatten)]
+    pub signer: SignerArgs,
 }
 
 #[derive(Args, Debug)]

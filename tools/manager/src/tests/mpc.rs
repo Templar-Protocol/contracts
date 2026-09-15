@@ -121,39 +121,6 @@ fn relay_takes_the_relayer_credentials() {
     assert!(Cli::try_parse_from(RELAY).is_err());
 }
 
-#[test]
-fn add_key_takes_a_literal_key_or_a_derivation_but_needs_one() {
-    let base = ["tmplrmgr", "account", "add-key"];
-
-    let error = Cli::try_parse_from(base.into_iter().chain(CREDS)).expect_err("no key source");
-    assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
-
-    let Command::Account {
-        command: AccountNs::AddKey(add_key),
-    } = Cli::try_parse_from(
-        base.into_iter()
-            .chain(["--mpc-dao", "dao.testnet"])
-            .chain(CREDS),
-    )
-    .expect("derivation parses")
-    .command
-    else {
-        panic!("expected Account::AddKey")
-    };
-    let derivation = add_key.derivation().expect("a derivation was requested");
-    assert_eq!(derivation.dao.as_str(), "dao.testnet");
-    assert_eq!(derivation.path, format!("dao.testnet-{}", CREDS[1]));
-    assert!(add_key.literal_public_key().is_none());
-
-    let error = Cli::try_parse_from(
-        base.into_iter()
-            .chain(["--mpc-path", "custom"])
-            .chain(CREDS),
-    )
-    .expect_err("--mpc-path alone");
-    assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
-}
-
 const KEY: &str = "ed25519:6phW8vfVNMmktunyZV576gGomMurYvg4ZkQHMdbGSiXd";
 
 #[test]
@@ -168,7 +135,7 @@ fn add_key_defaults_to_full_access_and_restricts_with_receiver_id() {
         else {
             panic!("expected Account::AddKey")
         };
-        add_key.permission()
+        add_key.into_spec().permission
     };
 
     assert_eq!(parse(&[]), spec::AccessKeyPermission::FullAccess);
@@ -199,6 +166,36 @@ fn add_key_defaults_to_full_access_and_restricts_with_receiver_id() {
             .chain(CREDS),
     )
     .expect_err("--method-name without --receiver-id");
+    assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+}
+
+#[test]
+fn install_key_derives_at_the_conventional_path_by_default() {
+    let Command::Mpc {
+        command: MpcNs::InstallKey(install_key),
+    } = Cli::try_parse_from(
+        ["tmplrmgr", "mpc", "install-key", "--dao", "dao.testnet"]
+            .into_iter()
+            .chain(CREDS),
+    )
+    .expect("parses")
+    .command
+    else {
+        panic!("expected Mpc::InstallKey")
+    };
+    assert_eq!(
+        install_key
+            .derivation
+            .path_for(&install_key.signer.account_id()),
+        format!("dao.testnet-{}", CREDS[1])
+    );
+
+    let error = Cli::try_parse_from(
+        ["tmplrmgr", "mpc", "install-key", "--path", "custom"]
+            .into_iter()
+            .chain(CREDS),
+    )
+    .expect_err("--path without --dao");
     assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
 }
 
@@ -292,9 +289,9 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     let strings = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
 
     run(strings(&[
-        "account",
-        "add-key",
-        "--mpc-dao",
+        "mpc",
+        "install-key",
+        "--dao",
         dao.as_str(),
         "--mpc-contract",
         signer_id.as_str(),

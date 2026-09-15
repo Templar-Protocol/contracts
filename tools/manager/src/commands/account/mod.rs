@@ -1,9 +1,11 @@
 mod add_key;
 mod delete;
+mod delete_key;
 mod get;
 
-pub use add_key::{AddKey, DeleteKey};
+pub use add_key::AddKey;
 pub use delete::Delete;
+pub use delete_key::DeleteKey;
 pub use get::Get;
 
 use clap::Subcommand;

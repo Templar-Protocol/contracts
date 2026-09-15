@@ -20,8 +20,9 @@ use templar_gateway_types::{
     Base64Bytes, ContractMethodName, ManagedAccountId, NearGas, NearToken,
 };
 
-use crate::commands::account::AddKey;
-use crate::commands::mpc::{DeriveKey, Propose, Relay, Show, DEFAULT_ADD_PROPOSAL_TGAS};
+use crate::commands::mpc::{
+    DeriveKey, InstallKey, Propose, Relay, Show, DEFAULT_ADD_PROPOSAL_TGAS,
+};
 use crate::commands::signer::{Authorization, Mode};
 use crate::context::{print_json, sputnik_function_call, CliContext};
 use crate::mpc::{
@@ -68,29 +69,22 @@ pub(super) async fn derive_key(ctx: CliContext, args: DeriveKey) -> anyhow::Resu
     })
 }
 
-pub(super) async fn add_key(ctx: CliContext, args: AddKey) -> anyhow::Result<()> {
-    let public_key = match args.derivation() {
-        Some(derivation) => {
-            derived_public_key(
-                &ctx,
-                &args.mpc.contract_id(ctx.network()),
-                args.mpc.key_type(),
-                &derivation.dao,
-                &derivation.path,
-            )
-            .await?
-        }
-        None => args
-            .literal_public_key()
-            .context("--key or --mpc-dao is required")?,
-    };
-    let permission = args.permission();
-    tracing::info!(%public_key, ?permission, "adding access key");
+pub(super) async fn install_key(ctx: CliContext, args: InstallKey) -> anyhow::Result<()> {
+    let controlled = args.signer.account_id();
+    let public_key = derived_public_key(
+        &ctx,
+        &args.mpc.contract_id(ctx.network()),
+        args.mpc.key_type(),
+        &args.derivation.dao,
+        &args.derivation.path_for(&controlled),
+    )
+    .await?;
+    tracing::info!(%public_key, "adding the derived key with full access");
     ctx.write(
         args.signer,
         account::AddKey {
             public_key: public_key.into(),
-            permission,
+            permission: account::AccessKeyPermission::FullAccess,
         },
     )
     .await
@@ -225,7 +219,7 @@ async fn installed_derived_key(
         .with_context(|| {
             format!(
                 "{controlled} has no access key {public_key}; install it with \
-                 `tmplrmgr account add-key --mpc-dao {dao} --mpc-path {path} --signer-id {controlled} …`"
+                 `tmplrmgr mpc install-key --dao {dao} --path {path} --signer-id {controlled} …`"
             )
         })?;
     anyhow::ensure!(
