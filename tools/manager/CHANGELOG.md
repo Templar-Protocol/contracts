@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.6.0...templar-manager-v0.7.0) - 2026-09-15
+
+### Added
+
+- *(gateway)* [**breaking**] oracle.updateLazer accepts multiple feeds (ENG-676) ([#615](https://github.com/Templar-Protocol/contracts/pull/615))
+- *(manager)* let --sign-with name the in-process backend (ENG-712) ([#628](https://github.com/Templar-Protocol/contracts/pull/628))
+
+### Fixed
+
+- *(manager)* accept an ambient $SECRET_KEY in --print mode (ENG-692) ([#626](https://github.com/Templar-Protocol/contracts/pull/626))
+
 ## [0.6.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.5.1...templar-manager-v0.6.0) - 2026-09-01
 
 ### Added
