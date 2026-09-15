@@ -72,18 +72,35 @@ pub struct GetAccessKeyResult {
     pub permission: AccessKeyPermission,
 }
 
-/// An access key's permission scope (mirrors NEAR's `AccessKeyPermissionView`).
+/// An access key's permission scope, in NEAR's own JSON encoding so a
+/// `getAccessKey` result can be fed back to `addKey` unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum AccessKeyPermission {
     /// Full access to the account.
     FullAccess,
-    /// Restricted to function calls against `receiver_id` (optionally limited to
-    /// `method_names` and a remaining `allowance`).
+    /// Restricted to function calls against `receiver_id`, optionally limited to
+    /// `method_names` and a gas `allowance` (the remaining budget when read, the
+    /// initial one when installed).
     FunctionCall {
         allowance: Option<NearToken>,
         receiver_id: AccountId,
         method_names: Vec<ContractMethodName>,
     },
+}
+
+/// Add an access key to the signing account.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "account.addKey")]
+pub struct AddKey {
+    pub public_key: PublicKey,
+    pub permission: AccessKeyPermission,
+}
+
+/// Delete an access key from the signing account.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "account.deleteKey")]
+pub struct DeleteKey {
+    pub public_key: PublicKey,
 }
 
 /// Delete a managed account and send remaining funds to a beneficiary.
