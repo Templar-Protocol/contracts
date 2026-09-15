@@ -187,7 +187,7 @@ fetch_lazer_payload() {
   fi
   : "${PYTH_LAZER_API_KEY:?Pyth Lazer API key required for the push phase (PYTH_LAZER_API_KEY or PYTH_LAZER_API_KEY_FILE)}"
   curl -sf -X POST "$LAZER_REST" \
-    -H "@<(printf 'Authorization: Bearer %s\n' "$PYTH_LAZER_API_KEY")" -H 'Content-Type: application/json' \
+    -H @<(printf 'Authorization: Bearer %s\n' "$PYTH_LAZER_API_KEY") -H 'Content-Type: application/json' \
     -d "{\"priceFeedIds\":[$LAZER_FEED_ID],\"properties\":[\"price\",\"exponent\",\"feedUpdateTimestamp\"],\"formats\":[\"leEcdsa\"],\"channel\":\"$LAZER_CHANNEL\",\"jsonBinaryEncoding\":\"hex\"}" \
     | tee "$OUT/lazer_response.json" \
     | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['leEcdsa']['data'])"
