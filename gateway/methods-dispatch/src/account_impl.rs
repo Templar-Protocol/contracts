@@ -47,7 +47,7 @@ fn permission_action(permission: account::AccessKeyPermission) -> NearAccessKeyP
             method_names,
         } => NearAccessKeyPermission::FunctionCall(FunctionCallPermission {
             allowance,
-            receiver_id: receiver_id.to_string(),
+            receiver_id: receiver_id.into(),
             method_names: method_names.into_iter().map(|name| name.0).collect(),
         }),
     }
@@ -242,21 +242,21 @@ mod tests {
 
     #[test]
     fn permission_round_trips_through_the_action_form() {
-        let permission = account::AccessKeyPermission::FunctionCall {
-            allowance: None,
-            receiver_id: "market.near".parse().expect("valid"),
-            method_names: vec![templar_gateway_types::ContractMethodName::from(
-                "borrow".to_owned(),
-            )],
-        };
-        assert_eq!(
-            permission_view(permission_action(permission.clone())).expect("maps back"),
-            permission
-        );
-        assert!(matches!(
-            permission_action(account::AccessKeyPermission::FullAccess),
-            NearAccessKeyPermission::FullAccess
-        ));
+        for permission in [
+            account::AccessKeyPermission::FullAccess,
+            account::AccessKeyPermission::FunctionCall {
+                allowance: Some(NearToken::from_near(1)),
+                receiver_id: "market.near".parse().expect("valid"),
+                method_names: vec![templar_gateway_types::ContractMethodName::from(
+                    "borrow".to_owned(),
+                )],
+            },
+        ] {
+            assert_eq!(
+                permission_view(permission_action(permission.clone())).expect("maps back"),
+                permission
+            );
+        }
     }
 
     #[test]

@@ -27,12 +27,11 @@ async fn account_get_endpoint_works_against_sandbox() -> Result<()> {
 async fn account_add_key_and_delete_key_endpoints_manage_both_permissions() -> Result<()> {
     let stack = TestStack::start().await?;
     let account_id = stack.harness.gateway_signer_account_id.clone();
-    let full_access = templar_gateway_types::primitive::PublicKey::from(
-        near_api::signer::generate_secret_key()?.public_key(),
-    );
-    let function_call = templar_gateway_types::primitive::PublicKey::from(
-        near_api::signer::generate_secret_key()?.public_key(),
-    );
+    let fresh_key = || -> Result<templar_gateway_types::primitive::PublicKey> {
+        Ok(near_api::signer::generate_secret_key()?.public_key().into())
+    };
+    let full_access = fresh_key()?;
+    let function_call = fresh_key()?;
     let restricted = account::AccessKeyPermission::FunctionCall {
         allowance: Some(NearToken::from_near(1)),
         receiver_id: stack.harness.ft_contract_id.clone(),
