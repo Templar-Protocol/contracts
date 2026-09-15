@@ -30,10 +30,20 @@ jobs:
           curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.52/mdbook-v0.4.52-x86_64-unknown-linux-gnu.tar.gz | tar -xz --directory=bin
 
       - name: Install mdbook-linkcheck
+        env:
+          MDBOOK_LINKCHECK_VERSION: v0.7.7
+          MDBOOK_LINKCHECK_SHA256: 18cebca9493804b307b39a44af2664cdfa881e84b8d92a94205d6c51572318ef
         run: |
-          curl -L https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/latest/download/mdbook-linkcheck.x86_64-unknown-linux-gnu.zip -o mdbook-linkcheck.zip && \
-          unzip -j mdbook-linkcheck.zip mdbook-linkcheck -d bin && \
+          curl -sSL "https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/download/${MDBOOK_LINKCHECK_VERSION}/mdbook-linkcheck.x86_64-unknown-linux-gnu.zip" -o mdbook-linkcheck.zip
+          echo "${MDBOOK_LINKCHECK_SHA256}  mdbook-linkcheck.zip" | sha256sum -c -
+          unzip -j mdbook-linkcheck.zip mdbook-linkcheck -d bin
           chmod +x bin/mdbook-linkcheck
+
+      - name: Check generated docs tables
+        run: |
+          python3 script/docs/gen-risk-parameters.py --self-test
+          python3 script/docs/gen-risk-parameters.py --check
+          python3 script/docs/gen-release-log.py --check
 
       - name: Build documentation
         run: ./script/build-docs.sh

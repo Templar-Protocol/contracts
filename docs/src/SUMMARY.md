@@ -1,6 +1,7 @@
 # Summary
 
 - [Introduction](./index.md)
+- [Architecture Overview](./architecture.md)
 - [Smart Contracts](./contract/index.md)
   - [Market](./contract/market/index.md)
     - [Supply](./contract/market/supply.md)
@@ -8,10 +9,14 @@
     - [Liquidate](./contract/market/liquidate.md)
   - [Registry](./contract/registry.md)
   - [LST Oracle](./contract/lst-oracle.md)
+  - [API Reference](./api-reference.md)
 - [Smart Contract Addresses](./addresses.md)
+- [Risk Parameters](./risk-parameters.md)
+- [Deployment and Version Log](./release-log.md)
 - [Deploying a market](./deployments.md)
 - [Oracles](./oracles.md)
 - [Protocol Governance](./governance.md)
+- [Stellar Curated Vaults](./vaults.md)
 - [Stellar Vault Curator Guide](./curator-guide.md)
 - [Security](./security-overview.md)
   - [Security Reporting](./security.md)
