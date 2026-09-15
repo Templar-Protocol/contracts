@@ -287,10 +287,11 @@ impl From<GlobalContractIdentifierInput> for GlobalContractIdentifier {
 /// The variants are an allowlist, not a mirror: every other NEAR action is
 /// unrepresentable here rather than rejected at runtime, so a new upstream
 /// variant cannot silently become submittable. Deliberately absent —
-/// `DeleteAccount`, `DeleteKey` and `Stake` are irreversible and want their own
-/// reviewed op; `Delegate` is `tx.relaySignedDelegateAction`; `CreateAccount`,
-/// `AddKey`, `DeployGlobalContract`, `DeterministicStateInit` and the NEP-611
-/// gas-key actions have no caller yet.
+/// `DeleteAccount`, `AddKey`, `DeleteKey` and `Stake` change who controls the
+/// account and want their own reviewed op (`account.delete`, `account.addKey`,
+/// `account.deleteKey`); `Delegate` is `tx.relaySignedDelegateAction`;
+/// `CreateAccount`, `DeployGlobalContract`, `DeterministicStateInit` and the
+/// NEP-611 gas-key actions have no caller yet.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum ActionInput {

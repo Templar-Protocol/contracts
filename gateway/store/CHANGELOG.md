@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-store-v0.2.2...templar-gateway-store-v0.2.3) - 2026-09-01
+
+### Fixed
+
+- *(gateway)* settle a transaction the chain never recorded (ENG-477) ([#611](https://github.com/Templar-Protocol/contracts/pull/611))
+- *(gateway)* ask the chain what it has, not what it will have (ENG-674) ([#613](https://github.com/Templar-Protocol/contracts/pull/613))
+
 ## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-store-v0.1.2...templar-gateway-store-v0.2.0) - 2026-08-04
 
 ### Added

@@ -36,9 +36,9 @@ When the nightly **Fuzz** workflow finds a crash it does **not** commit anything
 ```bash
 # 1. Download the `fuzz-crash-<target>` artifact from the failed run and unzip.
 # 2. Reproduce locally:
-cargo +nightly fuzz run <target> <path-to-crash-file>
+cargo +nightly-2025-11-25 fuzz run --target x86_64-unknown-linux-gnu <target> <path-to-crash-file>
 # 3. (optional) minimize it:
-cargo +nightly fuzz tmin <target> <path-to-crash-file>
+cargo +nightly-2025-11-25 fuzz tmin --target x86_64-unknown-linux-gnu <target> <path-to-crash-file>
 # 4. Commit it as a regression seed (name it after the tracking issue):
 cp <crash-file> fuzz/seeds/<target>/ENG-NNN-<short-description>
 git add fuzz/seeds/<target>/

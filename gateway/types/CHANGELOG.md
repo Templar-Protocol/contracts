@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-types-v0.3.1...templar-gateway-types-v0.4.0) - 2026-09-01
+
+### Added
+
+- *(gateway)* [**breaking**] validate registry init args against ABI (ENG-463) ([#607](https://github.com/Templar-Protocol/contracts/pull/607))
+- *(manager)* add guarded storage patch plans (ENG-652) ([#609](https://github.com/Templar-Protocol/contracts/pull/609))
+
+### Fixed
+
+- *(manager)* harden patch dry-run replay (ENG-653) ([#612](https://github.com/Templar-Protocol/contracts/pull/612))
+
 ## [0.3.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-types-v0.3.0...templar-gateway-types-v0.3.1) - 2026-08-25
 
 ### Added

@@ -623,6 +623,13 @@ impl OperationDriver {
                     );
                 }
             }
+            Ok(TransactionRecord::Pending) => {
+                tracing::debug!(
+                    operation_id = %operation.id.0,
+                    %tx_hash,
+                    "submitted transaction has not finished executing; leaving it submitted"
+                );
+            }
             Ok(TransactionRecord::Unconfirmed) => {
                 tracing::warn!(
                     operation_id = %operation.id.0,

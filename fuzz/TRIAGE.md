@@ -23,20 +23,16 @@ so it survives rebuilds while you work:
 cp fuzz/artifacts/<target>/crash-XXXX /tmp/crash      # keep a stable copy
 ```
 
-**CI run (nightly `Fuzz` workflow).** CI does *not* commit anything. It:
-- opens a GitHub issue labelled `fuzz-crash` (deduped per target), with the
-  input embedded as base64 when ≤ 4 KiB — copy that block and `base64 -d` it
-  into a file; and
-- uploads the input as the `fuzz-crash-<target>` workflow artifact (90-day
-  retention) for larger inputs — download and unzip it.
-
-Either way you end up with a single crash file. The rest of this runbook is the
-same for local and CI crashes.
+**CI run (nightly `Fuzz` workflow).** CI does not commit anything. When libFuzzer
+writes a `crash-*` input, it uploads `fuzz-crash-<target>` with the input and
+full log (90-day retention), then opens a deduplicated `fuzz-crash` issue on the
+scheduled run. The issue records the crash filename and byte size; it never
+embeds the input. Download and unzip the artifact to obtain the crash file.
 
 ## 1. Reproduce it deterministically
 
 ```bash
-cargo +nightly fuzz run <target> /tmp/crash
+cargo +nightly-2025-11-25 fuzz run --target x86_64-unknown-linux-gnu <target> /tmp/crash
 ```
 
 This runs the target on that one input. You should see the **same panic every
@@ -47,7 +43,7 @@ state); that is itself a bug to fix (P6) before you can triage anything.
 ## 2. Minimize it (optional but recommended)
 
 ```bash
-cargo +nightly fuzz tmin <target> /tmp/crash
+cargo +nightly-2025-11-25 fuzz tmin --target x86_64-unknown-linux-gnu <target> /tmp/crash
 ```
 
 `tmin` shrinks the input to the smallest one that still crashes, which usually
@@ -143,13 +139,13 @@ This is the step that closes the loop — prove the *exact* crashing input no
 longer crashes:
 
 ```bash
-cargo +nightly fuzz run <target> /tmp/crash      # exit 0, "Executed … in 0 ms"
+cargo +nightly-2025-11-25 fuzz run --target x86_64-unknown-linux-gnu <target> /tmp/crash      # exit 0, "Executed … in 0 ms"
 ```
 
 For an intentional-abort boundary, also run the paired unit test:
 
 ```bash
-cargo test -p templar-common --lib <abort_test_name>   # should_panic test passes
+just test-fast -p templar-common --lib <abort_test_name>   # should_panic test passes
 ```
 
 ## 7. Re-run the target to confirm no *new* crash nearby
@@ -158,7 +154,7 @@ A fix can move the crash one step deeper. Run the target again (with the seed
 corpus) for a while to confirm the region is clean:
 
 ```bash
-cargo +nightly fuzz run <target> corpus/<target> seeds/<target> -- -max_total_time=120
+cargo +nightly-2025-11-25 fuzz run --target x86_64-unknown-linux-gnu <target> corpus/<target> seeds/<target> -- -max_total_time=120
 ```
 
 If it survives, commit the fix, the new seed, and any `README.md` row together.

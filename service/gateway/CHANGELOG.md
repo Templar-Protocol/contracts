@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-service-v0.5.1...templar-gateway-service-v0.6.0) - 2026-09-01
+
+### Added
+
+- *(gateway)* [**breaking**] validate registry init args against ABI (ENG-463) ([#607](https://github.com/Templar-Protocol/contracts/pull/607))
+
+### Fixed
+
+- *(gateway)* settle a transaction the chain never recorded (ENG-477) ([#611](https://github.com/Templar-Protocol/contracts/pull/611))
+
 ## [0.5.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-service-v0.5.0...templar-gateway-service-v0.5.1) - 2026-08-25
 
 ### Added

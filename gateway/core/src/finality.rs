@@ -1,11 +1,15 @@
 use near_api::types::{Reference, TxExecutionStatus};
 
-/// A coherent transaction-wait and state-query policy.
+/// A coherent transaction-wait and state-query policy for *submitting* a
+/// transaction and reading the state it produced.
 ///
 /// Every mode waits for a complete application execution outcome. We
 /// intentionally do not expose `None`, `Included`, or `IncludedFinal`, which can
 /// return a pending transaction result that the operation driver cannot persist
 /// as a completed step.
+///
+/// Reconciliation does not use it to wait: it asks what the chain has now, and
+/// applies this as the bar an answer must meet to count as an outcome.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum FinalityPolicy {
     /// Wait until the transaction is included in a finalized block and all
@@ -31,6 +35,27 @@ impl FinalityPolicy {
         }
     }
 
+    /// Whether `progress` meets this policy's bar. Spelled out rather than
+    /// compared: the levels are not a ladder — `ExecutedOptimistic` has execution
+    /// without finality and `IncludedFinal` finality without execution — so
+    /// `TxExecutionStatus`'s derived `Ord` does not mean what it appears to.
+    #[must_use]
+    pub const fn is_satisfied_by(self, progress: TxExecutionStatus) -> bool {
+        match self {
+            Self::ExecutedOptimistic => matches!(
+                progress,
+                TxExecutionStatus::ExecutedOptimistic
+                    | TxExecutionStatus::Executed
+                    | TxExecutionStatus::Final
+            ),
+            Self::Executed => matches!(
+                progress,
+                TxExecutionStatus::Executed | TxExecutionStatus::Final
+            ),
+            Self::Final => matches!(progress, TxExecutionStatus::Final),
+        }
+    }
+
     #[must_use]
     pub const fn query_reference(self) -> Reference {
         match self {
@@ -43,6 +68,8 @@ impl FinalityPolicy {
 #[cfg(test)]
 mod tests {
     use near_api::types::{Reference, TxExecutionStatus};
+
+    use rstest::rstest;
 
     use super::FinalityPolicy;
 
@@ -61,6 +88,41 @@ mod tests {
 
         assert_eq!(policy.transaction_status(), TxExecutionStatus::Final);
         assert!(matches!(policy.query_reference(), Reference::Final));
+    }
+
+    /// Every level against every policy, since the levels are not a ladder.
+    #[rstest]
+    #[case(
+        FinalityPolicy::ExecutedOptimistic,
+        &[
+            TxExecutionStatus::ExecutedOptimistic,
+            TxExecutionStatus::Executed,
+            TxExecutionStatus::Final,
+        ]
+    )]
+    #[case(
+        FinalityPolicy::Executed,
+        &[TxExecutionStatus::Executed, TxExecutionStatus::Final]
+    )]
+    #[case(FinalityPolicy::Final, &[TxExecutionStatus::Final])]
+    fn policy_is_satisfied_only_by_a_level_that_meets_it(
+        #[case] policy: FinalityPolicy,
+        #[case] accepted: &[TxExecutionStatus],
+    ) {
+        for level in [
+            TxExecutionStatus::None,
+            TxExecutionStatus::Included,
+            TxExecutionStatus::ExecutedOptimistic,
+            TxExecutionStatus::IncludedFinal,
+            TxExecutionStatus::Executed,
+            TxExecutionStatus::Final,
+        ] {
+            assert_eq!(
+                policy.is_satisfied_by(level),
+                accepted.contains(&level),
+                "{policy:?} against {level:?}"
+            );
+        }
     }
 
     #[test]

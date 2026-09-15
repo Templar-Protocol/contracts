@@ -22,3 +22,77 @@ async fn account_get_endpoint_works_against_sandbox() -> Result<()> {
     stack.shutdown().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn account_add_key_and_delete_key_endpoints_manage_both_permissions() -> Result<()> {
+    let stack = TestStack::start().await?;
+    let account_id = stack.harness.gateway_signer_account_id.clone();
+    let fresh_key = || -> Result<templar_gateway_types::primitive::PublicKey> {
+        Ok(near_api::signer::generate_secret_key()?.public_key().into())
+    };
+    let full_access = fresh_key()?;
+    let function_call = fresh_key()?;
+    let restricted = account::AccessKeyPermission::FunctionCall {
+        allowance: Some(NearToken::from_near(1)),
+        receiver_id: stack.harness.ft_contract_id.clone(),
+        method_names: vec![ContractMethodName("ft_transfer".to_owned())],
+    };
+
+    for (public_key, permission) in [
+        (
+            full_access.clone(),
+            account::AccessKeyPermission::FullAccess,
+        ),
+        (function_call.clone(), restricted.clone()),
+    ] {
+        let _ = stack
+            .controller
+            .request::<account::AddKey>(&WriteRequest {
+                signer_account_id: account_id.clone(),
+                idempotency_key: None,
+                body: account::AddKey {
+                    public_key,
+                    permission,
+                },
+            })
+            .await?;
+    }
+
+    let installed = |public_key: templar_gateway_types::primitive::PublicKey| async {
+        stack
+            .controller
+            .request::<account::GetAccessKey>(&account::GetAccessKey {
+                account_id: account_id.0.clone(),
+                public_key,
+            })
+            .await
+    };
+    assert_eq!(
+        installed(full_access.clone()).await?.permission,
+        account::AccessKeyPermission::FullAccess
+    );
+    assert_eq!(
+        installed(function_call.clone()).await?.permission,
+        restricted
+    );
+
+    let _ = stack
+        .controller
+        .request::<account::DeleteKey>(&WriteRequest {
+            signer_account_id: account_id.clone(),
+            idempotency_key: None,
+            body: account::DeleteKey {
+                public_key: function_call.clone(),
+            },
+        })
+        .await?;
+
+    assert!(installed(function_call).await.is_err());
+    assert_eq!(
+        installed(full_access).await?.permission,
+        account::AccessKeyPermission::FullAccess
+    );
+
+    stack.shutdown().await;
+    Ok(())
+}

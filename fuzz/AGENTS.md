@@ -28,7 +28,7 @@ shared doc.
   raw-decode, documented caps). Prefer these patterns over the legacy single-shot
   field-setting targets.
 - **Build & smoke-test** a changed target before finishing:
-  `cargo +nightly fuzz build <target>` then
-  `cargo +nightly fuzz run <target> -- -max_total_time=60`.
+  `cargo +nightly-2025-11-25 fuzz build --target x86_64-unknown-linux-gnu <target>` then
+  `cargo +nightly-2025-11-25 fuzz run --target x86_64-unknown-linux-gnu <target> -- -max_total_time=60`.
 - **Record coverage changes.** Any reduction in what's fuzzed goes in
   `README.md`'s status tables in the same change.

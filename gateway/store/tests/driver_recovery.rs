@@ -632,14 +632,22 @@ async fn an_abandoned_preparation_leaves_the_plan_intact(#[case] mut op: StoredO
     );
 }
 
-/// Age alone must not reject. Without an archival node confirming it, a missing
-/// transaction is indistinguishable from one whose outcome the primary garbage
-/// collected — and that one may well have executed.
+/// An answer that does not settle the step leaves it submitted and records
+/// nothing: the chain is still executing the transaction, or no retention-complete
+/// node has confirmed it missing. Age does not override either — the `expired`
+/// cases are past the horizon.
+#[rstest]
+#[case::pending_fresh(TransactionRecord::Pending, fresh_submitted_step())]
+#[case::pending_expired(TransactionRecord::Pending, expired_submitted_step())]
+#[case::unconfirmed_expired(TransactionRecord::Unconfirmed, expired_submitted_step())]
 #[tokio::test]
-async fn an_unconfirmed_missing_transaction_is_never_rejected() {
+async fn an_unsettled_answer_leaves_the_step_submitted(
+    #[case] answer: TransactionRecord,
+    #[case] step: CurrentStep,
+) {
     let store = Arc::new(MemoryStore::new());
-    let key = seed_keyed(&store, "unconfirmed", step_op(expired_submitted_step())).await;
-    let executor = FakeExecutor::new(vec![], vec![Ok(TransactionRecord::Unconfirmed)]);
+    let key = seed_keyed(&store, "unsettled", step_op(step)).await;
+    let executor = FakeExecutor::new(vec![], vec![Ok(answer)]);
 
     let record = driver(store.clone(), executor)
         .reconcile_operation(&key)
@@ -650,6 +658,10 @@ async fn an_unconfirmed_missing_transaction_is_never_rejected() {
     assert_eq!(record.status, OperationStatus::InProgress);
     let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
     assert!(is_submitted(op.current_step.as_ref()));
+    assert!(
+        op.completed_steps.is_empty(),
+        "an unsettled step must not advance the cursor"
+    );
 }
 
 /// Rejection is terminal: a later sweep must not query the chain again, which is

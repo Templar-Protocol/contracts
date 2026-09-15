@@ -8,14 +8,11 @@ use near_sdk::Gas;
 
 use templar_gateway_types::ProposalEncoding;
 
-use super::{
-    parse_create_proposal, parse_governance, try_parse_governance, with_cleared_credential_env,
-    CREDS,
-};
+use super::{authorized, parse_create_proposal, parse_governance, try_parse_governance, CREDS};
 use crate::cli::{Cli, Command};
 use crate::commands::{
     proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs},
-    signer::PrintFormat,
+    signer::{Mode, PrintFormat},
 };
 use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
@@ -111,7 +108,10 @@ fn oracle_create(
     {
         Command::ProxyOracle {
             command: ProxyOracleNs::Create(cmd),
-        } => cmd.try_into_spec(),
+        } => {
+            let authorization = authorized(&cmd.signer);
+            cmd.try_into_spec(&authorization)
+        }
         _ => panic!("expected proxy-oracle create"),
     }
 }
@@ -654,90 +654,83 @@ fn execute_proposal_when_ready_flag() {
 
 #[test]
 fn governance_write_commands_accept_print_mode() {
-    let (execute, create) = with_cleared_credential_env(|| {
-        (
-            try_parse_governance([
-                "execute-proposal",
-                "--governance-id",
-                "gov.testnet",
-                "--id",
-                "2",
-                "--signer-id",
-                "dao.near",
-                "--print",
-                "sputnik",
-            ]),
-            try_parse_governance([
-                "create-proposal",
-                "--governance-id",
-                "gov.testnet",
-                "--id",
-                "0",
-                "--signer-id",
-                "dao.near",
-                "--print",
-                "json",
-                "oracle",
-                "call",
-                "--method",
-                "own_accept_owner",
-                "--deposit",
-                "1 yoctoNEAR",
-            ]),
-        )
-    });
-
-    let ProxyOracleGovernanceNs::ExecuteProposal(execute) =
-        execute.expect("immediate execution should support planning")
-    else {
+    let ProxyOracleGovernanceNs::ExecuteProposal(execute) = try_parse_governance([
+        "execute-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "2",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "sputnik",
+    ])
+    .expect("immediate execution should support planning") else {
         panic!("expected execute-proposal");
     };
-    assert_eq!(execute.signer.print(), Some(PrintFormat::Sputnik));
+    assert_eq!(
+        authorized(&execute.signer).mode(),
+        &Mode::Plan(PrintFormat::Sputnik)
+    );
 
-    let ProxyOracleGovernanceNs::CreateProposal(create) =
-        create.expect("single-write proposal creation should support planning")
-    else {
+    let ProxyOracleGovernanceNs::CreateProposal(create) = try_parse_governance([
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+        "oracle",
+        "call",
+        "--method",
+        "own_accept_owner",
+        "--deposit",
+        "1 yoctoNEAR",
+    ])
+    .expect("single-write proposal creation should support planning") else {
         panic!("expected create-proposal");
     };
-    assert_eq!(create.signer.print(), Some(PrintFormat::Json));
+    assert_eq!(
+        authorized(&create.signer).mode(),
+        &Mode::Plan(PrintFormat::Json)
+    );
 }
 
 #[test]
 fn proposal_orchestration_flags_conflict_with_print() {
-    let (execute, create) = with_cleared_credential_env(|| {
-        (
-            try_parse_governance([
-                "execute-proposal",
-                "--governance-id",
-                "gov.testnet",
-                "--id",
-                "2",
-                "--when-ready",
-                "--signer-id",
-                "dao.near",
-                "--print",
-                "json",
-            ]),
-            try_parse_governance([
-                "create-proposal",
-                "--governance-id",
-                "gov.testnet",
-                "--id",
-                "0",
-                "--execute-when-ready",
-                "--signer-id",
-                "dao.near",
-                "--print",
-                "json",
-                "oracle",
-                "call",
-                "--method",
-                "own_accept_owner",
-                "--deposit",
-                "1 yoctoNEAR",
-            ]),
-        )
-    });
+    let execute = try_parse_governance([
+        "execute-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "2",
+        "--when-ready",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+    ]);
+    let create = try_parse_governance([
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "--execute-when-ready",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+        "oracle",
+        "call",
+        "--method",
+        "own_accept_owner",
+        "--deposit",
+        "1 yoctoNEAR",
+    ]);
 
     assert_eq!(
         execute
@@ -776,7 +769,10 @@ fn governance_create_builds_typed_init_fields() {
         .into_iter()
         .chain(CREDS),
     ) {
-        ProxyOracleGovernanceNs::Create(cmd) => cmd.try_into_spec().expect("into spec"),
+        ProxyOracleGovernanceNs::Create(cmd) => {
+            let authorization = authorized(&cmd.signer);
+            cmd.try_into_spec(&authorization).expect("into spec")
+        }
         _ => panic!("expected governance create"),
     };
 
@@ -1080,9 +1076,9 @@ fn the_upgrade_preflight_is_on_unless_opted_out() {
         "--global-hash",
         "11111111111111111111111111111111",
     ]);
-    assert!(armed.preflight.runs(false));
-    // `--print` builds a payload without submitting, so it stays offline.
-    assert!(!armed.preflight.runs(true));
+    assert!(armed.preflight.runs(&Mode::Keychain));
+    // A plan builds a payload without submitting, so it stays offline.
+    assert!(!armed.preflight.runs(&Mode::Plan(PrintFormat::Json)));
 
     let opted_out = parse_create_proposal([
         "--governance-id",
@@ -1095,5 +1091,5 @@ fn the_upgrade_preflight_is_on_unless_opted_out() {
         "--global-hash",
         "11111111111111111111111111111111",
     ]);
-    assert!(!opted_out.preflight.runs(false));
+    assert!(!opted_out.preflight.runs(&Mode::Keychain));
 }

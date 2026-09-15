@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-core-v0.4.1...templar-gateway-core-v0.5.0) - 2026-09-01
+
+### Added
+
+- *(gateway)* [**breaking**] validate registry init args against ABI (ENG-463) ([#607](https://github.com/Templar-Protocol/contracts/pull/607))
+- *(manager)* add guarded storage patch plans (ENG-652) ([#609](https://github.com/Templar-Protocol/contracts/pull/609))
+
+### Fixed
+
+- *(gateway)* settle a transaction the chain never recorded (ENG-477) ([#611](https://github.com/Templar-Protocol/contracts/pull/611))
+- *(manager)* harden patch dry-run replay (ENG-653) ([#612](https://github.com/Templar-Protocol/contracts/pull/612))
+- *(gateway)* ask the chain what it has, not what it will have (ENG-674) ([#613](https://github.com/Templar-Protocol/contracts/pull/613))
+
 ## [0.4.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-core-v0.4.0...templar-gateway-core-v0.4.1) - 2026-08-25
 
 ### Added
