@@ -20,7 +20,7 @@ Adapter values are refreshed by the vault's operators rather than read live on e
 
 ## Depositing
 
-`deposit` takes assets and mints shares at the current share price; `mint` asks for an exact number of shares. Both are atomic. Deposits can be limited by a vault-wide cap and by restrictions (a whitelist or blacklist of accounts) that governance or the Sentinel may apply. Preview methods (`preview_deposit`, `preview_mint`) return the expected outcome before signing.
+`deposit` takes assets and mints shares at the current share price; `mint` asks for an exact number of shares. Both are atomic. There is no configurable vault-wide deposit cap on chain: `max_deposit` and `max_mint` are bounded only by the vault's pause and operation state and by arithmetic headroom, so a headline deposit limit a curator publishes is an operational limit. Deposits can be gated by restrictions (a whitelist or blacklist of accounts) that governance or the Sentinel may apply; allocation caps apply to routes and cap groups, not to deposits. Preview methods (`preview_deposit`, `preview_mint`) return the expected outcome before signing.
 
 ## Withdrawing
 
