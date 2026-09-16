@@ -8,10 +8,13 @@ chain the way `tmplrmgr` does (see `tools/manager/src/spec/extends.rs`), and
 writes the tables between the `BEGIN GENERATED` / `END GENERATED` markers of
 the page. Prose outside the markers is hand-written and left alone.
 
-By default only the markets listed on app.templarfi.org are rendered (see
-`LISTED_MARKETS`). `--all` renders every spec except the liquidation-test
-market, for local inspection. `--check` regenerates in memory and exits 1 with
-a diff if the page is stale; `--stdout` prints the block instead of writing.
+By default only the markets listed on app.templarfi.org are rendered. That set
+is the `listed` array in `script/docs/listed-markets.toml`; every other spec
+must be named in its `unlisted` array, and the script exits 1 if a spec is in
+neither (or in both), so a new market cannot be forgotten. `--all` renders every
+spec except the liquidation-test market, for local inspection. `--check`
+regenerates in memory and exits 1 with a diff if the page is stale; `--stdout`
+prints the block instead of writing.
 
 The output is a pure function of the inputs: no timestamps, no commit hashes.
 """
@@ -32,29 +35,8 @@ PAGE = ROOT / "docs" / "src" / "risk-parameters.md"
 BEGIN = "<!-- BEGIN GENERATED: risk-parameters (script/docs/gen-risk-parameters.py) -->"
 END = "<!-- END GENERATED: risk-parameters -->"
 
-# The markets offered on app.templarfi.org: the frontend's production market
-# allowlist plus `ixlmdejaaa-ixlmusdc-2`. Every other spec under
-# `deployments/v1/` is either deprecated in the app, an alpha market, or the
-# liquidation-test market, and is deliberately not rendered.
-LISTED_MARKETS = (
-    "iada-ixlmusdc",
-    "ibtc-iethusdc-1",
-    "ibtc-ixlmusdc",
-    "idoge-ixlmusdc",
-    "iethhemibtc-iethusdc",
-    "iethwbtc-ixlmusdc",
-    "iltc-ixlmusdc",
-    "ixlm-ixlmpyusd",
-    "ixlm-ixlmusdc-1",
-    "ixlmcetes-ixlmusdc",
-    "ixlmdejaaa-ixlmusdc-1",
-    "ixlmdejaaa-ixlmusdc-2",
-    "ixlmdejtrsy-ixlmusdc-1",
-    "ixlmsolvbtc-ixlmusdc",
-    "ixlmustry-ixlmusdc",
-    "ixrp-ixlmusdc",
-    "izec-ixlmusdc",
-)
+# Which specs the page renders is data, not code: see LISTING.
+LISTING = ROOT / "script" / "docs" / "listed-markets.toml"
 
 GITHUB_TREE = "https://github.com/Templar-Protocol/contracts/tree/dev"
 NEARBLOCKS = "https://nearblocks.io/address"
@@ -253,13 +235,47 @@ def asset_label(name_part):
 # --- loading ------------------------------------------------------------------
 
 
+def listing_errors(spec_names, listed, unlisted):
+    """Why `listed`/`unlisted` do not partition `spec_names`; empty when they do."""
+    errors = []
+    for label, names in (("listed", listed), ("unlisted", unlisted)):
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            errors.append(f"duplicated in `{label}`: {dupes}")
+    both = sorted(set(listed) & set(unlisted))
+    if both:
+        errors.append(f"in both `listed` and `unlisted`: {both}")
+    known = set(listed) | set(unlisted)
+    no_spec = sorted(known - set(spec_names))
+    if no_spec:
+        errors.append(f"named but have no spec under deployments/v1/: {no_spec}")
+    unclassified = sorted(set(spec_names) - known)
+    if unclassified:
+        errors.append(
+            f"have a spec but are in neither list (add them to `listed` or `unlisted`): {unclassified}"
+        )
+    return errors
+
+
+def load_listing(spec_names):
+    with LISTING.open("rb") as fh:
+        data = tomllib.load(fh)
+    listed = list(data.get("listed", []))
+    unlisted = list(data.get("unlisted", []))
+    errors = listing_errors(spec_names, listed, unlisted)
+    if errors:
+        where = LISTING.relative_to(ROOT)
+        raise SystemExit("\n".join([f"{where} does not classify every market:"] + [f"  - {e}" for e in errors]))
+    return set(listed)
+
+
 def load_markets(all_specs):
+    paths = [p for p in sorted(SPECS.glob("*.toml")) if not p.stem.startswith("liqtest-")]
+    listed = load_listing([p.stem for p in paths])
     markets = []
-    for path in sorted(SPECS.glob("*.toml")):
+    for path in paths:
         name = path.stem
-        if name.startswith("liqtest-"):
-            continue
-        if not all_specs and name not in LISTED_MARKETS:
+        if not all_specs and name not in listed:
             continue
         spec = resolve(path)
         registry = spec["registry"]
@@ -278,9 +294,6 @@ def load_markets(all_specs):
                 "profiles": extends_chain(path),
             }
         )
-    missing = set(LISTED_MARKETS) - {m["name"] for m in markets}
-    if missing and not all_specs:
-        raise SystemExit(f"listed markets without a spec: {sorted(missing)}")
     return sorted(markets, key=lambda m: m["name"])
 
 
@@ -462,6 +475,13 @@ def self_test():
     assert asset_label("ixlmdejaaa") == "deJAAA on Stellar (via NEAR Intents)"
     assert fmt_curve({"Piecewise": {"base": "0", "optimal": "0.9", "rate_1": "0.08888888888888888888888888888888888889", "rate_2": "2.4"}}) == "0% at 0% usage, 8% at 90% usage (kink), 32% at 100% usage"
     assert fmt_curve({"Piecewise": {"base": "0.03", "optimal": "0.9", "rate_1": "0", "rate_2": "2"}}) == "3% at 0% usage, 3% at 90% usage (kink), 23% at 100% usage"
+    # The listing file must partition the specs.
+    assert listing_errors(["a", "b", "c"], ["a"], ["b", "c"]) == []
+    errs = listing_errors(["a", "b", "c", "d"], ["a", "a", "x"], ["b", "a"])
+    assert any("duplicated in `listed`: ['a']" in e for e in errs), errs
+    assert any("in both" in e and "['a']" in e for e in errs), errs
+    assert any("no spec" in e and "['x']" in e for e in errs), errs
+    assert any("neither list" in e and "['c', 'd']" in e for e in errs), errs
     print("self-test ok")
 
 
