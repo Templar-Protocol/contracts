@@ -218,7 +218,7 @@ Markets validate price freshness before use. If no fresh, accepted price is avai
 
 ## Roadmap
 
-Two changes to the oracle layer are planned; neither has a committed date (**Input needed**: timing).
+Two changes to the oracle layer are planned; neither has a published committed date.
 
 - **Raise the per-feed quorum once a third provider is live.** With Pyth and RedStone as the only sources, `min_sources = 1` is what keeps a feed live through a single-provider outage. When a third independent provider (Chainlink or Atlas, both listed as planned under [Oracle Providers](#oracle-providers)) is configured on a feed, the quorum can be raised to two so that no single provider determines the price on its own. The change is a timelocked configuration proposal on each proxy oracle's governance contract.
 - **Retire classic Pyth reads in favour of Pyth Lazer.** Several proxy oracles still read `pyth-oracle.near`; the shared asset profiles in [`deployments/profiles/`](https://github.com/Templar-Protocol/contracts/tree/dev/deployments/profiles) already describe the Lazer configuration each feed migrates to. Each migration is a timelocked configuration proposal.

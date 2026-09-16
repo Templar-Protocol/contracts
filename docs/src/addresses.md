@@ -51,6 +51,7 @@ The markets currently offered in the app. Their immutable parameters and oracle 
 | [`ibtc-iethusdc-1.v1.tmplr.near`](https://nearblocks.io/address/ibtc-iethusdc-1.v1.tmplr.near) | Native BTC (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
 | [`ibtc-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/ibtc-ixlmusdc.v1.tmplr.near) | Native BTC (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`idoge-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/idoge-ixlmusdc.v1.tmplr.near) | Native DOGE (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
+| [`iethfxrp-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethfxrp-ixlmusdc.v1.tmplr.near) | FXRP on Ethereum (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`iethhemibtc-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/iethhemibtc-iethusdc.v1.tmplr.near) | hemiBTC on Ethereum (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
 | [`iethwbtc-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethwbtc-ixlmusdc.v1.tmplr.near) | WBTC on Ethereum (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`iltc-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iltc-ixlmusdc.v1.tmplr.near) | Native LTC (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
@@ -82,7 +83,16 @@ These markets were retired from the app at the end of August 2026. Where the sam
 | [`stnear-usdc.v1.tmplr.near`](https://nearblocks.io/address/stnear-usdc.v1.tmplr.near) | stNEAR on NEAR | USDC on NEAR | none |
 | [`stnear-usdc-1.v1.tmplr.near`](https://nearblocks.io/address/stnear-usdc-1.v1.tmplr.near) | stNEAR on NEAR | USDC on NEAR | none |
 
-Other markets exist on chain that are neither listed in the app nor formally deprecated (for example [`iethfxrp-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethfxrp-ixlmusdc.v1.tmplr.near), FXRP on Ethereum against USDC on Stellar). **Input needed**: their status. The registry's `list_deployments` output is the complete list.
+#### Other active markets
+
+The live [Markets API](https://api.templarfi.org/docs?spec=markets#tag/markets) classifies these markets as `active`, but they were not linked from the app navigation in a 2026-09-15 snapshot:
+
+| Account ID | Collateral Asset | Borrow Asset |
+|---|---|---|
+| [`linear-usdt.v1.tmplr.near`](https://nearblocks.io/address/linear-usdt.v1.tmplr.near) | LiNEAR on NEAR | USDT on NEAR |
+| [`stnear-usdt.v1.tmplr.near`](https://nearblocks.io/address/stnear-usdt.v1.tmplr.near) | stNEAR on NEAR | USDT on NEAR |
+
+Use the API's `status` field for the current operational classification. The registry's `list_deployments` output remains the complete deployment list and includes historical contracts as well as active markets.
 
 Each market's oracle account, price identifiers, and risk parameters are available from its `get_configuration` view; see [Market Configuration](./contract/market/index.md#configuration). The declarative specifications markets were deployed from are in [`deployments/v1/`](https://github.com/Templar-Protocol/contracts/tree/dev/deployments/v1). Which contract version each market runs, and how to verify it against a released build, is covered in the [Deployment and Version Log](./release-log.md).
 
