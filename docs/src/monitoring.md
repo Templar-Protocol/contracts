@@ -60,7 +60,7 @@ The same data drives the position and utilization alerts above. Total value lock
 
 The protocol runs the following off-chain services, all open source under [`service/`](https://github.com/Templar-Protocol/contracts/tree/dev/service):
 
-- **Liquidator**: monitors borrow positions across all registered markets, refreshes oracle prices, and executes liquidations of under-collateralized positions. Liquidation is permissionless; Templar's bot is one participant, not a privileged one.
+- **Liquidator**: monitors borrow positions across all registered markets, refreshes oracle prices, and executes liquidations of under-collateralized positions. Liquidation is permissionless and is performed primarily by third-party liquidation bots; Templar's bot is one participant among them, not a privileged one.
 - **Accumulator**: applies interest to borrow positions on a schedule so that accrued liability is always reflected on-chain.
 - **Market monitor**: scans every market and sends Telegram alerts for positions at risk of liquidation, classified into health zones by distance from the maintenance ratio.
 - **Oracle updaters**: the RedStone bridge service, together with the oracle-update paths built into the liquidator and relayer, fetch signed Pyth Lazer and RedStone payloads, submit them to the on-chain adapters, and refresh proxy oracle prices ahead of price-dependent actions.
