@@ -8,8 +8,8 @@ Templar Protocol relies on external price oracles to determine asset valuations 
 |---|---|---|
 | [Pyth Network](https://pyth.network/) | Live | Primary price source. Newer markets read [Pyth Lazer](https://docs.pyth.network/lazer) (marketed by Pyth as Pyth Pro) through Templar's Lazer adapter contract; markets deployed before the proxy oracle read Pyth's on-chain pull oracle ([`pyth-oracle.near`](https://nearblocks.io/address/pyth-oracle.near)) directly. |
 | [RedStone](https://redstone.finance/) | Live | Independent second source through Templar's RedStone adapter contract. RedStone is also the sole source for some tokenized real-world-asset feeds (for example tokenized treasury and fund products) that Pyth does not yet publish. |
-| [Chainlink](https://chain.link/) | Planned | Will be added as an additional proxy oracle source. |
-| Atlas | Planned | Will be added as an additional proxy oracle source. |
+| [Chainlink](https://chain.link/) | Planned by end of 2026 | Will be added as an additional proxy oracle source. |
+| Atlas | Planned by end of 2026 | Will be added as an additional proxy oracle source. |
 
 Where a market reads more than one provider, the sources are combined by a [proxy oracle](#proxy-oracle) rather than by the market itself. Source weights, quorum, freshness bounds, and circuit breakers are configured per market and can be adjusted through the proxy oracle's timelocked governance.
 
@@ -46,7 +46,7 @@ Because this configuration is immutable, an existing market cannot be repointed 
 The proxy oracle is Templar's oracle aggregation and safety layer. Each market typically has its own proxy oracle and governance contract, deployed alongside the market through the registry.
 
 - Source: [`contract/proxy-oracle`](https://github.com/Templar-Protocol/contracts/tree/dev/contract/proxy-oracle)
-- Audit: [Halborn, proxy oracle security assessment (August 2026)](https://drive.google.com/file/d/1KOVYEiz8pGcWRWJ_-NFDa94LJ_f2zMWw/view?usp=sharing). All findings were remediated before deployment; the remediation is recorded in the repository history.
+- Audit: [Halborn, proxy oracle security assessment (August 2026)](https://drive.google.com/file/d/1KOVYEiz8pGcWRWJ_-NFDa94LJ_f2zMWw/view?usp=sharing). The source remediations are recorded in [#595](https://github.com/Templar-Protocol/contracts/pull/595); they postdate the released `0.4.1` NEAR runtime.
 
 The logic is split between a chain-agnostic kernel (aggregation, freshness, circuit breakers) and per-chain runtimes. The NEAR runtime serves Templar markets; a Soroban runtime with the same kernel serves Stellar consumers through SEP-40 adapters.
 
@@ -218,7 +218,7 @@ Markets validate price freshness before use. If no fresh, accepted price is avai
 
 ## Roadmap
 
-Two changes to the oracle layer are planned; neither has a published committed date.
+Templar plans to add a third and fourth independent provider by the end of 2026. The classic-Pyth migration is also planned but has no separate published completion date.
 
-- **Raise the per-feed quorum once a third provider is live.** With Pyth and RedStone as the only sources, `min_sources = 1` is what keeps a feed live through a single-provider outage. When a third independent provider (Chainlink or Atlas, both listed as planned under [Oracle Providers](#oracle-providers)) is configured on a feed, the quorum can be raised to two so that no single provider determines the price on its own. The change is a timelocked configuration proposal on each proxy oracle's governance contract.
+- **Add two providers and raise the per-feed quorum.** Chainlink and Atlas are planned as the third and fourth providers. With Pyth and RedStone as the only sources, `min_sources = 1` is what keeps a feed live through a single-provider outage. Once a third independent provider is configured on a feed, the quorum can be raised to two so that no single provider determines the price on its own. The change is a timelocked configuration proposal on each proxy oracle's governance contract.
 - **Retire classic Pyth reads in favour of Pyth Lazer.** Several proxy oracles still read `pyth-oracle.near`; the shared asset profiles in [`deployments/profiles/`](https://github.com/Templar-Protocol/contracts/tree/dev/deployments/profiles) already describe the Lazer configuration each feed migrates to. Each migration is a timelocked configuration proposal.

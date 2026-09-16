@@ -55,4 +55,4 @@ Examples throughout this guide use [`near-cli-rs`](./notes.md#contract-interacti
 - [Oracles](./oracles.md#inspecting-a-proxy-oracle): proxy oracle feeds, cached prices, and circuit-breaker state.
 - [Monitoring and Risk Management](./monitoring.md#protocol-health-checks): the health checks Templar's own monitoring runs.
 
-[templarfi.org](https://templarfi.org/) links to the published guide. As of 2026-09-15, the app navigation does not expose a documentation link; adding one is a frontend change outside this repository.
+[templarfi.org](https://templarfi.org/) links to the published guide. The app should also expose a guide/API documentation link; that implementation belongs in the frontend repository.

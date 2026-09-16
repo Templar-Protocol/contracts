@@ -80,7 +80,7 @@ All contracts are open source and built reproducibly. The deployed code hash of 
 
 Oracle failure and manipulation is the dominant cause of lending-protocol losses. Templar's [proxy oracles](./oracles.md#proxy-oracle) aggregate multiple independent oracles for redundancy and gate every price through freshness filters and circuit breakers:
 
-- **Multiple sources**: Pyth (Lazer and classic) and RedStone are live; Chainlink and Atlas are being added. Sources, weights, and the fresh-source quorum are configured per feed.
+- **Multiple sources**: Pyth (Lazer and classic) and RedStone are live; Chainlink and Atlas are planned by the end of 2026. Sources, weights, and the fresh-source quorum are configured per feed.
 - **Freshness filters** drop stale and future-dated prices before aggregation.
 - **Weighted-median aggregation** across sources with a configurable fresh-source quorum. The standard production configuration uses a quorum of one with Pyth weighted above RedStone, so the higher-weighted source determines the price while both are fresh and a single fresh source carries the feed when the other is stale. That configuration favours liveness; the freshness filter and enforced circuit breakers, not the aggregation, are the primary defence against a single compromised provider, and quorum and weights can be raised per feed as more providers come online.
 - **Circuit breakers** compare against accepted history, so an attacker cannot first poison the reference sample and then pass a deviation check.
@@ -143,9 +143,9 @@ Templar coordinates with the NEAR Foundation and the Stellar Development Foundat
 
 ## Insurance and Recovery
 
-Templar does not currently carry insurance cover for smart contract or oracle failure, and there is no on-chain insurance fund that backstops bad debt. No evaluation scope or decision date for insurance options is published. Users with assets or positions in an exploited contract should assume that unrecovered exploit losses are borne by the users whose assets or positions are affected, including borrowers whose collateral is lost. Unrecoverable bad debt is borne by the affected market's suppliers and may reduce the share value of vaults allocated to that market. Markets are isolated, so neither kind of loss spreads to other markets.
+Templar does not currently carry insurance cover for smart contract or oracle failure, there is no on-chain insurance fund that backstops bad debt, and there is no insurance-adoption timeline. Users with assets or positions in an exploited contract should assume that unrecovered exploit losses are borne by the users whose assets or positions are affected, including borrowers whose collateral is lost. Unrecoverable bad debt is borne by the affected market's suppliers and may reduce the share value of vaults allocated to that market. Markets are isolated, so neither kind of loss spreads to other markets.
 
-Recovery from a protocol-level incident follows the [incident response](#incident-response) process: contain through the oracle layer and the bots, preserve user exits, and migrate to a patched, audited market version. For incidents at the infrastructure layer (NEAR Intents, bridges, stablecoin issuers), Templar coordinates with the NEAR Foundation and the Stellar Development Foundation security functions, following the recovery precedents those ecosystems have established. No treasury-backed remediation commitment or limits are published; users should not assume one applies.
+Recovery from a protocol-level incident follows the [incident response](#incident-response) process: contain through the oracle layer and the bots, preserve user exits, and migrate to a patched, audited market version. For incidents at the infrastructure layer (NEAR Intents, bridges, stablecoin issuers), Templar coordinates with the NEAR Foundation and the Stellar Development Foundation security functions, following the recovery precedents those ecosystems have established. There is no treasury-backed remediation policy; users should not assume one applies.
 
 ## Frontend Security
 

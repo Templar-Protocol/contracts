@@ -43,7 +43,6 @@ jobs:
         run: |
           python3 script/docs/gen-risk-parameters.py --self-test
           python3 script/docs/gen-risk-parameters.py --check
-          python3 script/docs/gen-release-log.py --check
 
       - name: Build documentation
         run: ./script/build-docs.sh

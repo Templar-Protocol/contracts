@@ -94,7 +94,7 @@ The live [Markets API](https://api.templarfi.org/docs?spec=markets#tag/markets) 
 
 Use the API's `status` field for the current operational classification. The registry's `list_deployments` output remains the complete deployment list and includes historical contracts as well as active markets.
 
-Each market's oracle account, price identifiers, and risk parameters are available from its `get_configuration` view; see [Market Configuration](./contract/market/index.md#configuration). The declarative specifications markets were deployed from are in [`deployments/v1/`](https://github.com/Templar-Protocol/contracts/tree/dev/deployments/v1). Which contract version each market runs, and how to verify it against a released build, is covered in the [Deployment and Version Log](./release-log.md).
+Each market's oracle account, price identifiers, and risk parameters are available from its `get_configuration` view; see [Market Configuration](./contract/market/index.md#configuration). The declarative specifications markets were deployed from are in [`deployments/v1/`](https://github.com/Templar-Protocol/contracts/tree/dev/deployments/v1). The registry's `get_deployment` view identifies the version key and code hash used at deployment; see [Registry](./contract/registry.md#read-a-deployment-record).
 
 A separate registry, [`templar-alpha.near`](https://nearblocks.io/address/templar-alpha.near), hosts pre-release and liquidation-test markets on mainnet. Markets under it are not production markets.
 

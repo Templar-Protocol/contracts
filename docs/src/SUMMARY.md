@@ -12,7 +12,6 @@
   - [API Reference](./api-reference.md)
 - [Smart Contract Addresses](./addresses.md)
 - [Risk Parameters](./risk-parameters.md)
-- [Deployment and Version Log](./release-log.md)
 - [Deploying a market](./deployments.md)
 - [Oracles](./oracles.md)
 - [Protocol Governance](./governance.md)

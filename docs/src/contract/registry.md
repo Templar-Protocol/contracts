@@ -22,15 +22,16 @@ Illustrative output:
 
 ```json
 [
-  "v1.0.0",
+  "v20250811",
   "v1.1.0",
+  "v1.2.1",
   "v1.3.0",
   "templar-proxy-oracle-near-contract@0.4.1#fb9b3b46bbedd16665dbc31f0efc605c8ef49acfa5ff17608fbc3b490b4a6cb3",
   "templar-proxy-oracle-near-governance-contract@0.3.1#40b1719a525dae7117a776ccefa281f97470e1213e83bbf054bd77eae5b0568a"
 ]
 ```
 
-Market versions are registered under `vX.Y.Z` keys; proxy oracle and governance builds under `<package>@<version>#<sha256>` keys. The mainnet deployment profile currently deploys new markets from `v1.3.0` and pins the proxy oracle and governance builds shown above; other keys may exist. Which release each key corresponds to is recorded in the [Deployment and Version Log](../release-log.md).
+Most market versions are registered under `vX.Y.Z` keys; the legacy `1.0.0` build uses `v20250811`. Proxy oracle and governance builds use `<package>@<version>#<sha256>` keys. The mainnet deployment profile currently deploys new markets from `v1.3.0` and pins the proxy oracle and governance builds shown above; other keys may exist. Released artifact hashes are recorded under [`contract/artifacts/releases/`](https://github.com/Templar-Protocol/contracts/tree/dev/contract/artifacts/releases).
 
 ### List deployments
 
@@ -79,4 +80,4 @@ Illustrative output:
 }
 ```
 
-`version_key` names the registered version the account was deployed from and `code_hash` is the hash of the bytes deployed; compare it with the release catalog in the [Deployment and Version Log](../release-log.md#verifying-a-deployed-contract-against-the-catalog). The record's types are documented in the [API Reference](../api-reference.md).
+`version_key` names the registered version the account was deployed from and `code_hash` is the hash of the bytes deployed. Compare the code hash with the released artifact manifests above, and use [Contract Verification](../addresses.md#contract-verification) to verify the deployed bytes against their source. The record's types are documented in the [API Reference](../api-reference.md).

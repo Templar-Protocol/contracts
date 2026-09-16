@@ -11,7 +11,6 @@ For definitions of key terms and concepts, refer to the [Glossary](./glossary.md
 - **[Architecture Overview](./architecture.md)** - How markets, oracles, NEAR Intents, vaults, and services fit together, and the trust assumptions
 - **[Smart Contract Addresses](./addresses.md)** - Official contract addresses and verification
 - **[Risk Parameters](./risk-parameters.md)** - Per-market collateralization ratios, interest curves, fees, and oracle sources
-- **[Deployment and Version Log](./release-log.md)** - Released contract builds, their hashes, and audit coverage
 - **[Deploying a market](./deployments.md)** - Declarative market deployment with `tmplrmgr`
 - **[Oracles](./oracles.md)** - Pyth and RedStone price feeds, proxy oracles, and circuit breakers
 - **[Protocol Governance](./governance.md)** - Immutability, administrative controls, multisig, and timelocks
