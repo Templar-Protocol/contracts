@@ -6,15 +6,14 @@ This document outlines the administrative structure and governance controls of T
 
 | Component | Mutability | Controlled by | Timelock |
 |---|---|---|---|
-| Market contracts (NEAR) | No admin functions, no upgrade method, no pause. Storage can be patched only while the deployer's full-access key is retained (see below). | Nobody through the contract; the DAO multisig while a deployer key is retained | n/a |
-| Proxy oracles | Feed configuration and code upgradeable through a dedicated governance contract | Templar DAO multisig (2-of-3) and role holders | 24h to 168h by action; emergency trips immediate |
+| Market contracts (NEAR) | No admin functions, no upgrade method, no pause. Storage can be patched only while the deployer's full-access key is retained (see below). | Nobody through the contract; the Templar DAO multisig (2-of-3) while a deployer key is retained | n/a |
+| Proxy oracles | Feed configuration and code upgradeable through a dedicated governance contract. Until the deployer's full-access key is deleted, the key holder can also change the account directly (see below). | Either the vault curators or the Templar DAO multisig (2-of-3), per proxy oracle; retained deployer keys are also held by the DAO multisig | 24h to 168h by action; emergency trips immediate; not enforced against a retained deployer key |
 | Registry | Owned. Owner can register versions, deploy new contracts, and upgrade the registry's own code. Cannot touch deployed markets. | Templar DAO multisig (2-of-3) | Two-step finalize |
-| Oracle adapters (Pyth Lazer, RedStone) | Owned; signer sets and configuration are admin-managed | Templar DAO multisig (2-of-3) | n/a |
 | Curated vaults (Stellar) | Governed; runtime upgradeable through the vault governance contract | Vault governance admin, curator, and Sentinel per vault | Configurable per action; risk-reducing actions immediate |
 
 ## Administrative Multisig
 
-All mutable Templar contracts on NEAR are administered by [`templar.sputnik-dao.near`](https://nearblocks.io/address/templar.sputnik-dao.near), a [Sputnik DAO](https://github.com/near-daos/sputnik-dao-contract) (v2) whose sole council role holds three signers at a **2-of-3** threshold. Administrative actions are executed as DAO function-call proposals against the target contract; no signer can act alone.
+Mutable Templar contracts on NEAR are by default administered by [`templar.sputnik-dao.near`](https://nearblocks.io/address/templar.sputnik-dao.near), a [Sputnik DAO](https://github.com/near-daos/sputnik-dao-contract) (v2) whose sole council role holds three signers at a **2-of-3** threshold. Administrative actions are executed as DAO function-call proposals against the target contract; no signer can act alone.
 
 Changing the signer set is itself a governed policy change: a council member submits a `ChangePolicy` (or `AddMemberToRole` / `RemoveMemberFromRole`) proposal, the remaining members vote, and the DAO applies the change to itself when the threshold is reached. Signer additions and removals are announced on the official channels.
 
@@ -26,11 +25,19 @@ Market contracts have **no administrative functions**:
 - There is no method to pause, upgrade, or modify market parameters.
 - There is no privileged access to user funds.
 
-At the account level, the registry adds the deployer's full-access key to each new market account. While that key is retained (by the DAO multisig), contract storage can be modified through the reviewed, sandbox-replayed patch process in [Deploying a market](./deployments.md#patching-contract-storage); this is how legacy markets were migrated to proxy oracles. A market account with no access keys cannot be changed by anyone. Check a market's keys with:
+At the account level, the registry adds the deployer's full-access key to each new market account. While that key is retained, contract storage can be modified through the reviewed, sandbox-replayed patch process in [Deploying a market](./deployments.md#patching-contract-storage); this is how legacy markets were migrated to proxy oracles. A market account with no access keys cannot be changed by anyone. Check a market's keys with:
 
 ```bash
 near account list-keys <market-address> network-config mainnet now
 ```
+
+### Deployer Key Retention
+
+When the registry deploys a market (or a proxy oracle and its governance contract), it adds the deploying signer's full-access key to the new account and logs a warning that it has done so; `tmplrmgr` includes that key by default and lists every key each account will receive in the deployment plan. The key exists so that contract storage can be repaired through the reviewed [patch process](./deployments.md#patching-contract-storage) while a market is new; it was used in August 2026 to migrate legacy markets to proxy oracles. The key is an ordinary NEAR full-access key: the account enforces nothing beyond a valid signature, so the key can deploy code, patch storage, or change keys directly. While retained, these keys are held by [`templar.sputnik-dao.near`](https://nearblocks.io/address/templar.sputnik-dao.near), whose 2-of-3 council threshold prevents one signer from acting alone. The reviewed, sandbox-replayed patch process and DAO sign-off remain operational policy rather than controls enforced by the target account.
+
+**Policy**: retained deployer keys are deleted after a bake-in period. This applies to every account the registry gives the key to: the market and, where one is deployed alongside it, its proxy oracle and governance contract. The bake-in period for a market ends once the curators allocating to it and the issuers of its assets have signed off on the deployment. The DAO then makes one key-removal call per contract account; each removal is reported in the [public alerts channel](https://t.me/+CcqXyt01lsljZmQx). After its key is deleted, a market becomes immutable at the account level as well as at the contract level: no storage patch is possible and any fix requires a new market version and user migration. A proxy oracle or governance contract can still be changed, but only through the governance contract's timelocked proposals.
+
+Anyone can check whether an account still carries an access key with the `near account list-keys` command above; an empty list means the key has been deleted.
 
 New market versions are deployed to new account IDs through the registry; old versions cannot be overwritten. When a new version of the market contract is available, it is uploaded to the registry contract and new markets are deployed from it. Existing markets are not upgraded and funds are not automatically migrated, so users migrate their positions individually.
 

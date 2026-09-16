@@ -4,6 +4,8 @@ The LST oracle adapter enhances base oracle functionality by supporting a broade
 
 Price normalization requires retrieving the price of the underlying asset and the conversion rate between the LST and the underlying asset and combining them to produce a price for the LST asset itself.
 
+The same normalization is available inside the [proxy oracle](../oracles.md#proxy-oracle) as a transformer source, which is the path new LST markets use. Method-level documentation for both is in the [API Reference](../api-reference.md).
+
 ## Example: stNEAR Price Calculation
 
 Examine the transformer specification:

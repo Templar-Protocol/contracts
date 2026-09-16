@@ -26,7 +26,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 **Compounding**: The process of reinvesting earned yield to generate additional returns over time.
 
-**Curator**: The party responsible for a [curated vault's](./curator-guide.md) risk policy: which markets it may allocate to, per-market and per-group caps, and fees. Curators operate under timelocked governance and alongside an independent Sentinel that can pause the vault immediately.
+**Curator**: The party responsible for a [curated vault's](./vaults.md) risk policy: which markets it may allocate to, per-market and per-group caps, and fees. Curators operate under timelocked governance and alongside an independent Sentinel that can pause the vault immediately.
 
 ## D
 
@@ -152,7 +152,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 ## V
 
-**Vault**: A curated, single-asset vault (currently on Stellar) that issues shares to depositors and allocates pooled liquidity into markets under a curator's policy. See the [Stellar Vault Curator Guide](./curator-guide.md).
+**Vault**: A curated, single-asset vault (currently on Stellar) that issues shares to depositors and allocates pooled liquidity into markets under a curator's policy. See [Stellar Curated Vaults](./vaults.md) for depositors and the [Stellar Vault Curator Guide](./curator-guide.md) for operators.
 
 ## W
 

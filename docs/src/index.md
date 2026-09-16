@@ -8,10 +8,13 @@ For definitions of key terms and concepts, refer to the [Glossary](./glossary.md
 
 ## Quick Navigation
 
+- **[Architecture Overview](./architecture.md)** - How markets, oracles, NEAR Intents, vaults, and services fit together, and the trust assumptions
 - **[Smart Contract Addresses](./addresses.md)** - Official contract addresses and verification
+- **[Risk Parameters](./risk-parameters.md)** - Per-market collateralization ratios, interest curves, fees, and oracle sources
 - **[Deploying a market](./deployments.md)** - Declarative market deployment with `tmplrmgr`
 - **[Oracles](./oracles.md)** - Pyth and RedStone price feeds, proxy oracles, and circuit breakers
 - **[Protocol Governance](./governance.md)** - Immutability, administrative controls, multisig, and timelocks
+- **[Stellar Curated Vaults](./vaults.md)** - Shares, fees, withdrawals, caps, and roles for depositors
 - **[Stellar Vault Curator Guide](./curator-guide.md)** - Deployment, governance, allocation, withdrawals, and keeper operations
 - **[Security](./security-overview.md)** - Audits, formal verification, oracle safeguards, monitoring, and operational security
 - **[Security Reporting](./security.md)** - Responsible disclosure
@@ -28,5 +31,6 @@ For definitions of key terms and concepts, refer to the [Glossary](./glossary.md
 ## Additional Resources
 
 - **[Implementation Notes](./notes.md)** - Technical implementation details
+- **[API Reference](./api-reference.md)** - The backend HTTP API, generated Rust API documentation, and the gateway method catalog
 - **[Live risk dashboard](https://data.templarfi.org/)** - Real-time coverage and liquidation analytics across markets
 - **[Source code](https://github.com/Templar-Protocol/contracts)** - Contracts, services, and tooling
