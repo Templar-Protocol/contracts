@@ -54,8 +54,21 @@ pub struct SignRequest {
 }
 
 impl SignRequest {
+    /// The signing domain, which the payload variant must agree with: the
+    /// contract rejects a mismatch, so a request that passes review here must
+    /// not fail there.
     pub fn key_type(&self) -> anyhow::Result<KeyType> {
-        KeyType::from_domain_id(self.domain_id)
+        let key_type = KeyType::from_domain_id(self.domain_id)?;
+        let expected = match self.payload {
+            Payload::Ecdsa(_) => KeyType::Secp256k1,
+            Payload::Eddsa(_) => KeyType::Ed25519,
+        };
+        anyhow::ensure!(
+            key_type == expected,
+            "the sign request names domain {} ({key_type:?}) but carries a {expected:?} payload",
+            self.domain_id
+        );
+        Ok(key_type)
     }
 }
 
@@ -200,6 +213,24 @@ mod tests {
     fn domain_ids_round_trip(#[case] key_type: KeyType, #[case] domain_id: u64) {
         assert_eq!(key_type.domain_id(), domain_id);
         assert_eq!(KeyType::from_domain_id(domain_id).expect("known"), key_type);
+    }
+
+    #[rstest]
+    #[case::ed25519(KeyType::Ed25519, 1, true)]
+    #[case::secp256k1(KeyType::Secp256k1, 0, true)]
+    #[case::eddsa_in_the_ecdsa_domain(KeyType::Ed25519, 0, false)]
+    #[case::ecdsa_in_the_eddsa_domain(KeyType::Secp256k1, 1, false)]
+    fn a_request_must_pair_its_payload_with_its_domain(
+        #[case] payload_for: KeyType,
+        #[case] domain_id: u64,
+        #[case] accepted: bool,
+    ) {
+        let request = SignRequest {
+            payload: Payload::for_hash(payload_for, [1; 32]),
+            path: "p".to_owned(),
+            domain_id,
+        };
+        assert_eq!(request.key_type().is_ok(), accepted);
     }
 
     #[test]

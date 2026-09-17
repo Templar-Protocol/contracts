@@ -5,7 +5,7 @@ use anyhow::Context as _;
 use near_account_id::AccountId;
 use serde::{Deserialize, Serialize};
 use sputnikdao2::{ProposalInput, ProposalStatus};
-use templar_gateway_types::{Base64Bytes, NearToken};
+use templar_gateway_types::{Base64Bytes, NearGas, NearToken};
 
 use super::signer_contract::{SignArgs, SignRequest};
 
@@ -13,6 +13,9 @@ pub const ADD_PROPOSAL_METHOD: &str = "add_proposal";
 pub const GET_PROPOSAL_METHOD: &str = "get_proposal";
 pub const GET_POLICY_METHOD: &str = "get_policy";
 pub const SIGN_METHOD: &str = "sign";
+/// `sign` needs a non-zero deposit and refunds the excess; nothing tmplrmgr
+/// proposes attaches more, so more is a proposal it did not make.
+pub const SIGN_DEPOSIT: NearToken = NearToken::from_yoctonear(1);
 
 #[derive(Serialize)]
 pub struct AddProposalArgs {
@@ -54,13 +57,19 @@ struct FunctionCallKind {
 struct ActionCallView {
     method_name: String,
     args: Base64Bytes,
+    deposit: NearToken,
+    gas: NearGas,
 }
 
-/// The `sign` call a proposal executes: which MPC contract, with which request.
+/// The `sign` call a proposal executes: which MPC contract, with which request,
+/// and what the DAO attaches to it. Every field Sputnik executes verbatim is
+/// here, so review sees what the vote authorises.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProposedSignature {
     pub mpc_contract_id: AccountId,
     pub request: SignRequest,
+    pub deposit: NearToken,
+    pub gas: NearGas,
 }
 
 impl ProposalView {
@@ -84,11 +93,21 @@ impl ProposalView {
             self.id,
             action.method_name
         );
+        anyhow::ensure!(
+            action.deposit == SIGN_DEPOSIT,
+            "proposal {} attaches {} yoctoNEAR to `{SIGN_METHOD}`; tmplrmgr attaches {}, so this \
+             proposal was not made by it — review it by hand",
+            self.id,
+            action.deposit.as_yoctonear(),
+            SIGN_DEPOSIT.as_yoctonear()
+        );
         let args: SignArgs =
             serde_json::from_slice(&action.args.0).context("decode the `sign` arguments")?;
         Ok(ProposedSignature {
             mpc_contract_id: kind.receiver_id,
             request: args.request,
+            deposit: action.deposit,
+            gas: action.gas,
         })
     }
 }
@@ -138,7 +157,33 @@ mod tests {
         assert_eq!(proposed.mpc_contract_id.as_str(), "v1.signer");
         assert_eq!(proposed.request.domain_id, 1);
         assert!(matches!(proposed.request.payload, Payload::Eddsa(_)));
+        assert_eq!(proposed.deposit, SIGN_DEPOSIT);
+        assert_eq!(proposed.gas, NearGas::from_tgas(15));
         assert_eq!(proposal.status, ProposalStatus::Approved);
+    }
+
+    /// A `sign` call with a larger deposit spends DAO funds the voter would
+    /// not see in the request itself.
+    #[test]
+    fn a_sign_call_with_a_dao_funded_deposit_is_refused() {
+        let proposal = proposal(&serde_json::json!({
+            "FunctionCall": {
+                "receiver_id": "v1.signer",
+                "actions": [{
+                    "method_name": "sign",
+                    "args": "e30=",
+                    "deposit": NearToken::from_near(5),
+                    "gas": "15000000000000",
+                }],
+            }
+        }));
+        let error = proposal.proposed_signature().expect_err("5 NEAR attached");
+        assert!(
+            error
+                .to_string()
+                .contains("attaches 5000000000000000000000000 yoctoNEAR"),
+            "{error}"
+        );
     }
 
     #[test]

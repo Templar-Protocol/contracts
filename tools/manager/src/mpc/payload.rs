@@ -32,20 +32,17 @@ pub enum PayloadKind {
     Transaction,
 }
 
-/// Borsh bytes of the signable, tagged with what they encode.
+/// Borsh bytes of the signable, tagged with what they encode. Nothing else:
+/// every fact about the payload is read back out of the bytes the hash commits
+/// to, so an envelope cannot claim what its payload is not.
 ///
 /// `transaction` bytes are a `TransactionV0`, which is byte-identical to the
 /// `Transaction::V0` wire form NEAR hashes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SignablePayload {
-    DelegateAction {
-        bytes: Base64Bytes,
-    },
-    Transaction {
-        bytes: Base64Bytes,
-        block_height: u64,
-    },
+    DelegateAction { bytes: Base64Bytes },
+    Transaction { bytes: Base64Bytes },
 }
 
 pub struct BuildInputs {
@@ -55,6 +52,16 @@ pub struct BuildInputs {
     pub nonce: u64,
     pub block: BlockSummary,
     pub valid_for_blocks: u64,
+}
+
+/// What bounds the signed artifact's acceptance, as the bytes state it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Validity {
+    MaxBlockHeight(u64),
+    /// Accepted for `TRANSACTION_VALIDITY_PERIOD_BLOCKS` after this block; its
+    /// height has to be looked up on chain.
+    BlockHash(CryptoHash),
 }
 
 /// When the signed artifact stops being accepted.
@@ -71,6 +78,17 @@ pub enum Expiry {
 }
 
 impl Expiry {
+    pub const fn max_block_height(last_valid_block: u64) -> Self {
+        Self::MaxBlockHeight { last_valid_block }
+    }
+
+    pub const fn after_block(block_height: u64) -> Self {
+        Self::BlockHash {
+            block_height,
+            last_valid_block: block_height.saturating_add(TRANSACTION_VALIDITY_PERIOD_BLOCKS),
+        }
+    }
+
     pub const fn last_valid_block(self) -> u64 {
         match self {
             Self::MaxBlockHeight { last_valid_block }
@@ -94,7 +112,7 @@ pub struct Decoded {
     pub nonce: u64,
     pub receiver_id: AccountId,
     pub actions: Vec<Action>,
-    pub expiry: Expiry,
+    pub validity: Validity,
 }
 
 /// The payload with its MPC signature attached.
@@ -148,7 +166,6 @@ impl SignablePayload {
                 };
                 Ok(Self::Transaction {
                     bytes: Base64Bytes(borsh::to_vec(&transaction)?),
-                    block_height: block.height,
                 })
             }
         }
@@ -165,9 +182,7 @@ impl SignablePayload {
                         .context("decode the delegate action")?;
                 Ok(delegate_action.get_nep461_hash().0)
             }
-            Self::Transaction { bytes, .. } => {
-                Ok(Transaction::V0(transaction_v0(bytes)?).get_hash().0)
-            }
+            Self::Transaction { bytes } => Ok(Transaction::V0(transaction_v0(bytes)?).get_hash().0),
         }
     }
 
@@ -186,15 +201,10 @@ impl SignablePayload {
                         .into_iter()
                         .map(|action| (*action).clone())
                         .collect(),
-                    expiry: Expiry::MaxBlockHeight {
-                        last_valid_block: delegate_action.max_block_height,
-                    },
+                    validity: Validity::MaxBlockHeight(delegate_action.max_block_height),
                 })
             }
-            Self::Transaction {
-                bytes,
-                block_height,
-            } => {
+            Self::Transaction { bytes } => {
                 let transaction = transaction_v0(bytes)?;
                 Ok(Decoded {
                     kind: PayloadKind::Transaction,
@@ -203,11 +213,7 @@ impl SignablePayload {
                     nonce: transaction.nonce,
                     receiver_id: transaction.receiver_id,
                     actions: transaction.actions,
-                    expiry: Expiry::BlockHash {
-                        block_height: *block_height,
-                        last_valid_block: block_height
-                            .saturating_add(TRANSACTION_VALIDITY_PERIOD_BLOCKS),
-                    },
+                    validity: Validity::BlockHash(transaction.block_hash),
                 })
             }
         }
@@ -232,7 +238,7 @@ impl SignablePayload {
                     SignedDelegateActionInput::from_borsh_bytes(&borsh::to_vec(&signed)?)?,
                 ))
             }
-            Self::Transaction { bytes, .. } => Ok(Signed::Transaction(SignedTransaction::new(
+            Self::Transaction { bytes } => Ok(Signed::Transaction(SignedTransaction::new(
                 signature,
                 Transaction::V0(transaction_v0(bytes)?),
             ))),
@@ -293,9 +299,9 @@ mod tests {
     }
 
     #[rstest]
-    #[case(PayloadKind::DelegateAction, 1_500)]
-    #[case(PayloadKind::Transaction, 1_000 + TRANSACTION_VALIDITY_PERIOD_BLOCKS)]
-    fn decodes_what_it_built(#[case] kind: PayloadKind, #[case] last_valid_block: u64) {
+    #[case(PayloadKind::DelegateAction, Validity::MaxBlockHeight(1_500))]
+    #[case(PayloadKind::Transaction, Validity::BlockHash(CryptoHash([9; 32])))]
+    fn decodes_what_it_built(#[case] kind: PayloadKind, #[case] validity: Validity) {
         let secret = near_api::signer::generate_secret_key().expect("key");
         let payload = build(kind, secret.public_key());
 
@@ -306,9 +312,19 @@ mod tests {
         assert_eq!(decoded.nonce, 42);
         assert_eq!(decoded.public_key, secret.public_key());
         assert_eq!(decoded.actions, planned().actions);
-        assert_eq!(decoded.expiry.last_valid_block(), last_valid_block);
-        assert!(!decoded.expiry.is_expired_at(last_valid_block));
-        assert!(decoded.expiry.is_expired_at(last_valid_block + 1));
+        assert_eq!(decoded.validity, validity);
+    }
+
+    #[rstest]
+    #[case(Expiry::max_block_height(1_500), 1_500)]
+    #[case(Expiry::after_block(1_000), 1_000 + TRANSACTION_VALIDITY_PERIOD_BLOCKS)]
+    fn expiry_is_inclusive_of_its_last_block(
+        #[case] expiry: Expiry,
+        #[case] last_valid_block: u64,
+    ) {
+        assert_eq!(expiry.last_valid_block(), last_valid_block);
+        assert!(!expiry.is_expired_at(last_valid_block));
+        assert!(expiry.is_expired_at(last_valid_block + 1));
     }
 
     #[rstest]
@@ -326,7 +342,7 @@ mod tests {
     #[test]
     fn transaction_hash_matches_near_primitives() {
         let secret = near_api::signer::generate_secret_key().expect("key");
-        let SignablePayload::Transaction { bytes, .. } =
+        let SignablePayload::Transaction { bytes } =
             build(PayloadKind::Transaction, secret.public_key())
         else {
             panic!("built a transaction")
@@ -336,12 +352,7 @@ mod tests {
                 .expect("same layout"),
         );
         assert_eq!(
-            SignablePayload::Transaction {
-                bytes,
-                block_height: 1_000
-            }
-            .hash()
-            .expect("hash"),
+            SignablePayload::Transaction { bytes }.hash().expect("hash"),
             reference.get_hash_and_size().0 .0
         );
     }

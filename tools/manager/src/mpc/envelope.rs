@@ -40,19 +40,27 @@ impl Envelope {
 
     /// `text` followed by the envelope on its own marked line.
     pub fn render_description(&self, text: &str) -> anyhow::Result<String> {
+        anyhow::ensure!(
+            !text.contains(DESCRIPTION_MARKER),
+            "the description must not contain `{DESCRIPTION_MARKER}`; that line is the payload"
+        );
         let json = serde_json::to_string(self).context("render the payload envelope")?;
         Ok(format!("{}\n\n{DESCRIPTION_MARKER}{json}", text.trim_end()))
     }
 
     /// The envelope embedded in a proposal description, if any.
     pub fn from_description(description: &str) -> anyhow::Result<Option<Self>> {
-        let Some(line) = description
+        let mut lines = description
             .lines()
             .map(str::trim)
-            .find_map(|line| line.strip_prefix(DESCRIPTION_MARKER))
-        else {
+            .filter_map(|line| line.strip_prefix(DESCRIPTION_MARKER));
+        let Some(line) = lines.next() else {
             return Ok(None);
         };
+        anyhow::ensure!(
+            lines.next().is_none(),
+            "the description carries more than one `{DESCRIPTION_MARKER}` line"
+        );
         let envelope: Self = serde_json::from_str(line)
             .context("the description's tmplrmgr-mpc line is not a payload envelope")?;
         envelope.check_version().map(Some)
@@ -63,14 +71,22 @@ impl Envelope {
         envelope.check_version()
     }
 
-    /// Written through a temp file and renamed, so a crash mid-write cannot
-    /// leave a truncated payload where the operator will look for it.
+    /// Written through a fresh sibling temp file and renamed, so a crash
+    /// mid-write cannot leave a truncated payload where the operator will look
+    /// for it, and nothing that already exists is truncated on the way.
     pub fn write_file(&self, path: &Path) -> anyhow::Result<()> {
         let rendered = serde_json::to_string_pretty(self).context("render the payload envelope")?;
-        let temporary = path.with_extension("tmp");
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .with_context(|| format!("{} is not a file path", path.display()))?;
+        let temporary = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
         {
             use std::io::Write as _;
-            let mut file = std::fs::File::create(&temporary)
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
                 .with_context(|| format!("create {}", temporary.display()))?;
             file.write_all(format!("{rendered}\n").as_bytes())
                 .with_context(|| format!("write {}", temporary.display()))?;
@@ -90,7 +106,6 @@ mod tests {
     fn envelope() -> Envelope {
         Envelope::new(SignablePayload::Transaction {
             bytes: Base64Bytes(vec![1, 2, 3]),
-            block_height: 77,
         })
     }
 
@@ -119,6 +134,19 @@ mod tests {
         assert!(Envelope::from_description("tmplrmgr-mpc:{nope").is_err());
     }
 
+    /// One marker means one payload: an operator's text cannot smuggle a decoy
+    /// in front of the appended one, and a reader never has to pick.
+    #[test]
+    fn a_second_marker_is_refused_on_both_sides() {
+        let decoy = format!("Rotate the owner\n{DESCRIPTION_MARKER}{{}}");
+        assert!(envelope().render_description(&decoy).is_err());
+
+        let rendered = envelope().render_description("x").expect("renders");
+        let doubled = format!("{rendered}\n{DESCRIPTION_MARKER}{{}}");
+        let error = Envelope::from_description(&doubled).expect_err("two markers");
+        assert!(error.to_string().contains("more than one"), "{error}");
+    }
+
     #[test]
     fn an_unknown_version_is_refused() {
         let mut json = serde_json::to_value(envelope()).expect("serializes");
@@ -142,7 +170,33 @@ mod tests {
             Some(from_file),
             Envelope::from_description(&rendered).expect("parses")
         );
-        assert!(!path.with_extension("tmp").exists());
+        assert_eq!(
+            std::fs::read_dir(&dir).expect("list").count(),
+            1,
+            "no temp file is left behind"
+        );
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    /// The destination's own name is never the temp file, so `--out x.tmp`
+    /// and a pre-existing sibling `x.tmp` are both safe.
+    #[test]
+    fn writing_never_truncates_a_sibling_or_the_destination_itself() {
+        let dir =
+            std::env::temp_dir().join(format!("tmplrmgr-mpc-envelope-tmp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let sibling = dir.join("payload.tmp");
+        std::fs::write(&sibling, "keep me").expect("sibling");
+
+        envelope()
+            .write_file(&dir.join("payload.json"))
+            .expect("writes");
+        assert_eq!(std::fs::read_to_string(&sibling).expect("read"), "keep me");
+
+        envelope()
+            .write_file(&sibling)
+            .expect("overwrites the destination by rename");
+        assert_eq!(Envelope::read_file(&sibling).expect("reads"), envelope());
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 }

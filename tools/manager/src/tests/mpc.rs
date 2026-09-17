@@ -92,10 +92,7 @@ fn blind_requires_out() {
     .expect("--blind with --out parses");
 }
 
-const RELAY: [&str; 11] = [
-    "tmplrmgr",
-    "mpc",
-    "relay",
+const EXECUTED: [&str; 8] = [
     "--dao",
     "dao.testnet",
     "--proposal-id",
@@ -106,19 +103,38 @@ const RELAY: [&str; 11] = [
     "voter.testnet",
 ];
 
+/// A delegate action needs a fee payer; a signed transaction needs nobody, so
+/// `broadcast` must parse with no credentials at all.
 #[test]
-fn relay_takes_the_relayer_credentials() {
+fn relay_needs_a_relayer_and_broadcast_needs_none() {
+    let relay = ["tmplrmgr", "mpc", "relay"].into_iter().chain(EXECUTED);
+    assert!(Cli::try_parse_from(relay.clone()).is_err());
     let Command::Mpc {
         command: MpcNs::Relay(relay),
-    } = Cli::try_parse_from(RELAY.into_iter().chain(CREDS))
-        .expect("relay parses")
+    } = Cli::try_parse_from(relay.chain(CREDS))
+        .expect("relay parses with a relayer")
         .command
     else {
         panic!("expected Mpc::Relay")
     };
-    assert_eq!(relay.proposal_id, 7);
-    assert_eq!(relay.tx_signer.as_str(), "voter.testnet");
-    assert!(Cli::try_parse_from(RELAY).is_err());
+    assert_eq!(relay.executed.proposal_id, 7);
+    assert_eq!(relay.executed.tx_signer.as_str(), "voter.testnet");
+
+    let Command::Mpc {
+        command: MpcNs::Broadcast(broadcast),
+    } = Cli::try_parse_from(
+        ["tmplrmgr", "mpc", "broadcast"]
+            .into_iter()
+            .chain(EXECUTED)
+            .chain(["--print"]),
+    )
+    .expect("broadcast parses without a signer")
+    .command
+    else {
+        panic!("expected Mpc::Broadcast")
+    };
+    assert_eq!(broadcast.executed.proposal_id, 7);
+    assert!(broadcast.print);
 }
 
 const KEY: &str = "ed25519:6phW8vfVNMmktunyZV576gGomMurYvg4ZkQHMdbGSiXd";
@@ -217,8 +233,11 @@ fn delete_key_parses() {
 }
 
 /// The whole operator flow against a mock MPC signer and a mock DAO: install
-/// the derived key, propose, have the "MPC" sign the hash the proposal carries,
-/// approve, review, relay — and the controlled account's transfer lands.
+/// the derived key, propose, review before the vote, have the "MPC" sign the
+/// hash the proposal carries, approve, review again, relay — and the
+/// controlled account's transfer lands. Along the way, every refusal a voter
+/// or relayer relies on: a payload that does not hash to the proposal, the
+/// wrong send command for the kind, and an expired payload.
 #[rstest::rstest]
 #[case::public_delegate_action(PayloadKind::DelegateAction, false)]
 #[case::blind_transaction(PayloadKind::Transaction, true)]
@@ -331,6 +350,29 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         PayloadKind::DelegateAction => "delegate-action",
         PayloadKind::Transaction => "transaction",
     };
+    let error = run(strings(&[
+        "mpc",
+        "propose",
+        "--plan",
+        plan_path.to_str().expect("utf-8 path"),
+        "--dao",
+        dao.as_str(),
+        "--mpc-contract",
+        signer_id.as_str(),
+        "--nonce",
+        "1",
+        "--signer-id",
+        proposer.as_str(),
+        "--secret-key",
+        &secret_key,
+    ]))
+    .await
+    .expect_err("a nonce the chain would reject is refused before the vote");
+    assert!(
+        error.to_string().contains("below the key's next nonce"),
+        "{error}"
+    );
+
     let mut propose = strings(&[
         "mpc",
         "propose",
@@ -378,6 +420,57 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         hash,
         "the proposal asks for the hash of the payload it carries"
     );
+
+    let mut show = strings(&["mpc", "show", "--dao", dao.as_str(), "--proposal-id", "0"]);
+    if blind {
+        let error = run(show.clone())
+            .await
+            .expect_err("a blind proposal cannot be reviewed without the payload file");
+        assert!(error.to_string().contains("--payload-file"), "{error}");
+        show.extend(strings(&[
+            "--payload-file",
+            payload_path.to_str().expect("utf-8 path"),
+        ]));
+    }
+    // A voter reviews before voting: the proposal is still in progress.
+    run(show.clone()).await?;
+
+    // A payload that does not hash to what the proposal signs is refused,
+    // whichever way it reaches the reviewer.
+    let decoy_path = dir.join("decoy.json");
+    let decoy = Envelope::new(crate::mpc::payload::SignablePayload::build(
+        crate::mpc::payload::BuildInputs {
+            kind,
+            planned: PlannedTransaction {
+                signer_account_id: controlled.clone(),
+                receiver_id: beneficiary.0.clone(),
+                actions: vec![Action::Transfer(TransferAction {
+                    deposit: NearToken::from_near(300),
+                })],
+                continue_on_failure: false,
+            },
+            public_key: mpc_key.public_key(),
+            nonce: 58_000_001,
+            block: client
+                .read(templar_gateway_methods_spec::chain::GetBlock::default())
+                .await?,
+            valid_for_blocks: 1_000,
+        },
+    )?);
+    decoy.write_file(&decoy_path)?;
+    let error = run(strings(&[
+        "mpc",
+        "show",
+        "--dao",
+        dao.as_str(),
+        "--proposal-id",
+        "0",
+        "--payload-file",
+        decoy_path.to_str().expect("utf-8 path"),
+    ]))
+    .await
+    .expect_err("a decoy payload is refused");
+    assert!(error.to_string().contains("hashes to"), "{error}");
 
     // Stand in for the MPC network: sign the hash the proposal carries.
     let signature = borsh::to_vec(&mpc_key.sign(near_api::CryptoHash(hash)))?;
@@ -438,8 +531,234 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         .await?
         .amount;
 
-    let mut show = strings(&["mpc", "show", "--dao", dao.as_str(), "--proposal-id", "0"]);
-    let mut relay = strings(&[
+    run(show).await?;
+
+    let executed = |command: &str| {
+        let mut args = strings(&[
+            "mpc",
+            command,
+            "--dao",
+            dao.as_str(),
+            "--proposal-id",
+            "0",
+            "--tx-hash",
+            &approve_tx,
+            "--tx-signer",
+            proposer.as_str(),
+        ]);
+        if blind {
+            args.extend(strings(&[
+                "--payload-file",
+                payload_path.to_str().expect("utf-8 path"),
+            ]));
+        }
+        args
+    };
+    let mut relay = executed("relay");
+    relay.extend(strings(&[
+        "--signer-id",
+        relayer.as_str(),
+        "--secret-key",
+        &secret_key,
+    ]));
+    let broadcast = executed("broadcast");
+    let (send, wrong_command, decoy_send) = match kind {
+        PayloadKind::DelegateAction => (relay.clone(), broadcast, relay),
+        PayloadKind::Transaction => (broadcast.clone(), relay, broadcast),
+    };
+
+    let error = run(wrong_command)
+        .await
+        .expect_err("the other send command refuses this payload kind");
+    assert!(error.to_string().contains("use `mpc "), "{error}");
+
+    let mut decoy_send = decoy_send;
+    if let Some(index) = decoy_send.iter().position(|arg| arg == "--payload-file") {
+        decoy_send.truncate(index);
+    }
+    decoy_send.extend(strings(&[
+        "--payload-file",
+        decoy_path.to_str().expect("utf-8 path"),
+    ]));
+    let error = run(decoy_send)
+        .await
+        .expect_err("a decoy payload never reaches the signature");
+    assert!(error.to_string().contains("hashes to"), "{error}");
+
+    run(send).await?;
+
+    let after = client
+        .read(account::Get {
+            account_id: beneficiary.0.clone(),
+        })
+        .await?
+        .amount;
+    assert_eq!(after, before.saturating_add(amount));
+
+    std::fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+/// A payload past its validity is refused before any signature is looked up,
+/// so an operator learns to re-propose rather than watching a broadcast fail.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario deliberately walks propose, sign, approve, fast-forward and refusal together"
+)]
+#[tokio::test]
+async fn requires_sandbox_mpc_expired_payload_is_refused_before_broadcast() -> anyhow::Result<()> {
+    use near_api::types::transaction::actions::{Action, TransferAction};
+    use templar_gateway_core::PlannedTransaction;
+    use templar_gateway_methods_spec::tx;
+    use templar_gateway_types::{common::ContractArgs, ContractMethodName, NearGas, NearToken};
+
+    use crate::mpc::signer_contract::{DerivedPublicKeyArgs, KeyType};
+
+    let harness = templar_gateway_testing::SandboxHarness::start_owned().await?;
+    let rpc_url = harness.network.rpc_endpoints[0].url.to_string();
+    let secret_key = templar_gateway_testing::test_secret_key()?.to_string();
+    let controlled = harness.create_user("mpc-target").await?;
+    let proposer = harness.create_user("mpc-proposer").await?;
+    let signer_id = harness.deploy_mock_signer("mpc-signer").await?;
+    let dao = harness.deploy_mock_dao("mpc-dao", NearToken::ZERO).await?;
+    let client = harness.client()?;
+    let mpc_key = near_api::signer::generate_secret_key()?;
+    client
+        .execute_as(
+            proposer.clone(),
+            tx::FunctionCall {
+                receiver_id: signer_id.clone(),
+                method_name: ContractMethodName("set_derived_public_key".to_owned()),
+                args: ContractArgs::Json(serde_json::to_value(SetDerivedPublicKey {
+                    derivation: DerivedPublicKeyArgs {
+                        path: format!("{dao}-{}", *controlled),
+                        predecessor: dao.clone(),
+                        domain_id: KeyType::Ed25519.domain_id(),
+                    },
+                    public_key: mpc_key.public_key().to_string(),
+                })?),
+                gas: NearGas::from_tgas(30),
+                deposit: NearToken::ZERO,
+            },
+        )
+        .await?;
+
+    let run = |args: Vec<String>| {
+        let rpc_url = rpc_url.clone();
+        async move {
+            let argv = ["tmplrmgr", "-q", "--rpc-url", rpc_url.as_str()]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(args)
+                .collect::<Vec<_>>();
+            let cli = Cli::try_parse_from(argv)?;
+            let ctx = crate::context::build_context(&cli)?;
+            crate::dispatch::dispatch(ctx, cli.command).await
+        }
+    };
+    let strings = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+
+    run(strings(&[
+        "mpc",
+        "install-key",
+        "--dao",
+        dao.as_str(),
+        "--mpc-contract",
+        signer_id.as_str(),
+        "--signer-id",
+        controlled.as_str(),
+        "--secret-key",
+        &secret_key,
+    ]))
+    .await?;
+
+    let dir = std::env::temp_dir().join(format!("tmplrmgr-mpc-expiry-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let plan_path = dir.join("plan.json");
+    std::fs::write(
+        &plan_path,
+        serde_json::to_vec(&PlannedTransaction {
+            signer_account_id: controlled.clone(),
+            receiver_id: proposer.0.clone(),
+            actions: vec![Action::Transfer(TransferAction {
+                deposit: NearToken::from_near(1),
+            })],
+            continue_on_failure: false,
+        })?,
+    )?;
+    run(strings(&[
+        "mpc",
+        "propose",
+        "--plan",
+        plan_path.to_str().expect("utf-8 path"),
+        "--dao",
+        dao.as_str(),
+        "--mpc-contract",
+        signer_id.as_str(),
+        "--valid-for-blocks",
+        "5",
+        "--signer-id",
+        proposer.as_str(),
+        "--secret-key",
+        &secret_key,
+    ]))
+    .await?;
+
+    let proposal: crate::mpc::dao::ProposalView = serde_json::from_value(
+        client
+            .read(templar_gateway_methods_spec::contract::ViewFunction {
+                contract_id: dao.clone(),
+                method_name: ContractMethodName("get_proposal".to_owned()),
+                args: ContractArgs::Json(serde_json::to_value(crate::mpc::dao::GetProposalArgs {
+                    id: 0,
+                })?),
+            })
+            .await?
+            .value,
+    )?;
+    let hash = proposal.proposed_signature()?.request.payload.hash()?;
+    let signature = borsh::to_vec(&mpc_key.sign(near_api::CryptoHash(hash)))?;
+    client
+        .execute_as(
+            proposer.clone(),
+            tx::FunctionCall {
+                receiver_id: signer_id.clone(),
+                method_name: ContractMethodName("set_signature".to_owned()),
+                args: ContractArgs::Json(serde_json::to_value(SetSignature {
+                    payload_hex: hex::encode(hash),
+                    response: SignatureResponseJson::Ed25519 {
+                        signature: signature[1..].to_vec(),
+                    },
+                })?),
+                gas: NearGas::from_tgas(30),
+                deposit: NearToken::ZERO,
+            },
+        )
+        .await?;
+    let approve = client
+        .execute_as(
+            proposer.clone(),
+            tx::FunctionCall {
+                receiver_id: dao.clone(),
+                method_name: ContractMethodName("act_proposal".to_owned()),
+                args: ContractArgs::Json(serde_json::to_value(ActProposal {
+                    id: 0,
+                    action: "VoteApprove".to_owned(),
+                })?),
+                gas: NearGas::from_tgas(100),
+                deposit: NearToken::ZERO,
+            },
+        )
+        .await?;
+    let approve_tx = approve
+        .operation
+        .latest_tx_hash()
+        .expect("act_proposal was sent")
+        .to_string();
+
+    harness.fast_forward(20).await?;
+
+    let error = run(strings(&[
         "mpc",
         "relay",
         "--dao",
@@ -451,32 +770,13 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         "--tx-signer",
         proposer.as_str(),
         "--signer-id",
-        relayer.as_str(),
+        proposer.as_str(),
         "--secret-key",
         &secret_key,
-    ]);
-    if blind {
-        let error = run(show.clone())
-            .await
-            .expect_err("a blind proposal cannot be reviewed without the payload file");
-        assert!(error.to_string().contains("--payload-file"), "{error}");
-        for args in [&mut show, &mut relay] {
-            args.extend(strings(&[
-                "--payload-file",
-                payload_path.to_str().expect("utf-8 path"),
-            ]));
-        }
-    }
-    run(show).await?;
-    run(relay).await?;
-
-    let after = client
-        .read(account::Get {
-            account_id: beneficiary.0.clone(),
-        })
-        .await?
-        .amount;
-    assert_eq!(after, before.saturating_add(amount));
+    ]))
+    .await
+    .expect_err("an approved but expired payload is refused before broadcast");
+    assert!(error.to_string().contains("expired"), "{error}");
 
     std::fs::remove_dir_all(dir)?;
     Ok(())

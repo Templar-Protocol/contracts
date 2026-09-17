@@ -17,6 +17,10 @@ Mutable Templar contracts on NEAR are by default administered by [`templar.sputn
 
 Changing the signer set is itself a governed policy change: a council member submits a `ChangePolicy` (or `AddMemberToRole` / `RemoveMemberFromRole`) proposal, the remaining members vote, and the DAO applies the change to itself when the threshold is reached. Signer additions and removals are announced on the official channels.
 
+### DAO-approved MPC signing
+
+Some administrative actions are not function calls a DAO can make directly — adding or removing an account's access keys, deploying code, or a transaction that must originate from the account itself. For those, an operational account can hold a full-access key derived by the NEAR Chain Signatures contract (`v1.signer`) for the DAO. The key never leaves the MPC network: to use it, a council member proposes a `sign` call carrying the hash of the exact payload (a NEP-366 delegate action or a transaction), voters review the payload the proposal carries against that hash, and once the proposal executes the MPC returns a signature that anyone can relay. The DAO threshold therefore governs these actions exactly as it governs direct calls, with two additional dependencies: the MPC network's availability and its key derivation, both audited by NEAR One. Which accounts hold a derived key is part of the deployment records.
+
 ## Market Contracts
 
 Market contracts have **no administrative functions**:

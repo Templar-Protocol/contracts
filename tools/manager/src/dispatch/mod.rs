@@ -114,6 +114,7 @@ async fn mpc(ctx: CliContext, ns: MpcNs) -> anyhow::Result<()> {
         MpcNs::Propose(a) => mpc::propose(ctx, a).await,
         MpcNs::Show(a) => mpc::show(ctx, a).await,
         MpcNs::Relay(a) => mpc::relay(ctx, a).await,
+        MpcNs::Broadcast(a) => mpc::broadcast(ctx, a).await,
     }
 }
 

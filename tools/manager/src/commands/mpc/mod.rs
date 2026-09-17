@@ -28,8 +28,10 @@ pub enum MpcNs {
     Propose(Propose),
     /// Decode and verify what an MPC signing proposal would sign.
     Show(Show),
-    /// Assemble the signature an executed proposal produced and send the result.
+    /// Relay an executed proposal's signed delegate action, paying its gas.
     Relay(Relay),
+    /// Broadcast an executed proposal's signed transaction.
+    Broadcast(Broadcast),
 }
 
 #[derive(Args, Clone, Debug)]
@@ -140,8 +142,9 @@ pub struct Show {
     pub payload_file: Option<PathBuf>,
 }
 
-#[derive(Args, Debug)]
-pub struct Relay {
+/// An executed proposal and the transaction that executed it.
+#[derive(Args, Clone, Debug)]
+pub struct ExecutedProposalArgs {
     #[arg(long, value_name = "ACCOUNT_ID")]
     pub dao: AccountId,
     #[arg(long)]
@@ -152,12 +155,27 @@ pub struct Relay {
     /// The transaction that executed the proposal (its `act_proposal` vote).
     #[arg(long, value_name = "HASH")]
     pub tx_hash: CryptoHash,
-    /// Account that sent that transaction.
+    /// Account that sent that transaction. NEAR looks a transaction up by
+    /// hash and sender, so a hash alone cannot be resolved.
     #[arg(long, value_name = "ACCOUNT_ID")]
     pub tx_signer: AccountId,
-    /// Relayer of a delegate-action payload. A transaction payload is already
-    /// signed by the derived key, so only `--print` (which emits the signed
-    /// transaction as base64 borsh) reads these.
+}
+
+#[derive(Args, Debug)]
+pub struct Relay {
+    #[command(flatten)]
+    pub executed: ExecutedProposalArgs,
+    /// The account that wraps the delegate action in a transaction and pays its gas.
     #[command(flatten)]
     pub signer: SignerArgs,
+}
+
+#[derive(Args, Debug)]
+pub struct Broadcast {
+    #[command(flatten)]
+    pub executed: ExecutedProposalArgs,
+    /// Print the signed transaction as base64 borsh (what `near transaction
+    /// send-signed-transaction` accepts) instead of sending it.
+    #[arg(long)]
+    pub print: bool,
 }
