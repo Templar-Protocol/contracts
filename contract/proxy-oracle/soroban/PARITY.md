@@ -13,6 +13,8 @@ supplies its own storage, RBAC, and events.
 | :--- | :--- | :--- | :--- |
 | SEP-40 read surface | `list_ema_prices_no_older_than` | `aggregated_latest` / `aggregated_history` (normalized); SEP-40 served by per-feed `Sep40Adapter` | Adapter rescales to its own `decimals`; fail-closed when stale/missing |
 | Source IO / aggregation | async cross-contract calls | synchronous within `refresh` | Quorum-based median; identical kernel |
+| Pyth Lazer source | `Lazer` source kind reads the NEAR adapter by feed id | `PythLazerSource` is a SEP-40 contract keyed `Other("<feed id>")`, listed in `SetProxy` like any source | Both push→persist→serve; Soroban delegates signature checks to Pyth's on-chain verifier and keeps freshness + anti-replay |
+| Maintenance fan-out | N/A (one call refreshes all sources) | `ProxyOracleBatcher` batches `refresh` / `extend_ttl` per asset | Stellar allows one Soroban op per transaction |
 | Freshness | `FreshnessFilter` | `FreshnessFilter` in `ProxyConfig` | Reject sources older than `max_age_secs`; identical kernel |
 | Accepted vs observed history | `CircuitBreakerSet` history | `History(asset)` + `Breakers(asset)` | Rule baseline vs audit trail kept separate |
 | `refresh` | `update_prices` (async callback) | `refresh` (sync) | Atomic cache + breaker update |
@@ -27,8 +29,8 @@ supplies its own storage, RBAC, and events.
 | Roles / authority | `Role` enum + `near-sdk-contract-tools::Rbac` | same 4 roles + OpenZeppelin `stellar-access` | Admin override; last-Admin removal rejected; the kernel does no role checks |
 | Upgrade | versioned state | `upgrade(new_wasm_hash, operator)` + Admin `Upgrade` action | Typed surface; NEAR `AdminFunctionCall` dynamic dispatch intentionally not ported |
 | Events | JSON | compact typed | Semantic, not byte parity |
-| Asset lifecycle | `set_proxy(id, None)` | `add_asset` / `remove_asset` | Soroban keeps an explicit `Assets` list |
-| Dedup / result shape | request-id dedup / map | `refresh` target dedup → `Vec<(Asset, RefreshStatus)>` | First-seen, deterministic |
+| Asset lifecycle | `set_proxy(id, None)` | `set_proxy` / `remove_proxy` | Soroban keeps an explicit `Assets` registry (≤ 64) |
+| Refresh shape | one call, all sources, request-id dedup | `refresh(asset)` per asset → `RefreshStatus`; `refresh_many` via the batcher | First-seen, deterministic |
 
 Verify the shared kernel and both Soroban runtimes:
 
