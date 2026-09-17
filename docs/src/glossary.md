@@ -18,11 +18,15 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 ## C
 
+**Circuit Breaker**: A rule on a [proxy oracle](./oracles.md#circuit-breakers) price feed that trips when accepted prices move in a way the rule forbids (for example, a single step larger than a configured percentage). When an *enforced* breaker trips, the feed is blocked and fails closed: markets reading it cannot borrow, withdraw collateral against debt, or liquidate until an operator re-arms it. A breaker in observe-only mode records and alerts on a trip without blocking. Feeds can also be tripped manually with no timelock.
+
 **Collateral Asset**: The token deposited by borrowers to secure their loans. Must be worth more than the borrowed amount due to over-collateralization requirements.
 
 **Collateralization Ratio (CR)**: The ratio of collateral value to borrowed value. A 150% ratio means $150 of collateral backs $100 of debt.
 
 **Compounding**: The process of reinvesting earned yield to generate additional returns over time.
+
+**Curator**: The party responsible for a [curated vault's](./vaults.md) risk policy: which markets it may allocate to, per-market and per-group caps, and fees. Curators operate under timelocked governance and alongside an independent Sentinel that can pause the vault immediately.
 
 ## D
 
@@ -47,6 +51,8 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 ## I
 
 **Interest Accumulation**: The process of calculating and adding accrued interest to a borrower's total liability.
+
+**Isolated Market**: A Templar market holds exactly one collateral asset and one borrow asset in its own contract account, with its own supply pool and risk parameters. Losses in one market cannot spread to another: there is no shared liquidity or cross-collateralization between markets.
 
 ## L
 
@@ -100,15 +106,23 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 **Protocol Revenue**: Fees collected by the protocol from borrowers and suppliers, distributed to suppliers and other accounts according to configured yield weights.
 
+**Proxy Oracle**: A Templar contract that reads several underlying oracle sources (Pyth, RedStone), filters out stale prices, aggregates the survivors (typically a weighted median), gates the result through circuit breakers, and serves the accepted price to markets through the same interface as the Pyth contract. See [Oracles](./oracles.md#proxy-oracle).
+
+**Pyth Lazer (Pyth Pro)**: Pyth's low-latency signed price feed product. Templar runs an on-chain adapter that verifies Lazer signatures and serves the prices to proxy oracles.
+
 **Pyth Network**: A decentralized oracle network providing high-frequency price feeds for various assets.
 
 ## R
+
+**RedStone**: A modular oracle network that delivers signed price data packages verified on-chain. Templar runs a RedStone adapter contract and uses RedStone feeds as an independent source alongside Pyth in its proxy oracles.
 
 **Registry**: A smart contract that manages deployment and versioning of market contracts within the Templar Protocol.
 
 **Repay**: The action of returning borrowed assets plus interest to reduce or eliminate a borrower's debt.
 
 ## S
+
+**Sentinel**: An emergency role on a curated vault that can pause the vault and tighten restrictions immediately, without a timelock, but cannot unpause, relax restrictions, or accept proposals.
 
 **Snapshot**: A point-in-time record of market state including interest rates, asset amounts, and yield distribution.
 
@@ -126,6 +140,8 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 **Time Chunk**: A configurable time period (based on blocks, epochs, or timestamps) that determines when new snapshots are created.
 
+**Timelock**: A mandatory delay between proposing and executing a governance action, giving users and operators time to react. Templar's proxy oracle governance and vault governance apply per-action timelocks; risk-reducing emergency actions (circuit breaker trips, vault pauses) execute immediately.
+
 **Transfer Call**: A token transfer that includes data, allowing the receiving contract to execute logic based on the transfer.
 
 ## U
@@ -133,6 +149,10 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 **Undercollateralized**: A borrow position where the collateral value falls below the required minimum ratio, making it eligible for liquidation.
 
 **Utilization Rate**: The percentage of supplied assets currently borrowed. Calculated as: `borrowed_amount / total_supplied_amount`.
+
+## V
+
+**Vault**: A curated, single-asset vault (currently on Stellar) that issues shares to depositors and allocates pooled liquidity into markets under a curator's policy. See [Stellar Curated Vaults](./vaults.md) for depositors and the [Stellar Vault Curator Guide](./curator-guide.md) for operators.
 
 ## W
 

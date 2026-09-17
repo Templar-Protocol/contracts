@@ -1,0 +1,52 @@
+# Which markets the Risk Parameters page renders.
+#
+# Source of truth: the markets offered on app.templarfi.org (the frontend's
+# production allowlist; the live Markets API at
+# https://api.templarfi.org/docs?spec=markets#tag/markets reports each
+# market's `status`). When a market is added to or removed from the app, move
+# its name between `listed` and `unlisted` and run `just docs-generate`.
+#
+# Every spec under `deployments/v1/` (except `liqtest-*`) must appear in
+# exactly one of the two lists. `just docs-check` (and CI) fails otherwise, so
+# a new market spec cannot land without deciding whether the page shows it.
+
+# Offered in the app: rendered in every table.
+listed = [
+  "iada-ixlmusdc",
+  "ibtc-iethusdc-1",
+  "ibtc-ixlmusdc",
+  "idoge-ixlmusdc",
+  "iethfxrp-ixlmusdc",
+  "iethhemibtc-iethusdc",
+  "iethwbtc-ixlmusdc",
+  "iltc-ixlmusdc",
+  "ixlm-ixlmpyusd",
+  "ixlm-ixlmusdc-1",
+  "ixlmcetes-ixlmusdc",
+  "ixlmdejaaa-ixlmusdc-1",
+  "ixlmdejaaa-ixlmusdc-2",
+  "ixlmdejtrsy-ixlmusdc-1",
+  "ixlmsolvbtc-ixlmusdc",
+  "ixlmustry-ixlmusdc",
+  "ixrp-ixlmusdc",
+  "izec-ixlmusdc",
+]
+
+# Deployed but not offered in the app: the markets deprecated on 2026-08-31,
+# and markets active in the API without an app listing. Not rendered.
+unlisted = [
+  # Deprecated 2026-08-31 (see Smart Contract Addresses).
+  "ibtc-iethusdc",
+  "ibtc-usdc",
+  "ibtc-usdc-1",
+  "iethwbtc-iethusdc",
+  "ixlm-ixlmusdc",
+  "ixlmdejaaa-ixlmusdc",
+  "ixlmdejtrsy-ixlmusdc",
+  "izec-isolusdc",
+  "stnear-usdc",
+  "stnear-usdc-1",
+  # Active in the Markets API, not linked in the app.
+  "linear-usdt",
+  "stnear-usdt",
+]
