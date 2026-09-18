@@ -82,6 +82,7 @@ pub struct Decoded {
 }
 
 /// The payload with its MPC signature attached.
+#[derive(Debug)]
 pub enum Signed {
     DelegateAction(SignedDelegateActionInput),
     Transaction(SignedTransaction),
@@ -186,26 +187,40 @@ impl SignablePayload {
     }
 
     /// Attach `signature` after checking it signs this payload's hash under
-    /// `public_key` — the derived key the proposal names, not the one embedded
-    /// in the bytes, so a payload built for the wrong key is caught here.
+    /// `public_key` — the derived key the proposal names — and that the bytes
+    /// name that same key, since the chain checks the signature against the
+    /// embedded one.
     pub fn sign(&self, signature: Signature, public_key: PublicKey) -> anyhow::Result<Signed> {
         let hash = CryptoHash(self.hash()?);
         anyhow::ensure!(
             signature.verify(hash, public_key),
             "the MPC signature does not verify against the derived key {public_key} over hash {hash}"
         );
+        let embedded_key = |embedded: PublicKey| {
+            anyhow::ensure!(
+                embedded == public_key,
+                "the payload is built for key {embedded}, not the derived key {public_key}"
+            );
+            Ok(())
+        };
         match self {
             Self::DelegateAction { bytes } => {
+                let delegate_action = delegate_action(bytes)?;
+                embedded_key(delegate_action.public_key)?;
                 let signed = SignedDelegateAction {
-                    delegate_action: delegate_action(bytes)?,
+                    delegate_action,
                     signature,
                 };
                 Ok(Signed::DelegateAction(signed.into()))
             }
-            Self::Transaction { bytes } => Ok(Signed::Transaction(SignedTransaction::new(
-                signature,
-                Transaction::V0(transaction_v0(bytes)?),
-            ))),
+            Self::Transaction { bytes } => {
+                let transaction = transaction_v0(bytes)?;
+                embedded_key(transaction.public_key)?;
+                Ok(Signed::Transaction(SignedTransaction::new(
+                    signature,
+                    Transaction::V0(transaction),
+                )))
+            }
         }
     }
 }
@@ -326,6 +341,22 @@ mod tests {
             }
             Signed::Transaction(signed) => assert_eq!(signed.transaction.nonce(), 42),
         }
+    }
+
+    /// A payload built for one key, signed and verified under another: the
+    /// signature is valid, but the chain would check it against the embedded key.
+    #[rstest]
+    #[case(PayloadKind::DelegateAction)]
+    #[case(PayloadKind::Transaction)]
+    fn a_payload_built_for_another_key_is_refused(#[case] kind: PayloadKind) {
+        let embedded = near_api::signer::generate_secret_key().expect("key");
+        let signer = near_api::signer::generate_secret_key().expect("key");
+        let payload = build(kind, embedded.public_key());
+        let signature = signer.sign(CryptoHash(payload.hash().expect("hash")));
+        let error = payload
+            .sign(signature, signer.public_key())
+            .expect_err("embedded key differs");
+        assert!(error.to_string().contains("built for key"), "{error}");
     }
 
     #[test]

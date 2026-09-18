@@ -16,7 +16,7 @@ const CURRENT_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {
-    pub v: u8,
+    v: u8,
     #[serde(flatten)]
     pub payload: SignablePayload,
 }
