@@ -40,6 +40,9 @@ use crate::mpc::{
 
 /// ≈7 days of mainnet blocks: our DAOs' default `proposal_period`.
 const DEFAULT_VALID_FOR_BLOCKS: u64 = 1_000_000;
+/// A public payload lives in the DAO's storage (≈1 NEAR per 100 KiB) and
+/// inside one `add_proposal` transaction; contract code goes `--blind`.
+const MAX_PUBLIC_DESCRIPTION_BYTES: usize = 64 * 1024;
 
 #[derive(Serialize)]
 struct DerivedKeyOutput {
@@ -145,12 +148,7 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
     if let Some(out) = &args.out {
         envelope.write_file(out)?;
     }
-    let description = if args.blind {
-        Envelope::check_description(&args.description)?;
-        args.description
-    } else {
-        envelope.render_description(&args.description)?
-    };
+    let description = proposal_description(&envelope, args.description, args.blind)?;
 
     let add_proposal = add_proposal_call(
         &dao,
@@ -207,6 +205,22 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
         payload_file: args.out,
         add_proposal: result,
     })
+}
+
+/// The operator's text, carrying the envelope unless the proposal is blind.
+fn proposal_description(envelope: &Envelope, text: String, blind: bool) -> anyhow::Result<String> {
+    if blind {
+        Envelope::check_description(&text)?;
+        return Ok(text);
+    }
+    let rendered = envelope.render_description(&text)?;
+    anyhow::ensure!(
+        rendered.len() <= MAX_PUBLIC_DESCRIPTION_BYTES,
+        "the payload is {} bytes; the DAO would pay for that storage forever and a large one does \
+         not fit an add_proposal transaction. Propose it with --blind --out",
+        rendered.len()
+    );
+    Ok(rendered)
 }
 
 /// A delegate action's window is the operator's; a transaction's is the protocol's.
@@ -272,10 +286,12 @@ async fn full_access_next_nonce(
 
 /// The gateway erases the RPC's typed error, so the text is all that is left:
 /// nearcore reports a missing key either as the `UnknownAccessKey` variant or,
-/// in its legacy in-`result` form, as "does not exist while viewing".
+/// in its legacy in-`result` form, as "access key … does not exist while
+/// viewing" (a missing *account* reads "account … does not exist").
 fn is_unknown_access_key(error: &templar_gateway_core::GatewayError) -> bool {
     let text = error.to_string();
-    text.contains("UnknownAccessKey") || text.contains("does not exist while viewing")
+    text.contains("UnknownAccessKey")
+        || (text.contains("access key") && text.contains("does not exist while viewing"))
 }
 
 /// The `add_proposal` call that asks the DAO to have `request` signed.
@@ -355,10 +371,14 @@ pub(super) async fn broadcast(ctx: CliContext, args: Broadcast) -> anyhow::Resul
             signed_transaction: Base64Bytes(borsh::to_vec(&signed_transaction)?),
         });
     }
-    let outcome = NearOperationExecutor::new(ctx.network_config().clone(), None)
+    let tx_hash = signed_transaction.get_hash().into();
+    let Some(outcome) = NearOperationExecutor::new(ctx.network_config().clone(), None)
         .submit_transaction(signed_transaction)
         .await?
-        .context("the transaction was broadcast but its outcome is not yet known")?;
+    else {
+        ctx.report_tx_hash(tx_hash);
+        anyhow::bail!("transaction {tx_hash} was broadcast but its outcome is not yet known");
+    };
     ctx.report_tx_hash(outcome.tx_hash);
     let succeeded = outcome.is_success;
     print_json(&BroadcastOutput {
@@ -568,7 +588,8 @@ async fn review(ctx: &CliContext, args: &ReviewArgs) -> anyhow::Result<Review> {
             payload,
             last_valid_block,
             head_height,
-            expired: head_height > last_valid_block,
+            // Anything sent now lands after `head_height`, so the last valid block is already too late.
+            expired: head_height >= last_valid_block,
         },
         payload: envelope.payload,
     })
