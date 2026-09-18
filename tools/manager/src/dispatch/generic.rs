@@ -3,7 +3,6 @@
 
 use anyhow::Context as _;
 use serde_json::Value;
-use std::io::Read as _;
 use templar_gateway_oracle_updates_spec::oracle as oracle_spec;
 use templar_gateway_types::MethodSpec;
 
@@ -116,16 +115,7 @@ fn load_params(call: GenericMethodCall) -> anyhow::Result<Value> {
         return serde_json::from_str(&json).context("parse --json method parameters");
     }
     if let Some(path) = call.json_file {
-        if path == std::path::Path::new("-") {
-            let mut input = String::new();
-            std::io::stdin()
-                .read_to_string(&mut input)
-                .context("read JSON parameters from stdin")?;
-            return serde_json::from_str(&input).context("parse JSON method parameters");
-        }
-        let input = std::fs::read_to_string(&path)
-            .with_context(|| format!("read JSON parameters from {}", path.display()))?;
-        return serde_json::from_str(&input).context("parse JSON method parameters");
+        return crate::commands::load_json_file(&path);
     }
     anyhow::bail!("missing method parameters (use --json or --json-file)")
 }

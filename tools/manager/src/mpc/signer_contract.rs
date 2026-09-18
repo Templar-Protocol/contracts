@@ -5,8 +5,19 @@
 use anyhow::Context as _;
 use clap::ValueEnum;
 use near_account_id::AccountId;
-use near_api::types::{crypto::KeyType as NearKeyType, PublicKey, Signature};
+use near_api::types::{crypto::KeyType as NearKeyType, Signature};
 use serde::{Deserialize, Serialize};
+use templar_gateway_client::Network;
+
+/// The chain-signatures contract NEAR operates on each network.
+pub fn default_contract_id(network: Network) -> AccountId {
+    match network {
+        Network::Mainnet => "v1.signer",
+        Network::Testnet => "v1.signer-prod.testnet",
+    }
+    .parse()
+    .unwrap_or_else(|_| unreachable!("well-known account ids are valid"))
+}
 
 /// The curve of the derived key, which the contract calls a signing domain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
@@ -21,14 +32,6 @@ impl KeyType {
         match self {
             Self::Secp256k1 => 0,
             Self::Ed25519 => 1,
-        }
-    }
-
-    pub fn from_domain_id(domain_id: u64) -> anyhow::Result<Self> {
-        match domain_id {
-            0 => Ok(Self::Secp256k1),
-            1 => Ok(Self::Ed25519),
-            other => anyhow::bail!("unsupported MPC signing domain {other}"),
         }
     }
 }
@@ -54,19 +57,20 @@ pub struct SignRequest {
 }
 
 impl SignRequest {
-    /// The signing domain, which the payload variant must agree with: the
-    /// contract rejects a mismatch, so a request that passes review here must
-    /// not fail there.
+    /// The curve the payload variant asks for, which `domain_id` must name:
+    /// the contract rejects a mismatch, so a request that passes review here
+    /// must not fail there. Requests read from chain may have been made by any
+    /// tool, so the mismatch stays representable and is checked on read.
     pub fn key_type(&self) -> anyhow::Result<KeyType> {
-        let key_type = KeyType::from_domain_id(self.domain_id)?;
-        let expected = match self.payload {
+        let key_type = match self.payload {
             Payload::Ecdsa(_) => KeyType::Secp256k1,
             Payload::Eddsa(_) => KeyType::Ed25519,
         };
         anyhow::ensure!(
-            key_type == expected,
-            "the sign request names domain {} ({key_type:?}) but carries a {expected:?} payload",
-            self.domain_id
+            self.domain_id == key_type.domain_id(),
+            "the sign request names domain {} but carries a {key_type:?} payload (domain {})",
+            self.domain_id,
+            key_type.domain_id()
         );
         Ok(key_type)
     }
@@ -155,15 +159,6 @@ impl SignatureResponse {
     }
 }
 
-/// Parse the `derived_public_key` view's return value.
-pub fn parse_public_key(value: &serde_json::Value) -> anyhow::Result<PublicKey> {
-    let text = value
-        .as_str()
-        .context("derived_public_key did not return a string")?;
-    text.parse()
-        .map_err(|error| anyhow::anyhow!("derived_public_key returned `{text}`: {error}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,18 +203,11 @@ mod tests {
     }
 
     #[rstest]
-    #[case(KeyType::Ed25519, 1)]
-    #[case(KeyType::Secp256k1, 0)]
-    fn domain_ids_round_trip(#[case] key_type: KeyType, #[case] domain_id: u64) {
-        assert_eq!(key_type.domain_id(), domain_id);
-        assert_eq!(KeyType::from_domain_id(domain_id).expect("known"), key_type);
-    }
-
-    #[rstest]
     #[case::ed25519(KeyType::Ed25519, 1, true)]
     #[case::secp256k1(KeyType::Secp256k1, 0, true)]
     #[case::eddsa_in_the_ecdsa_domain(KeyType::Ed25519, 0, false)]
     #[case::ecdsa_in_the_eddsa_domain(KeyType::Secp256k1, 1, false)]
+    #[case::unknown_domain(KeyType::Ed25519, 2, false)]
     fn a_request_must_pair_its_payload_with_its_domain(
         #[case] payload_for: KeyType,
         #[case] domain_id: u64,

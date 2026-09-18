@@ -232,12 +232,211 @@ fn delete_key_parses() {
     assert_eq!(delete_key.into_spec().public_key.0.to_string(), KEY);
 }
 
+/// A controlled account, a proposer, a mock MPC signer with a locally held
+/// "derived" key, and a mock DAO — everything the `mpc` commands touch.
+struct MpcFixture {
+    harness: templar_gateway_testing::SandboxHarness,
+    rpc_url: String,
+    secret_key: String,
+    controlled: templar_gateway_types::ManagedAccountId,
+    proposer: templar_gateway_types::ManagedAccountId,
+    signer_id: near_account_id::AccountId,
+    dao: near_account_id::AccountId,
+    /// Stands in for the MPC network: the test signs with it what the real
+    /// network would sign with its derived key.
+    mpc_key: near_api::SecretKey,
+    dir: std::path::PathBuf,
+}
+
+impl MpcFixture {
+    async fn start(label: &str, bond: templar_gateway_types::NearToken) -> anyhow::Result<Self> {
+        use crate::mpc::signer_contract::{DerivedPublicKeyArgs, KeyType};
+
+        let harness = templar_gateway_testing::SandboxHarness::start_owned().await?;
+        let controlled = harness.create_user("mpc-target").await?;
+        let proposer = harness.create_user("mpc-proposer").await?;
+        let signer_id = harness.deploy_mock_signer("mpc-signer").await?;
+        let dao = harness.deploy_mock_dao("mpc-dao", bond).await?;
+        let mpc_key = near_api::signer::generate_secret_key()?;
+        harness
+            .call_function(
+                &proposer,
+                &signer_id,
+                "set_derived_public_key",
+                SetDerivedPublicKey {
+                    derivation: DerivedPublicKeyArgs {
+                        path: format!("{dao}-{}", *controlled),
+                        predecessor: dao.clone(),
+                        domain_id: KeyType::Ed25519.domain_id(),
+                    },
+                    public_key: mpc_key.public_key().to_string(),
+                },
+            )
+            .await?;
+        let dir = std::env::temp_dir().join(format!("tmplrmgr-mpc-{label}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self {
+            rpc_url: harness.network.rpc_endpoints[0].url.to_string(),
+            secret_key: templar_gateway_testing::test_secret_key()?.to_string(),
+            harness,
+            controlled,
+            proposer,
+            signer_id,
+            dao,
+            mpc_key,
+            dir,
+        })
+    }
+
+    /// One `tmplrmgr` invocation against the sandbox.
+    async fn run(&self, args: &[&str]) -> anyhow::Result<()> {
+        let invocation = ["tmplrmgr", "-q", "--rpc-url", &self.rpc_url]
+            .into_iter()
+            .chain(args.iter().copied());
+        let cli = Cli::try_parse_from(invocation)?;
+        let ctx = crate::context::build_context(&cli)?;
+        crate::dispatch::dispatch(ctx, cli.command).await
+    }
+
+    fn creds(&self, account: &templar_gateway_types::ManagedAccountId) -> [String; 4] {
+        [
+            "--signer-id".to_owned(),
+            account.to_string(),
+            "--secret-key".to_owned(),
+            self.secret_key.clone(),
+        ]
+    }
+
+    async fn install_key(&self) -> anyhow::Result<()> {
+        let creds = self.creds(&self.controlled);
+        let mut args = vec![
+            "mpc",
+            "install-key",
+            "--dao",
+            self.dao.as_str(),
+            "--mpc-contract",
+            self.signer_id.as_str(),
+        ];
+        args.extend(creds.iter().map(String::as_str));
+        self.run(&args).await
+    }
+
+    /// Write a `--print json` plan transferring `amount` from the controlled
+    /// account to `receiver`.
+    fn plan(
+        &self,
+        receiver: &near_account_id::AccountId,
+        amount: templar_gateway_types::NearToken,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        use near_api::types::transaction::actions::{Action, TransferAction};
+
+        let path = self.dir.join("plan.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&templar_gateway_core::PlannedTransaction::single_action(
+                self.controlled.clone(),
+                receiver.clone(),
+                Action::Transfer(TransferAction { deposit: amount }),
+            ))?,
+        )?;
+        Ok(path)
+    }
+
+    async fn proposal(&self, id: u64) -> anyhow::Result<crate::mpc::dao::ProposalView> {
+        self.harness
+            .view_json(
+                &self.dao,
+                "get_proposal",
+                crate::mpc::dao::GetProposalArgs { id },
+            )
+            .await
+    }
+
+    /// The "MPC" signs `hash`, so the next `sign` request for it succeeds.
+    async fn mpc_signs(&self, hash: [u8; 32]) -> anyhow::Result<()> {
+        let signature = borsh::to_vec(&self.mpc_key.sign(near_api::CryptoHash(hash)))?;
+        self.harness
+            .call_function(
+                &self.proposer,
+                &self.signer_id,
+                "set_signature",
+                SetSignature {
+                    payload_hex: hex::encode(hash),
+                    response: SignatureResponseJson::Ed25519 {
+                        signature: signature[1..].to_vec(),
+                    },
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Approve and execute proposal `id`; returns the vote's transaction hash.
+    async fn approve(&self, id: u64) -> anyhow::Result<String> {
+        use templar_gateway_types::operation::ReceiptStatus;
+
+        let kind = self
+            .harness
+            .view_json::<serde_json::Value>(
+                &self.dao,
+                "get_proposal",
+                crate::mpc::dao::GetProposalArgs { id },
+            )
+            .await?["kind"]
+            .clone();
+        let approve = self
+            .harness
+            .call_function(
+                &self.proposer,
+                &self.dao,
+                "act_proposal",
+                ActProposal {
+                    id,
+                    action: "VoteApprove",
+                    proposal: kind,
+                    memo: None,
+                },
+            )
+            .await?;
+        let receipts = &approve
+            .operation
+            .final_outcome()
+            .expect("act_proposal executed")
+            .receipts;
+        assert!(
+            receipts
+                .iter()
+                .all(|receipt| receipt.status == ReceiptStatus::Succeeded),
+            "{receipts:?}"
+        );
+        Ok(approve
+            .operation
+            .latest_tx_hash()
+            .expect("act_proposal was sent")
+            .to_string())
+    }
+
+    async fn balance(
+        &self,
+        account: &near_account_id::AccountId,
+    ) -> anyhow::Result<templar_gateway_types::NearToken> {
+        Ok(self
+            .harness
+            .client()?
+            .read(templar_gateway_methods_spec::account::Get {
+                account_id: account.clone(),
+            })
+            .await?
+            .amount)
+    }
+}
+
 /// The whole operator flow against a mock MPC signer and a mock DAO: install
 /// the derived key, propose, review before the vote, have the "MPC" sign the
 /// hash the proposal carries, approve, review again, relay — and the
 /// controlled account's transfer lands. Along the way, every refusal a voter
 /// or relayer relies on: a payload that does not hash to the proposal, the
-/// wrong send command for the kind, and an expired payload.
+/// wrong send command for the kind, a replay, and a rejected nonce.
 #[rstest::rstest]
 #[case::public_delegate_action(PayloadKind::DelegateAction, false)]
 #[case::blind_transaction(PayloadKind::Transaction, true)]
@@ -246,84 +445,25 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     #[case] kind: PayloadKind,
     #[case] blind: bool,
 ) -> anyhow::Result<()> {
-    use near_api::types::transaction::actions::{Action, TransferAction};
-    use templar_gateway_core::PlannedTransaction;
-    use templar_gateway_methods_spec::{account, contract, tx};
-    use templar_gateway_types::{
-        common::ContractArgs, operation::ReceiptStatus, ContractMethodName, NearGas, NearToken,
-    };
+    use templar_gateway_methods_spec::account;
+    use templar_gateway_types::{ContractMethodName, NearToken};
 
-    use crate::mpc::{
-        envelope::Envelope,
-        signer_contract::{DerivedPublicKeyArgs, KeyType},
-    };
+    use crate::mpc::envelope::Envelope;
 
-    let harness = templar_gateway_testing::SandboxHarness::start_owned().await?;
-    let rpc_url = harness.network.rpc_endpoints[0].url.to_string();
-    let secret_key = templar_gateway_testing::test_secret_key()?.to_string();
-    let controlled = harness.create_user("mpc-target").await?;
-    let proposer = harness.create_user("mpc-proposer").await?;
-    let relayer = harness.create_user("mpc-relayer").await?;
-    let beneficiary = harness.create_user("mpc-beneficiary").await?;
-    let bond = NearToken::from_millinear(100);
-    let signer_id = harness.deploy_mock_signer("mpc-signer").await?;
-    let dao = harness.deploy_mock_dao("mpc-dao", bond).await?;
-    let client = harness.client()?;
-
-    let mpc_key = near_api::signer::generate_secret_key()?;
-    let path = format!("{dao}-{}", *controlled);
-    client
-        .execute_as(
-            proposer.clone(),
-            tx::FunctionCall {
-                receiver_id: signer_id.clone(),
-                method_name: ContractMethodName("set_derived_public_key".to_owned()),
-                args: ContractArgs::Json(serde_json::to_value(SetDerivedPublicKey {
-                    derivation: DerivedPublicKeyArgs {
-                        path: path.clone(),
-                        predecessor: dao.clone(),
-                        domain_id: KeyType::Ed25519.domain_id(),
-                    },
-                    public_key: mpc_key.public_key().to_string(),
-                })?),
-                gas: NearGas::from_tgas(30),
-                deposit: NearToken::ZERO,
-            },
-        )
-        .await?;
-
-    let run = |args: Vec<String>| {
-        let rpc_url = rpc_url.clone();
-        async move {
-            let argv = ["tmplrmgr", "-q", "--rpc-url", rpc_url.as_str()]
-                .into_iter()
-                .map(str::to_owned)
-                .chain(args)
-                .collect::<Vec<_>>();
-            let cli = Cli::try_parse_from(argv)?;
-            let ctx = crate::context::build_context(&cli)?;
-            crate::dispatch::dispatch(ctx, cli.command).await
-        }
-    };
-    let strings = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
-
-    run(strings(&[
-        "mpc",
-        "install-key",
-        "--dao",
-        dao.as_str(),
-        "--mpc-contract",
-        signer_id.as_str(),
-        "--signer-id",
-        controlled.as_str(),
-        "--secret-key",
-        &secret_key,
-    ]))
+    let f = MpcFixture::start(
+        if blind { "blind" } else { "public" },
+        NearToken::from_millinear(100),
+    )
     .await?;
+    let relayer = f.harness.create_user("mpc-relayer").await?;
+    let beneficiary = f.harness.create_user("mpc-beneficiary").await?;
+    let client = f.harness.client()?;
+
+    f.install_key().await?;
     let installed = client
         .read(account::GetAccessKey {
-            account_id: controlled.0.clone(),
-            public_key: mpc_key.public_key().into(),
+            account_id: f.controlled.0.clone(),
+            public_key: f.mpc_key.public_key().into(),
         })
         .await?;
     assert_eq!(
@@ -331,86 +471,105 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         account::AccessKeyPermission::FullAccess
     );
 
-    let dir =
-        std::env::temp_dir().join(format!("tmplrmgr-mpc-e2e-{}-{kind:?}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
-    let plan_path = dir.join("plan.json");
-    let payload_path = dir.join("payload.json");
+    // The plain key commands, on the same account, with a function-call key.
+    let restricted_key = near_api::signer::generate_secret_key()?.public_key();
+    let controlled_creds = f.creds(&f.controlled);
+    let controlled_creds: Vec<&str> = controlled_creds.iter().map(String::as_str).collect();
+    let restricted = restricted_key.to_string();
+    f.run(
+        &[
+            &[
+                "account",
+                "add-key",
+                "--key",
+                &restricted,
+                "--receiver-id",
+                f.dao.as_str(),
+                "--method-name",
+                "act_proposal",
+            ][..],
+            &controlled_creds,
+        ]
+        .concat(),
+    )
+    .await?;
+    assert_eq!(
+        client
+            .read(account::GetAccessKey {
+                account_id: f.controlled.0.clone(),
+                public_key: restricted_key.into(),
+            })
+            .await?
+            .permission,
+        account::AccessKeyPermission::FunctionCall {
+            allowance: None,
+            receiver_id: f.dao.clone(),
+            method_names: vec![ContractMethodName("act_proposal".to_owned())],
+        }
+    );
+    f.run(
+        &[
+            &["account", "delete-key", "--key", &restricted][..],
+            &controlled_creds,
+        ]
+        .concat(),
+    )
+    .await?;
+    assert!(client
+        .read(account::GetAccessKey {
+            account_id: f.controlled.0.clone(),
+            public_key: restricted_key.into(),
+        })
+        .await
+        .is_err());
+
     let amount = NearToken::from_near(3);
-    std::fs::write(
-        &plan_path,
-        serde_json::to_vec(&PlannedTransaction {
-            signer_account_id: controlled.clone(),
-            receiver_id: beneficiary.0.clone(),
-            actions: vec![Action::Transfer(TransferAction { deposit: amount })],
-            continue_on_failure: false,
-        })?,
-    )?;
+    let plan = f.plan(&beneficiary.0, amount)?;
+    let plan = plan.to_str().expect("utf-8 path");
+    let payload_file = f.dir.join("payload.json");
+    let payload_file = payload_file.to_str().expect("utf-8 path");
+    let proposer_creds = f.creds(&f.proposer);
+    let proposer_creds: Vec<&str> = proposer_creds.iter().map(String::as_str).collect();
     let kind_flag = match kind {
         PayloadKind::DelegateAction => "delegate-action",
         PayloadKind::Transaction => "transaction",
     };
-    let error = run(strings(&[
+    let propose_base = [
         "mpc",
         "propose",
         "--plan",
-        plan_path.to_str().expect("utf-8 path"),
+        plan,
         "--dao",
-        dao.as_str(),
+        f.dao.as_str(),
         "--mpc-contract",
-        signer_id.as_str(),
-        "--nonce",
-        "1",
-        "--signer-id",
-        proposer.as_str(),
-        "--secret-key",
-        &secret_key,
-    ]))
-    .await
-    .expect_err("a nonce the chain would reject is refused before the vote");
+        f.signer_id.as_str(),
+    ];
+
+    let error = f
+        .run(&[&propose_base[..], &["--nonce", "1"], &proposer_creds].concat())
+        .await
+        .expect_err("a nonce the chain would reject is refused before the vote");
     assert!(
         error.to_string().contains("below the key's next nonce"),
         "{error}"
     );
 
-    let mut propose = strings(&[
-        "mpc",
-        "propose",
-        "--plan",
-        plan_path.to_str().expect("utf-8 path"),
-        "--dao",
-        dao.as_str(),
-        "--mpc-contract",
-        signer_id.as_str(),
-        "--kind",
-        kind_flag,
-        "--out",
-        payload_path.to_str().expect("utf-8 path"),
-        "--signer-id",
-        proposer.as_str(),
-        "--secret-key",
-        &secret_key,
-    ]);
-    if blind {
-        propose.push("--blind".to_owned());
-    }
-    run(propose).await?;
+    let blind_flag: &[&str] = if blind { &["--blind"] } else { &[] };
+    f.run(
+        &[
+            &propose_base[..],
+            &["--kind", kind_flag, "--out", payload_file],
+            blind_flag,
+            &proposer_creds,
+        ]
+        .concat(),
+    )
+    .await?;
 
-    let proposal: crate::mpc::dao::ProposalView = serde_json::from_value(
-        client
-            .read(contract::ViewFunction {
-                contract_id: dao.clone(),
-                method_name: ContractMethodName("get_proposal".to_owned()),
-                args: ContractArgs::Json(serde_json::to_value(crate::mpc::dao::GetProposalArgs {
-                    id: 0,
-                })?),
-            })
-            .await?
-            .value,
-    )?;
+    let proposal = f.proposal(0).await?;
     let in_description = Envelope::from_description(&proposal.description)?;
     assert_eq!(in_description.is_some(), !blind, "{}", proposal.description);
-    let envelope = Envelope::read_file(&payload_path)?;
+    let envelope = Envelope::read_file(std::path::Path::new(payload_file))?;
     if let Some(published) = in_description {
         assert_eq!(published, envelope);
     }
@@ -421,175 +580,99 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         "the proposal asks for the hash of the payload it carries"
     );
 
-    let mut show = strings(&["mpc", "show", "--dao", dao.as_str(), "--proposal-id", "0"]);
+    let show_base = ["mpc", "show", "--dao", f.dao.as_str(), "--proposal-id", "0"];
+    let payload_arg: &[&str] = if blind {
+        &["--payload-file", payload_file]
+    } else {
+        &[]
+    };
     if blind {
-        let error = run(show.clone())
+        let error = f
+            .run(&show_base)
             .await
             .expect_err("a blind proposal cannot be reviewed without the payload file");
         assert!(error.to_string().contains("--payload-file"), "{error}");
-        show.extend(strings(&[
-            "--payload-file",
-            payload_path.to_str().expect("utf-8 path"),
-        ]));
     }
     // A voter reviews before voting: the proposal is still in progress.
-    run(show.clone()).await?;
+    f.run(&[&show_base[..], payload_arg].concat()).await?;
 
     // A payload that does not hash to what the proposal signs is refused,
     // whichever way it reaches the reviewer.
-    let decoy_path = dir.join("decoy.json");
-    let decoy = Envelope::new(crate::mpc::payload::SignablePayload::build(
+    let decoy_file = f.dir.join("decoy.json");
+    Envelope::new(crate::mpc::payload::SignablePayload::build(
         crate::mpc::payload::BuildInputs {
             kind,
-            planned: PlannedTransaction {
-                signer_account_id: controlled.clone(),
-                receiver_id: beneficiary.0.clone(),
-                actions: vec![Action::Transfer(TransferAction {
-                    deposit: NearToken::from_near(300),
-                })],
-                continue_on_failure: false,
-            },
-            public_key: mpc_key.public_key(),
+            planned: templar_gateway_core::PlannedTransaction::single_action(
+                f.controlled.clone(),
+                beneficiary.0.clone(),
+                near_api::types::transaction::actions::Action::Transfer(
+                    near_api::types::transaction::actions::TransferAction {
+                        deposit: NearToken::from_near(300),
+                    },
+                ),
+            ),
+            public_key: f.mpc_key.public_key(),
             nonce: 58_000_001,
             block: client
                 .read(templar_gateway_methods_spec::chain::GetBlock::default())
                 .await?,
             valid_for_blocks: 1_000,
         },
-    )?);
-    decoy.write_file(&decoy_path)?;
-    let error = run(strings(&[
-        "mpc",
-        "show",
-        "--dao",
-        dao.as_str(),
-        "--proposal-id",
-        "0",
-        "--payload-file",
-        decoy_path.to_str().expect("utf-8 path"),
-    ]))
-    .await
-    .expect_err("a decoy payload is refused");
+    )?)
+    .write_file(&decoy_file)?;
+    let decoy_arg = ["--payload-file", decoy_file.to_str().expect("utf-8 path")];
+    let error = f
+        .run(&[&show_base[..], &decoy_arg].concat())
+        .await
+        .expect_err("a decoy payload is refused");
     assert!(error.to_string().contains("hashes to"), "{error}");
 
-    // Stand in for the MPC network: sign the hash the proposal carries.
-    let signature = borsh::to_vec(&mpc_key.sign(near_api::CryptoHash(hash)))?;
-    client
-        .execute_as(
-            proposer.clone(),
-            tx::FunctionCall {
-                receiver_id: signer_id.clone(),
-                method_name: ContractMethodName("set_signature".to_owned()),
-                args: ContractArgs::Json(serde_json::to_value(SetSignature {
-                    payload_hex: hex::encode(hash),
-                    response: SignatureResponseJson::Ed25519 {
-                        signature: signature[1..].to_vec(),
-                    },
-                })?),
-                gas: NearGas::from_tgas(30),
-                deposit: NearToken::ZERO,
-            },
-        )
-        .await?;
+    f.mpc_signs(hash).await?;
+    let approve_tx = f.approve(0).await?;
+    f.run(&[&show_base[..], payload_arg].concat()).await?;
 
-    let approve = client
-        .execute_as(
-            proposer.clone(),
-            tx::FunctionCall {
-                receiver_id: dao.clone(),
-                method_name: ContractMethodName("act_proposal".to_owned()),
-                args: ContractArgs::Json(serde_json::to_value(ActProposal {
-                    id: 0,
-                    action: "VoteApprove".to_owned(),
-                })?),
-                gas: NearGas::from_tgas(100),
-                deposit: NearToken::ZERO,
-            },
-        )
-        .await?;
-    let approve_tx = approve
-        .operation
-        .latest_tx_hash()
-        .expect("act_proposal was sent")
-        .to_string();
-    let approve_receipts = &approve
-        .operation
-        .final_outcome()
-        .expect("act_proposal executed")
-        .receipts;
-    assert!(
-        approve_receipts
-            .iter()
-            .all(|receipt| receipt.status == ReceiptStatus::Succeeded),
-        "{approve_receipts:?}"
-    );
-
-    let before = client
-        .read(account::Get {
-            account_id: beneficiary.0.clone(),
-        })
-        .await?
-        .amount;
-
-    run(show).await?;
-
-    let executed = |command: &str| {
-        let mut args = strings(&[
+    let before = f.balance(&beneficiary.0).await?;
+    let relayer_creds = f.creds(&relayer);
+    let relayer_creds: Vec<&str> = relayer_creds.iter().map(String::as_str).collect();
+    let executed = |command: &'static str| {
+        vec![
             "mpc",
             command,
             "--dao",
-            dao.as_str(),
+            f.dao.as_str(),
             "--proposal-id",
             "0",
             "--tx-hash",
             &approve_tx,
             "--tx-signer",
-            proposer.as_str(),
-        ]);
-        if blind {
-            args.extend(strings(&[
-                "--payload-file",
-                payload_path.to_str().expect("utf-8 path"),
-            ]));
-        }
-        args
+            f.proposer.as_str(),
+        ]
     };
-    let mut relay = executed("relay");
-    relay.extend(strings(&[
-        "--signer-id",
-        relayer.as_str(),
-        "--secret-key",
-        &secret_key,
-    ]));
-    let broadcast = executed("broadcast");
-    let (send, wrong_command, decoy_send) = match kind {
-        PayloadKind::DelegateAction => (relay.clone(), broadcast, relay),
-        PayloadKind::Transaction => (broadcast.clone(), relay, broadcast),
+    // `relay` needs a fee payer's credentials; `broadcast` takes none.
+    let (send, signer_args, wrong, wrong_args): (&str, &[&str], &str, &[&str]) = match kind {
+        PayloadKind::DelegateAction => ("relay", &relayer_creds, "broadcast", &[]),
+        PayloadKind::Transaction => ("broadcast", &[], "relay", &relayer_creds),
     };
 
-    let error = run(wrong_command)
+    let error = f
+        .run(&[&executed(wrong)[..], payload_arg, wrong_args].concat())
         .await
         .expect_err("the other send command refuses this payload kind");
     assert!(error.to_string().contains("use `mpc "), "{error}");
 
-    let mut decoy_send = decoy_send;
-    if let Some(index) = decoy_send.iter().position(|arg| arg == "--payload-file") {
-        decoy_send.truncate(index);
-    }
-    decoy_send.extend(strings(&[
-        "--payload-file",
-        decoy_path.to_str().expect("utf-8 path"),
-    ]));
-    let error = run(decoy_send)
+    let error = f
+        .run(&[&executed(send)[..], &decoy_arg, signer_args].concat())
         .await
         .expect_err("a decoy payload never reaches the signature");
     assert!(error.to_string().contains("hashes to"), "{error}");
 
-    run(send.clone()).await?;
+    let send_args = [&executed(send)[..], payload_arg, signer_args].concat();
+    f.run(&send_args).await?;
 
     // The nonce is spent now: a second send is refused before anything is
     // broadcast, so a replay costs the relayer nothing.
-    let error = run(send)
+    let error = f
+        .run(&send_args)
         .await
         .expect_err("a relayed payload cannot be sent twice");
     assert!(
@@ -597,198 +680,80 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         "{error}"
     );
 
-    let after = client
-        .read(account::Get {
-            account_id: beneficiary.0.clone(),
-        })
-        .await?
-        .amount;
-    assert_eq!(after, before.saturating_add(amount));
-
-    std::fs::remove_dir_all(dir)?;
+    assert_eq!(
+        f.balance(&beneficiary.0).await?,
+        before.saturating_add(amount)
+    );
+    std::fs::remove_dir_all(&f.dir)?;
     Ok(())
 }
 
 /// A payload past its validity is refused before any signature is looked up,
 /// so an operator learns to re-propose rather than watching a broadcast fail.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario deliberately walks propose, sign, approve, fast-forward and refusal together"
-)]
 #[tokio::test]
 async fn requires_sandbox_mpc_expired_payload_is_refused_before_broadcast() -> anyhow::Result<()> {
-    use near_api::types::transaction::actions::{Action, TransferAction};
-    use templar_gateway_core::PlannedTransaction;
-    use templar_gateway_methods_spec::tx;
-    use templar_gateway_types::{common::ContractArgs, ContractMethodName, NearGas, NearToken};
+    use templar_gateway_types::NearToken;
 
-    use crate::mpc::signer_contract::{DerivedPublicKeyArgs, KeyType};
-
-    let harness = templar_gateway_testing::SandboxHarness::start_owned().await?;
-    let rpc_url = harness.network.rpc_endpoints[0].url.to_string();
-    let secret_key = templar_gateway_testing::test_secret_key()?.to_string();
-    let controlled = harness.create_user("mpc-target").await?;
-    let proposer = harness.create_user("mpc-proposer").await?;
-    let signer_id = harness.deploy_mock_signer("mpc-signer").await?;
-    let dao = harness.deploy_mock_dao("mpc-dao", NearToken::ZERO).await?;
-    let client = harness.client()?;
-    let mpc_key = near_api::signer::generate_secret_key()?;
-    client
-        .execute_as(
-            proposer.clone(),
-            tx::FunctionCall {
-                receiver_id: signer_id.clone(),
-                method_name: ContractMethodName("set_derived_public_key".to_owned()),
-                args: ContractArgs::Json(serde_json::to_value(SetDerivedPublicKey {
-                    derivation: DerivedPublicKeyArgs {
-                        path: format!("{dao}-{}", *controlled),
-                        predecessor: dao.clone(),
-                        domain_id: KeyType::Ed25519.domain_id(),
-                    },
-                    public_key: mpc_key.public_key().to_string(),
-                })?),
-                gas: NearGas::from_tgas(30),
-                deposit: NearToken::ZERO,
-            },
-        )
-        .await?;
-
-    let run = |args: Vec<String>| {
-        let rpc_url = rpc_url.clone();
-        async move {
-            let argv = ["tmplrmgr", "-q", "--rpc-url", rpc_url.as_str()]
-                .into_iter()
-                .map(str::to_owned)
-                .chain(args)
-                .collect::<Vec<_>>();
-            let cli = Cli::try_parse_from(argv)?;
-            let ctx = crate::context::build_context(&cli)?;
-            crate::dispatch::dispatch(ctx, cli.command).await
-        }
-    };
-    let strings = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
-
-    run(strings(&[
-        "mpc",
-        "install-key",
-        "--dao",
-        dao.as_str(),
-        "--mpc-contract",
-        signer_id.as_str(),
-        "--signer-id",
-        controlled.as_str(),
-        "--secret-key",
-        &secret_key,
-    ]))
+    let f = MpcFixture::start("expiry", NearToken::ZERO).await?;
+    f.install_key().await?;
+    let plan = f.plan(&f.proposer.0, NearToken::from_near(1))?;
+    let proposer_creds = f.creds(&f.proposer);
+    let proposer_creds: Vec<&str> = proposer_creds.iter().map(String::as_str).collect();
+    f.run(
+        &[
+            &[
+                "mpc",
+                "propose",
+                "--plan",
+                plan.to_str().expect("utf-8 path"),
+                "--dao",
+                f.dao.as_str(),
+                "--mpc-contract",
+                f.signer_id.as_str(),
+                "--valid-for-blocks",
+                "5",
+            ][..],
+            &proposer_creds,
+        ]
+        .concat(),
+    )
     .await?;
 
-    let dir = std::env::temp_dir().join(format!("tmplrmgr-mpc-expiry-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
-    let plan_path = dir.join("plan.json");
-    std::fs::write(
-        &plan_path,
-        serde_json::to_vec(&PlannedTransaction {
-            signer_account_id: controlled.clone(),
-            receiver_id: proposer.0.clone(),
-            actions: vec![Action::Transfer(TransferAction {
-                deposit: NearToken::from_near(1),
-            })],
-            continue_on_failure: false,
-        })?,
-    )?;
-    run(strings(&[
-        "mpc",
-        "propose",
-        "--plan",
-        plan_path.to_str().expect("utf-8 path"),
-        "--dao",
-        dao.as_str(),
-        "--mpc-contract",
-        signer_id.as_str(),
-        "--valid-for-blocks",
-        "5",
-        "--signer-id",
-        proposer.as_str(),
-        "--secret-key",
-        &secret_key,
-    ]))
-    .await?;
+    let hash = f
+        .proposal(0)
+        .await?
+        .proposed_signature()?
+        .request
+        .payload
+        .hash()?;
+    f.mpc_signs(hash).await?;
+    let approve_tx = f.approve(0).await?;
+    f.harness.fast_forward(20).await?;
 
-    let proposal: crate::mpc::dao::ProposalView = serde_json::from_value(
-        client
-            .read(templar_gateway_methods_spec::contract::ViewFunction {
-                contract_id: dao.clone(),
-                method_name: ContractMethodName("get_proposal".to_owned()),
-                args: ContractArgs::Json(serde_json::to_value(crate::mpc::dao::GetProposalArgs {
-                    id: 0,
-                })?),
-            })
-            .await?
-            .value,
-    )?;
-    let hash = proposal.proposed_signature()?.request.payload.hash()?;
-    let signature = borsh::to_vec(&mpc_key.sign(near_api::CryptoHash(hash)))?;
-    client
-        .execute_as(
-            proposer.clone(),
-            tx::FunctionCall {
-                receiver_id: signer_id.clone(),
-                method_name: ContractMethodName("set_signature".to_owned()),
-                args: ContractArgs::Json(serde_json::to_value(SetSignature {
-                    payload_hex: hex::encode(hash),
-                    response: SignatureResponseJson::Ed25519 {
-                        signature: signature[1..].to_vec(),
-                    },
-                })?),
-                gas: NearGas::from_tgas(30),
-                deposit: NearToken::ZERO,
-            },
+    let error = f
+        .run(
+            &[
+                &[
+                    "mpc",
+                    "relay",
+                    "--dao",
+                    f.dao.as_str(),
+                    "--proposal-id",
+                    "0",
+                    "--tx-hash",
+                    &approve_tx,
+                    "--tx-signer",
+                    f.proposer.as_str(),
+                ][..],
+                &proposer_creds,
+            ]
+            .concat(),
         )
-        .await?;
-    let approve = client
-        .execute_as(
-            proposer.clone(),
-            tx::FunctionCall {
-                receiver_id: dao.clone(),
-                method_name: ContractMethodName("act_proposal".to_owned()),
-                args: ContractArgs::Json(serde_json::to_value(ActProposal {
-                    id: 0,
-                    action: "VoteApprove".to_owned(),
-                })?),
-                gas: NearGas::from_tgas(100),
-                deposit: NearToken::ZERO,
-            },
-        )
-        .await?;
-    let approve_tx = approve
-        .operation
-        .latest_tx_hash()
-        .expect("act_proposal was sent")
-        .to_string();
-
-    harness.fast_forward(20).await?;
-
-    let error = run(strings(&[
-        "mpc",
-        "relay",
-        "--dao",
-        dao.as_str(),
-        "--proposal-id",
-        "0",
-        "--tx-hash",
-        &approve_tx,
-        "--tx-signer",
-        proposer.as_str(),
-        "--signer-id",
-        proposer.as_str(),
-        "--secret-key",
-        &secret_key,
-    ]))
-    .await
-    .expect_err("an approved but expired payload is refused before broadcast");
+        .await
+        .expect_err("an approved but expired payload is refused before broadcast");
     assert!(error.to_string().contains("expired"), "{error}");
 
-    std::fs::remove_dir_all(dir)?;
+    std::fs::remove_dir_all(&f.dir)?;
     Ok(())
 }
 
@@ -812,8 +777,11 @@ enum SignatureResponseJson {
     Ed25519 { signature: Vec<u8> },
 }
 
+/// Sputnik's `act_proposal` arguments: the kind is echoed back.
 #[derive(serde::Serialize)]
 struct ActProposal {
     id: u64,
-    action: String,
+    action: &'static str,
+    proposal: serde_json::Value,
+    memo: Option<String>,
 }

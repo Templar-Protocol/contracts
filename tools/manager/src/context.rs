@@ -109,6 +109,28 @@ impl CliContext {
         Ok((account_id, client, public_key))
     }
 
+    /// Call a contract view method and decode its JSON return value.
+    pub(crate) async fn view<T: serde::de::DeserializeOwned>(
+        &self,
+        contract_id: &near_account_id::AccountId,
+        method_name: &str,
+        args: &impl Serialize,
+    ) -> anyhow::Result<T> {
+        let result = self
+            .client
+            .read(templar_gateway_methods_spec::contract::ViewFunction {
+                contract_id: contract_id.clone(),
+                method_name: templar_gateway_types::ContractMethodName(method_name.to_owned()),
+                args: templar_gateway_types::common::ContractArgs::Json(serde_json::to_value(
+                    args,
+                )?),
+            })
+            .await
+            .with_context(|| format!("call {contract_id}.{method_name}"))?;
+        serde_json::from_value(result.value)
+            .with_context(|| format!("decode {contract_id}.{method_name}'s return value"))
+    }
+
     /// Dispatch a read and print its JSON result.
     pub(crate) async fn read<S>(&self, request: S) -> anyhow::Result<()>
     where

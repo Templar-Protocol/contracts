@@ -71,30 +71,10 @@ impl Envelope {
         envelope.check_version()
     }
 
-    /// Written through a fresh sibling temp file and renamed, so a crash
-    /// mid-write cannot leave a truncated payload where the operator will look
-    /// for it, and nothing that already exists is truncated on the way.
     pub fn write_file(&self, path: &Path) -> anyhow::Result<()> {
         let rendered = serde_json::to_string_pretty(self).context("render the payload envelope")?;
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .with_context(|| format!("{} is not a file path", path.display()))?;
-        let temporary = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
-        {
-            use std::io::Write as _;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-                .with_context(|| format!("create {}", temporary.display()))?;
-            file.write_all(format!("{rendered}\n").as_bytes())
-                .with_context(|| format!("write {}", temporary.display()))?;
-            file.sync_all()
-                .with_context(|| format!("flush {}", temporary.display()))?;
-        }
-        std::fs::rename(&temporary, path)
-            .with_context(|| format!("replace the payload file at {}", path.display()))
+        crate::commands::write_atomically(path, format!("{rendered}\n").as_bytes())
+            .with_context(|| format!("write the payload file at {}", path.display()))
     }
 }
 

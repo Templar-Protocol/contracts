@@ -141,6 +141,14 @@ pub struct SignedDelegateActionInput(
     near_api_types::transaction::delegate_action::SignedDelegateAction,
 );
 
+impl From<near_api_types::transaction::delegate_action::SignedDelegateAction>
+    for SignedDelegateActionInput
+{
+    fn from(inner: near_api_types::transaction::delegate_action::SignedDelegateAction) -> Self {
+        Self(inner)
+    }
+}
+
 impl SignedDelegateActionInput {
     /// Borsh-decode from the NEP-366 byte encoding.
     pub fn from_borsh_bytes(bytes: &[u8]) -> std::io::Result<Self> {

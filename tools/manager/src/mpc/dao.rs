@@ -16,6 +16,7 @@ pub const SIGN_METHOD: &str = "sign";
 /// `sign` needs a non-zero deposit and refunds the excess; nothing tmplrmgr
 /// proposes attaches more, so more is a proposal it did not make.
 pub const SIGN_DEPOSIT: NearToken = NearToken::from_yoctonear(1);
+pub const ADD_PROPOSAL_GAS: NearGas = NearGas::from_tgas(30);
 
 #[derive(Serialize)]
 pub struct AddProposalArgs {
@@ -78,8 +79,7 @@ impl ProposalView {
             .kind
             .get("FunctionCall")
             .with_context(|| format!("proposal {} is not a FunctionCall proposal", self.id))?;
-        let kind: FunctionCallKind =
-            serde_json::from_value(kind.clone()).context("decode the FunctionCall kind")?;
+        let kind = FunctionCallKind::deserialize(kind).context("decode the FunctionCall kind")?;
         let [action] = kind.actions.as_slice() else {
             anyhow::bail!(
                 "proposal {} carries {} actions; an MPC signing proposal carries exactly one `{SIGN_METHOD}` call",

@@ -1,21 +1,21 @@
 //! Stand-in for a Sputnik DAO v2, reduced to what an MPC signing proposal
 //! touches: `add_proposal` with an exact bond, `get_proposal`/`get_policy`
 //! reads, and `act_proposal` approving and executing a FunctionCall kind.
-//! JSON shapes match Sputnik's so the CLI reads it unchanged.
+//! JSON shapes match Sputnik's so the CLI reads it unchanged. Known
+//! divergences: every caller is council at threshold one; `vote_counts`,
+//! `votes` and `Finalize` are absent; and the status flips to `Approved` only
+//! in the execution callback, where Sputnik sets it before executing.
 
 // `#[near]` method parameters are taken by value; the generated wrappers own them.
 #![allow(clippy::needless_pass_by_value)]
 
 use near_sdk::{
-    env, is_promise_success,
-    json_types::{Base64VecU8, U64},
-    near,
-    store::Vector,
-    AccountId, Gas, NearToken, PanicOnDefault, Promise,
+    env, is_promise_success, json_types::Base64VecU8, near, store::Vector, AccountId, Gas,
+    NearToken, PanicOnDefault, Promise,
 };
 
 #[near(serializers = [json, borsh])]
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ActionCall {
     pub method_name: String,
     pub args: Base64VecU8,
@@ -24,7 +24,7 @@ pub struct ActionCall {
 }
 
 #[near(serializers = [json, borsh])]
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ProposalKind {
     FunctionCall {
         receiver_id: AccountId,
@@ -41,6 +41,12 @@ pub enum ProposalStatus {
 }
 
 #[near(serializers = [json])]
+#[derive(PartialEq, Eq)]
+pub enum Action {
+    VoteApprove,
+}
+
+#[near(serializers = [json])]
 pub struct ProposalInput {
     pub description: String,
     pub kind: ProposalKind,
@@ -53,7 +59,6 @@ pub struct Proposal {
     pub description: String,
     pub kind: ProposalKind,
     pub status: ProposalStatus,
-    pub submission_time: U64,
 }
 
 #[near(serializers = [json])]
@@ -66,7 +71,6 @@ pub struct ProposalOutput {
 #[near(serializers = [json])]
 pub struct Policy {
     pub proposal_bond: NearToken,
-    pub proposal_period: U64,
 }
 
 #[derive(PanicOnDefault)]
@@ -95,7 +99,6 @@ impl Contract {
             description: proposal.description,
             kind: proposal.kind,
             status: ProposalStatus::InProgress,
-            submission_time: U64(env::block_timestamp()),
         });
         u64::from(id)
     }
@@ -107,29 +110,32 @@ impl Contract {
         }
     }
 
-    pub fn get_last_proposal_id(&self) -> u64 {
-        u64::from(self.proposals.len())
-    }
-
     pub fn get_policy(&self) -> Policy {
         Policy {
             proposal_bond: self.proposal_bond,
-            proposal_period: U64(7 * 24 * 60 * 60 * 1_000_000_000),
         }
     }
 
-    /// Every caller is council with a threshold of one: `VoteApprove` executes.
-    pub fn act_proposal(&mut self, id: u64, action: String) -> Promise {
-        assert_eq!(action, "VoteApprove", "only VoteApprove is mocked");
-        let proposal = self.proposal(id).clone();
+    /// Sputnik's signature: the kind is echoed back and must match.
+    pub fn act_proposal(
+        &mut self,
+        id: u64,
+        action: Action,
+        proposal: ProposalKind,
+        memo: Option<String>,
+    ) -> Promise {
+        assert!(action == Action::VoteApprove);
+        let _ = memo;
+        let stored = self.proposal(id).clone();
         assert!(
-            proposal.status == ProposalStatus::InProgress,
+            stored.status == ProposalStatus::InProgress,
             "proposal is not in progress"
         );
+        assert!(stored.kind == proposal, "ERR_WRONG_KIND");
         let ProposalKind::FunctionCall {
             receiver_id,
             actions,
-        } = proposal.kind;
+        } = stored.kind;
         let mut promise = Promise::new(receiver_id);
         for action in actions {
             promise = promise.function_call(

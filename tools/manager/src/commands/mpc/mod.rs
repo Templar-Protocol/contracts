@@ -9,13 +9,10 @@ use near_api::CryptoHash;
 use templar_gateway_client::Network;
 
 use crate::commands::signer::SignerArgs;
-use crate::mpc::{payload::PayloadKind, signer_contract::KeyType};
-
-/// ≈7 days of mainnet blocks: the default `proposal_period` of our DAOs.
-pub const DEFAULT_VALID_FOR_BLOCKS: u64 = 1_000_000;
-/// Above the contract's 15 Tgas floor; the remainder is refunded.
-pub const DEFAULT_SIGN_TGAS: u64 = 30;
-pub const DEFAULT_ADD_PROPOSAL_TGAS: u64 = 30;
+use crate::mpc::{
+    payload::PayloadKind,
+    signer_contract::{self, KeyType},
+};
 
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
@@ -41,18 +38,14 @@ pub struct MpcContractArgs {
     mpc_contract: Option<AccountId>,
     /// Curve of the derived key.
     #[arg(long, value_enum, default_value_t = KeyType::Ed25519, value_name = "CURVE")]
-    key_type: KeyType,
+    pub key_type: KeyType,
 }
 
 impl MpcContractArgs {
     pub fn contract_id(&self, network: Network) -> AccountId {
         self.mpc_contract
             .clone()
-            .unwrap_or_else(|| network.mpc_contract_id())
-    }
-
-    pub const fn key_type(&self) -> KeyType {
-        self.key_type
+            .unwrap_or_else(|| signer_contract::default_contract_id(network))
     }
 }
 
@@ -113,7 +106,8 @@ pub struct Propose {
     #[arg(long)]
     pub nonce: Option<u64>,
     /// How many blocks past the current head a delegate action stays relayable.
-    #[arg(long, default_value_t = DEFAULT_VALID_FOR_BLOCKS, value_name = "BLOCKS")]
+    /// The default is ≈7 days of mainnet blocks, our DAOs' `proposal_period`.
+    #[arg(long, default_value_t = 1_000_000, value_name = "BLOCKS")]
     pub valid_for_blocks: u64,
     /// Proposal description shown to voters.
     #[arg(long, default_value = "MPC signature request", value_name = "TEXT")]
@@ -124,8 +118,8 @@ pub struct Propose {
     /// Write the payload envelope here as well, for `show`/`relay --payload-file`.
     #[arg(long, value_name = "PATH")]
     pub out: Option<PathBuf>,
-    /// Gas the DAO attaches to `sign`.
-    #[arg(long, default_value_t = DEFAULT_SIGN_TGAS, value_name = "TGAS")]
+    /// Gas the DAO attaches to `sign`. The contract needs 15 and refunds the rest.
+    #[arg(long, default_value_t = 30, value_name = "TGAS")]
     pub sign_tgas: u64,
     #[command(flatten)]
     pub signer: SignerArgs,

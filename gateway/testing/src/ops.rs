@@ -2105,12 +2105,11 @@ impl SandboxHarness {
         let result = self
             .call_function(signer, contract_id, method_name, args)
             .await?;
-        let bytes = result
+        result
             .operation
             .final_outcome()
-            .and_then(|outcome| outcome.return_value.as_ref())
-            .with_context(|| format!("{contract_id}.{method_name} returned no value"))?;
-        serde_json::from_slice(&bytes.0)
+            .and_then(|outcome| outcome.return_value_json().transpose())
+            .with_context(|| format!("{contract_id}.{method_name} returned no value"))?
             .with_context(|| format!("failed to decode {contract_id}.{method_name} return value"))
     }
 

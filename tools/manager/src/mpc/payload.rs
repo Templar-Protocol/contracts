@@ -64,43 +64,9 @@ pub enum Validity {
     BlockHash(CryptoHash),
 }
 
-/// When the signed artifact stops being accepted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Expiry {
-    MaxBlockHeight {
-        last_valid_block: u64,
-    },
-    BlockHash {
-        block_height: u64,
-        last_valid_block: u64,
-    },
-}
-
-impl Expiry {
-    pub const fn max_block_height(last_valid_block: u64) -> Self {
-        Self::MaxBlockHeight { last_valid_block }
-    }
-
-    pub const fn after_block(block_height: u64) -> Self {
-        Self::BlockHash {
-            block_height,
-            last_valid_block: block_height.saturating_add(TRANSACTION_VALIDITY_PERIOD_BLOCKS),
-        }
-    }
-
-    pub const fn last_valid_block(self) -> u64 {
-        match self {
-            Self::MaxBlockHeight { last_valid_block }
-            | Self::BlockHash {
-                last_valid_block, ..
-            } => last_valid_block,
-        }
-    }
-
-    pub const fn is_expired_at(self, head_height: u64) -> bool {
-        head_height > self.last_valid_block()
-    }
+/// The last block a transaction pinned to a block at `pinned_height` is accepted in.
+pub const fn transaction_last_valid_block(pinned_height: u64) -> u64 {
+    pinned_height.saturating_add(TRANSACTION_VALIDITY_PERIOD_BLOCKS)
 }
 
 /// The payload's fields, for review.
@@ -234,9 +200,7 @@ impl SignablePayload {
                     delegate_action: delegate_action(bytes)?,
                     signature,
                 };
-                Ok(Signed::DelegateAction(
-                    SignedDelegateActionInput::from_borsh_bytes(&borsh::to_vec(&signed)?)?,
-                ))
+                Ok(Signed::DelegateAction(signed.into()))
             }
             Self::Transaction { bytes } => Ok(Signed::Transaction(SignedTransaction::new(
                 signature,
@@ -313,18 +277,6 @@ mod tests {
         assert_eq!(decoded.public_key, secret.public_key());
         assert_eq!(decoded.actions, planned().actions);
         assert_eq!(decoded.validity, validity);
-    }
-
-    #[rstest]
-    #[case(Expiry::max_block_height(1_500), 1_500)]
-    #[case(Expiry::after_block(1_000), 1_000 + TRANSACTION_VALIDITY_PERIOD_BLOCKS)]
-    fn expiry_is_inclusive_of_its_last_block(
-        #[case] expiry: Expiry,
-        #[case] last_valid_block: u64,
-    ) {
-        assert_eq!(expiry.last_valid_block(), last_valid_block);
-        assert!(!expiry.is_expired_at(last_valid_block));
-        assert!(expiry.is_expired_at(last_valid_block + 1));
     }
 
     #[rstest]
