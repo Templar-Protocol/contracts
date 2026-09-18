@@ -38,12 +38,19 @@ impl Envelope {
         Ok(self)
     }
 
-    /// `text` followed by the envelope on its own marked line.
-    pub fn render_description(&self, text: &str) -> anyhow::Result<String> {
+    /// An operator's description may not carry the marker: a reader would take
+    /// that line for the payload.
+    pub fn check_description(text: &str) -> anyhow::Result<()> {
         anyhow::ensure!(
             !text.contains(DESCRIPTION_MARKER),
             "the description must not contain `{DESCRIPTION_MARKER}`; that line is the payload"
         );
+        Ok(())
+    }
+
+    /// `text` followed by the envelope on its own marked line.
+    pub fn render_description(&self, text: &str) -> anyhow::Result<String> {
+        Self::check_description(text)?;
         let json = serde_json::to_string(self).context("render the payload envelope")?;
         Ok(format!("{}\n\n{DESCRIPTION_MARKER}{json}", text.trim_end()))
     }

@@ -9,14 +9,16 @@ use near_api::types::{crypto::KeyType as NearKeyType, Signature};
 use serde::{Deserialize, Serialize};
 use templar_gateway_client::Network;
 
-/// The chain-signatures contract NEAR operates on each network.
-pub fn default_contract_id(network: Network) -> AccountId {
-    match network {
-        Network::Mainnet => "v1.signer",
-        Network::Testnet => "v1.signer-prod.testnet",
-    }
-    .parse()
-    .unwrap_or_else(|_| unreachable!("well-known account ids are valid"))
+/// `explicit`, or the chain-signatures contract NEAR operates on `network`.
+pub fn contract_id_or_default(explicit: Option<&AccountId>, network: Network) -> AccountId {
+    explicit.cloned().unwrap_or_else(|| {
+        match network {
+            Network::Mainnet => "v1.signer",
+            Network::Testnet => "v1.signer-prod.testnet",
+        }
+        .parse()
+        .unwrap_or_else(|_| unreachable!("well-known account ids are valid"))
+    })
 }
 
 /// The curve of the derived key, which the contract calls a signing domain.

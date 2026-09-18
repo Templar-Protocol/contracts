@@ -288,37 +288,44 @@ impl MpcFixture {
         })
     }
 
-    /// One `tmplrmgr` invocation against the sandbox.
-    async fn run(&self, args: &[&str]) -> anyhow::Result<()> {
+    /// One `tmplrmgr` invocation against the sandbox, signed by `signer` if
+    /// given (every harness account shares the fixed test key).
+    async fn run(
+        &self,
+        signer: Option<&templar_gateway_types::ManagedAccountId>,
+        args: &[&str],
+    ) -> anyhow::Result<()> {
+        let creds: &[&str] = match signer {
+            Some(signer) => &[
+                "--signer-id",
+                signer.as_str(),
+                "--secret-key",
+                &self.secret_key,
+            ],
+            None => &[],
+        };
         let invocation = ["tmplrmgr", "-q", "--rpc-url", &self.rpc_url]
             .into_iter()
-            .chain(args.iter().copied());
+            .chain(args.iter().copied())
+            .chain(creds.iter().copied());
         let cli = Cli::try_parse_from(invocation)?;
         let ctx = crate::context::build_context(&cli)?;
         crate::dispatch::dispatch(ctx, cli.command).await
     }
 
-    fn creds(&self, account: &templar_gateway_types::ManagedAccountId) -> [String; 4] {
-        [
-            "--signer-id".to_owned(),
-            account.to_string(),
-            "--secret-key".to_owned(),
-            self.secret_key.clone(),
-        ]
-    }
-
     async fn install_key(&self) -> anyhow::Result<()> {
-        let creds = self.creds(&self.controlled);
-        let mut args = vec![
-            "mpc",
-            "install-key",
-            "--dao",
-            self.dao.as_str(),
-            "--mpc-contract",
-            self.signer_id.as_str(),
-        ];
-        args.extend(creds.iter().map(String::as_str));
-        self.run(&args).await
+        self.run(
+            Some(&self.controlled),
+            &[
+                "mpc",
+                "install-key",
+                "--dao",
+                self.dao.as_str(),
+                "--mpc-contract",
+                self.signer_id.as_str(),
+            ],
+        )
+        .await
     }
 
     /// Write a `--print json` plan transferring `amount` from the controlled
@@ -473,24 +480,19 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
 
     // The plain key commands, on the same account, with a function-call key.
     let restricted_key = near_api::signer::generate_secret_key()?.public_key();
-    let controlled_creds = f.creds(&f.controlled);
-    let controlled_creds: Vec<&str> = controlled_creds.iter().map(String::as_str).collect();
     let restricted = restricted_key.to_string();
     f.run(
+        Some(&f.controlled),
         &[
-            &[
-                "account",
-                "add-key",
-                "--key",
-                &restricted,
-                "--receiver-id",
-                f.dao.as_str(),
-                "--method-name",
-                "act_proposal",
-            ][..],
-            &controlled_creds,
-        ]
-        .concat(),
+            "account",
+            "add-key",
+            "--key",
+            &restricted,
+            "--receiver-id",
+            f.dao.as_str(),
+            "--method-name",
+            "act_proposal",
+        ],
     )
     .await?;
     assert_eq!(
@@ -508,37 +510,35 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         }
     );
     f.run(
-        &[
-            &["account", "delete-key", "--key", &restricted][..],
-            &controlled_creds,
-        ]
-        .concat(),
+        Some(&f.controlled),
+        &["account", "delete-key", "--key", &restricted],
     )
     .await?;
-    assert!(client
+    let deleted = client
         .read(account::GetAccessKey {
             account_id: f.controlled.0.clone(),
             public_key: restricted_key.into(),
         })
         .await
-        .is_err());
+        .expect_err("the key is gone");
+    assert!(
+        deleted.to_string().contains("does not exist while viewing"),
+        "review tells a missing key from an RPC failure by this text: {deleted}"
+    );
 
     let amount = NearToken::from_near(3);
     let plan = f.plan(&beneficiary.0, amount)?;
-    let plan = plan.to_str().expect("utf-8 path");
-    let payload_file = f.dir.join("payload.json");
-    let payload_file = payload_file.to_str().expect("utf-8 path");
-    let proposer_creds = f.creds(&f.proposer);
-    let proposer_creds: Vec<&str> = proposer_creds.iter().map(String::as_str).collect();
+    let payload_path = f.dir.join("payload.json");
+    let payload_file = payload_path.to_str().expect("utf-8 path");
     let kind_flag = match kind {
         PayloadKind::DelegateAction => "delegate-action",
         PayloadKind::Transaction => "transaction",
     };
-    let propose_base = [
+    let propose: &[&str] = &[
         "mpc",
         "propose",
         "--plan",
-        plan,
+        plan.to_str().expect("utf-8 path"),
         "--dao",
         f.dao.as_str(),
         "--mpc-contract",
@@ -546,7 +546,7 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     ];
 
     let error = f
-        .run(&[&propose_base[..], &["--nonce", "1"], &proposer_creds].concat())
+        .run(Some(&f.proposer), &[propose, &["--nonce", "1"]].concat())
         .await
         .expect_err("a nonce the chain would reject is refused before the vote");
     assert!(
@@ -556,11 +556,11 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
 
     let blind_flag: &[&str] = if blind { &["--blind"] } else { &[] };
     f.run(
+        Some(&f.proposer),
         &[
-            &propose_base[..],
+            propose,
             &["--kind", kind_flag, "--out", payload_file],
             blind_flag,
-            &proposer_creds,
         ]
         .concat(),
     )
@@ -569,7 +569,7 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     let proposal = f.proposal(0).await?;
     let in_description = Envelope::from_description(&proposal.description)?;
     assert_eq!(in_description.is_some(), !blind, "{}", proposal.description);
-    let envelope = Envelope::read_file(std::path::Path::new(payload_file))?;
+    let envelope = Envelope::read_file(&payload_path)?;
     if let Some(published) = in_description {
         assert_eq!(published, envelope);
     }
@@ -580,42 +580,35 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         "the proposal asks for the hash of the payload it carries"
     );
 
-    let show_base = [
-        "mpc",
-        "show",
-        "--dao",
-        f.dao.as_str(),
-        "--proposal-id",
-        "0",
-        "--mpc-contract",
-        f.signer_id.as_str(),
-    ];
+    // The pieces every review command takes, named so a test can leave one out.
+    let target: &[&str] = &["--dao", f.dao.as_str(), "--proposal-id", "0"];
+    let mpc: &[&str] = &["--mpc-contract", f.signer_id.as_str()];
     let payload_arg: &[&str] = if blind {
         &["--payload-file", payload_file]
     } else {
         &[]
     };
+    let show = [&["mpc", "show"][..], target, mpc, payload_arg].concat();
     if blind {
         let error = f
-            .run(&show_base)
+            .run(None, &[&["mpc", "show"][..], target, mpc].concat())
             .await
             .expect_err("a blind proposal cannot be reviewed without the payload file");
         assert!(error.to_string().contains("--payload-file"), "{error}");
     }
     // A voter reviews before voting: the proposal is still in progress.
-    f.run(&[&show_base[..], payload_arg].concat()).await?;
+    f.run(None, &show).await?;
 
-    // Review is pinned to the network's MPC contract: a proposal calling any
-    // other contract — even one echoing the right key — is refused.
+    // Without `--mpc-contract` the review is pinned to the network's signer.
     let error = f
-        .run(&[&show_base[..6], payload_arg].concat())
+        .run(None, &[&["mpc", "show"][..], target, payload_arg].concat())
         .await
         .expect_err("the mock signer is not the network's MPC contract");
     assert!(error.to_string().contains("look-alike"), "{error}");
 
     // A payload that does not hash to what the proposal signs is refused,
     // whichever way it reaches the reviewer.
-    let decoy_file = f.dir.join("decoy.json");
+    let decoy_path = f.dir.join("decoy.json");
     Envelope::new(crate::mpc::payload::SignablePayload::build(
         crate::mpc::payload::BuildInputs {
             kind,
@@ -636,62 +629,52 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
             valid_for_blocks: 1_000,
         },
     )?)
-    .write_file(&decoy_file)?;
-    let decoy_arg = ["--payload-file", decoy_file.to_str().expect("utf-8 path")];
+    .write_file(&decoy_path)?;
+    let decoy: &[&str] = &["--payload-file", decoy_path.to_str().expect("utf-8 path")];
     let error = f
-        .run(&[&show_base[..], &decoy_arg].concat())
+        .run(None, &[&["mpc", "show"][..], target, mpc, decoy].concat())
         .await
         .expect_err("a decoy payload is refused");
     assert!(error.to_string().contains("hashes to"), "{error}");
 
     f.mpc_signs(hash).await?;
     let approve_tx = f.approve(0).await?;
-    f.run(&[&show_base[..], payload_arg].concat()).await?;
+    f.run(None, &show).await?;
 
     let before = f.balance(&beneficiary.0).await?;
-    let relayer_creds = f.creds(&relayer);
-    let relayer_creds: Vec<&str> = relayer_creds.iter().map(String::as_str).collect();
-    let executed = |command: &'static str| {
-        vec![
-            "mpc",
-            command,
-            "--dao",
-            f.dao.as_str(),
-            "--proposal-id",
-            "0",
-            "--tx-hash",
-            &approve_tx,
-            "--tx-signer",
-            f.proposer.as_str(),
-            "--mpc-contract",
-            f.signer_id.as_str(),
-        ]
-    };
-    // `relay` needs a fee payer's credentials; `broadcast` takes none.
-    let (send, signer_args, wrong, wrong_args): (&str, &[&str], &str, &[&str]) = match kind {
-        PayloadKind::DelegateAction => ("relay", &relayer_creds, "broadcast", &[]),
-        PayloadKind::Transaction => ("broadcast", &[], "relay", &relayer_creds),
+    let executed = [
+        target,
+        mpc,
+        &["--tx-hash", &approve_tx, "--tx-signer", f.proposer.as_str()],
+    ]
+    .concat();
+    // `relay` needs a fee payer; `broadcast` takes no credentials.
+    let (send, sender, wrong, wrong_sender) = match kind {
+        PayloadKind::DelegateAction => ("relay", Some(&relayer), "broadcast", None),
+        PayloadKind::Transaction => ("broadcast", None, "relay", Some(&relayer)),
     };
 
     let error = f
-        .run(&[&executed(wrong)[..], payload_arg, wrong_args].concat())
+        .run(
+            wrong_sender,
+            &[&["mpc", wrong][..], &executed, payload_arg].concat(),
+        )
         .await
         .expect_err("the other send command refuses this payload kind");
     assert!(error.to_string().contains("use `mpc "), "{error}");
 
     let error = f
-        .run(&[&executed(send)[..], &decoy_arg, signer_args].concat())
+        .run(sender, &[&["mpc", send][..], &executed, decoy].concat())
         .await
         .expect_err("a decoy payload never reaches the signature");
     assert!(error.to_string().contains("hashes to"), "{error}");
 
-    let send_args = [&executed(send)[..], payload_arg, signer_args].concat();
-    f.run(&send_args).await?;
+    let send_args = [&["mpc", send][..], &executed, payload_arg].concat();
+    f.run(sender, &send_args).await?;
 
-    // The nonce is spent now: a second send is refused before anything is
-    // broadcast, so a replay costs the relayer nothing.
+    // The nonce is spent now: a replay is refused before anything is broadcast.
     let error = f
-        .run(&send_args)
+        .run(sender, &send_args)
         .await
         .expect_err("a relayed payload cannot be sent twice");
     assert!(
@@ -716,25 +699,20 @@ async fn requires_sandbox_mpc_expired_payload_is_refused_before_broadcast() -> a
     let f = MpcFixture::start("expiry", NearToken::ZERO).await?;
     f.install_key().await?;
     let plan = f.plan(&f.proposer.0, NearToken::from_near(1))?;
-    let proposer_creds = f.creds(&f.proposer);
-    let proposer_creds: Vec<&str> = proposer_creds.iter().map(String::as_str).collect();
     f.run(
+        Some(&f.proposer),
         &[
-            &[
-                "mpc",
-                "propose",
-                "--plan",
-                plan.to_str().expect("utf-8 path"),
-                "--dao",
-                f.dao.as_str(),
-                "--mpc-contract",
-                f.signer_id.as_str(),
-                "--valid-for-blocks",
-                "5",
-            ][..],
-            &proposer_creds,
-        ]
-        .concat(),
+            "mpc",
+            "propose",
+            "--plan",
+            plan.to_str().expect("utf-8 path"),
+            "--dao",
+            f.dao.as_str(),
+            "--mpc-contract",
+            f.signer_id.as_str(),
+            "--valid-for-blocks",
+            "5",
+        ],
     )
     .await?;
 
@@ -751,24 +729,21 @@ async fn requires_sandbox_mpc_expired_payload_is_refused_before_broadcast() -> a
 
     let error = f
         .run(
+            Some(&f.proposer),
             &[
-                &[
-                    "mpc",
-                    "relay",
-                    "--dao",
-                    f.dao.as_str(),
-                    "--proposal-id",
-                    "0",
-                    "--tx-hash",
-                    &approve_tx,
-                    "--tx-signer",
-                    f.proposer.as_str(),
-                    "--mpc-contract",
-                    f.signer_id.as_str(),
-                ][..],
-                &proposer_creds,
-            ]
-            .concat(),
+                "mpc",
+                "relay",
+                "--dao",
+                f.dao.as_str(),
+                "--proposal-id",
+                "0",
+                "--mpc-contract",
+                f.signer_id.as_str(),
+                "--tx-hash",
+                &approve_tx,
+                "--tx-signer",
+                f.proposer.as_str(),
+            ],
         )
         .await
         .expect_err("an approved but expired payload is refused before broadcast");

@@ -24,7 +24,7 @@ pub enum MpcNs {
     /// Propose that the DAO have the MPC sign a planned transaction.
     Propose(Propose),
     /// Decode and verify what an MPC signing proposal would sign.
-    Show(Show),
+    Show(ReviewArgs),
     /// Relay an executed proposal's signed delegate action, paying its gas.
     Relay(Relay),
     /// Broadcast an executed proposal's signed transaction.
@@ -43,9 +43,7 @@ pub struct MpcContractArgs {
 
 impl MpcContractArgs {
     pub fn contract_id(&self, network: Network) -> AccountId {
-        self.mpc_contract
-            .clone()
-            .unwrap_or_else(|| signer_contract::default_contract_id(network))
+        signer_contract::contract_id_or_default(self.mpc_contract.as_ref(), network)
     }
 }
 
@@ -144,16 +142,8 @@ pub struct ReviewArgs {
 
 impl ReviewArgs {
     pub fn mpc_contract_id(&self, network: Network) -> AccountId {
-        self.mpc_contract
-            .clone()
-            .unwrap_or_else(|| signer_contract::default_contract_id(network))
+        signer_contract::contract_id_or_default(self.mpc_contract.as_ref(), network)
     }
-}
-
-#[derive(Args, Debug)]
-pub struct Show {
-    #[command(flatten)]
-    pub review: ReviewArgs,
 }
 
 /// An executed proposal and the transaction that executed it.

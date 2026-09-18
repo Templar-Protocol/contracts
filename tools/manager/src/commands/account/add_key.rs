@@ -17,7 +17,8 @@ pub struct AddKey {
     /// Methods the restricted key may call (repeatable). Omit to allow every method.
     #[arg(long, requires = "receiver_id", value_name = "METHOD")]
     method_name: Vec<ContractMethodName>,
-    /// Gas budget of the restricted key. Omit for unlimited.
+    /// NEAR the restricted key may spend on gas in total (e.g. `0.25 NEAR`).
+    /// Omit for unlimited.
     #[arg(long, requires = "receiver_id", value_name = "AMOUNT")]
     allowance: Option<NearToken>,
     #[command(flatten)]

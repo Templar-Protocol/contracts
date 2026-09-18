@@ -19,11 +19,8 @@ use templar_gateway_types::{
 };
 
 use crate::commands::mpc::{
-    Broadcast, DeriveKey, ExecutedProposalArgs, InstallKey, Propose, Relay, ReviewArgs, Show,
+    Broadcast, DeriveKey, ExecutedProposalArgs, InstallKey, Propose, Relay, ReviewArgs,
 };
-
-/// ≈7 days of mainnet blocks: our DAOs' default `proposal_period`.
-const DEFAULT_VALID_FOR_BLOCKS: u64 = 1_000_000;
 use crate::commands::signer::{Authorization, Mode};
 use crate::context::{print_json, sputnik_function_call, CliContext};
 use crate::mpc::{
@@ -40,6 +37,9 @@ use crate::mpc::{
         DerivedPublicKeyArgs, KeyType, Payload, SignArgs, SignRequest, SignatureResponse,
     },
 };
+
+/// ≈7 days of mainnet blocks: our DAOs' default `proposal_period`.
+const DEFAULT_VALID_FOR_BLOCKS: u64 = 1_000_000;
 
 #[derive(Serialize)]
 struct DerivedKeyOutput {
@@ -146,6 +146,7 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
         envelope.write_file(out)?;
     }
     let description = if args.blind {
+        Envelope::check_description(&args.description)?;
         args.description
     } else {
         envelope.render_description(&args.description)?
@@ -172,9 +173,6 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
         "built the payload the DAO will have signed"
     );
     if let Mode::Plan(_) = authorization.mode() {
-        // The plan is executed later by someone else, but the payload is
-        // already bound to this nonce and block: a transaction kind expires
-        // long before a typical vote.
         tracing::warn!(
             nonce,
             last_valid_block,
@@ -236,24 +234,48 @@ async fn installed_derived_key(
     controlled: &AccountId,
 ) -> anyhow::Result<(PublicKey, u64)> {
     let public_key = derived_public_key(ctx, mpc_contract_id, key_type, dao, path).await?;
-    let access_key = ctx
-        .client
-        .read(account::GetAccessKey {
-            account_id: controlled.clone(),
-            public_key: public_key.into(),
-        })
-        .await
+    let next_nonce = full_access_next_nonce(ctx, controlled, public_key)
+        .await?
         .with_context(|| {
             format!(
-                "{controlled} has no access key {public_key}; install it with \
+                "{controlled} has no full-access key {public_key}; install it with \
                  `tmplrmgr mpc install-key --dao {dao} --path {path} --signer-id {controlled} …`"
             )
         })?;
-    anyhow::ensure!(
-        access_key.permission == account::AccessKeyPermission::FullAccess,
-        "{public_key} on {controlled} is a function-call key; MPC signing needs full access"
-    );
-    Ok((public_key, access_key.nonce + 1))
+    Ok((public_key, next_nonce))
+}
+
+/// The next nonce of `public_key` on `account`, or `None` when the account
+/// does not hold it as a full-access key. Any other failure is an error: a
+/// flaky RPC must not read as a missing key.
+async fn full_access_next_nonce(
+    ctx: &CliContext,
+    account: &AccountId,
+    public_key: PublicKey,
+) -> anyhow::Result<Option<u64>> {
+    match ctx
+        .client
+        .read(account::GetAccessKey {
+            account_id: account.clone(),
+            public_key: public_key.into(),
+        })
+        .await
+    {
+        Ok(key) if key.permission == account::AccessKeyPermission::FullAccess => {
+            Ok(Some(key.nonce + 1))
+        }
+        Ok(_) => Ok(None),
+        Err(error) if is_unknown_access_key(&error) => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("read {account}'s key {public_key}")),
+    }
+}
+
+/// The gateway erases the RPC's typed error, so the text is all that is left:
+/// nearcore reports a missing key either as the `UnknownAccessKey` variant or,
+/// in its legacy in-`result` form, as "does not exist while viewing".
+fn is_unknown_access_key(error: &templar_gateway_core::GatewayError) -> bool {
+    let text = error.to_string();
+    text.contains("UnknownAccessKey") || text.contains("does not exist while viewing")
 }
 
 /// The `add_proposal` call that asks the DAO to have `request` signed.
@@ -298,8 +320,8 @@ fn sign_proposal_kind(
     ))
 }
 
-pub(super) async fn show(ctx: CliContext, args: Show) -> anyhow::Result<()> {
-    print_json(&review(&ctx, &args.review).await?.output)
+pub(super) async fn show(ctx: CliContext, args: ReviewArgs) -> anyhow::Result<()> {
+    print_json(&review(&ctx, &args).await?.output)
 }
 
 pub(super) async fn relay(ctx: CliContext, args: Relay) -> anyhow::Result<()> {
@@ -378,7 +400,6 @@ async fn signed_payload(
          superseded by a newer proposal",
         output.payload.nonce
     );
-    let executed_proposal_id = proposal_id;
 
     let tx = ctx
         .client
@@ -389,8 +410,7 @@ async fn signed_payload(
             encoding: tx::ValueEncoding::Json,
         })
         .await?;
-    // One vote can execute several signing proposals; the signature that
-    // verifies over this payload's hash is the one that belongs to it.
+    // One vote can execute several signing proposals; keep the one that verifies over this payload.
     let mut last_error = None;
     for receipt in &tx.receipts {
         if receipt.executor_id != output.mpc_contract_id {
@@ -399,11 +419,9 @@ async fn signed_payload(
         let Some(tx::ReturnValue::Json(value)) = &receipt.return_value else {
             continue;
         };
-        let Ok(response) = SignatureResponse::deserialize(value) else {
-            continue;
-        };
-        match response
-            .into_signature()
+        match SignatureResponse::deserialize(value)
+            .context("decode the MPC's response")
+            .and_then(SignatureResponse::into_signature)
             .and_then(|signature| review.payload.sign(signature, output.derived_public_key))
         {
             Ok(signed) => return Ok(signed),
@@ -413,7 +431,7 @@ async fn signed_payload(
     match last_error {
         None => anyhow::bail!(
             "transaction {} has no `sign` receipt from {} returning a signature; is it the \
-             transaction that executed proposal {executed_proposal_id}?",
+             transaction that executed proposal {proposal_id}?",
             executed.tx_hash,
             output.mpc_contract_id,
         ),
@@ -474,10 +492,8 @@ struct Review {
 }
 
 async fn review(ctx: &CliContext, args: &ReviewArgs) -> anyhow::Result<Review> {
-    let ReviewArgs {
-        dao, proposal_id, ..
-    } = args;
-    let proposal_id = *proposal_id;
+    let dao = &args.dao;
+    let proposal_id = args.proposal_id;
     let proposal: ProposalView = ctx
         .view(
             dao,
@@ -529,18 +545,8 @@ async fn review(ctx: &CliContext, args: &ReviewArgs) -> anyhow::Result<Review> {
         payload.public_key,
         request.path
     );
-    // A missing key is a fact to report, not an error: the proposal stays
-    // reviewable after the key is rotated out.
-    let key_next_nonce = ctx
-        .client
-        .read(account::GetAccessKey {
-            account_id: payload.signer_id.clone(),
-            public_key: derived_public_key.into(),
-        })
-        .await
-        .ok()
-        .filter(|key| key.permission == account::AccessKeyPermission::FullAccess)
-        .map(|key| key.nonce + 1);
+    let key_next_nonce =
+        full_access_next_nonce(ctx, &payload.signer_id, derived_public_key).await?;
 
     Ok(Review {
         output: ReviewOutput {

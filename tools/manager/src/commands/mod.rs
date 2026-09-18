@@ -48,18 +48,22 @@ pub fn write_atomically(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
     let temporary = path.with_file_name(format!(".{name}.{}.{unique}.tmp", std::process::id()));
-    {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .with_context(|| format!("create {}", temporary.display()))?;
-        file.write_all(bytes)
-            .with_context(|| format!("write {}", temporary.display()))?;
-        file.sync_all()
-            .with_context(|| format!("flush {}", temporary.display()))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .with_context(|| format!("create {}", temporary.display()))?;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("write {}", temporary.display()))
+        .and_then(|()| {
+            std::fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
     }
-    std::fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))?;
+    written?;
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
