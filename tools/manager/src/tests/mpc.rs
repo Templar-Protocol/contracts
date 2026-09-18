@@ -585,7 +585,17 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         .expect_err("a decoy payload never reaches the signature");
     assert!(error.to_string().contains("hashes to"), "{error}");
 
-    run(send).await?;
+    run(send.clone()).await?;
+
+    // The nonce is spent now: a second send is refused before anything is
+    // broadcast, so a replay costs the relayer nothing.
+    let error = run(send)
+        .await
+        .expect_err("a relayed payload cannot be sent twice");
+    assert!(
+        error.to_string().contains("already signed at nonce"),
+        "{error}"
+    );
 
     let after = client
         .read(account::Get {

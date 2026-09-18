@@ -336,6 +336,12 @@ async fn signed_payload(
         output.expiry.last_valid_block(),
         output.head_height
     );
+    anyhow::ensure!(
+        !output.nonce_spent,
+        "the derived key has already signed at nonce {} or later: this payload was relayed, or \
+         superseded by a newer proposal",
+        output.payload.nonce
+    );
 
     let tx = ctx
         .client
@@ -425,6 +431,9 @@ struct ReviewOutput {
     expiry: Expiry,
     head_height: u64,
     expired: bool,
+    /// The derived key has already signed at this nonce or a later one: the
+    /// payload was relayed, or superseded by another proposal.
+    nonce_spent: bool,
 }
 
 struct Review {
@@ -477,8 +486,15 @@ async fn review(
         hex::encode(expected_hash)
     );
     let payload = envelope.payload.decode()?;
-    let derived_public_key =
-        derived_public_key(ctx, &mpc_contract_id, key_type, dao, &request.path).await?;
+    let (derived_public_key, key_next_nonce) = installed_derived_key(
+        ctx,
+        &mpc_contract_id,
+        key_type,
+        dao,
+        &request.path,
+        &payload.signer_id,
+    )
+    .await?;
     anyhow::ensure!(
         payload.public_key == derived_public_key,
         "the payload is built for key {} but {dao} derives {derived_public_key} at path `{}`",
@@ -504,6 +520,7 @@ async fn review(
         }
     };
     let head_height = ctx.client.read(chain::GetBlock::default()).await?.height;
+    let nonce_spent = payload.nonce < key_next_nonce;
 
     Ok(Review {
         output: ReviewOutput {
@@ -524,6 +541,7 @@ async fn review(
             expiry,
             expired: expiry.is_expired_at(head_height),
             head_height,
+            nonce_spent,
         },
         envelope,
     })
