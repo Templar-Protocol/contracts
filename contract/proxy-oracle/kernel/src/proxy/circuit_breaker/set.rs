@@ -580,8 +580,13 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
         let mut blocking_breaker_ids = vec![];
 
         for (breaker_id, breaker) in &mut self.0.breakers {
-            if breaker.is_armed_at(now) && breaker.breaker.should_trip(proposed_accepted_history) {
-                events.push(breaker.trip(*breaker_id, price_update, now));
+            if let Some(event) = breaker.apply_armed_transition(
+                *breaker_id,
+                proposed_accepted_history,
+                price_update,
+                now,
+            ) {
+                events.push(event);
             }
             if breaker.is_blocking() {
                 blocking_breaker_ids.push(*breaker_id);
@@ -626,6 +631,20 @@ impl<R> CircuitBreakerState<R> {
 }
 
 impl<R: CircuitBreakerRule> CircuitBreakerState<R> {
+    pub(crate) fn apply_armed_transition(
+        &mut self,
+        breaker_id: u32,
+        proposed_accepted_history: &RingBuffer<Observation>,
+        price_update: Observation,
+        now: Nanoseconds,
+    ) -> Option<CircuitBreakerEvent> {
+        if self.is_armed_at(now) && self.breaker.should_trip(proposed_accepted_history) {
+            Some(self.trip(breaker_id, price_update, now))
+        } else {
+            None
+        }
+    }
+
     fn is_armed_at(&self, now: Nanoseconds) -> bool {
         matches!(
             self.status,
