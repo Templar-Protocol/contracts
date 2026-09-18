@@ -1,0 +1,129 @@
+name: Kani / Proxy Oracle
+
+on:
+  schedule:
+    # Nightly verification on the default branch.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - ".github/workflows/kani-proxy-oracle.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "contract/proxy-oracle/kernel/**"
+      - "primitives/**"
+
+concurrency:
+  group: kani-proxy-oracle-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  KANI_VERSION: "0.67.0"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+# Harnesses are solved serially within a job; each job holds a group that measures
+# under ~8 minutes locally so a 2x slower hosted runner still fits its timeout.
+jobs:
+  aggregation:
+    name: Aggregation
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run freshness, median rank, and priority resolution proofs
+        uses: model-checking/kani-github-action@2534b7aeb3c6b4b0a5ecc3981bb3e63d47b5b126
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: >-
+            -p templar-proxy-oracle-kernel
+            --harness freshness_matches_optional_inclusive_limits
+            --harness median_low_index_satisfies_weighted_rank
+            --harness median_high_index_satisfies_weighted_rank
+            --harness priority_resolve_selects_first_surviving_source
+
+  circuit-breaker-pipeline:
+    name: Circuit Breaker Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run production pipeline and stepwise rule proofs
+        uses: model-checking/kani-github-action@2534b7aeb3c6b4b0a5ecc3981bb3e63d47b5b126
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: >-
+            -p templar-proxy-oracle-kernel
+            --harness armed_breaker_trips_once_and_stays_blocking
+            --harness stepwise_matches_strict_relative_reference
+
+  monotonic-run:
+    name: Monotonic Run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run monotonic run rule proof
+        uses: model-checking/kani-github-action@2534b7aeb3c6b4b0a5ecc3981bb3e63d47b5b126
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: >-
+            -p templar-proxy-oracle-kernel
+            --harness monotonic_matches_significant_suffix_reference
+
+  windowed-mean:
+    name: Windowed Mean
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run windowed mean rule proof
+        uses: model-checking/kani-github-action@2534b7aeb3c6b4b0a5ecc3981bb3e63d47b5b126
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: >-
+            -p templar-proxy-oracle-kernel
+            --harness windowed_matches_strict_mean_reference
+
+  windowed-lookback:
+    name: Windowed Lookback
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run windowed lookback rule proof
+        uses: model-checking/kani-github-action@2534b7aeb3c6b4b0a5ecc3981bb3e63d47b5b126
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: >-
+            -p templar-proxy-oracle-kernel
+            --harness windowed_lookback_uses_offset_reference

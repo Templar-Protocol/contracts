@@ -24,3 +24,6 @@ mod price;
 pub use price::Price;
 pub mod primitive;
 pub mod proxy;
+
+#[cfg(kani)]
+mod kani_proofs;
