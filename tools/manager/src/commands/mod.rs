@@ -44,7 +44,10 @@ pub fn write_atomically(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<
         .file_name()
         .and_then(|name| name.to_str())
         .with_context(|| format!("{} is not a file path", path.display()))?;
-    let temporary = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let temporary = path.with_file_name(format!(".{name}.{}.{unique}.tmp", std::process::id()));
     {
         let mut file = std::fs::OpenOptions::new()
             .write(true)

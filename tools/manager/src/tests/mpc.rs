@@ -117,7 +117,7 @@ fn relay_needs_a_relayer_and_broadcast_needs_none() {
     else {
         panic!("expected Mpc::Relay")
     };
-    assert_eq!(relay.executed.proposal_id, 7);
+    assert_eq!(relay.executed.review.proposal_id, 7);
     assert_eq!(relay.executed.tx_signer.as_str(), "voter.testnet");
 
     let Command::Mpc {
@@ -133,7 +133,7 @@ fn relay_needs_a_relayer_and_broadcast_needs_none() {
     else {
         panic!("expected Mpc::Broadcast")
     };
-    assert_eq!(broadcast.executed.proposal_id, 7);
+    assert_eq!(broadcast.executed.review.proposal_id, 7);
     assert!(broadcast.print);
 }
 
@@ -580,7 +580,16 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         "the proposal asks for the hash of the payload it carries"
     );
 
-    let show_base = ["mpc", "show", "--dao", f.dao.as_str(), "--proposal-id", "0"];
+    let show_base = [
+        "mpc",
+        "show",
+        "--dao",
+        f.dao.as_str(),
+        "--proposal-id",
+        "0",
+        "--mpc-contract",
+        f.signer_id.as_str(),
+    ];
     let payload_arg: &[&str] = if blind {
         &["--payload-file", payload_file]
     } else {
@@ -595,6 +604,14 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     }
     // A voter reviews before voting: the proposal is still in progress.
     f.run(&[&show_base[..], payload_arg].concat()).await?;
+
+    // Review is pinned to the network's MPC contract: a proposal calling any
+    // other contract — even one echoing the right key — is refused.
+    let error = f
+        .run(&[&show_base[..6], payload_arg].concat())
+        .await
+        .expect_err("the mock signer is not the network's MPC contract");
+    assert!(error.to_string().contains("look-alike"), "{error}");
 
     // A payload that does not hash to what the proposal signs is refused,
     // whichever way it reaches the reviewer.
@@ -646,6 +663,8 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
             &approve_tx,
             "--tx-signer",
             f.proposer.as_str(),
+            "--mpc-contract",
+            f.signer_id.as_str(),
         ]
     };
     // `relay` needs a fee payer's credentials; `broadcast` takes none.
@@ -744,6 +763,8 @@ async fn requires_sandbox_mpc_expired_payload_is_refused_before_broadcast() -> a
                     &approve_tx,
                     "--tx-signer",
                     f.proposer.as_str(),
+                    "--mpc-contract",
+                    f.signer_id.as_str(),
                 ][..],
                 &proposer_creds,
             ]

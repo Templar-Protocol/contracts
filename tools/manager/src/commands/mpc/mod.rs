@@ -106,9 +106,10 @@ pub struct Propose {
     #[arg(long)]
     pub nonce: Option<u64>,
     /// How many blocks past the current head a delegate action stays relayable.
-    /// The default is ≈7 days of mainnet blocks, our DAOs' `proposal_period`.
-    #[arg(long, default_value_t = 1_000_000, value_name = "BLOCKS")]
-    pub valid_for_blocks: u64,
+    /// Defaults to ≈7 days of mainnet blocks, our DAOs' `proposal_period`. A
+    /// transaction's validity is fixed by the protocol, so this is refused for it.
+    #[arg(long, value_name = "BLOCKS")]
+    pub valid_for_blocks: Option<u64>,
     /// Proposal description shown to voters.
     #[arg(long, default_value = "MPC signature request", value_name = "TEXT")]
     pub description: String,
@@ -125,8 +126,9 @@ pub struct Propose {
     pub signer: SignerArgs,
 }
 
-#[derive(Args, Debug)]
-pub struct Show {
+/// A proposal to review, and the MPC contract it must call.
+#[derive(Args, Clone, Debug)]
+pub struct ReviewArgs {
     #[arg(long, value_name = "ACCOUNT_ID")]
     pub dao: AccountId,
     #[arg(long)]
@@ -134,18 +136,31 @@ pub struct Show {
     /// Read the payload from this file instead of the proposal description.
     #[arg(long, value_name = "PATH")]
     pub payload_file: Option<PathBuf>,
+    /// The MPC signer contract the proposal must call. Defaults to the
+    /// network's; a proposal calling anything else is refused.
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    mpc_contract: Option<AccountId>,
+}
+
+impl ReviewArgs {
+    pub fn mpc_contract_id(&self, network: Network) -> AccountId {
+        self.mpc_contract
+            .clone()
+            .unwrap_or_else(|| signer_contract::default_contract_id(network))
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct Show {
+    #[command(flatten)]
+    pub review: ReviewArgs,
 }
 
 /// An executed proposal and the transaction that executed it.
 #[derive(Args, Clone, Debug)]
 pub struct ExecutedProposalArgs {
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    pub dao: AccountId,
-    #[arg(long)]
-    pub proposal_id: u64,
-    /// Read the payload from this file instead of the proposal description.
-    #[arg(long, value_name = "PATH")]
-    pub payload_file: Option<PathBuf>,
+    #[command(flatten)]
+    pub review: ReviewArgs,
     /// The transaction that executed the proposal (its `act_proposal` vote).
     #[arg(long, value_name = "HASH")]
     pub tx_hash: CryptoHash,
