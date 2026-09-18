@@ -71,9 +71,19 @@ pub struct DeriveKey {
     pub mpc: MpcContractArgs,
     #[command(flatten)]
     pub derivation: DerivationArgs,
-    /// The account the derived key controls (names the default path).
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    pub account_id: AccountId,
+    /// The account the derived key controls, which names the default path.
+    #[arg(long, value_name = "ACCOUNT_ID", required_unless_present = "path")]
+    pub account_id: Option<AccountId>,
+}
+
+impl DeriveKey {
+    pub fn path(&self) -> String {
+        match (&self.derivation.path, &self.account_id) {
+            (Some(path), _) => path.clone(),
+            (None, Some(account_id)) => self.derivation.path_for(account_id),
+            (None, None) => unreachable!("clap requires --account-id without --path"),
+        }
+    }
 }
 
 #[derive(Args, Debug)]

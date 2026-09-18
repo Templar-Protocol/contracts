@@ -40,6 +40,9 @@ use crate::mpc::{
 
 /// ≈7 days of mainnet blocks: our DAOs' default `proposal_period`.
 const DEFAULT_VALID_FOR_BLOCKS: u64 = 1_000_000;
+/// nearcore's `AccessKey::ACCESS_KEY_NONCE_RANGE_MULTIPLIER`: a nonce must stay
+/// below `(block_height + 1) × this`.
+const NONCE_RANGE_PER_BLOCK: u64 = 1_000_000;
 /// A public payload lives in the DAO's storage (≈1 NEAR per 100 KiB) and
 /// inside one `add_proposal` transaction; contract code goes `--blind`.
 const MAX_PUBLIC_DESCRIPTION_BYTES: usize = 64 * 1024;
@@ -55,7 +58,7 @@ struct DerivedKeyOutput {
 
 pub(super) async fn derive_key(ctx: CliContext, args: DeriveKey) -> anyhow::Result<()> {
     let mpc_contract_id = args.mpc.contract_id(ctx.network());
-    let path = args.derivation.path_for(&args.account_id);
+    let path = args.path();
     let public_key = derived_public_key(
         &ctx,
         &mpc_contract_id,
@@ -131,6 +134,13 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
         "--nonce {nonce} is below the key's next nonce {next_nonce}; the chain would reject the \
          signed result after the DAO has voted on it"
     );
+    let nonce_ceiling = (block.height + 1) * NONCE_RANGE_PER_BLOCK;
+    anyhow::ensure!(
+        nonce < nonce_ceiling,
+        "--nonce {nonce} is at or above the chain's ceiling {nonce_ceiling} for block {}; the \
+         chain would reject the signed result as NonceTooLarge",
+        block.height
+    );
     let valid_for_blocks = valid_for_blocks(args.kind, args.valid_for_blocks)?;
     let last_valid_block = block.height.saturating_add(valid_for_blocks);
 
@@ -145,10 +155,10 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
     let hash = payload.hash()?;
     let payload_hash = hex::encode(hash);
     let envelope = Envelope::new(payload);
+    let description = proposal_description(&envelope, args.description, args.blind)?;
     if let Some(out) = &args.out {
         envelope.write_file(out)?;
     }
-    let description = proposal_description(&envelope, args.description, args.blind)?;
 
     let add_proposal = add_proposal_call(
         &dao,
@@ -252,7 +262,7 @@ async fn installed_derived_key(
         .await?
         .with_context(|| {
             format!(
-                "{controlled} has no full-access key {public_key}; install it with \
+                "{controlled} has no access key {public_key}; install it with \
                  `tmplrmgr mpc install-key --dao {dao} --path {path} --signer-id {controlled} …`"
             )
         })?;
@@ -260,8 +270,8 @@ async fn installed_derived_key(
 }
 
 /// The next nonce of `public_key` on `account`, or `None` when the account
-/// does not hold it as a full-access key. Any other failure is an error: a
-/// flaky RPC must not read as a missing key.
+/// does not hold it. A downgraded key and a failed RPC are errors: neither
+/// must read as a missing key.
 async fn full_access_next_nonce(
     ctx: &CliContext,
     account: &AccountId,
@@ -278,7 +288,9 @@ async fn full_access_next_nonce(
         Ok(key) if key.permission == account::AccessKeyPermission::FullAccess => {
             Ok(Some(key.nonce + 1))
         }
-        Ok(_) => Ok(None),
+        Ok(_) => anyhow::bail!(
+            "{public_key} on {account} is a function-call key; MPC signing needs full access"
+        ),
         Err(error) if is_unknown_access_key(&error) => Ok(None),
         Err(error) => Err(error).with_context(|| format!("read {account}'s key {public_key}")),
     }

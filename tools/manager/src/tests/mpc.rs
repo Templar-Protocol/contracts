@@ -185,6 +185,32 @@ fn add_key_defaults_to_full_access_and_restricts_with_receiver_id() {
     assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
 }
 
+/// `--account-id` only names the default path, so an explicit `--path` lifts it.
+#[test]
+fn derive_key_needs_an_account_only_for_the_default_path() {
+    let Command::Mpc {
+        command: MpcNs::DeriveKey(derive),
+    } = Cli::try_parse_from([
+        "tmplrmgr",
+        "mpc",
+        "derive-key",
+        "--dao",
+        "dao.testnet",
+        "--path",
+        "custom",
+    ])
+    .expect("an explicit path needs no account")
+    .command
+    else {
+        panic!("expected Mpc::DeriveKey")
+    };
+    assert_eq!(derive.path(), "custom");
+
+    let error = Cli::try_parse_from(["tmplrmgr", "mpc", "derive-key", "--dao", "dao.testnet"])
+        .expect_err("neither path nor account");
+    assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+}
+
 #[test]
 fn install_key_derives_at_the_conventional_path_by_default() {
     let Command::Mpc {
