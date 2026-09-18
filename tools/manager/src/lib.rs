@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod context;
 mod dispatch;
+mod mpc;
 mod proxy;
 mod report;
 mod resolve;

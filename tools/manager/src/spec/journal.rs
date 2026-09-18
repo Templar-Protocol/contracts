@@ -83,10 +83,6 @@ impl Journal {
     }
 
     /// Record an entry and persist it before the next step runs.
-    ///
-    /// Written through a temp file, fsynced, renamed, then the directory
-    /// fsynced: a truncating write risks the whole history on every step, and a
-    /// rename alone survives a process crash but not machine loss.
     pub fn record(&mut self, path: &Path, entry: Entry) -> anyhow::Result<()> {
         match self
             .entries
@@ -98,33 +94,8 @@ impl Journal {
         }
 
         let rendered = serde_json::to_string_pretty(self).context("render the journal")?;
-        let temporary = path.with_extension("tmp");
-
-        {
-            use std::io::Write as _;
-            let mut file = std::fs::File::create(&temporary)
-                .with_context(|| format!("create {}", temporary.display()))?;
-            file.write_all(format!("{rendered}\n").as_bytes())
-                .with_context(|| format!("write {}", temporary.display()))?;
-            file.sync_all()
-                .with_context(|| format!("flush {}", temporary.display()))?;
-        }
-
-        std::fs::rename(&temporary, path)
-            .with_context(|| format!("replace the journal at {}", path.display()))?;
-
-        // Durability of the rename itself. Best-effort: a directory that cannot
-        // be opened or synced (some filesystems refuse it) must not fail a step
-        // whose record is already written and renamed into place.
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            if let Ok(dir) = std::fs::File::open(parent) {
-                let _ = dir.sync_all();
-            }
-        }
-        Ok(())
+        crate::commands::write_atomically(path, format!("{rendered}\n").as_bytes())
+            .with_context(|| format!("replace the journal at {}", path.display()))
     }
 
     /// Which steps of `file` still have to run.

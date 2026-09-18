@@ -109,6 +109,28 @@ impl CliContext {
         Ok((account_id, client, public_key))
     }
 
+    /// Call a contract view method and decode its JSON return value.
+    pub(crate) async fn view<T: serde::de::DeserializeOwned>(
+        &self,
+        contract_id: &near_account_id::AccountId,
+        method_name: &str,
+        args: &impl Serialize,
+    ) -> anyhow::Result<T> {
+        let result = self
+            .client
+            .read(templar_gateway_methods_spec::contract::ViewFunction {
+                contract_id: contract_id.clone(),
+                method_name: templar_gateway_types::ContractMethodName(method_name.to_owned()),
+                args: templar_gateway_types::common::ContractArgs::Json(serde_json::to_value(
+                    args,
+                )?),
+            })
+            .await
+            .with_context(|| format!("call {contract_id}.{method_name}"))?;
+        serde_json::from_value(result.value)
+            .with_context(|| format!("decode {contract_id}.{method_name}'s return value"))
+    }
+
     /// Dispatch a read and print its JSON result.
     pub(crate) async fn read<S>(&self, request: S) -> anyhow::Result<()>
     where
@@ -225,8 +247,12 @@ impl CliContext {
     /// carrying every step's hash, still goes to stdout).
     pub(crate) fn report_tx(&self, result: &WriteOperationResult) {
         if let Some(tx_hash) = result.operation.latest_tx_hash() {
-            tracing::info!("tx: {}{}", self.transaction_url_prefix, tx_hash);
+            self.report_tx_hash(tx_hash);
         }
+    }
+
+    pub(crate) fn report_tx_hash(&self, tx_hash: templar_gateway_types::CryptoHash) {
+        tracing::info!("tx: {}{}", self.transaction_url_prefix, tx_hash);
     }
 
     /// Report an intermediate write's tx link, then fail if it reverted — the
@@ -343,7 +369,7 @@ pub(crate) fn single_transaction(plan: OperationPlan) -> anyhow::Result<PlannedT
     Ok(transaction)
 }
 
-fn sputnik_function_call(
+pub(crate) fn sputnik_function_call(
     transaction: PlannedTransaction,
 ) -> anyhow::Result<sputnikdao2::ProposalKind> {
     let actions = transaction

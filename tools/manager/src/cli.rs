@@ -8,8 +8,8 @@ use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
 
 use super::commands::signer::SignerArgs;
 use super::commands::{
-    AccountNs, ContractNs, FtNs, MarketNs, OracleNs, OwnerNs, PatchNs, ProxyOracleNs, PythNs,
-    RecoverNep141, RedstoneNs, RegistryNs, SpecNs, StorageNs,
+    AccountNs, ContractNs, FtNs, MarketNs, MpcNs, OracleNs, OwnerNs, PatchNs, ProxyOracleNs,
+    PythNs, RecoverNep141, RedstoneNs, RegistryNs, SpecNs, StorageNs,
 };
 
 #[derive(Parser, Debug)]
@@ -95,7 +95,7 @@ impl Cli {
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum Command {
-    /// Account reads and deletion.
+    /// Account reads, keys, and deletion.
     Account {
         #[command(subcommand)]
         command: AccountNs,
@@ -149,6 +149,11 @@ pub enum Command {
     Redstone {
         #[command(subcommand)]
         command: RedstoneNs,
+    },
+    /// Have a Sputnik DAO sign a planned transaction through the NEAR MPC signer.
+    Mpc {
+        #[command(subcommand)]
+        command: MpcNs,
     },
     /// Plan and atomically apply guarded contract-storage patches.
     Patch {
