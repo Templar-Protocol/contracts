@@ -3345,8 +3345,20 @@ class Rehearsal:
         batch_accepted = require_accepted_statuses(
             refresh_many_result, 1, "batch refresh_many"
         )
-        if batch_accepted != [aggregated]:
-            fail("batch refresh result differs from aggregated_latest")
+        batch_aggregated = self.view(
+            runtime,
+            "aggregated_latest",
+            {"asset": self.settings.asset},
+            decoder=decode_optional_normalized_price,
+        )
+        if (
+            batch_aggregated is None
+            or batch_accepted != [batch_aggregated]
+        ):
+            fail(
+                "batch refresh result differs from "
+                "post-batch aggregated_latest"
+            )
 
         extend_assets_args = {
             "oracle": runtime,
@@ -3396,6 +3408,7 @@ class Rehearsal:
             "refresh_many": refresh_many_result,
             "extend_ttl_many": extend_assets_result,
             "extend_ttl_contracts": extend_contracts_result,
+            "aggregated_latest": batch_aggregated,
         }
         self.store.pass_phase(
             "refresh",

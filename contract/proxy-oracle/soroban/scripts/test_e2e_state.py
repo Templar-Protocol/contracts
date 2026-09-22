@@ -2347,9 +2347,30 @@ class RehearsalLogicTests(unittest.TestCase):
                 return next(self.results)
 
         accepted = self.accepted_status()
+        batch_accepted = {
+            "vec": [
+                {"symbol": "Accepted"},
+                {
+                    "map": [
+                        {
+                            "key": {"symbol": "expo"},
+                            "val": {"i32": -8},
+                        },
+                        {
+                            "key": {"symbol": "mantissa"},
+                            "val": {"i64": "5100000000"},
+                        },
+                        {
+                            "key": {"symbol": "timestamp"},
+                            "val": {"u64": "124"},
+                        },
+                    ]
+                },
+            ]
+        }
         results = [
             accepted,
-            {"vec": [accepted]},
+            {"vec": [batch_accepted]},
             {"vec": [{"bool": True}]},
             {
                 "vec": [
@@ -2369,6 +2390,7 @@ class RehearsalLogicTests(unittest.TestCase):
                 side_effect=[
                     {"mantissa": 5_000_000_000, "expo": -8, "timestamp": 123},
                     {"price": 5_000_000_000, "timestamp": 123},
+                    {"mantissa": 5_100_000_000, "expo": -8, "timestamp": 124},
                 ]
             )
             driver.store.pass_phase = mock.Mock()  # type: ignore[method-assign]
