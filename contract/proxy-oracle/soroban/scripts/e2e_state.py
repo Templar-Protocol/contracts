@@ -478,7 +478,7 @@ def decode_optional_price(
 def decode_scval_optional_price(
     value: object, label: str
 ) -> dict[str, object] | None:
-    if value == {"void": None}:
+    if value == "void":
         return None
     encoded = require_exact_keys(value, {"map"}, label)
     entries = encoded["map"]

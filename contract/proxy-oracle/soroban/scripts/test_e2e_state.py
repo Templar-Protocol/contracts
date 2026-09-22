@@ -1863,6 +1863,12 @@ class RehearsalLogicTests(unittest.TestCase):
                 run.call_args_list[1].kwargs["input_text"], "price-xdr"
             )
 
+    def test_scval_price_decodes_void_as_none(self) -> None:
+        self.assertIsNone(
+            rehearsal.decode_scval_optional_price("void", "price")
+        )
+
+
     def test_scval_price_rejects_duplicate_fields(self) -> None:
         encoded = {
             "map": [
