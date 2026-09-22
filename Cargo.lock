@@ -13711,6 +13711,7 @@ dependencies = [
  "hex",
  "hex-literal",
  "primitive-types 0.14.0",
+ "proptest",
  "rstest",
  "schemars 0.8.22",
  "serde",

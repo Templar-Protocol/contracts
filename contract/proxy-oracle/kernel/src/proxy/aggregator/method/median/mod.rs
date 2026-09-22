@@ -48,6 +48,11 @@ fn median<T>(sorted_weighted_items: &[(T, u32)]) -> (usize, usize) {
     (find_target(low_target), find_target(high_target))
 }
 
+#[cfg(kani)]
+pub(crate) fn median_indices_for_proof<T>(sorted_weighted_items: &[(T, u32)]) -> (usize, usize) {
+    median(sorted_weighted_items)
+}
+
 pub trait MedianVariant {
     fn median<T>(sorted_weighted_items: &[(T, u32)]) -> usize;
 }

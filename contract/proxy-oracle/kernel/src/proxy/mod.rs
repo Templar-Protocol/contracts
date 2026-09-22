@@ -471,4 +471,42 @@ mod tests {
             130
         );
     }
+
+    #[test]
+    fn resolve_length_mismatch_preserves_populated_breaker_state() {
+        let proxy = priority_proxy(FreshnessFilter::empty());
+        let mut circuit_breakers = CircuitBreakerSet::new(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 2,
+        });
+        circuit_breakers
+            .add(
+                0,
+                CircuitBreaker::StepwiseChange(StepwiseChange {
+                    max_relative_change: Decimal::from_u8(1) / 10_u8,
+                }),
+            )
+            .unwrap();
+        proxy
+            .resolve(
+                &mut circuit_breakers,
+                [Some(price(100, 0, 1_000)), None],
+                Nanoseconds::from_secs(1_000),
+            )
+            .unwrap();
+        let before = circuit_breakers.clone();
+
+        assert_eq!(
+            proxy.resolve(
+                &mut circuit_breakers,
+                [Some(price(120, 0, 1_001))],
+                Nanoseconds::from_secs(1_001),
+            ),
+            Err(ResolveError::Aggregation(Error::LengthMismatch {
+                expected: 2,
+                actual: 1,
+            }))
+        );
+        assert_eq!(circuit_breakers, before);
+    }
 }

@@ -12,6 +12,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "common/**"
+      - "primitives/**"
       - "contract/universal-account/**"
       - "contract/vault/kernel/**"
       - "fuzz/fuzz_targets/fuzz_fee_math.rs"
