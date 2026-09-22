@@ -1,16 +1,15 @@
 #![no_std]
 
-use soroban_sdk::{
-    contractclient, contracterror, contracttype, Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
-};
+use soroban_sdk::{contractclient, contracterror, contracttype, Address, BytesN, Env, Symbol, Vec};
+#[cfg(feature = "owner-upgrade")]
 use stellar_access::ownable::get_owner;
 use templar_primitives::Decimal;
 
 pub const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 pub const DEFAULT_TTL_EXTEND_TO: u32 = 3_110_400;
 pub const MAX_MANUAL_TRIP_METADATA_LEN: usize = 1024;
-/// Largest SEP-40 `decimals` a price can be re-scaled to without overflowing i128 arithmetic.
-pub const MAX_SEP40_DECIMALS: u32 = 18;
+/// Largest precision this implementation can rescale without overflowing i128 arithmetic.
+pub const MAX_SUPPORTED_SEP40_DECIMALS: u32 = 18;
 
 pub fn extend_instance_ttl(env: &Env) {
     env.storage()
@@ -18,15 +17,14 @@ pub fn extend_instance_ttl(env: &Env) {
         .extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
 }
 
-pub fn extend_persistent_ttl<K: IntoVal<Env, Val>>(env: &Env, key: &K) {
-    let storage = env.storage().persistent();
-    if storage.has(key) {
-        storage.extend_ttl(key, DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
-    }
+#[must_use]
+pub fn is_zero_wasm_hash(wasm_hash: &BytesN<32>) -> bool {
+    wasm_hash.to_array() == [0_u8; 32]
 }
 
 /// Owner-gated wasm swap in the OpenZeppelin `Upgradeable` shape
 /// (`upgrade(env, new_wasm_hash, operator)`); the caller publishes its own event.
+#[cfg(feature = "owner-upgrade")]
 pub fn owner_upgrade(
     env: &Env,
     new_wasm_hash: &BytesN<32>,
@@ -42,21 +40,6 @@ pub fn owner_upgrade(
     env.deployer()
         .update_current_contract_wasm(new_wasm_hash.clone());
     Ok(())
-}
-
-/// SEP-40 timestamp bucketing: the start of the `resolution`-wide window holding `timestamp`.
-#[must_use]
-pub fn bucket_timestamp(timestamp: u64, resolution: u32) -> u64 {
-    timestamp - (timestamp % u64::from(resolution))
-}
-
-/// Returns true when `wasm_hash` is all zero bytes.
-///
-/// Implemented without `Env` so it can be used anywhere `BytesN<32>` is
-/// available, including in pure validation helpers.
-#[must_use]
-pub fn is_zero_wasm_hash(wasm_hash: &BytesN<32>) -> bool {
-    wasm_hash.to_array() == [0_u8; 32]
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,13 +97,14 @@ pub trait PriceFeedTrait {
 /// timestamp }`) post-aggregation; adapters re-scale to their own SEP-40
 /// fixed decimals.
 ///
-/// The proxy oracle owns the freshness check (`max_age_secs` from
-/// `ProxyConfig`); `aggregated_latest` already applies it before returning.
+/// The proxy oracle owns freshness. Each source has an age/drift bound and an
+/// accepted cache persists the minimum source/cache deadline; this read already
+/// checks that stored proof before returning.
 #[contractclient(name = "ProxyOracleClient")]
 pub trait ProxyOracleTrait {
-    /// Latest aggregated price for `asset`, post-freshness-check. Returns
-    /// `None` if no proxy is registered, the cache is empty / not accepted,
-    /// or the cached entry is older than the configured `max_age_secs`.
+    /// Latest aggregated price for `asset`, post-proof check. Returns `None` if
+    /// no proxy is registered, the cache is empty / terminal, or its persisted
+    /// acceptance deadline has elapsed.
     fn aggregated_latest(env: Env, asset: Asset) -> Option<NormalizedPrice>;
     /// Last `records` aggregated prices for `asset`, oldest first. Does not
     /// apply a freshness filter; callers that care about staleness should
@@ -196,6 +180,8 @@ pub enum ContractError {
 pub struct SourceConfig {
     pub oracle: Address,
     pub asset: Asset,
+    pub max_age_secs: u64,
+    pub max_clock_drift_secs: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,14 +189,13 @@ pub struct SourceConfig {
 pub struct ProxyConfig {
     pub sources: Vec<SourceConfig>,
     pub min_sources: u32,
-    pub max_age_secs: Option<u64>,
-    pub max_clock_drift_secs: Option<u64>,
+    pub max_cache_age_secs: u64,
 }
 
 pub const MAX_SOURCES_PER_PROXY: u32 = 16;
 pub const MAX_SOURCE_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_CLOCK_DRIFT_SECS: u64 = 60 * 60;
-
+pub const MAX_CACHE_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 pub fn validate_proxy_config(config: &ProxyConfig) -> Result<(), ContractError> {
     if config.sources.len() < 3 {
         return Err(ContractError::TooFewSources);
@@ -221,13 +206,16 @@ pub fn validate_proxy_config(config: &ProxyConfig) -> Result<(), ContractError> 
     if config.min_sources < 3 || config.min_sources > config.sources.len() {
         return Err(ContractError::InvalidInput);
     }
-    let (Some(max_age_secs), Some(max_clock_drift_secs)) =
-        (config.max_age_secs, config.max_clock_drift_secs)
-    else {
+    if config.max_cache_age_secs == 0 || config.max_cache_age_secs > MAX_CACHE_AGE_SECS {
         return Err(ContractError::InvalidInput);
-    };
-    if max_age_secs > MAX_SOURCE_AGE_SECS || max_clock_drift_secs > MAX_CLOCK_DRIFT_SECS {
-        return Err(ContractError::InvalidInput);
+    }
+    for source in config.sources.iter() {
+        if source.max_age_secs == 0
+            || source.max_age_secs > MAX_SOURCE_AGE_SECS
+            || source.max_clock_drift_secs > MAX_CLOCK_DRIFT_SECS
+        {
+            return Err(ContractError::InvalidInput);
+        }
     }
     for i in 0..config.sources.len() {
         let source = config.sources.get(i).ok_or(ContractError::InvalidInput)?;

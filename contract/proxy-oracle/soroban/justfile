@@ -8,247 +8,120 @@ set dotenv-load := false
 # Prerequisites:
 #   - Rust with the wasm32v1-none target (rustup target add wasm32v1-none)
 #   - Stellar CLI v25.2.0+ (cargo install --locked stellar-cli --features opt)
-#   - Python 3 (size/budget/release gate scripts)
+#   - Python 3 (release, validation, and rehearsal helpers)
 #
 # Size budgets: runtime & governance <= 131072 bytes (128 KiB); adapter, Lazer source, batcher <= 32768 (32 KiB).
 # =============================================================================
 
 root             := justfile_directory() + "/../../.."
 release_dir      := root + "/target/proxy-oracle-soroban"
-# `wasm_dir` is a justfile-managed output path (populated via `stellar contract
-# build --out-dir`), not where cargo writes intermediates. Cargo actually builds
-# to `target/wasm32v1-none/release-soroban-checked/`; keeping wasm_dir under
-# `release_dir` makes it clear this is a chosen artifact location.
-wasm_dir         := release_dir + "/wasm"
 scripts_dir      := justfile_directory() + "/scripts"
-shared_scripts_dir := root + "/script/soroban"
-evidence_dir     := release_dir + "/evidence"
-manifest_path    := release_dir + "/release-manifest.json"
-
-runtime_pkg      := "templar-proxy-oracle-soroban-contract"
-governance_pkg   := "templar-proxy-oracle-soroban-governance-contract"
-adapter_pkg      := "templar-proxy-oracle-soroban-sep40-adapter-contract"
-lazer_pkg        := "templar-proxy-oracle-soroban-pyth-lazer-source-contract"
-batcher_pkg      := "templar-proxy-oracle-soroban-batcher-contract"
-
-runtime_wasm     := wasm_dir + "/templar_proxy_oracle_soroban_contract.wasm"
-governance_wasm  := wasm_dir + "/templar_proxy_oracle_soroban_governance_contract.wasm"
-adapter_wasm     := wasm_dir + "/templar_proxy_oracle_soroban_sep40_adapter_contract.wasm"
-lazer_wasm       := wasm_dir + "/templar_proxy_oracle_soroban_pyth_lazer_source_contract.wasm"
-batcher_wasm     := wasm_dir + "/templar_proxy_oracle_soroban_batcher_contract.wasm"
-
-runtime_opt      := wasm_dir + "/templar_proxy_oracle_soroban_contract.optimized.wasm"
-governance_opt   := wasm_dir + "/templar_proxy_oracle_soroban_governance_contract.optimized.wasm"
-adapter_opt      := wasm_dir + "/templar_proxy_oracle_soroban_sep40_adapter_contract.optimized.wasm"
-lazer_opt        := wasm_dir + "/templar_proxy_oracle_soroban_pyth_lazer_source_contract.optimized.wasm"
-batcher_opt      := wasm_dir + "/templar_proxy_oracle_soroban_batcher_contract.optimized.wasm"
-
-remap_rustflags  := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
 soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
-
-size_limit       := "131072"
-small_size_limit := "32768"
 
 # =============================================================================
 # TEST
 # =============================================================================
 
-# Run all proxy-oracle Soroban unit tests (runtime, governance, adapter, Lazer source, batcher).
+# Run all proxy-oracle Soroban unit tests through the repository test entrypoint.
 test:
-    @echo "Running proxy-oracle Soroban tests..."
-    @cargo test -p "{{runtime_pkg}}" --features testutils -- --nocapture
-    @cargo test -p "{{governance_pkg}}" --features testutils -- --nocapture
-    @cargo test -p "{{adapter_pkg}}" --features testutils -- --nocapture
-    @cargo test -p "{{lazer_pkg}}" --features testutils -- --nocapture
-    @cargo test -p "{{batcher_pkg}}" --features testutils -- --nocapture
-    @echo "✓ All proxy-oracle Soroban tests passed"
+    @just --justfile "{{root}}/justfile" test-fast -p templar-proxy-oracle-soroban-common -p templar-proxy-oracle-soroban-governance-common
+    @just --justfile "{{root}}/justfile" test-fast -p templar-proxy-oracle-soroban-contract --features testutils
+    @just --justfile "{{root}}/justfile" test-fast -p templar-proxy-oracle-soroban-governance-contract --features testutils
+    @just --justfile "{{root}}/justfile" test-fast -p templar-proxy-oracle-soroban-sep40-adapter-contract --features testutils
+    @just --justfile "{{root}}/justfile" test-fast -p templar-proxy-oracle-soroban-pyth-lazer-source-contract --features testutils
+    @just --justfile "{{root}}/justfile" test-fast -p templar-proxy-oracle-soroban-batcher-contract --features testutils
 
-# Run cross-contract integration tests (full deploy + Blend pool, in-process Env).
 test-integration:
-    @echo "Running proxy-oracle Soroban integration tests..."
-    @cargo test -p templar-proxy-oracle-soroban-integration-tests -- --nocapture
-    @echo "✓ All proxy-oracle Soroban integration tests passed"
+    @just --justfile "{{root}}/justfile" test-fast -p templar-proxy-oracle-soroban-integration-tests
+
+test-scripts:
+    @python3 -m unittest discover -s "{{scripts_dir}}" -p "test_*.py"
 
 # =============================================================================
 # BUILD
 # =============================================================================
 
-# Build one package's WASM with `stellar contract build` (release-soroban-checked profile).
-_build-wasm package:
-    @RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
-        --profile release-soroban-checked \
-        --manifest-path "{{root}}/Cargo.toml" \
-        --package "{{package}}" \
-        --out-dir "{{wasm_dir}}"
+_artifacts action slug:
+    @python3 "{{scripts_dir}}/make_release_manifest.py" \
+        --action "{{action}}" \
+        --slug "{{slug}}" \
+        --rust-toolchain "{{soroban_rust_toolchain}}"
+
+# Developer builds invalidate release evidence and never write a manifest.
+build slug="all":
+    @just -f "{{justfile_directory()}}/justfile" _artifacts build "{{slug}}"
 
 build-runtime:
-    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{runtime_pkg}}"
-    @echo "✓ Built: {{runtime_wasm}}"
+    @just -f "{{justfile_directory()}}/justfile" build runtime
 
 build-governance:
-    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{governance_pkg}}"
-    @echo "✓ Built: {{governance_wasm}}"
+    @just -f "{{justfile_directory()}}/justfile" build governance
 
 build-sep40-adapter:
-    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{adapter_pkg}}"
-    @echo "✓ Built: {{adapter_wasm}}"
+    @just -f "{{justfile_directory()}}/justfile" build sep40_adapter
 
 build-lazer-source:
-    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{lazer_pkg}}"
-    @echo "✓ Built: {{lazer_wasm}}"
+    @just -f "{{justfile_directory()}}/justfile" build lazer_source
 
 build-batcher:
-    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{batcher_pkg}}"
-    @echo "✓ Built: {{batcher_wasm}}"
+    @just -f "{{justfile_directory()}}/justfile" build batcher
 
-# Build every proxy-oracle WASM via `stellar contract build` (stellar-access needs spec shaking; plain cargo won't do).
-build: build-runtime build-governance build-sep40-adapter build-lazer-source build-batcher
-    @echo "✓ All proxy-oracle WASMs built"
-
-# =============================================================================
-# OPTIMIZE
-# =============================================================================
-
-# Build a package, then optimize it into `<name>.optimized.wasm` and print the
-# size delta. `stellar contract build --optimize` rewrites the wasm in place
-# under the crate's own name, so it runs into a staging dir and the single
-# artifact is copied out, leaving the unoptimized build intact.
-_optimize package wasm optimized label:
-    @just -f "{{justfile_directory()}}/justfile" _build-wasm "{{package}}"
-    @set -e; staging="$(mktemp -d)"; trap 'rm -rf "$staging"' EXIT; \
-    RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
-        --profile release-soroban-checked \
-        --manifest-path "{{root}}/Cargo.toml" \
-        --package "{{package}}" \
-        --optimize \
-        --out-dir "$staging"; \
-    cp "$staging/$(echo '{{package}}' | tr - _).wasm" "{{optimized}}"
-    @python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
-        --wasm "{{wasm}}" \
-        --optimized "{{optimized}}" \
-        --label "{{label}}"
-    @echo "✓ Optimized: {{optimized}}"
+optimize slug="all":
+    @just -f "{{justfile_directory()}}/justfile" _artifacts optimize "{{slug}}"
 
 optimize-runtime:
-    @just -f "{{justfile_directory()}}/justfile" _optimize "{{runtime_pkg}}" "{{runtime_wasm}}" "{{runtime_opt}}" runtime
+    @just -f "{{justfile_directory()}}/justfile" optimize runtime
 
 optimize-governance:
-    @just -f "{{justfile_directory()}}/justfile" _optimize "{{governance_pkg}}" "{{governance_wasm}}" "{{governance_opt}}" governance
+    @just -f "{{justfile_directory()}}/justfile" optimize governance
 
 optimize-sep40-adapter:
-    @just -f "{{justfile_directory()}}/justfile" _optimize "{{adapter_pkg}}" "{{adapter_wasm}}" "{{adapter_opt}}" sep40-adapter
+    @just -f "{{justfile_directory()}}/justfile" optimize sep40_adapter
 
 optimize-lazer-source:
-    @just -f "{{justfile_directory()}}/justfile" _optimize "{{lazer_pkg}}" "{{lazer_wasm}}" "{{lazer_opt}}" lazer-source
+    @just -f "{{justfile_directory()}}/justfile" optimize lazer_source
 
 optimize-batcher:
-    @just -f "{{justfile_directory()}}/justfile" _optimize "{{batcher_pkg}}" "{{batcher_wasm}}" "{{batcher_opt}}" batcher
-
-# Build and optimize all WASMs.
-optimize: optimize-runtime optimize-governance optimize-sep40-adapter optimize-lazer-source optimize-batcher
-    @echo "✓ All proxy-oracle WASMs optimized"
+    @just -f "{{justfile_directory()}}/justfile" optimize batcher
 
 # =============================================================================
 # SIZE GATE
 # =============================================================================
 
-# Enforce optimized-WASM size budgets (runtime/governance 128 KiB; adapter, Lazer source, batcher 32 KiB).
-# The report is written only after every budget check passes, so it never records a false PASS.
-size-check: optimize
-    @echo "Running size gate..."
-    @mkdir -p "{{evidence_dir}}"
-    @set -e; report="$(mktemp)"; trap 'rm -f "$report"' EXIT; \
-    { \
-        echo "# Proxy-Oracle Soroban Size Gate"; \
-        echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
-        echo "limits: {{size_limit}} bytes (runtime, governance); {{small_size_limit}} bytes (sep40-adapter, lazer-source, batcher)"; \
-    } > "$report"; \
-    printf '%s\n' \
-        "runtime:{{runtime_wasm}}:{{size_limit}}" \
-        "governance:{{governance_wasm}}:{{size_limit}}" \
-        "sep40-adapter:{{adapter_wasm}}:{{small_size_limit}}" \
-        "lazer-source:{{lazer_wasm}}:{{small_size_limit}}" \
-        "batcher:{{batcher_wasm}}:{{small_size_limit}}" \
-    | while IFS=: read -r label wasm limit; do \
-        opt="${wasm%.wasm}.optimized.wasm"; \
-        printf '\n## %s\n' "$label" | tee -a "$report"; \
-        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" --wasm "$wasm" --optimized "$opt" --label "$label" | tee -a "$report"; \
-        python3 "{{shared_scripts_dir}}/check_wasm_budget.py" --wasm "$opt" --max-bytes "$limit" || exit 1; \
-    done; \
-    printf '\n## Result: PASS\n' | tee -a "$report"; \
-    cp "$report" "{{evidence_dir}}/size-check.txt"
-    @echo "✓ Size gate passed — evidence: {{evidence_dir}}/size-check.txt"
+# Developer five-Wasm build, ABI, and size gate. No release claim.
+size-check:
+    @just -f "{{justfile_directory()}}/justfile" _artifacts size-check all
 
-# =============================================================================
-# BUDGET GATE
-# =============================================================================
-
-# Run deterministic budget scenarios (soroban-sdk testutils, not live simulation).
-budget-check:
-    @echo "Running proxy-oracle budget check scenarios..."
-    @mkdir -p "{{evidence_dir}}"
-    @python3 "{{scripts_dir}}/budget_report.py" \
-        --root "{{root}}" \
-        --out "{{evidence_dir}}/budget-check.txt"
-    @echo "✓ Budget check passed — evidence: {{evidence_dir}}/budget-check.txt"
 
 # =============================================================================
 # COMBINED RELEASE GATE
 # =============================================================================
 
-# Run full release gate: test + optimize + size-check + budget-check.
-release-gate: test size-check budget-check
-    @echo ""
+# Tests, one complete clean-source release build, then validation without rebuilding.
+release-gate: test test-integration test-scripts release validate-release
     @echo "✓ Proxy-oracle Soroban release gate complete"
 
-# =============================================================================
-# RELEASE ARTIFACTS
-# =============================================================================
+# Clean-source, manifest-last publication of all five optimized Wasms.
+release:
+    @just -f "{{justfile_directory()}}/justfile" _artifacts release all
+    @echo "✓ Release manifest: {{release_dir}}/release-manifest.json"
 
-# Build optimized WASMs and write the release manifest (SHA-256, sizes, versions).
-release: optimize
-    @echo "Generating release manifest..."
-    @mkdir -p "{{release_dir}}"
-    @python3 "{{scripts_dir}}/make_release_manifest.py" \
-        --root "{{root}}" \
-        --wasm-dir "{{wasm_dir}}" \
-        --rust-toolchain "{{soroban_rust_toolchain}}" \
-        --out "{{manifest_path}}"
-    @echo "✓ Release manifest: {{manifest_path}}"
-
-# =============================================================================
-# DRY-RUN DEPLOY
-# =============================================================================
-
-# Validate release artifacts (SHA-256 + size) without broadcasting. Run `release` first.
-dry-run:
-    @echo "Running dry-run deploy validation..."
-    @if [ ! -f "{{manifest_path}}" ]; then \
-        echo "ERROR: release manifest not found — run: just -f {{justfile_directory()}}/justfile release" >&2; \
-        exit 1; \
-    fi
-    @mkdir -p "{{evidence_dir}}"
-    @python3 "{{scripts_dir}}/dry_run_deploy.py" \
-        --manifest "{{manifest_path}}" \
-        --root "{{root}}" \
-        --out "{{evidence_dir}}/dry-run.txt"
-    @echo "✓ Dry-run passed — evidence: {{evidence_dir}}/dry-run.txt"
+# Validate the canonical schema-4 manifest and exact five canonical artifacts.
+validate-release:
+    @python3 "{{scripts_dir}}/validate_release_artifacts.py"
 
 # =============================================================================
 # AUDIT READINESS GATE
 # =============================================================================
 
-# Full pre-audit gate (reproducible from a clean checkout): tests, size + budget, fmt, clippy, diff.
-audit-ready: test size-check budget-check release dry-run
-    @echo ""
+# Full pre-audit gate (reproducible from a clean checkout).
+audit-ready: release-gate
     @echo "=== Soroban Proxy Oracle audit-ready gate ==="
-    @echo "--- AUDIT.md placeholder check..."
     @if rg -n "TBD|TODO|DECISION NEEDED|FIXME" "{{justfile_directory()}}/AUDIT.md"; then \
         echo "ERROR: unresolved placeholders in AUDIT.md" >&2; \
         exit 1; \
     fi
-    @echo "--- shared kernel + workspace checks..."
-    @cd "{{root}}" && cargo test -p templar-proxy-oracle-kernel --features serde,borsh --lib
+    @just --justfile "{{root}}/justfile" test-fast -p templar-proxy-oracle-kernel --features serde,borsh --lib
     @cd "{{root}}" && cargo fmt --check
     @cd "{{root}}" && cargo clippy --all-features --workspace --tests -- -D warnings
     @cd "{{root}}" && git diff --check
@@ -258,37 +131,22 @@ audit-ready: test size-check budget-check release dry-run
 # UTILITIES
 # =============================================================================
 
-# Print the runtime optimized WASM path.
+catalog:
+    @python3 "{{scripts_dir}}/release_artifacts.py"
+
 runtime-wasm-path:
-    @echo "{{runtime_opt}}"
+    @python3 "{{scripts_dir}}/release_artifacts.py" | while IFS="$(printf '\t')" read -r slug package wasm limit policy; do \
+        if [ "$slug" = runtime ]; then printf '%s/wasm/%s\n' "{{release_dir}}" "$wasm"; fi; \
+    done
 
-# Print the governance optimized WASM path.
 governance-wasm-path:
-    @echo "{{governance_opt}}"
+    @python3 "{{scripts_dir}}/release_artifacts.py" | while IFS="$(printf '\t')" read -r slug package wasm limit policy; do \
+        if [ "$slug" = governance ]; then printf '%s/wasm/%s\n' "{{release_dir}}" "$wasm"; fi; \
+    done
 
-# Print size of existing artifacts (no rebuild).
 sizes:
-    @if [ -f "{{runtime_opt}}" ]; then \
-        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
-            --wasm "{{runtime_wasm}}" \
-            --optimized "{{runtime_opt}}" \
-            --label "runtime"; \
-    else \
-        echo "runtime optimized WASM not found — run: just optimize-runtime"; \
-    fi
-    @if [ -f "{{governance_opt}}" ]; then \
-        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
-            --wasm "{{governance_wasm}}" \
-            --optimized "{{governance_opt}}" \
-            --label "governance"; \
-    else \
-        echo "governance optimized WASM not found — run: just optimize-governance"; \
-    fi
-    @if [ -f "{{adapter_opt}}" ]; then \
-        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
-            --wasm "{{adapter_wasm}}" \
-            --optimized "{{adapter_opt}}" \
-            --label "sep40-adapter"; \
-    else \
-        echo "adapter optimized WASM not found — run: just optimize-sep40-adapter"; \
-    fi
+    @python3 "{{scripts_dir}}/release_artifacts.py" | while IFS="$(printf '\t')" read -r slug package wasm limit policy; do \
+        path="{{release_dir}}/wasm/$wasm"; \
+        if [ -f "$path" ]; then printf '%s\t%s\t%s\n' "$slug" "$(stat -c %s "$path")" "$path"; \
+        else printf '%s\tmissing\t%s\n' "$slug" "$path"; fi; \
+    done

@@ -351,8 +351,7 @@ mod tests {
         let proxy_config = ProxyConfig {
             sources: soroban_sdk::Vec::new(&env),
             min_sources: 1,
-            max_age_secs: None,
-            max_clock_drift_secs: None,
+            max_cache_age_secs: 0,
         };
         let stepwise = CircuitBreakerConfig::StepwiseChange(StepwiseChangeConfig {
             max_relative_change: SorobanDecimal::from_decimal(
@@ -408,8 +407,7 @@ mod tests {
                     ProxyConfig {
                         sources: soroban_sdk::Vec::new(&env),
                         min_sources: 1,
-                        max_age_secs: None,
-                        max_clock_drift_secs: None,
+                        max_cache_age_secs: 0,
                     },
                 ),
                 1024,
@@ -441,13 +439,14 @@ mod tests {
             sources.push_back(templar_proxy_oracle_soroban_common::SourceConfig {
                 oracle: Address::generate(&env),
                 asset: asset.clone(),
+                max_age_secs: 30,
+                max_clock_drift_secs: 5,
             });
         }
         let mut config = ProxyConfig {
             sources,
             min_sources: 3,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
+            max_cache_age_secs: 30,
         };
         assert_eq!(
             validate_action(
@@ -457,7 +456,7 @@ mod tests {
             Ok(())
         );
 
-        config.max_age_secs = None;
+        config.max_cache_age_secs = 0;
         assert_eq!(
             validate_action(&GovernanceAction::SetProxy(asset, config), 1024),
             Err(GovernanceError::InvalidInput)

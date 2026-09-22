@@ -68,8 +68,7 @@ fn proposal_captures_ttl_at_create_time() {
         ProxyConfig {
             sources,
             min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
+            max_cache_age_secs: 300,
         },
     );
     let id_first = b.governance.next_proposal_id();

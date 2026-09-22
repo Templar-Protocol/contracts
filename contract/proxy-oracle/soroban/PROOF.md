@@ -61,10 +61,11 @@ the freshness window, and avoid any operator manual trip.
 
 ```rust
 let proxy_config = ProxyConfig {
+    // Each SourceConfig carries its own max_age_secs and
+    // max_clock_drift_secs.
     sources: vec![pyth, redstone, reflector],
     min_sources: 3,
-    max_age_secs: Some(300),
-    max_clock_drift_secs: Some(60),
+    max_cache_age_secs: 300,
 };
 let stepwise = StepwiseChange { max_relative_change: dec("0.10") };
 let monotonic = MonotonicRun { max_streak: 3, min_relative_step_change: dec("0.01") };
@@ -77,7 +78,8 @@ Set `history_len` ≥ the largest lookback any installed breaker needs. Guard th
 ## Demonstration
 
 ```bash
-cargo test -p templar-proxy-oracle-soroban-contract --features testutils blend_exploit
+just test-fast -p templar-proxy-oracle-soroban-contract \
+  --features testutils blend_exploit
 ```
 
 | Scenario | Expected outcome |

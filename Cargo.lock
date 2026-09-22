@@ -7608,7 +7608,7 @@ dependencies = [
 [[package]]
 name = "pyth-lazer-protocol"
 version = "0.43.0"
-source = "git+https://github.com/Templar-Protocol/pyth-lazer-public?tag=templar%2Fstellar-sdk-0.3.0-soroban25#7ee94541c88e023d7804c0031f1209116d7c88e7"
+source = "git+https://github.com/Templar-Protocol/pyth-lazer-public?rev=7ee94541c88e023d7804c0031f1209116d7c88e7#7ee94541c88e023d7804c0031f1209116d7c88e7"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -7631,7 +7631,7 @@ dependencies = [
 [[package]]
 name = "pyth-lazer-stellar-sdk"
 version = "0.3.0"
-source = "git+https://github.com/Templar-Protocol/pyth-lazer-public?tag=templar%2Fstellar-sdk-0.3.0-soroban25#7ee94541c88e023d7804c0031f1209116d7c88e7"
+source = "git+https://github.com/Templar-Protocol/pyth-lazer-public?rev=7ee94541c88e023d7804c0031f1209116d7c88e7#7ee94541c88e023d7804c0031f1209116d7c88e7"
 dependencies = [
  "soroban-sdk",
 ]

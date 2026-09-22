@@ -10,23 +10,23 @@ use soroban_sdk::{
 use stellar_access::ownable::{renounce_ownership as relinquish_ownership, set_owner, Ownable};
 use stellar_macros::only_owner;
 use templar_proxy_oracle_soroban_common::{
-    bucket_timestamp, extend_instance_ttl, normalized_to_sep40, owner_upgrade, Asset,
-    ContractError, PriceData, PriceFeedTrait, ProxyOracleClient, MAX_SEP40_DECIMALS,
+    extend_instance_ttl, normalized_to_sep40, owner_upgrade, Asset, ContractError, PriceData,
+    PriceFeedTrait, ProxyOracleClient, MAX_SUPPORTED_SEP40_DECIMALS,
 };
 
 const MAX_HISTORY_RECORDS: u32 = 32;
+
+/// SEP-40 timestamp bucketing: the start of the `resolution`-wide window holding `timestamp`.
+#[must_use]
+fn bucket_timestamp(timestamp: u64, resolution: u32) -> u64 {
+    timestamp - (timestamp % u64::from(resolution))
+}
 
 /// Keep the deployed `Config` encoding stable; decommissioning uses a separate key.
 const CONFIG: Symbol = symbol_short!("CONFIG");
 const DECOMMISSIONED: Symbol = symbol_short!("DECOM");
 
 soroban_sdk::contractmeta!(key = "sep", val = "40");
-
-#[contractevent]
-#[derive(Clone)]
-pub struct DecimalsUpdated {
-    pub decimals: u32,
-}
 
 #[contractevent]
 #[derive(Clone)]
@@ -64,7 +64,7 @@ impl Sep40Adapter {
         resolution: u32,
         base: Asset,
     ) -> Result<(), ContractError> {
-        if decimals > MAX_SEP40_DECIMALS || resolution == 0 {
+        if decimals > MAX_SUPPORTED_SEP40_DECIMALS || resolution == 0 {
             return Err(ContractError::InvalidInput);
         }
         let parent = ProxyOracleClient::new(&env, &parent_oracle);
@@ -83,22 +83,6 @@ impl Sep40Adapter {
             },
         );
         set_owner(&env, &owner);
-        Ok(())
-    }
-
-    #[only_owner]
-    pub fn set_decimals(env: Env, decimals: u32) -> Result<(), ContractError> {
-        if decimals > MAX_SEP40_DECIMALS {
-            return Err(ContractError::InvalidInput);
-        }
-        extend_instance_ttl(&env);
-        let mut config = load_config(&env);
-        if is_decommissioned(&env) {
-            return Err(ContractError::InvalidInput);
-        }
-        config.decimals = decimals;
-        env.storage().instance().set(&CONFIG, &config);
-        DecimalsUpdated { decimals }.publish(&env);
         Ok(())
     }
 

@@ -27,10 +27,12 @@ them via the feed-id view methods.
 | `templar-pyth-lazer-verifier` | `verifier/` | Chain-agnostic verify + parse. No `near-sdk`. |
 | `templar-pyth-lazer-adapter-contract` | `contract/` | NEAR cdylib: storage, governance, feed-id views. |
 
-The verifier wraps a forked, slimmed [`pyth-lazer-protocol`](https://github.com/Templar-Protocol/pyth-lazer-public/tree/feat/protocol-slim-build)
-(pinned by `rev = "10aebfd0075887e9784f9fb65ef28ddbadb57139"` on the `feat/protocol-slim-build`
-branch, `default-features = false`) for the wire format and adds the trust checks an on-chain
-adapter needs.
+The verifier wraps the workspace-pinned, slimmed
+[`pyth-lazer-protocol`](https://github.com/Templar-Protocol/pyth-lazer-public)
+fork with `default-features = false` for the wire format and adds the trust checks an on-chain
+adapter needs. The root `Cargo.toml` declaration and `Cargo.lock` resolved source are the
+authoritative dependency pins; this README intentionally does not duplicate a branch, tag, or
+revision that can become stale.
 
 ## Governance
 

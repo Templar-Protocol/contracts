@@ -303,48 +303,6 @@ fn price_finds_matching_timestamp() {
 }
 
 #[test]
-fn set_decimals_changes_scale_without_relabeling_metadata() {
-    let f = fixture(8, 1);
-    f.parent.set_aggregated(
-        &f.asset,
-        &NormalizedPrice {
-            mantissa: 500_000,
-            expo: -4,
-            timestamp: 100,
-        },
-    );
-    assert_eq!(f.adapter.lastprice(&f.asset).unwrap().price, 5_000_000_000);
-
-    f.adapter.set_decimals(&4);
-    assert_eq!(f.adapter.decimals(), 4);
-    assert_eq!(f.adapter.resolution(), 1);
-    assert_eq!(f.adapter.base(), f.base);
-    assert_eq!(f.adapter.lastprice(&f.asset).unwrap().price, 500_000);
-}
-
-#[test]
-fn set_decimals_emits_event() {
-    let f = fixture(8, 1);
-    f.adapter.set_decimals(&4);
-    let emitted = f
-        .env
-        .events()
-        .all()
-        .filter_by_contract(&f.adapter.address)
-        .events()
-        .to_vec();
-    let expected = DecimalsUpdated { decimals: 4 }.to_xdr(&f.env, &f.adapter.address);
-    assert!(emitted.contains(&expected));
-}
-
-#[test]
-#[should_panic]
-fn set_decimals_rejects_values_above_18() {
-    let f = fixture(8, 1);
-    f.adapter.set_decimals(&19);
-}
-
-#[test]
 fn upgrade_rejects_zero_wasm_hash() {
     let f = fixture(8, 1);
     let zero = soroban_sdk::BytesN::from_array(&f.env, &[0; 32]);
@@ -462,6 +420,16 @@ fn parent_base_drift_fails_all_price_reads_closed() {
 }
 
 #[test]
+fn downstream_read_failure_fails_all_price_reads_closed() {
+    let f = fixture(8, 1);
+    f.parent.set_read_trap(&true);
+
+    assert_eq!(f.adapter.price(&f.asset, &100), None);
+    assert_eq!(f.adapter.prices(&f.asset, &1), None);
+    assert_eq!(f.adapter.lastprice(&f.asset), None);
+}
+
+#[test]
 fn timestamps_are_bucketed_and_history_collisions_keep_newest() {
     let f = fixture(8, 60);
     f.parent.set_aggregated(
@@ -544,6 +512,32 @@ fn prices_skips_unconvertible_history_entries() {
     });
     f.parent.set_history(&f.asset, &invalid);
     assert_eq!(f.adapter.prices(&f.asset, &1), None);
+}
+
+#[test]
+fn decommission_rejects_unauthorized_call_without_changing_reads() {
+    let f = fixture(8, 1);
+    f.parent.set_aggregated(
+        &f.asset,
+        &NormalizedPrice {
+            mantissa: 500_000,
+            expo: -4,
+            timestamp: 100,
+        },
+    );
+    f.env.mock_auths(&[]);
+
+    assert!(f.adapter.try_decommission().is_err());
+    assert!(f
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&f.adapter.address)
+        .events()
+        .is_empty());
+    assert_eq!(f.adapter.get_owner(), Some(f.owner));
+    assert_eq!(f.adapter.assets().len(), 1);
+    assert!(f.adapter.lastprice(&f.asset).is_some());
 }
 
 #[test]

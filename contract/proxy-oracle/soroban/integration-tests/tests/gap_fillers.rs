@@ -53,8 +53,7 @@ fn get_proposal_returns_action_and_maturity() {
         ProxyConfig {
             sources,
             min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
+            max_cache_age_secs: 300,
         },
     );
     let id = b.governance.next_proposal_id();

@@ -35,15 +35,20 @@ fn wired() -> Wired {
         channel: LazerChannel::FixedRate200ms,
         freshness: FreshnessConfig {
             max_age_secs: 120,
-            max_ahead_secs: 5,
+            max_clock_drift_secs: 5,
         },
     };
-    let source_id = b.env.register(PythLazerSource, (&b.admin, config));
+    let source_id = b.env.register(
+        PythLazerSource,
+        (&b.admin, config, Vec::from_array(&b.env, [BTC_FEED])),
+    );
     let mut sources = b.source_configs(&b.asset_btc);
     sources.pop_back();
     sources.push_back(SourceConfig {
         oracle: source_id.clone(),
         asset: feed_asset(&b.env, BTC_FEED),
+        max_age_secs: 300,
+        max_clock_drift_secs: 60,
     });
     b.submit_and_execute(
         &b.admin,
@@ -52,8 +57,7 @@ fn wired() -> Wired {
             ProxyConfig {
                 sources,
                 min_sources: 3,
-                max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                max_cache_age_secs: 300,
             },
         ),
     );

@@ -8,7 +8,10 @@ extern crate alloc;
 use alloc::vec::Vec as AllocVec;
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
-use stellar_access::ownable::{set_owner, Ownable};
+use stellar_access::{
+    ownable::{set_owner, Ownable, OwnableStorageKey},
+    role_transfer::PendingTransfer,
+};
 use stellar_macros::only_owner;
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_kernel::{
@@ -18,9 +21,8 @@ use templar_proxy_oracle_kernel::{
     },
     Price,
 };
-use templar_proxy_oracle_soroban_common::validate_proxy_config;
 use templar_proxy_oracle_soroban_common::{
-    extend_instance_ttl, extend_persistent_ttl, owner_upgrade,
+    extend_instance_ttl, owner_upgrade, validate_proxy_config,
 };
 pub use templar_proxy_oracle_soroban_common::{
     Asset, CircuitBreakerConfig, ContractError,
@@ -50,10 +52,10 @@ pub use events::{
 
 use codes::breaker_error;
 use conversion::{circuit_breaker_from_config, validate_source_decimals};
-use refresh::{cached_accepted_no_older_than, refresh_one};
+use refresh::{cached_accepted_if_valid, refresh_one};
 use storage::{
-    add_asset, clear_history, invalidate_cache, load_assets, load_breakers, remove_asset,
-    require_proxy_exists, store_breakers, DataKey,
+    add_asset, clear_history, extend_persistent_ttl, invalidate_cache, load_assets, load_breakers,
+    remove_asset, require_proxy_exists, store_breakers, DataKey,
 };
 
 pub(crate) const MAX_HISTORY_RECORDS: u32 = 32;
@@ -65,16 +67,31 @@ pub(crate) const AGGREGATION_FAILED_CODE: u32 = 1;
 pub(crate) const STORAGE_FAILED_CODE: u32 = 3;
 pub(crate) const SOURCE_UNAVAILABLE_CODE: u32 = 5;
 pub(crate) const UNKNOWN_ASSET_CODE: u32 = 6;
+pub(crate) const NON_ADVANCING_WITHOUT_PROOF_CODE: u32 = 7;
 
 #[contract]
 pub struct SorobanProxyOracle;
 
 #[derive(Clone)]
 #[contracttype]
+pub struct AcceptedPrice {
+    pub price: NormalizedPrice,
+    pub valid_until: u64,
+}
+
+#[derive(Clone)]
+#[contracttype]
 pub enum CachedStatus {
-    Accepted(NormalizedPrice),
+    Accepted(AcceptedPrice),
     Blocked(u32),
     ResolveFailed(u32),
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct PendingOwnership {
+    pub address: Address,
+    pub live_until_ledger: u32,
 }
 
 #[derive(Clone)]
@@ -116,6 +133,24 @@ fn with_breakers<T>(
     Ok((result, true))
 }
 
+fn same_source_pairs_and_quorum(current: &ProxyConfig, next: &ProxyConfig) -> bool {
+    if current.min_sources != next.min_sources || current.sources.len() != next.sources.len() {
+        return false;
+    }
+    for index in 0..current.sources.len() {
+        let Some(current) = current.sources.get(index) else {
+            return false;
+        };
+        let Some(next) = next.sources.get(index) else {
+            return false;
+        };
+        if current.oracle != next.oracle || current.asset != next.asset {
+            return false;
+        }
+    }
+    true
+}
+
 #[contractimpl]
 impl SorobanProxyOracle {
     pub fn __constructor(env: Env, governance: Address, base: Asset) {
@@ -155,10 +190,10 @@ impl SorobanProxyOracle {
         let storage = env.storage().persistent();
         let previous = storage.get::<_, ProxyConfig>(&DataKey::Proxy(asset.clone()));
         let config_changed = previous.as_ref() != Some(&config);
-        let aggregation_changed = previous.as_ref().is_some_and(|current| {
-            current.sources != config.sources || current.min_sources != config.min_sources
-        });
-        if aggregation_changed || !storage.has(&DataKey::Breakers(asset.clone())) {
+        let sources_or_quorum_changed = previous
+            .as_ref()
+            .is_some_and(|current| !same_source_pairs_and_quorum(current, &config));
+        if sources_or_quorum_changed || !storage.has(&DataKey::Breakers(asset.clone())) {
             store_breakers(&env, &asset, &CircuitBreakerSet::empty())?;
         }
         storage.set(&DataKey::Proxy(asset.clone()), &config);
@@ -217,33 +252,18 @@ impl SorobanProxyOracle {
         breaker: CircuitBreakerConfig,
     ) -> Result<u32, ContractError> {
         let baseline = match &breaker {
-            CircuitBreakerConfig::CumulativeChange(_) => {
-                let proxy_config = env
-                    .storage()
-                    .persistent()
-                    .get::<_, ProxyConfig>(&DataKey::Proxy(asset.clone()))
-                    .ok_or(ContractError::InvalidInput)?;
-                let max_age_secs = proxy_config
-                    .max_age_secs
-                    .ok_or(ContractError::InvalidInput)?;
-                env.storage()
-                    .persistent()
-                    .get::<_, CachedProxyPrice>(&DataKey::Cache(asset.clone()))
-                    .and_then(|cached| {
-                        cached_accepted_no_older_than(
-                            &cached,
-                            max_age_secs,
-                            env.ledger().timestamp(),
-                        )
-                    })
-                    .filter(|price| price.mantissa > 0)
-                    .map(|price| Price {
-                        price: price.mantissa,
-                        conf: 0,
-                        expo: price.expo,
-                        publish_time_ns: Nanoseconds::from_secs(price.timestamp),
-                    })
-            }
+            CircuitBreakerConfig::CumulativeChange(_) => env
+                .storage()
+                .persistent()
+                .get::<_, CachedProxyPrice>(&DataKey::Cache(asset.clone()))
+                .and_then(|cached| cached_accepted_if_valid(&cached, env.ledger().timestamp()))
+                .filter(|price| price.mantissa > 0)
+                .map(|price| Price {
+                    price: price.mantissa,
+                    conf: 0,
+                    expo: price.expo,
+                    publish_time_ns: Nanoseconds::from_secs(price.timestamp),
+                }),
             CircuitBreakerConfig::StepwiseChange(_)
             | CircuitBreakerConfig::MonotonicRun(_)
             | CircuitBreakerConfig::WindowedChangeDelta(_) => None,
@@ -351,6 +371,18 @@ impl SorobanProxyOracle {
         env.storage().persistent().get(&DataKey::Cache(asset))
     }
 
+    /// Returns the active pending owner without requesting authorization or mutating TTLs.
+    pub fn get_pending_owner(env: Env) -> Option<PendingOwnership> {
+        let pending: PendingTransfer = env
+            .storage()
+            .temporary()
+            .get(&OwnableStorageKey::PendingOwner)?;
+        (env.ledger().sequence() <= pending.live_until_ledger).then_some(PendingOwnership {
+            address: pending.address,
+            live_until_ledger: pending.live_until_ledger,
+        })
+    }
+
     pub fn get_breaker_set_view(env: Env, asset: Asset) -> Option<CircuitBreakerSetView> {
         if !env
             .storage()
@@ -405,16 +437,12 @@ impl Ownable for SorobanProxyOracle {}
 #[contractimpl]
 impl ProxyOracleTrait for SorobanProxyOracle {
     fn aggregated_latest(env: Env, asset: Asset) -> Option<NormalizedPrice> {
-        let cached = env
-            .storage()
-            .persistent()
-            .get::<_, CachedProxyPrice>(&DataKey::Cache(asset.clone()))?;
-        let proxy_config = env
-            .storage()
-            .persistent()
-            .get::<_, ProxyConfig>(&DataKey::Proxy(asset))?;
-        let max_age = proxy_config.max_age_secs?;
-        cached_accepted_no_older_than(&cached, max_age, env.ledger().timestamp())
+        let storage = env.storage().persistent();
+        let cached = storage.get::<_, CachedProxyPrice>(&DataKey::Cache(asset.clone()))?;
+        storage
+            .has(&DataKey::Proxy(asset))
+            .then(|| cached_accepted_if_valid(&cached, env.ledger().timestamp()))
+            .flatten()
     }
 
     fn aggregated_history(env: Env, asset: Asset, records: u32) -> Option<Vec<NormalizedPrice>> {

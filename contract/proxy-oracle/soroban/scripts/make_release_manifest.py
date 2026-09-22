@@ -1,231 +1,240 @@
 #!/usr/bin/env python3
-"""Build and write a deterministic release manifest for the Soroban proxy-oracle.
+"""Build, optimize, size-check, or release proxy-oracle Soroban artifacts."""
 
-Reads the optimized runtime, governance, SEP-40 adapter, Pyth Lazer source, and
-batcher WASM artifacts,
-computes SHA-256 checksums, collects package version, git commit, stellar CLI
-version, rust toolchain, and optimized sizes, then writes a JSON manifest to:
-
-    target/proxy-oracle-soroban/release-manifest.json
-
-Usage:
-    python3 scripts/make_release_manifest.py \\
-        --root <workspace_root> \\
-        --wasm-dir <dir holding <package>.optimized.wasm per artifact> \\
-        --out <target/proxy-oracle-soroban/release-manifest.json>
-"""
+from __future__ import annotations
 
 import argparse
-import hashlib
 import json
+import os
 import re
-import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from release_artifacts import ARTIFACTS
+from release_artifacts import (
+    ARTIFACTS,
+    MANIFEST_PATH,
+    RELEASE_DIR,
+    ROOT,
+    WASM_DIR,
+    Artifact,
+    atomic_write,
+    fsync_directory,
+    git_head,
+    inspect_artifact_fd,
+    invalidate_release_evidence,
+    package_versions,
+    release_lock,
+    require_tracked_clean,
+    run_text,
+    selected_artifacts,
+    stellar_version_metadata,
+)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+
+DEFAULT_TOOLCHAIN = "1.89.0"
+REMAP_RUSTFLAGS = " ".join(
+    (
+        f"--remap-path-prefix {ROOT}=/workspace",
+        "--remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry",
+        "--remap-path-prefix /nix/store=/nix-store",
+    )
+)
 
 
-def sha256_file(path: Path) -> str:
-    """Return the SHA-256 hex digest of a file."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def fail(message: str) -> None:
+    raise ValueError(message)
 
 
-def run(args: list[str], cwd: str | None = None) -> str:
-    """Run a command and return stripped stdout, or '' on failure."""
+def build_environment(toolchain: str) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["RUSTUP_TOOLCHAIN"] = toolchain
+    existing = environment.get("CARGO_BUILD_RUSTFLAGS", "")
+    environment["CARGO_BUILD_RUSTFLAGS"] = " ".join(
+        part for part in (existing, REMAP_RUSTFLAGS) if part
+    )
+    return environment
+
+
+def build_one(
+    artifact: Artifact,
+    output_directory: Path,
+    toolchain: str,
+    *,
+    optimize: bool,
+) -> Path:
+    output_directory.mkdir(parents=True, exist_ok=True)
+    command = [
+        "stellar",
+        "contract",
+        "build",
+        "--locked",
+        "--profile",
+        "release-soroban-checked",
+        "--manifest-path",
+        str(ROOT / "Cargo.toml"),
+        "--package",
+        artifact.package,
+        "--out-dir",
+        str(output_directory),
+    ]
+    if optimize:
+        command.append("--optimize")
+    run_text(command, env=build_environment(toolchain))
+    output = output_directory / artifact.wasm
+    if output.is_symlink() or not output.is_file():
+        fail(f"build did not produce a regular Wasm for {artifact.slug}")
+    return output
+
+
+def inspect_built_artifact(path: Path, artifact: Artifact) -> dict[str, object]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(path, flags)
     try:
-        result = subprocess.run(
-            args,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return result.stdout.strip()
-    except Exception:
-        return ""
-
-
-def get_git_commit(root: Path) -> str:
-    """Return the current HEAD commit hash (short), or 'unknown'."""
-    out = run(["git", "rev-parse", "--short", "HEAD"], cwd=str(root))
-    return out if out else "unknown"
-
-
-def get_git_commit_full(root: Path) -> str:
-    """Return the full HEAD commit hash, or 'unknown'."""
-    out = run(["git", "rev-parse", "HEAD"], cwd=str(root))
-    return out if out else "unknown"
-
-
-def get_stellar_cli_version() -> str:
-    """Return the stellar CLI version string, or 'unknown'."""
-    out = run(["stellar", "--version"])
-    if out:
-        # First line: "stellar 25.1.0 (...)"
-        return out.splitlines()[0].strip()
-    return "unknown"
-
-
-def get_rust_toolchain(root: Path) -> str:
-    """Return the active Rust toolchain, or 'unknown'."""
-    # Check rust-toolchain.toml first
-    toolchain_file = root / "rust-toolchain.toml"
-    if toolchain_file.exists():
-        content = toolchain_file.read_text()
-        m = re.search(r'channel\s*=\s*"([^"]+)"', content)
-        if m:
-            return m.group(1)
-    # Fall back to `rustup show active-toolchain`
-    out = run(["rustup", "show", "active-toolchain"])
-    if out:
-        return out.splitlines()[0].strip()
-    # Fall back to `rustc --version`
-    out = run(["rustc", "--version"])
-    return out if out else "unknown"
-
-
-def package_versions(root: Path) -> dict[str, str]:
-    """Map every workspace package name to its version via one `cargo metadata` call."""
-    out = run(
-        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-        cwd=str(root),
-    )
-    if not out:
-        return {}
-    try:
-        meta = json.loads(out)
-    except Exception:
-        return {}
-    return {pkg.get("name"): pkg.get("version", "unknown") for pkg in meta.get("packages", [])}
-
-
-def build_deploy_command(
-    wasm_path: str,
-    network: str = "<network>",
-    source: str = "<source-identity>",
-) -> str:
-    """Return the stellar contract install command (dry-run template, no broadcast)."""
-    return (
-        f"stellar contract install"
-        f" --wasm {wasm_path}"
-        f" --network {network}"
-        f" --source {source}"
-        f" --simulate-only"
-    )
-
-
-def build_initialize_command(
-    contract_id: str = "<contract-id>",
-    governance_id: str = "<governance-contract-id>",
-    network: str = "<network>",
-    source: str = "<source-identity>",
-) -> str:
-    """Return a template stellar contract invoke initialize command."""
-    return (
-        f"stellar contract invoke"
-        f" --id {contract_id}"
-        f" --network {network}"
-        f" --source {source}"
-        f" --simulate-only"
-        f" -- initialize"
-        f" --governance_id {governance_id}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Write a deterministic release manifest for proxy-oracle Soroban WASMs."
-    )
-    parser.add_argument("--root", required=True, help="Workspace root directory")
-    parser.add_argument(
-        "--wasm-dir", required=True, help="Directory holding <package>.optimized.wasm per artifact"
-    )
-    parser.add_argument(
-        "--rust-toolchain",
-        help="Rust toolchain used to build the WASM artifacts",
-    )
-    parser.add_argument(
-        "--out", required=True, help="Output path for release-manifest.json"
-    )
-    args = parser.parse_args()
-
-    root = Path(args.root).resolve()
-    wasm_dir = Path(args.wasm_dir).resolve()
-    out_path = Path(args.out).resolve()
-
-    paths = {artifact.manifest_key: wasm_dir / artifact.optimized_wasm for artifact in ARTIFACTS}
-    errors = [f"{key} not found: {path}" for key, path in paths.items() if not path.exists()]
-    if errors:
-        for e in errors:
-            print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    versions = package_versions(root)
-
-    def rel_or_abs(p: Path) -> str:
-        try:
-            return str(p.relative_to(root))
-        except ValueError:
-            return str(p)
-
-    manifest = {
-        "schema_version": "3",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "git_commit": get_git_commit_full(root),
-        "git_commit_short": get_git_commit(root),
-        "stellar_cli": get_stellar_cli_version(),
-        "rust_toolchain": args.rust_toolchain or get_rust_toolchain(root),
-    }
-    dry_run_commands = {
-        "note": (
-            "These commands use --simulate-only and do not broadcast. "
-            "Replace <network>, <source-identity>, <contract-id>, "
-            "<governance-contract-id>, <owner>, <parent-oracle-id>, "
-            "<asset>, <decimals>, <resolution>, <base> with real values "
-            "for actual deployment."
-        ),
-    }
-    for artifact in ARTIFACTS:
-        path = paths[artifact.manifest_key]
-        rel = rel_or_abs(path)
-        manifest[artifact.manifest_key] = {
-            "package": artifact.package,
-            "version": versions.get(artifact.package, "unknown"),
-            "path": rel,
-            "sha256": sha256_file(path),
-            "optimized_size": path.stat().st_size,
+        measurement = inspect_artifact_fd(descriptor, artifact)
+        return {
+            "optimized_size": measurement.size,
+            "sha256": measurement.wasm_sha256,
+            "contract_spec_sha256": measurement.contract_spec_sha256,
         }
-        dry_run_commands[artifact.install_key] = build_deploy_command(rel)
-    dry_run_commands["initialize_runtime"] = build_initialize_command()
-    dry_run_commands["initialize_governance"] = build_initialize_command()
-    manifest["dry_run_commands"] = dry_run_commands
+    finally:
+        os.close(descriptor)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
-    print(f"Release manifest written: {out_path}")
-    print(f"  git_commit:      {manifest['git_commit']}")
-    print(f"  stellar_cli:     {manifest['stellar_cli']}")
-    print(f"  rust_toolchain:  {manifest['rust_toolchain']}")
-    for artifact in ARTIFACTS:
-        entry = manifest[artifact.manifest_key]
-        print(f"  {artifact.manifest_key:<20} sha256: {entry['sha256']}  ({entry['optimized_size']} bytes)")
+def publish_file(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with source.open("rb") as built:
+        os.fsync(built.fileno())
+    source.chmod(0o644)
+    os.replace(source, destination)
+    fsync_directory(destination.parent)
+
+
+def developer_action(action: str, slug: str, toolchain: str) -> None:
+    artifacts = selected_artifacts(slug)
+    optimize = action in {"optimize", "size-check"}
+    invalidate_release_evidence()
+    with tempfile.TemporaryDirectory(prefix=".developer-", dir=RELEASE_DIR) as raw:
+        staging = Path(raw)
+        for artifact in artifacts:
+            built = build_one(
+                artifact,
+                staging / ("optimized" if optimize else "unoptimized") / artifact.slug,
+                toolchain,
+                optimize=optimize,
+            )
+            if optimize:
+                result = inspect_built_artifact(built, artifact)
+                print(
+                    f"{artifact.slug}: {result['optimized_size']} / "
+                    f"{artifact.max_optimized_size} bytes"
+                )
+            if action != "size-check":
+                destination = WASM_DIR / (
+                    artifact.optimized_wasm if optimize else artifact.wasm
+                )
+                publish_file(built, destination)
+
+
+def release(toolchain: str) -> None:
+    require_tracked_clean(ROOT)
+    commit = git_head(ROOT)
+    invalidate_release_evidence()
+    cli_version, cli_output = stellar_version_metadata()
+    rustc = run_text(["rustc", f"+{toolchain}", "--version"])
+    if not rustc.startswith(f"rustc {toolchain}"):
+        fail(f"rustc output does not match requested toolchain {toolchain}")
+    versions = package_versions(ROOT)
+    with tempfile.TemporaryDirectory(prefix=".release-", dir=RELEASE_DIR) as raw:
+        staging = Path(raw)
+        results: dict[str, dict[str, object]] = {}
+        optimized_paths: dict[str, Path] = {}
+        for artifact in ARTIFACTS:
+            build_one(
+                artifact,
+                staging / "unoptimized" / artifact.slug,
+                toolchain,
+                optimize=False,
+            )
+            optimized = build_one(
+                artifact,
+                staging / "optimized" / artifact.slug,
+                toolchain,
+                optimize=True,
+            )
+            results[artifact.slug] = inspect_built_artifact(optimized, artifact)
+            optimized_paths[artifact.slug] = optimized
+        require_tracked_clean(ROOT)
+        if git_head(ROOT) != commit:
+            fail("Git HEAD changed during release build")
+        artifacts: dict[str, dict[str, object]] = {}
+        for artifact in ARTIFACTS:
+            result = results[artifact.slug]
+            artifacts[artifact.slug] = {
+                "package": artifact.package,
+                "version": versions[artifact.package],
+                "path": artifact.manifest_path,
+                "sha256": result["sha256"],
+                "contract_spec_sha256": result["contract_spec_sha256"],
+                "optimized_size": result["optimized_size"],
+                "max_optimized_size": artifact.max_optimized_size,
+            }
+        manifest = {
+            "schema_version": "4",
+            "generated_at": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "git_commit": commit,
+            "stellar_cli": {"version": cli_version, "output": cli_output},
+            "rust_toolchain": {"channel": toolchain, "rustc": rustc},
+            "artifacts": artifacts,
+        }
+        invalidate_release_evidence()
+        for artifact in ARTIFACTS:
+            publish_file(
+                optimized_paths[artifact.slug],
+                WASM_DIR / artifact.optimized_wasm,
+            )
+        atomic_write(
+            MANIFEST_PATH,
+            (json.dumps(manifest, indent=2) + "\n").encode(),
+        )
+
+
+def execute(action: str, slug: str, toolchain: str) -> None:
+    if not re.fullmatch(r"\d+\.\d+\.\d+", toolchain):
+        fail("--rust-toolchain must be a numeric Rust channel")
+    if action == "release":
+        if slug != "all":
+            fail("release requires --slug all")
+        release(toolchain)
+    else:
+        developer_action(action, slug, toolchain)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--action",
+        choices=("build", "optimize", "size-check", "release"),
+        required=True,
+    )
+    parser.add_argument(
+        "--slug",
+        choices=("all", *(artifact.slug for artifact in ARTIFACTS)),
+        default="all",
+    )
+    parser.add_argument("--rust-toolchain", default=DEFAULT_TOOLCHAIN)
+    args = parser.parse_args()
+    try:
+        with release_lock():
+            execute(args.action, args.slug, args.rust_toolchain)
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

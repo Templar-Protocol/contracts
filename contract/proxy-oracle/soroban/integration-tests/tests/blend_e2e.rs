@@ -131,6 +131,8 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
         sources.push_back(SourceConfig {
             oracle,
             asset: btc_asset.clone(),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         });
     }
     let create_id = governance.next_proposal_id();
@@ -142,8 +144,7 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
             ProxyConfig {
                 sources,
                 min_sources: 3,
-                max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                max_cache_age_secs: 300,
             },
         ),
         &0,

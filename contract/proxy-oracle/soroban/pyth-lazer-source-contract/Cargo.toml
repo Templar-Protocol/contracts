@@ -19,7 +19,7 @@ pyth-lazer-stellar-sdk.workspace = true
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 stellar-access = "0.7.1"
 stellar-macros = "0.7.1"
-templar-proxy-oracle-soroban-common = { path = "../common" }
+templar-proxy-oracle-soroban-common = { path = "../common", features = ["owner-upgrade"] }
 
 [dev-dependencies]
 hex-literal.workspace = true

@@ -8,7 +8,7 @@
 //! source-validation invariant — every source must report prices in the same
 //! base.
 
-use soroban_sdk::{contracttype, Bytes, Env, Vec};
+use soroban_sdk::{contracttype, Bytes, Env, IntoVal, Val, Vec};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet;
 use templar_proxy_oracle_soroban_common::{Asset, ContractError, NormalizedPrice};
 
@@ -33,6 +33,17 @@ pub(crate) struct PendingHistoryUpdate {
 pub(crate) enum HistoryUpdate {
     Append(PendingHistoryUpdate),
     Unchanged(NormalizedPrice),
+}
+
+pub fn extend_persistent_ttl<K: IntoVal<Env, Val>>(env: &Env, key: &K) {
+    let storage = env.storage().persistent();
+    if storage.has(key) {
+        storage.extend_ttl(
+            key,
+            templar_proxy_oracle_soroban_common::DEFAULT_TTL_THRESHOLD,
+            templar_proxy_oracle_soroban_common::DEFAULT_TTL_EXTEND_TO,
+        );
+    }
 }
 
 pub fn require_proxy_exists(env: &Env, asset: &Asset) -> Result<(), ContractError> {
