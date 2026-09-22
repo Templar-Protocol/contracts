@@ -75,10 +75,12 @@ pub enum ArtifactId {
     #[cfg_attr(feature = "clap", value(alias = "mock-ref"))]
     MockRefFinance,
     MockReceiver,
+    MockSigner,
+    MockDao,
 }
 
 impl ArtifactId {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 17] = [
         Self::Registry,
         Self::Market,
         Self::Vault,
@@ -94,6 +96,8 @@ impl ArtifactId {
         Self::MockOracle,
         Self::MockRefFinance,
         Self::MockReceiver,
+        Self::MockSigner,
+        Self::MockDao,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -117,6 +121,8 @@ impl ArtifactId {
             Self::MockOracle => &MOCK_ORACLE_METADATA,
             Self::MockRefFinance => &MOCK_REF_FINANCE_METADATA,
             Self::MockReceiver => &MOCK_RECEIVER_METADATA,
+            Self::MockSigner => &MOCK_SIGNER_METADATA,
+            Self::MockDao => &MOCK_DAO_METADATA,
         }
     }
 
@@ -363,3 +369,6 @@ static MOCK_RECEIVER_METADATA: ArtifactMetadata = entry!(
     "mock_receiver",
     "mock/receiver"
 );
+static MOCK_SIGNER_METADATA: ArtifactMetadata =
+    entry!(MockSigner, "mock-signer", "mock_signer", "mock/signer");
+static MOCK_DAO_METADATA: ArtifactMetadata = entry!(MockDao, "mock-dao", "mock_dao", "mock/dao");

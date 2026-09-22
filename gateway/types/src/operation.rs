@@ -200,6 +200,18 @@ pub struct OperationRecord {
     pub steps: Vec<TransactionStepRecord>,
 }
 
+impl ExecutionOutcome {
+    /// The return value decoded as JSON; `None` when the call returned nothing.
+    pub fn return_value_json<T: serde::de::DeserializeOwned>(
+        &self,
+    ) -> Result<Option<T>, serde_json::Error> {
+        self.return_value
+            .as_ref()
+            .map(|bytes| serde_json::from_slice(&bytes.0))
+            .transpose()
+    }
+}
+
 impl OperationRecord {
     /// The transaction hash of the highest-`index` step that has one, or `None`
     /// if no step has been prepared yet.

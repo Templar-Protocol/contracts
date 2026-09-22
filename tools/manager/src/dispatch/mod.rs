@@ -8,6 +8,7 @@ mod aggregate;
 pub(crate) mod export;
 mod funding;
 pub(crate) mod generic;
+mod mpc;
 mod patch;
 mod patch_dry_run;
 mod patch_export;
@@ -26,6 +27,7 @@ use crate::commands::{
     contract::ContractNs,
     ft::FtNs,
     market::MarketNs,
+    mpc::MpcNs,
     oracle::OracleNs,
     owner::OwnerNs,
     patch::PatchNs,
@@ -70,6 +72,7 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
         Command::Oracle { command } => oracle(ctx, command).await,
         Command::Pyth { command } => pyth(ctx, command).await,
         Command::Redstone { command } => redstone(ctx, command).await,
+        Command::Mpc { command } => mpc(ctx, command).await,
         Command::Patch { command } => patch(ctx, command).await,
         Command::Spec { command } => spec(ctx, command).await,
         Command::RecoverNep141(args) => teardown::recover_nep141(ctx, args).await,
@@ -98,7 +101,20 @@ async fn patch(ctx: CliContext, ns: PatchNs) -> anyhow::Result<()> {
 async fn account(ctx: CliContext, ns: AccountNs) -> anyhow::Result<()> {
     match ns {
         AccountNs::Get(a) => ctx.read(a.into_spec()).await,
+        AccountNs::AddKey(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        AccountNs::DeleteKey(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
         AccountNs::Delete(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+    }
+}
+
+async fn mpc(ctx: CliContext, ns: MpcNs) -> anyhow::Result<()> {
+    match ns {
+        MpcNs::DeriveKey(a) => mpc::derive_key(ctx, a).await,
+        MpcNs::InstallKey(a) => mpc::install_key(ctx, a).await,
+        MpcNs::Propose(a) => mpc::propose(ctx, a).await,
+        MpcNs::Show(a) => mpc::show(ctx, a).await,
+        MpcNs::Relay(a) => mpc::relay(ctx, a).await,
+        MpcNs::Broadcast(a) => mpc::broadcast(ctx, a).await,
     }
 }
 
