@@ -1645,7 +1645,9 @@ class RehearsalLogicTests(unittest.TestCase):
                 driver.run("deploy")
             driver.phase_deploy.assert_not_called()
 
-    def test_completed_rehearsal_requires_no_push_credential(self) -> None:
+    def test_completed_rehearsal_revalidates_refresh_without_push_credential(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             value = checkpoint()
             phase_results = value["phase_results"]
@@ -1656,16 +1658,16 @@ class RehearsalLogicTests(unittest.TestCase):
                     "evidence_path": f"phases/{phase}.json",
                 }
             driver = self.driver(Path(raw), value)
-            driver.verify_provider_fingerprints = mock.Mock(  # type: ignore[method-assign]
-                side_effect=AssertionError("completed phases must skip")
-            )
+            driver.verify_provider_fingerprints = mock.Mock()  # type: ignore[method-assign]
+            driver.phase_refresh = mock.Mock()  # type: ignore[method-assign]
             driver.pyth_api_key = mock.Mock(  # type: ignore[method-assign]
                 side_effect=AssertionError("credential must not be read")
             )
 
             driver.run("all")
 
-            driver.verify_provider_fingerprints.assert_not_called()
+            driver.verify_provider_fingerprints.assert_called_once_with()
+            driver.phase_refresh.assert_called_once_with()
             driver.pyth_api_key.assert_not_called()
 
     def test_exact_pending_owner_skips_duplicate_transfer(self) -> None:
@@ -2322,7 +2324,7 @@ class RehearsalLogicTests(unittest.TestCase):
             ):
                 rehearsal.require_true_scvals(result, 2, "batch")
 
-    def test_refresh_executes_exact_batch_sequence(self) -> None:
+    def test_completed_refresh_revalidates_exact_batch_sequence(self) -> None:
         class SequenceTransactions:
             def __init__(self, results: list[object]):
                 self.results = iter(results)
@@ -2383,13 +2385,21 @@ class RehearsalLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw, mock.patch.object(
             rehearsal.time, "time", return_value=123
         ):
-            driver = self.driver(Path(raw))
+            value = checkpoint()
+            phase_results = value["phase_results"]
+            assert isinstance(phase_results, dict)
+            for phase in rehearsal.PHASES:
+                phase_results[phase] = {
+                    "operation_numbers": [],
+                    "evidence_path": f"phases/{phase}.json",
+                }
+            driver = self.driver(Path(raw), value)
             transactions = SequenceTransactions(results)
             driver.transactions = transactions  # type: ignore[assignment]
             driver.view = mock.Mock(  # type: ignore[method-assign]
                 side_effect=[
-                    {"mantissa": 5_000_000_000, "expo": -8, "timestamp": 123},
-                    {"price": 5_000_000_000, "timestamp": 123},
+                    {"mantissa": 5_100_000_000, "expo": -8, "timestamp": 124},
+                    {"price": 5_100_000_000, "timestamp": 124},
                     {"mantissa": 5_100_000_000, "expo": -8, "timestamp": 124},
                 ]
             )

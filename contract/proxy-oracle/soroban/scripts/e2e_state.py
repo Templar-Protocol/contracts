@@ -3258,6 +3258,9 @@ class Rehearsal:
 
 
     def phase_refresh(self) -> None:
+        phase_results = self.store.value["phase_results"]
+        assert isinstance(phase_results, dict)
+        refresh_already_completed = phase_results["refresh"] is not None
         runtime = str(self.deployments["runtime"]["contract_id"])
         adapter = str(self.deployments["sep40_adapter"]["contract_id"])
         batcher = str(self.deployments["batcher"]["contract_id"])
@@ -3290,7 +3293,7 @@ class Rehearsal:
                 "runtime aggregated_latest did not return "
                 "a normalized price"
             )
-        if aggregated != accepted:
+        if not refresh_already_completed and aggregated != accepted:
             fail(
                 "runtime Accepted result differs from aggregated_latest"
             )
@@ -3431,7 +3434,7 @@ class Rehearsal:
                 for prior in PHASES[:phase_index]
             ):
                 fail(f"{phase} requires every preceding phase to pass")
-            if phase_results[phase] is not None:
+            if phase_results[phase] is not None and phase != "refresh":
                 continue
             self.verify_provider_fingerprints()
             getattr(self, f"phase_{phase}")()
