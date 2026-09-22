@@ -164,6 +164,10 @@ SRC=<funded-cli-identity> PYTH_LAZER_API_KEY_FILE=<mode-600-file> \
 The mode-0700 checkpoint directory stores immutable artifact snapshots,
 deterministically revalidated contract plans, signed envelopes, transaction
 hashes, independent RPC results, postconditions, and terminal phase outcomes.
+When simulation produces a total fee above the inner transaction's `u32`
+limit, the rehearsal signs the inner transaction, wraps it in a fee-bump paid
+and signed by the same `SRC`, and persists the outer envelope and hash before
+submission.
 Re-running re-hashes and resumes one unresolved envelope by its transaction
 hash. Use `--reinitialize` only to deliberately discard that state and plan new
 contract IDs; destructive reset refuses an unmarked non-empty output directory.

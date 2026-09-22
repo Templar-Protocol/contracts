@@ -156,6 +156,23 @@ class FakeRunner:
             output = TX_HASH
         elif args[:3] == ["stellar", "tx", "send"]:
             output = "submitted"
+        elif args[:3] == ["stellar", "tx", "decode"]:
+            output = json.dumps(
+                {
+                    "tx": {
+                        "tx": {
+                            "source_account": ACCOUNT,
+                            "fee": 100,
+                            "ext": "v0",
+                        },
+                        "signatures": (
+                            [{"signature": "present"}]
+                            if input_text == "signed"
+                            else []
+                        ),
+                    }
+                }
+            )
         elif args[:3] == ["stellar", "xdr", "decode"]:
             output = self.decoded
         else:
@@ -682,20 +699,158 @@ class TransactionStateMachineTests(unittest.TestCase):
                     ["contract", "invoke"],
                     ["tx", "simulate"],
                     ["tx", "sign"],
+                    ["tx", "decode"],
+                    ["tx", "decode"],
                     ["tx", "hash"],
+                    ["tx", "decode"],
                     ["tx", "hash"],
                     ["tx", "send"],
                 ],
             )
             self.assertEqual(runner.calls[1][1], "unsigned")
             self.assertEqual(runner.calls[2][1], "simulated")
-            self.assertEqual(runner.calls[3][1], "signed")
-            self.assertEqual(runner.calls[4][1], "signed")
-            self.assertEqual(runner.calls[5][1], "signed")
+            self.assertEqual(runner.calls[3][1], "simulated")
+            for index in (4, 5, 6, 7, 8):
+                self.assertEqual(runner.calls[index][1], "signed")
             loaded = rehearsal.CheckpointStore.load(current_settings.state_path)
             self.assertEqual(
                 loaded.operations()[0]["status"], "succeeded"
             )
+
+    def test_large_resource_fee_is_signed_and_recorded_as_fee_bump(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            current_settings = settings(directory)
+            store = self.make_store(directory)
+            calls: list[tuple[list[str], str | None]] = []
+            encoded_payload: dict[str, object] = {}
+            resource_fee = rehearsal.UINT32_MAX + 1
+
+            def envelope(
+                fee: int,
+                extension: object,
+                signatures: list[object],
+            ) -> str:
+                return json.dumps(
+                    {
+                        "tx": {
+                            "tx": {
+                                "source_account": ACCOUNT,
+                                "fee": fee,
+                                "ext": extension,
+                            },
+                            "signatures": signatures,
+                        }
+                    }
+                )
+
+            def runner(
+                args: list[str], *, input_text: str | None = None
+            ) -> subprocess.CompletedProcess[str]:
+                calls.append((list(args), input_text))
+                command = args[1:3]
+                if command == ["tx", "simulate"]:
+                    output = "simulated"
+                elif command == ["tx", "decode"]:
+                    if input_text == "simulated":
+                        output = envelope(
+                            0,
+                            {"v1": {"resource_fee": str(resource_fee)}},
+                            [],
+                        )
+                    elif input_text == "unsigned":
+                        output = envelope(100, "v0", [])
+                    elif input_text == "signed-inner":
+                        output = envelope(
+                            0,
+                            {"v1": {"resource_fee": str(resource_fee)}},
+                            [{"signature": "present"}],
+                        )
+                    elif input_text == "signed-fee-bump":
+                        signed_fee_bump = copy.deepcopy(encoded_payload)
+                        outer = signed_fee_bump["tx_fee_bump"]
+                        assert isinstance(outer, dict)
+                        outer["signatures"] = [{"signature": "outer"}]
+                        output = json.dumps(signed_fee_bump)
+                    else:
+                        raise AssertionError(
+                            f"unexpected envelope decode: {input_text!r}"
+                        )
+                elif command == ["tx", "encode"]:
+                    assert input_text is not None
+                    encoded_payload.update(json.loads(input_text))
+                    output = "fee-bump"
+                elif command == ["xdr", "encode"]:
+                    output = base64.b64encode(
+                        b"fee-bump-signature-payload"
+                    ).decode()
+                elif command == ["tx", "sign"]:
+                    output = (
+                        "signed-fee-bump"
+                        if input_text == "fee-bump"
+                        else "signed-inner"
+                    )
+                elif command == ["tx", "hash"]:
+                    output = TX_HASH
+                elif command == ["tx", "send"]:
+                    output = "submitted"
+                else:
+                    output = "unsigned"
+                return subprocess.CompletedProcess(args, 0, output, "")
+
+            executor = rehearsal.TransactionExecutor(
+                current_settings,
+                store,
+                runner=runner,
+                rpc=self.success_rpc(),
+                sleep=lambda _: None,
+            )
+            executor.execute(
+                "deploy",
+                "deploy",
+                CONTRACT,
+                {
+                    "slug": "runtime",
+                    "wasm_hash": DIGEST,
+                    "salt": "3" * 64,
+                    "constructor_args": {},
+                },
+                ["stellar", "contract", "deploy"],
+            )
+
+            fee_bump = encoded_payload["tx_fee_bump"]
+            assert isinstance(fee_bump, dict)
+            transaction = fee_bump["tx"]
+            assert isinstance(transaction, dict)
+            self.assertEqual(
+                transaction["fee"],
+                str(resource_fee + 200),
+            )
+            self.assertEqual(transaction["fee_source"], ACCOUNT)
+            self.assertEqual(
+                transaction["inner_tx"],
+                json.loads(
+                    envelope(
+                        0,
+                        {"v1": {"resource_fee": str(resource_fee)}},
+                        [{"signature": "present"}],
+                    )
+                ),
+            )
+            self.assertFalse(
+                any(call[0][1:3] == ["tx", "hash"] for call in calls)
+            )
+            self.assertEqual(
+                sum(call[0][1:3] == ["xdr", "encode"] for call in calls),
+                2,
+            )
+            self.assertEqual(calls[-1][0][1:3], ["tx", "send"])
+            self.assertEqual(calls[-1][1], "signed-fee-bump")
+            persisted = (
+                current_settings.output
+                / "operations/0001/signed-envelope.xdr"
+            ).read_text()
+            self.assertEqual(persisted, "signed-fee-bump\n")
 
     def prepare_operation(
         self, directory: Path, *, submitted: bool
@@ -763,10 +918,12 @@ class TransactionStateMachineTests(unittest.TestCase):
                 sleep=lambda _: None,
             )
             executor.resolve_unfinished()
-            self.assertEqual(runner.calls[0][0][1:3], ["tx", "hash"])
+            self.assertEqual(runner.calls[0][0][1:3], ["tx", "decode"])
             self.assertEqual(runner.calls[0][1], "signed")
-            self.assertEqual(runner.calls[1][0][1:3], ["tx", "send"])
+            self.assertEqual(runner.calls[1][0][1:3], ["tx", "hash"])
             self.assertEqual(runner.calls[1][1], "signed")
+            self.assertEqual(runner.calls[2][0][1:3], ["tx", "send"])
+            self.assertEqual(runner.calls[2][1], "signed")
             self.assertEqual(
                 store.operations()[0]["status"], "succeeded"
             )
@@ -777,12 +934,33 @@ class TransactionStateMachineTests(unittest.TestCase):
                 Path(raw), submitted=False
             )
             runner = mock.Mock(
-                return_value=subprocess.CompletedProcess(
-                    ["stellar", "tx", "hash"],
-                    0,
-                    "c" * 64,
-                    "",
-                )
+                side_effect=[
+                    subprocess.CompletedProcess(
+                        ["stellar", "tx", "decode"],
+                        0,
+                        json.dumps(
+                            {
+                                "tx": {
+                                    "tx": {
+                                        "source_account": ACCOUNT,
+                                        "fee": 100,
+                                        "ext": "v0",
+                                    },
+                                    "signatures": [
+                                        {"signature": "present"}
+                                    ],
+                                }
+                            }
+                        ),
+                        "",
+                    ),
+                    subprocess.CompletedProcess(
+                        ["stellar", "tx", "hash"],
+                        0,
+                        "c" * 64,
+                        "",
+                    ),
+                ]
             )
             executor = rehearsal.TransactionExecutor(
                 current_settings,
@@ -796,7 +974,7 @@ class TransactionStateMachineTests(unittest.TestCase):
             ):
                 executor.resolve_unfinished()
             self.assertEqual(store.operations()[0]["status"], "prepared")
-            self.assertEqual(runner.call_count, 1)
+            self.assertEqual(runner.call_count, 2)
 
     def test_resume_submitted_transaction_only_polls_recorded_hash(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1006,7 +1184,11 @@ class TransactionStateMachineTests(unittest.TestCase):
                 [
                     call[0][1:3] for call in initial_runner.calls
                 ],
-                [["tx", "hash"], ["tx", "send"]],
+                [
+                    ["tx", "decode"],
+                    ["tx", "hash"],
+                    ["tx", "send"],
+                ],
             )
             self.assertEqual(
                 store.operations()[0]["status"], "submitted"

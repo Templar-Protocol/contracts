@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import contextlib
 import fcntl
 import json
@@ -95,6 +96,7 @@ ACCOUNT_RE = re.compile(r"^G[A-Z2-7]{55}$")
 IDENTITY_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 UINT32_MAX = (1 << 32) - 1
 UINT64_MAX = (1 << 64) - 1
+INT64_MAX = (1 << 63) - 1
 MAX_FRESHNESS_AGE_SECS = 7 * 24 * 60 * 60
 MAX_FRESHNESS_DRIFT_SECS = 60 * 60
 PROVIDER_ID_OVERRIDE_KEYS = (
@@ -1794,6 +1796,205 @@ class TransactionExecutor:
             fail(f"{step} returned empty stdout")
         return output
 
+    def decode_envelope(
+        self,
+        envelope: str,
+        operation_number: int,
+        step: str,
+    ) -> dict[str, object]:
+        output = self.command(
+            ["stellar", "tx", "decode", "--output", "json-formatted"],
+            input_text=envelope,
+            operation_number=operation_number,
+            step=step,
+        )
+        decoded = strict_json_bytes(output.encode(), step)
+        if not isinstance(decoded, dict):
+            fail(f"{step} must decode to an object")
+        return decoded
+
+    def decode_transaction(
+        self,
+        envelope: str,
+        operation_number: int,
+        step: str,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        outer = require_exact_keys(
+            self.decode_envelope(envelope, operation_number, step),
+            {"tx"},
+            step,
+        )
+        inner = require_exact_keys(
+            outer["tx"],
+            {"tx", "signatures"},
+            f"{step}.tx",
+        )
+        transaction = inner["tx"]
+        if not isinstance(transaction, dict):
+            fail(f"{step}.tx.tx must be an object")
+        return outer, transaction
+
+    def transaction_hash(
+        self,
+        envelope: str,
+        operation_number: int,
+        step: str,
+    ) -> str:
+        decoded = self.decode_envelope(
+            envelope,
+            operation_number,
+            f"{step}-decode",
+        )
+        if set(decoded) == {"tx"}:
+            transaction_envelope = require_exact_keys(
+                decoded["tx"],
+                {"tx", "signatures"},
+                f"{step}.tx",
+            )
+            signatures = transaction_envelope["signatures"]
+            if not isinstance(signatures, list) or not signatures:
+                fail(f"{step} transaction must be signed")
+            return self.command(
+                ["stellar", "tx", "hash", *self.settings.network_args],
+                input_text=envelope,
+                operation_number=operation_number,
+                step=step,
+            )
+
+        outer = require_exact_keys(decoded, {"tx_fee_bump"}, step)
+        fee_bump_envelope = require_exact_keys(
+            outer["tx_fee_bump"],
+            {"tx", "signatures"},
+            f"{step}.tx_fee_bump",
+        )
+        signatures = fee_bump_envelope["signatures"]
+        if not isinstance(signatures, list) or not signatures:
+            fail(f"{step} fee-bump transaction must be signed")
+        fee_bump_transaction = fee_bump_envelope["tx"]
+        if not isinstance(fee_bump_transaction, dict):
+            fail(f"{step} fee-bump transaction must be an object")
+        signature_payload = {
+            "network_id": sha256_bytes(PASSPHRASE.encode()),
+            "tagged_transaction": {
+                "tx_fee_bump": fee_bump_transaction,
+            },
+        }
+        encoded_payload = self.command(
+            [
+                "stellar",
+                "xdr",
+                "encode",
+                "--type",
+                "TransactionSignaturePayload",
+                "--output",
+                "single-base64",
+            ],
+            input_text=canonical_json_text(signature_payload),
+            operation_number=operation_number,
+            step=f"{step}-payload",
+        )
+        try:
+            payload = base64.b64decode(encoded_payload, validate=True)
+        except (binascii.Error, ValueError):
+            fail(f"{step} signature payload is not canonical base64")
+        return sha256_bytes(payload)
+
+    def wrap_fee_bump_if_required(
+        self,
+        unsigned: str,
+        simulated: str,
+        signed_inner: str,
+        operation_number: int,
+    ) -> str:
+        _, simulated_transaction = self.decode_transaction(
+            simulated,
+            operation_number,
+            "fee-check",
+        )
+        simulated_fee = require_u32(
+            simulated_transaction.get("fee"),
+            "simulated transaction fee",
+        )
+        if simulated_fee != 0:
+            return signed_inner
+
+        extension = require_exact_keys(
+            simulated_transaction.get("ext"),
+            {"v1"},
+            "simulated transaction extension",
+        )
+        version_one = extension["v1"]
+        if not isinstance(version_one, dict):
+            fail("simulated transaction v1 extension must be an object")
+        resource_fee = require_integer(
+            version_one.get("resource_fee"),
+            "simulated transaction resource fee",
+        )
+        if resource_fee <= 0:
+            fail("simulated transaction resource fee must be positive")
+
+        _, unsigned_transaction = self.decode_transaction(
+            unsigned,
+            operation_number,
+            "fee-bump-decode-unsigned",
+        )
+        inclusion_fee = require_u32(
+            unsigned_transaction.get("fee"),
+            "unsigned transaction inclusion fee",
+            positive=True,
+        )
+        fee_bump_fee = resource_fee + 2 * inclusion_fee
+        if fee_bump_fee <= UINT32_MAX or fee_bump_fee > INT64_MAX:
+            fail("simulated zero-fee transaction has an invalid fee-bump amount")
+
+        signed_envelope, signed_transaction = self.decode_transaction(
+            signed_inner,
+            operation_number,
+            "fee-bump-decode-inner",
+        )
+        if (
+            signed_transaction.get("fee") != 0
+            or signed_transaction.get("source_account")
+            != self.settings.administrator
+        ):
+            fail("signed fee-bump inner transaction differs from its simulation")
+        signed_transaction_envelope = signed_envelope["tx"]
+        assert isinstance(signed_transaction_envelope, dict)
+        signatures = signed_transaction_envelope["signatures"]
+        if not isinstance(signatures, list) or not signatures:
+            fail("fee-bump inner transaction must be signed")
+
+        fee_bump = {
+            "tx_fee_bump": {
+                "tx": {
+                    "fee_source": self.settings.administrator,
+                    "fee": str(fee_bump_fee),
+                    "inner_tx": signed_envelope,
+                    "ext": "v0",
+                },
+                "signatures": [],
+            }
+        }
+        encoded = self.command(
+            ["stellar", "tx", "encode"],
+            input_text=canonical_json_text(fee_bump),
+            operation_number=operation_number,
+            step="fee-bump-encode",
+        )
+        return self.command(
+            [
+                "stellar",
+                "tx",
+                "sign",
+                *self.settings.network_args,
+                "--sign-with-key",
+                self.settings.source_identity,
+            ],
+            input_text=encoded,
+            operation_number=operation_number,
+            step="fee-bump-sign",
+        )
+
     def poll(self, operation: dict[str, object], attempts: int = 60) -> bool:
         tx_hash = str(operation["tx_hash"])
         result_path = self.settings.output / operation_result_path(
@@ -1835,11 +2036,10 @@ class TransactionExecutor:
         envelope: str,
     ) -> None:
         operation_number = int(operation["number"])
-        actual = self.command(
-            ["stellar", "tx", "hash", *self.settings.network_args],
-            input_text=envelope,
-            operation_number=operation_number,
-            step="verify-hash",
+        actual = self.transaction_hash(
+            envelope,
+            operation_number,
+            "verify-hash",
         )
         if actual != operation["tx_hash"]:
             fail("signed transaction envelope does not match its checkpoint hash")
@@ -1962,17 +2162,22 @@ class TransactionExecutor:
             operation_number=operation_number,
             step="simulate",
         )
-        signed = self.command(
+        signed_inner = self.command(
             ["stellar", "tx", "sign", *self.settings.network_args, "--sign-with-key", self.settings.source_identity],
             input_text=simulated,
             operation_number=operation_number,
             step="sign",
         )
-        tx_hash = self.command(
-            ["stellar", "tx", "hash", *self.settings.network_args],
-            input_text=signed,
-            operation_number=operation_number,
-            step="hash",
+        signed = self.wrap_fee_bump_if_required(
+            unsigned,
+            simulated,
+            signed_inner,
+            operation_number,
+        )
+        tx_hash = self.transaction_hash(
+            signed,
+            operation_number,
+            "hash",
         )
         if not SHA256.fullmatch(tx_hash):
             fail("stellar tx hash did not return a lowercase SHA-256 digest")
