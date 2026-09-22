@@ -11,6 +11,8 @@ on:
       - ".github/workflows/kani-proxy-oracle.yml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".cargo/config.toml"
+      - "rust-toolchain.toml"
       - "contract/proxy-oracle/kernel/**"
       - "primitives/**"
 

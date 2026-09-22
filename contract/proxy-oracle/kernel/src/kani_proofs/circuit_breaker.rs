@@ -4,7 +4,8 @@ use super::{bounded_i8, bounded_u8, normalized_at_exponent_minus_one, symbolic_p
 use crate::{
     proxy::circuit_breaker::{
         CircuitBreakerEvent, CircuitBreakerRule, CircuitBreakerState, CircuitBreakerStatus,
-        MonotonicRun, Observation, RingBuffer, StepwiseChange, WindowedChangeDelta,
+        MonotonicRun, Observation, ProposedPriceAcceptance, RingBuffer, StepwiseChange,
+        WindowedChangeDelta,
     },
     Price,
 };
@@ -474,11 +475,11 @@ fn armed_breaker_trips_once_and_stays_blocking() {
         price: selected,
         observed_at_ns: now,
     };
-    let mut proposed_history = RingBuffer::new(3);
-    proposed_history.push(seed);
-    proposed_history.push(trip_observation);
+    let mut accepted_history = RingBuffer::new(3);
+    accepted_history.push(seed);
+    let proposed_acceptance = ProposedPriceAcceptance::new(&accepted_history, trip_observation);
 
-    let event = state.apply_armed_transition(BREAKER_ID, &proposed_history, trip_observation, now);
+    let event = state.apply_armed_transition(BREAKER_ID, &proposed_acceptance, now);
 
     if now < armed_after {
         assert_eq!(event, None);
@@ -512,9 +513,11 @@ fn armed_breaker_trips_once_and_stays_blocking() {
     assert_eq!(state.status, tripped_status);
     assert_eq!(state.is_blocking(), is_enforced);
 
-    proposed_history.push(trip_observation);
+    accepted_history.push(trip_observation);
+    let repeated_proposed_acceptance =
+        ProposedPriceAcceptance::new(&accepted_history, trip_observation);
     assert_eq!(
-        state.apply_armed_transition(BREAKER_ID, &proposed_history, trip_observation, now),
+        state.apply_armed_transition(BREAKER_ID, &repeated_proposed_acceptance, now),
         None
     );
     assert_eq!(state.status, tripped_status);

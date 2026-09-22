@@ -558,34 +558,29 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
             )));
         }
 
-        let mut proposed_accepted_history = self.0.accepted_history.clone();
-        proposed_accepted_history.push(price_update);
+        let proposed_acceptance =
+            ProposedPriceAcceptance::new(&self.0.accepted_history, price_update);
 
-        let acceptance =
-            self.apply_armed_breaker_transitions(&proposed_accepted_history, price_update, now);
+        let acceptance = self.apply_armed_breaker_transitions(&proposed_acceptance, now);
 
         if acceptance.value.is_ok() && should_persist_sample && accepted_history_should_advance {
-            self.0.accepted_history = proposed_accepted_history;
+            self.0.accepted_history = proposed_acceptance.accepted_history;
         }
         Ok(acceptance)
     }
 
     fn apply_armed_breaker_transitions(
         &mut self,
-        proposed_accepted_history: &RingBuffer<Observation>,
-        price_update: Observation,
+        proposed_acceptance: &ProposedPriceAcceptance,
         now: Nanoseconds,
     ) -> CircuitBreakerOutcome<PriceAcceptance> {
         let mut events = vec![];
         let mut blocking_breaker_ids = vec![];
 
         for (breaker_id, breaker) in &mut self.0.breakers {
-            if let Some(event) = breaker.apply_armed_transition(
-                *breaker_id,
-                proposed_accepted_history,
-                price_update,
-                now,
-            ) {
+            if let Some(event) =
+                breaker.apply_armed_transition(*breaker_id, proposed_acceptance, now)
+            {
                 events.push(event);
             }
             if breaker.is_blocking() {
@@ -594,13 +589,32 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
         }
 
         let value = if blocking_breaker_ids.is_empty() {
-            Ok(price_update.price)
+            Ok(proposed_acceptance.price_update.price)
         } else {
             Err(PriceBlockedReason::BreakerTripped {
                 blocking_breaker_ids,
             })
         };
         CircuitBreakerOutcome::new(value).with_events(events)
+    }
+}
+
+pub(crate) struct ProposedPriceAcceptance {
+    price_update: Observation,
+    accepted_history: RingBuffer<Observation>,
+}
+
+impl ProposedPriceAcceptance {
+    pub(crate) fn new(
+        accepted_history: &RingBuffer<Observation>,
+        price_update: Observation,
+    ) -> Self {
+        let mut accepted_history = accepted_history.clone();
+        accepted_history.push(price_update);
+        Self {
+            price_update,
+            accepted_history,
+        }
     }
 }
 
@@ -634,12 +648,15 @@ impl<R: CircuitBreakerRule> CircuitBreakerState<R> {
     pub(crate) fn apply_armed_transition(
         &mut self,
         breaker_id: u32,
-        proposed_accepted_history: &RingBuffer<Observation>,
-        price_update: Observation,
+        proposed_acceptance: &ProposedPriceAcceptance,
         now: Nanoseconds,
     ) -> Option<CircuitBreakerEvent> {
-        if self.is_armed_at(now) && self.breaker.should_trip(proposed_accepted_history) {
-            Some(self.trip(breaker_id, price_update, now))
+        if self.is_armed_at(now)
+            && self
+                .breaker
+                .should_trip(&proposed_acceptance.accepted_history)
+        {
+            Some(self.trip(breaker_id, proposed_acceptance.price_update, now))
         } else {
             None
         }

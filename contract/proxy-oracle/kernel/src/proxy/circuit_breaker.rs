@@ -4,6 +4,9 @@ mod observation;
 mod ring_buffer;
 mod rule;
 mod set;
+
+#[cfg(kani)]
+pub(crate) use set::ProposedPriceAcceptance;
 mod status;
 
 pub use error::{CircuitBreakerError, ErrorCode};
