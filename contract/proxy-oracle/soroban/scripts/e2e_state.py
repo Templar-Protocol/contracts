@@ -28,6 +28,7 @@ from release_artifacts import (
     MANIFEST_PATH,
     ROOT,
     SHA256,
+    catalog_artifact,
     canonical_json,
     parse_json,
     release_lock,
@@ -2006,9 +2007,7 @@ class Rehearsal:
         return value  # type: ignore[return-value]
 
     def build_upload(self, slug: str) -> list[str]:
-        artifact = next(
-            artifact for artifact in ARTIFACTS if artifact.slug == slug
-        )
+        artifact = catalog_artifact(slug)
         return [
             "stellar",
             "contract",
@@ -2031,10 +2030,11 @@ class Rehearsal:
 
     def build_deploy(self, slug: str) -> list[str]:
         deployment = self.deployments[slug]
+        artifact = catalog_artifact(slug)
         command = [
             "stellar", "contract", "deploy", *self.settings.network_args,
             "--source", self.settings.administrator,
-            "--wasm-hash", str(deployment["wasm_hash"]),
+            "--wasm", str(self.settings.snapshot / artifact.optimized_wasm),
             "--salt", str(deployment["salt"]),
             "--build-only",
         ]

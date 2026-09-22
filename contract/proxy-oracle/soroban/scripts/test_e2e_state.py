@@ -1283,6 +1283,34 @@ class RehearsalLogicTests(unittest.TestCase):
                 ],
             )
 
+    def test_deploy_build_uses_snapshotted_wasm_for_constructor_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            driver = self.driver(Path(raw))
+            driver.deployments["runtime"]["constructor_args"] = {
+                "governance": ACCOUNT,
+                "base": {"Other": "USD"},
+            }
+
+            command = driver.build_deploy("runtime")
+
+            artifact = rehearsal.catalog_artifact("runtime")
+            wasm_index = command.index("--wasm")
+            self.assertEqual(
+                command[wasm_index + 1],
+                str(driver.settings.snapshot / artifact.optimized_wasm),
+            )
+            self.assertNotIn("--wasm-hash", command)
+            constructor_index = command.index("--")
+            self.assertEqual(
+                command[constructor_index + 1 :],
+                [
+                    "--governance",
+                    ACCOUNT,
+                    "--base",
+                    '{"Other":"USD"}',
+                ],
+            )
+
     def test_provider_drift_stops_before_phase_writes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             driver = self.driver(Path(raw))
