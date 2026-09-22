@@ -1,19 +1,20 @@
-//! Stand-in for the NEAR MPC signer (`v1.signer`): derived keys and signatures
-//! are configured by the test instead of computed, and `sign` returns the
-//! configured response in its own receipt like the real contract does.
+//! Stand-in for the NEAR MPC signer (`v1.signer`), ed25519 only: keys are
+//! derived from `(predecessor, path, domain_id)` and `sign` signs in-contract.
+//! `set_refuse` makes `sign` panic, as when the MPC network does not answer.
 
 // `#[near]` method parameters are taken by value; the generated wrappers own them.
 #![allow(clippy::needless_pass_by_value)]
 
-use near_sdk::{env, near, serde_json, store::LookupMap, AccountId, NearToken, PanicOnDefault};
+use ed25519_dalek::{Signer as _, SigningKey};
+use near_sdk::{env, near, AccountId, CurveType, NearToken, PanicOnDefault, PublicKey};
+use sha2::{Digest as _, Sha256};
+
+const ED25519_DOMAIN_ID: u64 = 1;
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
-    /// `(predecessor, path, domain_id)` → public key text.
-    derived_keys: LookupMap<String, String>,
-    /// hex payload → the JSON `SignatureResponse` `sign` returns for it.
-    signatures: LookupMap<String, String>,
+    refuse: bool,
 }
 
 #[near(serializers = [json])]
@@ -30,39 +31,34 @@ pub enum Payload {
 }
 
 #[near(serializers = [json])]
-pub struct SignArgs {
-    pub request: SignRequestArgs,
+#[serde(tag = "scheme")]
+pub enum SignatureResponse {
+    Ed25519 { signature: Vec<u8> },
 }
 
-fn derivation_key(predecessor: &AccountId, path: &str, domain_id: u64) -> String {
-    format!("{predecessor}|{path}|{domain_id}")
+fn signing_key(predecessor: &AccountId, path: &str, domain_id: u64) -> SigningKey {
+    assert!(
+        domain_id == ED25519_DOMAIN_ID,
+        "only the ed25519 domain is mocked"
+    );
+    let seed = Sha256::new()
+        .chain_update(predecessor.as_bytes())
+        .chain_update(b",")
+        .chain_update(path.as_bytes())
+        .chain_update(domain_id.to_le_bytes())
+        .finalize();
+    SigningKey::from_bytes(&seed.into())
 }
 
 #[near]
 impl Contract {
     #[init]
     pub fn new() -> Self {
-        Self {
-            derived_keys: LookupMap::new(b"k"),
-            signatures: LookupMap::new(b"s"),
-        }
+        Self { refuse: false }
     }
 
-    pub fn set_derived_public_key(
-        &mut self,
-        predecessor: AccountId,
-        path: String,
-        domain_id: u64,
-        public_key: String,
-    ) {
-        self.derived_keys
-            .insert(derivation_key(&predecessor, &path, domain_id), public_key);
-    }
-
-    /// `response` is the JSON the real contract would return, e.g.
-    /// `{"scheme":"Ed25519","signature":[…]}`.
-    pub fn set_signature(&mut self, payload_hex: String, response: serde_json::Value) {
-        self.signatures.insert(payload_hex, response.to_string());
+    pub fn set_refuse(&mut self, refuse: bool) {
+        self.refuse = refuse;
     }
 
     pub fn derived_public_key(
@@ -70,29 +66,32 @@ impl Contract {
         path: String,
         predecessor: Option<AccountId>,
         domain_id: Option<u64>,
-    ) -> String {
+    ) -> PublicKey {
         let predecessor = predecessor.unwrap_or_else(env::predecessor_account_id);
-        let key = derivation_key(&predecessor, &path, domain_id.unwrap_or(0));
-        self.derived_keys
-            .get(&key)
-            .unwrap_or_else(|| env::panic_str(&format!("no derived key configured for {key}")))
-            .clone()
+        let key = signing_key(&predecessor, &path, domain_id.unwrap_or(0));
+        PublicKey::from_parts(CurveType::ED25519, key.verifying_key().to_bytes().to_vec())
+            .unwrap_or_else(|_| env::panic_str("an ed25519 key is 32 bytes"))
     }
 
     #[payable]
-    pub fn sign(&mut self, request: SignRequestArgs) -> serde_json::Value {
+    pub fn sign(&mut self, request: SignRequestArgs) -> SignatureResponse {
         assert!(
             env::attached_deposit() >= NearToken::from_yoctonear(1),
             "sign needs a deposit"
         );
-        let payload_hex = match request.payload_v2 {
-            Payload::Ecdsa(hex) | Payload::Eddsa(hex) => hex,
+        assert!(!self.refuse, "the MPC network did not answer");
+        let Payload::Eddsa(payload) = request.payload_v2 else {
+            env::panic_str("only Eddsa payloads are mocked")
         };
-        let response = self.signatures.get(&payload_hex).unwrap_or_else(|| {
-            env::panic_str(&format!("no signature configured for {payload_hex}"))
-        });
-        serde_json::from_str(response)
-            .unwrap_or_else(|_| env::panic_str("stored response is not JSON"))
+        let payload = hex::decode(payload).unwrap_or_else(|_| env::panic_str("payload is not hex"));
+        let key = signing_key(
+            &env::predecessor_account_id(),
+            &request.path,
+            request.domain_id,
+        );
+        SignatureResponse::Ed25519 {
+            signature: key.sign(&payload).to_bytes().to_vec(),
+        }
     }
 }
 

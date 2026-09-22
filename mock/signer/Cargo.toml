@@ -22,8 +22,11 @@ container_build_command = [
 ]
 
 [dependencies]
+ed25519-dalek.workspace = true
 getrandom.workspace = true
+hex.workspace = true
 near-sdk.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true
