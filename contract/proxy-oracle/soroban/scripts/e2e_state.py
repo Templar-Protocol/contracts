@@ -467,12 +467,15 @@ def decode_optional_price(
 ) -> dict[str, object] | None:
     if value is None:
         return None
-    price = require_exact_keys(value, {"price", "timestamp"}, label)
-    require_integer(price["price"], f"{label}.price")
-    timestamp = require_integer(price["timestamp"], f"{label}.timestamp")
-    if timestamp < 0:
-        fail(f"{label}.timestamp must be non-negative")
-    return price
+    encoded = require_exact_keys(value, {"price", "timestamp"}, label)
+    price = require_integer(encoded["price"], f"{label}.price")
+    if not -(1 << 127) <= price < 1 << 127:
+        fail(f"{label}.price must be an i128")
+    timestamp = require_integer(
+        encoded["timestamp"], f"{label}.timestamp"
+    )
+    require_u64(timestamp, f"{label}.timestamp")
+    return {"price": price, "timestamp": timestamp}
 
 
 def decode_scval_optional_price(

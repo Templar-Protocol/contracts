@@ -1866,6 +1866,15 @@ class RehearsalLogicTests(unittest.TestCase):
                         decoder=rehearsal.decode_optional_price,
                     )
 
+    def test_sep40_price_normalizes_i128_json_strings(self) -> None:
+        self.assertEqual(
+            rehearsal.decode_optional_price(
+                {"price": "21232754", "timestamp": "1790094000"},
+                "price",
+            ),
+            {"price": 21232754, "timestamp": 1790094000},
+        )
+
     def test_sep40_price_decodes_raw_simulation_result(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             driver = self.driver(Path(raw))
