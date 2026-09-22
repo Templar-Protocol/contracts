@@ -662,6 +662,89 @@ class CheckpointStoreTests(unittest.TestCase):
                         current_settings, context, deployments
                     )
 
+    def test_resume_rejects_every_context_boundary_without_mutation(
+        self,
+    ) -> None:
+        cases = (
+            ("RPC", ("network", "rpc_url"), "https://changed-rpc.test"),
+            ("administrator", ("administrator",), strkey(48, 8)),
+            (
+                "provider",
+                ("providers", "reflector", "initial_code_hash"),
+                "9" * 64,
+            ),
+            (
+                "artifact",
+                ("artifact_hashes", "runtime"),
+                "8" * 64,
+            ),
+            (
+                "tool",
+                (
+                    "tool_hashes",
+                    "contract/proxy-oracle/soroban/scripts/e2e_state.py",
+                ),
+                "7" * 64,
+            ),
+            ("profile", ("profile", "name"), "custom"),
+            (
+                "policy",
+                ("freshness", "reflector", "max_age_secs"),
+                601,
+            ),
+        )
+        for label, path, changed_value in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as raw:
+                current_settings = settings(Path(raw))
+                existing = checkpoint()
+                store = rehearsal.CheckpointStore(
+                    current_settings.state_path, existing
+                )
+                store.first_save()
+                before = current_settings.state_path.read_bytes()
+                changed = copy.deepcopy(existing["context"])
+                cursor = changed
+                for key in path[:-1]:
+                    assert isinstance(cursor, dict)
+                    cursor = cursor[key]
+                assert isinstance(cursor, dict)
+                cursor[path[-1]] = changed_value
+
+                with (
+                    mock.patch.object(rehearsal, "check_network"),
+                    mock.patch.object(rehearsal, "check_funded"),
+                    mock.patch.object(
+                        rehearsal,
+                        "snapshot_release",
+                        return_value=({}, {}),
+                    ),
+                    mock.patch.object(
+                        rehearsal,
+                        "provider_fingerprints",
+                        return_value={},
+                    ),
+                    mock.patch.object(
+                        rehearsal,
+                        "build_context",
+                        return_value=changed,
+                    ),
+                    mock.patch.object(
+                        rehearsal, "validate_deployment_plan"
+                    ) as validate_plan,
+                    self.assertRaisesRegex(
+                        rehearsal.RehearsalError,
+                        "checkpoint context drift",
+                    ),
+                ):
+                    rehearsal.resume_or_initialize(
+                        current_settings, reinitialize=False
+                    )
+
+                validate_plan.assert_not_called()
+                self.assertEqual(
+                    current_settings.state_path.read_bytes(), before
+                )
+
 
 class TransactionStateMachineTests(unittest.TestCase):
     def make_store(self, directory: Path) -> rehearsal.CheckpointStore:
