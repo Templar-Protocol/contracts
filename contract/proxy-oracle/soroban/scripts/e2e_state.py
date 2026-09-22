@@ -475,6 +475,43 @@ def decode_optional_price(
     return price
 
 
+def decode_scval_optional_price(
+    value: object, label: str
+) -> dict[str, object] | None:
+    if value == {"void": None}:
+        return None
+    encoded = require_exact_keys(value, {"map"}, label)
+    entries = encoded["map"]
+    if not isinstance(entries, list):
+        fail(f"{label}.map must be an array")
+    fields: dict[str, int] = {}
+    for index, raw_entry in enumerate(entries):
+        entry_label = f"{label}.map[{index}]"
+        entry = require_exact_keys(raw_entry, {"key", "val"}, entry_label)
+        key = require_exact_keys(
+            entry["key"], {"symbol"}, f"{entry_label}.key"
+        )
+        name = require_string(key["symbol"], f"{entry_label}.key.symbol")
+        value_type = {"price": "i128", "timestamp": "u64"}.get(name)
+        if value_type is None:
+            fail(f"{label} contains an unexpected field {name!r}")
+        if name in fields:
+            fail(f"{label} contains duplicate field {name!r}")
+        wrapped = require_exact_keys(
+            entry["val"], {value_type}, f"{entry_label}.val"
+        )
+        fields[name] = require_integer(
+            wrapped[value_type], f"{entry_label}.val.{value_type}"
+        )
+    if set(fields) != {"price", "timestamp"}:
+        fail(f"{label} does not contain a complete SEP-40 price")
+    price = fields["price"]
+    if not -(1 << 127) <= price < 1 << 127:
+        fail(f"{label}.price must be an i128")
+    require_u64(fields["timestamp"], f"{label}.timestamp")
+    return {"price": price, "timestamp": fields["timestamp"]}
+
+
 def decode_optional_stored_price(
     value: object, label: str
 ) -> dict[str, object] | None:
@@ -2294,6 +2331,56 @@ class Rehearsal:
         label = f"{function} view"
         return decoder(strict_json_bytes(result.stdout.strip().encode(), label), label)
 
+    def sep40_price(
+        self, contract_id: str, asset: dict[str, str]
+    ) -> dict[str, object] | None:
+        built = run_simple(
+            self.build_invoke(contract_id, "lastprice", {"asset": asset})
+        )
+        transaction = require_string(
+            built.stdout.strip(), "lastprice transaction"
+        )
+        simulation = rpc_call(
+            self.settings.rpc_url,
+            "simulateTransaction",
+            {"transaction": transaction},
+        )
+        if not isinstance(simulation, dict):
+            fail("lastprice simulation returned an invalid result")
+        if "error" in simulation:
+            fail(
+                "lastprice simulation failed: "
+                + canonical_json_text(simulation["error"])
+            )
+        results = simulation.get("results")
+        if (
+            not isinstance(results, list)
+            or len(results) != 1
+            or not isinstance(results[0], dict)
+        ):
+            fail("lastprice simulation did not return exactly one result")
+        encoded = require_string(
+            results[0].get("xdr"), "lastprice simulation result XDR"
+        )
+        decoded = run_simple(
+            [
+                "stellar",
+                "xdr",
+                "decode",
+                "--type",
+                "ScVal",
+                "--input",
+                "single-base64",
+                "--output",
+                "json-formatted",
+            ],
+            input_text=encoded,
+        )
+        label = "lastprice view"
+        return decode_scval_optional_price(
+            strict_json_bytes(decoded.stdout.encode(), label), label
+        )
+
     def ownership_handoff_recorded(self) -> bool:
         governance = str(
             self.deployments["governance"]["contract_id"]
@@ -2896,12 +2983,7 @@ class Rehearsal:
                 "decimals": self.view(
                     contract_id, "decimals", decoder=require_u32
                 ),
-                "lastprice": self.view(
-                    contract_id,
-                    "lastprice",
-                    {"asset": asset},
-                    decoder=decode_optional_price,
-                ),
+                "lastprice": self.sep40_price(contract_id, asset),
             }
             if source["base"] != {"Other": "USD"}:
                 fail(f"{name} source has the wrong base asset")

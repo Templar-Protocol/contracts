@@ -1811,6 +1811,80 @@ class RehearsalLogicTests(unittest.TestCase):
                         decoder=rehearsal.decode_optional_price,
                     )
 
+    def test_sep40_price_decodes_raw_simulation_result(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            driver = self.driver(Path(raw))
+            built = subprocess.CompletedProcess(
+                ["stellar"], 0, stdout="transaction-xdr\n", stderr=""
+            )
+            decoded = subprocess.CompletedProcess(
+                ["stellar"],
+                0,
+                stdout=json.dumps(
+                    {
+                        "map": [
+                            {
+                                "key": {"symbol": "price"},
+                                "val": {"i128": "21314030"},
+                            },
+                            {
+                                "key": {"symbol": "timestamp"},
+                                "val": {"u64": "1790089230"},
+                            },
+                        ]
+                    }
+                ),
+                stderr="",
+            )
+            with (
+                mock.patch.object(
+                    rehearsal, "run_simple", side_effect=[built, decoded]
+                ) as run,
+                mock.patch.object(
+                    rehearsal,
+                    "rpc_call",
+                    return_value={
+                        "results": [{"auth": [], "xdr": "price-xdr"}]
+                    },
+                ) as rpc,
+            ):
+                self.assertEqual(
+                    driver.sep40_price(CONTRACT, {"Other": "XLM"}),
+                    {"price": 21314030, "timestamp": 1790089230},
+                )
+
+            self.assertIn("--build-only", run.call_args_list[0].args[0])
+            rpc.assert_called_once_with(
+                "https://rpc.test",
+                "simulateTransaction",
+                {"transaction": "transaction-xdr"},
+            )
+            self.assertEqual(
+                run.call_args_list[1].kwargs["input_text"], "price-xdr"
+            )
+
+    def test_scval_price_rejects_duplicate_fields(self) -> None:
+        encoded = {
+            "map": [
+                {
+                    "key": {"symbol": "price"},
+                    "val": {"i128": "1"},
+                },
+                {
+                    "key": {"symbol": "price"},
+                    "val": {"i128": "2"},
+                },
+                {
+                    "key": {"symbol": "timestamp"},
+                    "val": {"u64": "3"},
+                },
+            ]
+        }
+        with self.assertRaisesRegex(
+            rehearsal.RehearsalError, "duplicate field"
+        ):
+            rehearsal.decode_scval_optional_price(encoded, "price")
+
     def test_governance_resume_reconciles_recorded_proposal_id(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             value = checkpoint()
