@@ -2135,26 +2135,56 @@ class TransactionExecutor:
         return value
 
     def return_value(self, operation: dict[str, object]) -> object:
-        encoded = self.result(operation).get("returnValue")
-        if not isinstance(encoded, str) or not encoded:
-            fail("successful transaction lacks a returnValue")
-        result = self.runner(
+        stored = self.result(operation)
+        encoded = stored.get("returnValue")
+        if isinstance(encoded, str) and encoded:
+            decoded = self.runner(
+                [
+                    "stellar",
+                    "xdr",
+                    "decode",
+                    "--type",
+                    "ScVal",
+                    "--input",
+                    "single-base64",
+                    "--output",
+                    "json-formatted",
+                ],
+                input_text=encoded,
+            )
+            return strict_json_bytes(
+                decoded.stdout.encode(), "transaction returnValue"
+            )
+
+        metadata_xdr = stored.get("resultMetaXdr")
+        if not isinstance(metadata_xdr, str) or not metadata_xdr:
+            fail("successful transaction lacks result metadata")
+        decoded = self.runner(
             [
                 "stellar",
                 "xdr",
                 "decode",
                 "--type",
-                "ScVal",
+                "TransactionMeta",
                 "--input",
                 "single-base64",
                 "--output",
                 "json-formatted",
             ],
-            input_text=encoded,
+            input_text=metadata_xdr,
         )
-        return strict_json_bytes(
-            result.stdout.encode(), "transaction returnValue"
+        metadata = strict_json_bytes(
+            decoded.stdout.encode(), "transaction result metadata"
         )
+        if not isinstance(metadata, dict) or len(metadata) != 1:
+            fail("transaction result metadata has an invalid version")
+        version, body = next(iter(metadata.items()))
+        if version not in {"v3", "v4"} or not isinstance(body, dict):
+            fail("transaction result metadata is not Soroban metadata")
+        soroban = body.get("soroban_meta")
+        if not isinstance(soroban, dict) or "return_value" not in soroban:
+            fail("transaction result metadata lacks a return value")
+        return soroban["return_value"]
 
     def execute(
         self,

@@ -1236,6 +1236,61 @@ class TransactionStateMachineTests(unittest.TestCase):
                 executor.return_value(store.operations()[0]), {"u32": 0}
             )
 
+    def test_current_rpc_result_metadata_exposes_return_value(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            current_settings, store = self.prepare_operation(
+                directory, submitted=True
+            )
+            runner = FakeRunner(
+                decoded=json.dumps(
+                    {
+                        "v4": {
+                            "ext": "v0",
+                            "soroban_meta": {
+                                "return_value": {"u32": 1}
+                            },
+                        }
+                    }
+                )
+            )
+            executor = rehearsal.TransactionExecutor(
+                current_settings,
+                store,
+                runner=runner,
+                rpc=RpcQueue(
+                    {
+                        "status": "SUCCESS",
+                        "resultMetaXdr": "metadata-xdr",
+                    }
+                ),
+                sleep=lambda _: None,
+            )
+            executor.resolve_unfinished()
+
+            self.assertEqual(
+                executor.return_value(store.operations()[0]), {"u32": 1}
+            )
+            self.assertEqual(
+                runner.calls,
+                [
+                    (
+                        [
+                            "stellar",
+                            "xdr",
+                            "decode",
+                            "--type",
+                            "TransactionMeta",
+                            "--input",
+                            "single-base64",
+                            "--output",
+                            "json-formatted",
+                        ],
+                        "metadata-xdr",
+                    )
+                ],
+            )
+
     def test_noncanonical_checkpoint_path_is_rejected_before_read(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
