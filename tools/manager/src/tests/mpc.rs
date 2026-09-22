@@ -258,8 +258,8 @@ fn delete_key_parses() {
     assert_eq!(delete_key.into_spec().public_key.0.to_string(), KEY);
 }
 
-/// A controlled account, a proposer, a mock MPC signer with a locally held
-/// "derived" key, and a mock DAO — everything the `mpc` commands touch.
+/// A controlled account, a proposer, a mock MPC signer, and a mock DAO —
+/// everything the `mpc` commands touch.
 struct MpcFixture {
     harness: templar_gateway_testing::SandboxHarness,
     rpc_url: String,
@@ -268,37 +268,16 @@ struct MpcFixture {
     proposer: templar_gateway_types::ManagedAccountId,
     signer_id: near_account_id::AccountId,
     dao: near_account_id::AccountId,
-    /// Stands in for the MPC network: the test signs with it what the real
-    /// network would sign with its derived key.
-    mpc_key: near_api::SecretKey,
     dir: std::path::PathBuf,
 }
 
 impl MpcFixture {
     async fn start(label: &str, bond: templar_gateway_types::NearToken) -> anyhow::Result<Self> {
-        use crate::mpc::signer_contract::{DerivedPublicKeyArgs, KeyType};
-
         let harness = templar_gateway_testing::SandboxHarness::start_owned().await?;
         let controlled = harness.create_user("mpc-target").await?;
         let proposer = harness.create_user("mpc-proposer").await?;
         let signer_id = harness.deploy_mock_signer("mpc-signer").await?;
         let dao = harness.deploy_mock_dao("mpc-dao", bond).await?;
-        let mpc_key = near_api::signer::generate_secret_key()?;
-        harness
-            .call_function(
-                &proposer,
-                &signer_id,
-                "set_derived_public_key",
-                SetDerivedPublicKey {
-                    derivation: DerivedPublicKeyArgs {
-                        path: format!("{dao}-{}", *controlled),
-                        predecessor: dao.clone(),
-                        domain_id: KeyType::Ed25519.domain_id(),
-                    },
-                    public_key: mpc_key.public_key().to_string(),
-                },
-            )
-            .await?;
         let dir = std::env::temp_dir().join(format!("tmplrmgr-mpc-{label}-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         Ok(Self {
@@ -309,9 +288,29 @@ impl MpcFixture {
             proposer,
             signer_id,
             dao,
-            mpc_key,
             dir,
         })
+    }
+
+    /// The key the mock derives for `predecessor` at `path`, as the CLI reads it.
+    async fn derived_key(
+        &self,
+        predecessor: &near_account_id::AccountId,
+        path: &str,
+    ) -> anyhow::Result<near_api::PublicKey> {
+        use crate::mpc::signer_contract::{DerivedPublicKeyArgs, KeyType};
+
+        self.harness
+            .view_json(
+                &self.signer_id,
+                "derived_public_key",
+                DerivedPublicKeyArgs {
+                    path: path.to_owned(),
+                    predecessor: predecessor.clone(),
+                    domain_id: KeyType::Ed25519.domain_id(),
+                },
+            )
+            .await
     }
 
     /// One `tmplrmgr` invocation against the sandbox, signed by `signer` if
@@ -385,29 +384,19 @@ impl MpcFixture {
             .await
     }
 
-    /// The "MPC" signs `hash`, so the next `sign` request for it succeeds.
-    async fn mpc_signs(&self, hash: [u8; 32]) -> anyhow::Result<()> {
-        let signature = borsh::to_vec(&self.mpc_key.sign(near_api::CryptoHash(hash)))?;
-        self.harness
-            .call_function(
-                &self.proposer,
-                &self.signer_id,
-                "set_signature",
-                SetSignature {
-                    payload_hex: hex::encode(hash),
-                    response: SignatureResponseJson::Ed25519 {
-                        signature: signature[1..].to_vec(),
-                    },
-                },
-            )
-            .await?;
-        Ok(())
-    }
-
     /// Approve and execute proposal `id`; returns the vote's transaction hash.
     async fn approve(&self, id: u64) -> anyhow::Result<String> {
-        use templar_gateway_types::operation::ReceiptStatus;
+        let vote = self.try_approve(id).await?;
+        let failed: Vec<_> = templar_gateway_testing::failed_receipts(&vote).collect();
+        assert!(failed.is_empty(), "{failed:?}");
+        Ok(tx_hash(&vote))
+    }
 
+    /// Vote to approve `id` without asserting on what the execution did.
+    async fn try_approve(
+        &self,
+        id: u64,
+    ) -> anyhow::Result<templar_gateway_types::common::WriteOperationResult> {
         let kind = self
             .harness
             .view_json::<serde_json::Value>(
@@ -417,9 +406,8 @@ impl MpcFixture {
             )
             .await?["kind"]
             .clone();
-        let approve = self
-            .harness
-            .call_function(
+        self.harness
+            .try_call_function(
                 &self.proposer,
                 &self.dao,
                 "act_proposal",
@@ -430,23 +418,45 @@ impl MpcFixture {
                     memo: None,
                 },
             )
-            .await?;
-        let receipts = &approve
-            .operation
-            .final_outcome()
-            .expect("act_proposal executed")
-            .receipts;
-        assert!(
-            receipts
-                .iter()
-                .all(|receipt| receipt.status == ReceiptStatus::Succeeded),
-            "{receipts:?}"
-        );
-        Ok(approve
-            .operation
-            .latest_tx_hash()
-            .expect("act_proposal was sent")
-            .to_string())
+            .await
+    }
+
+    /// `mpc propose` of `plan` as the proposer, against the mock signer.
+    async fn propose(&self, plan: &std::path::Path, extra: &[&str]) -> anyhow::Result<()> {
+        let base: &[&str] = &[
+            "mpc",
+            "propose",
+            "--plan",
+            plan.to_str().expect("utf-8 path"),
+            "--dao",
+            self.dao.as_str(),
+            "--mpc-contract",
+            self.signer_id.as_str(),
+        ];
+        self.run(Some(&self.proposer), &[base, extra].concat())
+            .await
+    }
+
+    /// `mpc relay` of proposal 0 as executed by the proposer's vote `tx_hash`.
+    async fn relay(&self, tx_hash: &str) -> anyhow::Result<()> {
+        self.run(
+            Some(&self.proposer),
+            &[
+                "mpc",
+                "relay",
+                "--dao",
+                self.dao.as_str(),
+                "--proposal-id",
+                "0",
+                "--mpc-contract",
+                self.signer_id.as_str(),
+                "--tx-hash",
+                tx_hash,
+                "--tx-signer",
+                self.proposer.as_str(),
+            ],
+        )
+        .await
     }
 
     async fn balance(
@@ -465,11 +475,11 @@ impl MpcFixture {
 }
 
 /// The whole operator flow against a mock MPC signer and a mock DAO: install
-/// the derived key, propose, review before the vote, have the "MPC" sign the
-/// hash the proposal carries, approve, review again, relay — and the
-/// controlled account's transfer lands. Along the way, every refusal a voter
-/// or relayer relies on: a payload that does not hash to the proposal, the
-/// wrong send command for the kind, a replay, and a rejected nonce.
+/// the derived key, propose, review before the vote, approve (the mock signs),
+/// review again, relay — and the controlled account's transfer lands. Along
+/// the way, every refusal a voter or relayer relies on: a payload that does
+/// not hash to the proposal, the wrong send command for the kind, a replay,
+/// and a rejected nonce.
 #[rstest::rstest]
 #[case::public_delegate_action(PayloadKind::DelegateAction, false)]
 #[case::blind_transaction(PayloadKind::Transaction, true)]
@@ -493,16 +503,21 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     let client = f.harness.client()?;
 
     f.install_key().await?;
+    let default_path = format!("{}-{}", f.dao, *f.controlled);
+    let mpc_key = f.derived_key(&f.dao, &default_path).await?;
     let installed = client
         .read(account::GetAccessKey {
             account_id: f.controlled.0.clone(),
-            public_key: f.mpc_key.public_key().into(),
+            public_key: mpc_key.into(),
         })
         .await?;
     assert_eq!(
         installed.permission,
         account::AccessKeyPermission::FullAccess
     );
+    // Derivation, not lookup: another caller or path is another key.
+    assert_ne!(f.derived_key(&f.dao, "other").await?, mpc_key);
+    assert_ne!(f.derived_key(&f.proposer.0, &default_path).await?, mpc_key);
 
     // The plain key commands, on the same account, with a function-call key.
     let restricted_key = near_api::signer::generate_secret_key()?.public_key();
@@ -560,19 +575,8 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         PayloadKind::DelegateAction => "delegate-action",
         PayloadKind::Transaction => "transaction",
     };
-    let propose: &[&str] = &[
-        "mpc",
-        "propose",
-        "--plan",
-        plan.to_str().expect("utf-8 path"),
-        "--dao",
-        f.dao.as_str(),
-        "--mpc-contract",
-        f.signer_id.as_str(),
-    ];
-
     let error = f
-        .run(Some(&f.proposer), &[propose, &["--nonce", "1"]].concat())
+        .propose(&plan, &["--nonce", "1"])
         .await
         .expect_err("a nonce the chain would reject is refused before the vote");
     assert!(
@@ -581,11 +585,10 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     );
 
     let blind_flag: &[&str] = if blind { &["--blind"] } else { &[] };
-    f.run(
-        Some(&f.proposer),
+    f.propose(
+        &plan,
         &[
-            propose,
-            &["--kind", kind_flag, "--out", payload_file],
+            &["--kind", kind_flag, "--out", payload_file][..],
             blind_flag,
         ]
         .concat(),
@@ -647,7 +650,7 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
                     },
                 ),
             ),
-            public_key: f.mpc_key.public_key(),
+            public_key: mpc_key,
             nonce: 58_000_001,
             block: client
                 .read(templar_gateway_methods_spec::chain::GetBlock::default())
@@ -663,7 +666,6 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         .expect_err("a decoy payload is refused");
     assert!(error.to_string().contains("hashes to"), "{error}");
 
-    f.mpc_signs(hash).await?;
     let approve_tx = f.approve(0).await?;
     f.run(None, &show).await?;
 
@@ -725,52 +727,13 @@ async fn requires_sandbox_mpc_expired_payload_is_refused_before_broadcast() -> a
     let f = MpcFixture::start("expiry", NearToken::ZERO).await?;
     f.install_key().await?;
     let plan = f.plan(&f.proposer.0, NearToken::from_near(1))?;
-    f.run(
-        Some(&f.proposer),
-        &[
-            "mpc",
-            "propose",
-            "--plan",
-            plan.to_str().expect("utf-8 path"),
-            "--dao",
-            f.dao.as_str(),
-            "--mpc-contract",
-            f.signer_id.as_str(),
-            "--valid-for-blocks",
-            "5",
-        ],
-    )
-    .await?;
+    f.propose(&plan, &["--valid-for-blocks", "5"]).await?;
 
-    let hash = f
-        .proposal(0)
-        .await?
-        .proposed_signature()?
-        .request
-        .payload
-        .hash()?;
-    f.mpc_signs(hash).await?;
     let approve_tx = f.approve(0).await?;
     f.harness.fast_forward(20).await?;
 
     let error = f
-        .run(
-            Some(&f.proposer),
-            &[
-                "mpc",
-                "relay",
-                "--dao",
-                f.dao.as_str(),
-                "--proposal-id",
-                "0",
-                "--mpc-contract",
-                f.signer_id.as_str(),
-                "--tx-hash",
-                &approve_tx,
-                "--tx-signer",
-                f.proposer.as_str(),
-            ],
-        )
+        .relay(&approve_tx)
         .await
         .expect_err("an approved but expired payload is refused before broadcast");
     assert!(error.to_string().contains("expired"), "{error}");
@@ -779,24 +742,55 @@ async fn requires_sandbox_mpc_expired_payload_is_refused_before_broadcast() -> a
     Ok(())
 }
 
-#[derive(serde::Serialize)]
-struct SetDerivedPublicKey {
-    #[serde(flatten)]
-    derivation: crate::mpc::signer_contract::DerivedPublicKeyArgs,
-    public_key: String,
+/// When the MPC network does not answer, Sputnik's callback marks the proposal
+/// `Failed`; nothing downstream may treat it as signed.
+#[tokio::test]
+async fn requires_sandbox_mpc_refusal_leaves_the_proposal_failed() -> anyhow::Result<()> {
+    use sputnikdao2::ProposalStatus;
+    use templar_gateway_types::NearToken;
+
+    let f = MpcFixture::start("refusal", NearToken::ZERO).await?;
+    f.install_key().await?;
+    let plan = f.plan(&f.proposer.0, NearToken::from_near(1))?;
+    f.propose(&plan, &[]).await?;
+
+    f.harness
+        .call_function(
+            &f.proposer,
+            &f.signer_id,
+            "set_refuse",
+            SetRefuse { refuse: true },
+        )
+        .await?;
+    let vote = f.try_approve(0).await?;
+    assert!(
+        templar_gateway_testing::failed_receipts(&vote)
+            .any(|receipt| receipt.contract_id == f.signer_id),
+        "the signer's receipt is the one that failed"
+    );
+    assert_eq!(f.proposal(0).await?.status, ProposalStatus::Failed);
+
+    let error = f
+        .relay(&tx_hash(&vote))
+        .await
+        .expect_err("a failed proposal has no signature to relay");
+    assert!(error.to_string().contains("not Approved"), "{error}");
+
+    std::fs::remove_dir_all(&f.dir)?;
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
-struct SetSignature {
-    payload_hex: String,
-    response: SignatureResponseJson,
+struct SetRefuse {
+    refuse: bool,
 }
 
-/// What the real MPC returns, written from the test's side.
-#[derive(serde::Serialize)]
-#[serde(tag = "scheme")]
-enum SignatureResponseJson {
-    Ed25519 { signature: Vec<u8> },
+fn tx_hash(result: &templar_gateway_types::common::WriteOperationResult) -> String {
+    result
+        .operation
+        .latest_tx_hash()
+        .expect("the transaction was sent")
+        .to_string()
 }
 
 /// Sputnik's `act_proposal` arguments: the kind is echoed back.

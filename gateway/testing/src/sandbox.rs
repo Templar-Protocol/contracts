@@ -718,7 +718,8 @@ impl SandboxHarness {
         Ok(id)
     }
 
-    /// Deploy the mock MPC signer, whose derived keys and signatures the test configures.
+    /// Deploy the mock MPC signer: derives ed25519 keys and signs on its own;
+    /// `set_refuse` makes `sign` fail.
     pub async fn deploy_mock_signer(&self, label: &str) -> Result<AccountId> {
         let (id, signer) = self
             .create_account(label, NearToken::from_near(100))
