@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-kernel-v0.1.2...templar-proxy-oracle-kernel-v0.1.3) - 2026-09-22
+
+### Added
+
+- *(proxy-oracle)* Kani proofs and property tests for proxy resolution (ENG-361) ([#636](https://github.com/Templar-Protocol/contracts/pull/636))
+
 ## [0.1.2](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-kernel-v0.1.1...templar-proxy-oracle-kernel-v0.1.2) - 2026-08-24
 
 ### Fixed

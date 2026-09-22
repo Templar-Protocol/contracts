@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-spec-v0.5.0...templar-gateway-methods-spec-v0.5.1) - 2026-09-22
+
+### Added
+
+- *(gateway)* account.addKey and account.deleteKey (ENG-719) ([#631](https://github.com/Templar-Protocol/contracts/pull/631))
+- *(gateway)* tx.get returns per-receipt outcomes (ENG-720) ([#632](https://github.com/Templar-Protocol/contracts/pull/632))
+
 ## [0.5.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-spec-v0.4.1...templar-gateway-methods-spec-v0.5.0) - 2026-09-01
 
 ### Added
