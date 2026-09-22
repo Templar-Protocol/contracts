@@ -3098,6 +3098,7 @@ class Rehearsal:
             headers={
                 "Authorization": f"Bearer {self.pyth_api_key()}",
                 "Content-Type": "application/json",
+                "User-Agent": HTTP_USER_AGENT,
             },
             method="POST",
         )

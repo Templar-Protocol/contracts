@@ -2337,11 +2337,18 @@ class FilesystemAndSecretTests(unittest.TestCase):
                 {"PYTH_LAZER_API_KEY_FILE": str(key_file)},
                 clear=False,
             ), mock.patch.object(
-                rehearsal.urllib.request, "urlopen", return_value=Response()
-            ):
+                rehearsal.urllib.request,
+                "urlopen",
+                return_value=Response(),
+            ) as urlopen:
                 payload, evidence = driver.fetch_lazer_payload()
             self.assertEqual(payload, "aabb")
             self.assertEqual(evidence["request"]["priceFeedIds"], [23])
+            request = urlopen.call_args.args[0]
+            self.assertEqual(
+                request.get_header("User-agent"),
+                rehearsal.HTTP_USER_AGENT,
+            )
             persisted = (current_settings.output / "lazer_response.json").read_text()
             self.assertNotIn("super-secret", persisted)
             self.assertNotIn("Authorization", persisted)
