@@ -44,6 +44,7 @@ NETWORK = "testnet"
 PASSPHRASE = "Test SDF Network ; September 2015"
 DEFAULT_RPC_URL = "https://soroban-testnet.stellar.org"
 DEFAULT_HORIZON_URL = "https://horizon-testnet.stellar.org"
+HTTP_USER_AGENT = "templar-proxy-oracle-rehearsal/1"
 LAZER_REST = "https://pyth-lazer.dourolabs.app/v1/latest_price"
 PYTH_VERIFIER = "CAYFT5JE3UQTKT4Q6ZOZK4FXVYVT6RE3MFC7STA4UB6WAEGBT65MRU52"
 REFLECTOR = "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63"
@@ -1256,7 +1257,10 @@ def rpc_call(rpc_url: str, method: str, params: object | None = None) -> object:
     request = urllib.request.Request(
         rpc_url,
         data=canonical_json(request_body),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": HTTP_USER_AGENT,
+        },
         method="POST",
     )
     try:

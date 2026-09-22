@@ -510,6 +510,44 @@ class InputValidationTests(unittest.TestCase):
 
 
 
+class RpcTransportTests(unittest.TestCase):
+    def test_rpc_call_sets_explicit_user_agent(self) -> None:
+        class Response:
+            def __enter__(self) -> Response:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return rehearsal.canonical_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"passphrase": rehearsal.PASSPHRASE},
+                    }
+                )
+
+        def urlopen(
+            request: rehearsal.urllib.request.Request, *, timeout: int
+        ) -> Response:
+            self.assertEqual(timeout, 30)
+            self.assertEqual(
+                request.get_header("User-agent"),
+                rehearsal.HTTP_USER_AGENT,
+            )
+            return Response()
+
+        with mock.patch.object(
+            rehearsal.urllib.request,
+            "urlopen",
+            side_effect=urlopen,
+        ):
+            result = rehearsal.rpc_call("https://rpc.test", "getNetwork")
+
+        self.assertEqual(result, {"passphrase": rehearsal.PASSPHRASE})
+
+
 class CheckpointStoreTests(unittest.TestCase):
     def make_store(self, directory: Path) -> rehearsal.CheckpointStore:
         store = rehearsal.CheckpointStore(directory / "state.json", checkpoint())
