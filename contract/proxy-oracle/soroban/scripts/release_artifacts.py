@@ -158,7 +158,8 @@ def sha256_bytes(value: bytes) -> str:
 def sha256_public_network_data(value: bytes) -> str:
     # Stellar network passphrases are public domain separators, not
     # credentials. SHA-256 is required for network IDs and deterministic salts.
-    return hashlib.sha256(value).hexdigest()  # lgtm[py/weak-sensitive-data-hashing]
+    # codeql[py/weak-sensitive-data-hashing]
+    return hashlib.sha256(value).hexdigest()
 
 
 
