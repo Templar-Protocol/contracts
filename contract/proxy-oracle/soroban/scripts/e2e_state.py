@@ -44,7 +44,7 @@ from validate_release_artifacts import validate_manifest
 
 SCHEMA_VERSION = 1
 NETWORK = "testnet"
-PASSPHRASE = "Test SDF Network ; September 2015"
+NETWORK_IDENTIFIER = "Test SDF Network ; September 2015"
 DEFAULT_RPC_URL = "https://soroban-testnet.stellar.org"
 DEFAULT_HORIZON_URL = "https://horizon-testnet.stellar.org"
 HTTP_USER_AGENT = "templar-proxy-oracle-rehearsal/1"
@@ -885,7 +885,7 @@ def validate_checkpoint(value: object) -> dict[str, object]:
     network = require_exact_keys(
         context["network"], NETWORK_KEYS, "context.network"
     )
-    if network["name"] != NETWORK or network["passphrase"] != PASSPHRASE:
+    if network["name"] != NETWORK or network["passphrase"] != NETWORK_IDENTIFIER:
         fail("checkpoint is not bound to Stellar testnet")
     require_string(network["rpc_url"], "context.network.rpc_url")
     validate_account(context["administrator"], "context.administrator")
@@ -1063,7 +1063,7 @@ class Settings:
 
     @property
     def network_args(self) -> list[str]:
-        return ["--rpc-url", self.rpc_url, "--network-passphrase", PASSPHRASE]
+        return ["--rpc-url", self.rpc_url, "--network-passphrase", NETWORK_IDENTIFIER]
 
 
 def env_u32(
@@ -1324,7 +1324,7 @@ def rpc_call(rpc_url: str, method: str, params: object | None = None) -> object:
 
 def check_network(settings: Settings) -> None:
     result = rpc_call(settings.rpc_url, "getNetwork")
-    if not isinstance(result, dict) or result.get("passphrase") != PASSPHRASE:
+    if not isinstance(result, dict) or result.get("passphrase") != NETWORK_IDENTIFIER:
         fail("RPC endpoint is not Stellar testnet")
 
 
@@ -1416,8 +1416,6 @@ def snapshot_release(settings: Settings) -> tuple[dict[str, object], dict[str, d
 
 
 def deterministic_salt(context: dict[str, object], slug: str) -> str:
-    network = context["network"]
-    assert isinstance(network, dict)
     return sha256_public_network_data(
         canonical_json(
             {
@@ -1425,7 +1423,7 @@ def deterministic_salt(context: dict[str, object], slug: str) -> str:
                 "slug": slug,
                 "manifest_sha256": context["manifest_sha256"],
                 "administrator": context["administrator"],
-                "passphrase": network["passphrase"],
+                "network_identifier": NETWORK_IDENTIFIER,
             }
         )
     )
@@ -1513,7 +1511,7 @@ def build_context(
         "network": {
             "name": NETWORK,
             "rpc_url": settings.rpc_url,
-            "passphrase": PASSPHRASE,
+            "passphrase": NETWORK_IDENTIFIER,
         },
         "administrator": settings.administrator,
         "git_commit": manifest["git_commit"],
@@ -1915,7 +1913,7 @@ class TransactionExecutor:
         if not isinstance(fee_bump_transaction, dict):
             fail(f"{step} fee-bump transaction must be an object")
         signature_payload = {
-            "network_id": sha256_public_network_data(PASSPHRASE.encode()),
+            "network_id": sha256_public_network_data(NETWORK_IDENTIFIER.encode()),
             "tagged_transaction": {
                 "tx_fee_bump": fee_bump_transaction,
             },

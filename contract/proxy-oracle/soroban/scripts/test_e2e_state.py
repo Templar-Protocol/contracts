@@ -66,7 +66,7 @@ def checkpoint() -> dict[str, object]:
         "network": {
             "name": rehearsal.NETWORK,
             "rpc_url": "https://rpc.test",
-            "passphrase": rehearsal.PASSPHRASE,
+            "passphrase": rehearsal.NETWORK_IDENTIFIER,
         },
         "administrator": ACCOUNT,
         "git_commit": "f" * 40,
@@ -541,7 +541,7 @@ class RpcTransportTests(unittest.TestCase):
                     {
                         "jsonrpc": "2.0",
                         "id": 1,
-                        "result": {"passphrase": rehearsal.PASSPHRASE},
+                        "result": {"passphrase": rehearsal.NETWORK_IDENTIFIER},
                     }
                 )
 
@@ -562,7 +562,7 @@ class RpcTransportTests(unittest.TestCase):
         ):
             result = rehearsal.rpc_call("https://rpc.test", "getNetwork")
 
-        self.assertEqual(result, {"passphrase": rehearsal.PASSPHRASE})
+        self.assertEqual(result, {"passphrase": rehearsal.NETWORK_IDENTIFIER})
 
 
 class CheckpointStoreTests(unittest.TestCase):
