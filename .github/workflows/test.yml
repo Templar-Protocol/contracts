@@ -298,7 +298,7 @@ jobs:
       - name: Install tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
-          tool: just
+          tool: nextest,just
 
       - name: Install stellar CLI
         uses: stellar/stellar-cli@60f7458e7ecffddf2f2d91dc6d0d2db4fab03ecc
