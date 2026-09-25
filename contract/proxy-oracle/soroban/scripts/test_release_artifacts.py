@@ -124,6 +124,35 @@ class ReleaseManifestValidationTests(unittest.TestCase):
         checked = self.validate()
         self.assertEqual(set(checked), {artifact.slug for artifact in catalog.ARTIFACTS})
 
+    def test_semver_parser_is_linear_and_preserves_legal_suffixes(self) -> None:
+        for value in (
+            "0.0.0",
+            "1.2.3-alpha.1+build.5",
+            "1.0.0-0.3.7",
+            "1.0.0-x.7.z.92",
+            "1.0.0+21AF26D3----117B344092BD",
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(catalog.is_semver(value))
+        for value in (
+            "",
+            "1.2",
+            "01.2.3",
+            "1.02.3",
+            "1.2.03",
+            "1.2.3-",
+            "1.2.3+",
+            "1.2.3-alpha..1",
+            "1.2.3-01",
+            "1.2.3-alpha_beta",
+            "1.2.3+build+other",
+            "0.0.0-0." + "--." * 1_000,
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(catalog.is_semver(value))
+
+
+
     def test_manifest_shape_metadata_and_numeric_rejections(self) -> None:
         mutations: list[tuple[str, object]] = [
             ("schema", {**self.fixture.manifest, "schema_version": "3"}),

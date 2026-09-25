@@ -36,6 +36,7 @@ from release_artifacts import (
     read_single_link_file,
     sha256_bytes,
     sha256_file,
+    sha256_public_network_data,
     stable_stellar_version,
     stellar_version_metadata,
 )
@@ -1417,7 +1418,7 @@ def snapshot_release(settings: Settings) -> tuple[dict[str, object], dict[str, d
 def deterministic_salt(context: dict[str, object], slug: str) -> str:
     network = context["network"]
     assert isinstance(network, dict)
-    return sha256_bytes(
+    return sha256_public_network_data(
         canonical_json(
             {
                 "deployment_nonce": context["deployment_nonce"],
@@ -1914,7 +1915,7 @@ class TransactionExecutor:
         if not isinstance(fee_bump_transaction, dict):
             fail(f"{step} fee-bump transaction must be an object")
         signature_payload = {
-            "network_id": sha256_bytes(PASSPHRASE.encode()),
+            "network_id": sha256_public_network_data(PASSPHRASE.encode()),
             "tagged_transaction": {
                 "tx_fee_bump": fee_bump_transaction,
             },

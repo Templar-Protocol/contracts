@@ -69,17 +69,62 @@ MANIFEST_PATH = RELEASE_DIR / "release-manifest.json"
 EVIDENCE_PATH = RELEASE_DIR / "evidence/artifact-validation.txt"
 LOCK_PATH = RELEASE_DIR / ".release.lock"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
-SEMVER = re.compile(
-    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-    r"(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
-    r"(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?"
-    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
-)
 STELLAR_VERSION = re.compile(r"^stellar\s+(\d+\.\d+\.\d+)(?:\s|$)")
 
 
 def fail(message: str) -> None:
     raise ValueError(message)
+
+def _is_ascii_digits(value: str) -> bool:
+    return bool(value) and all("0" <= character <= "9" for character in value)
+
+
+def _is_semver_number(value: str) -> bool:
+    return _is_ascii_digits(value) and (
+        value == "0" or not value.startswith("0")
+    )
+
+
+def _has_valid_semver_identifiers(
+    value: str, *, allow_numeric_leading_zero: bool
+) -> bool:
+    for identifier in value.split("."):
+        if not identifier or not all(
+            character.isascii()
+            and (character.isalnum() or character == "-")
+            for character in identifier
+        ):
+            return False
+        if (
+            not allow_numeric_leading_zero
+            and _is_ascii_digits(identifier)
+            and not _is_semver_number(identifier)
+        ):
+            return False
+    return True
+
+
+def is_semver(value: str) -> bool:
+    release_and_prerelease, build_separator, build = value.partition("+")
+    if build_separator and (
+        "+" in build
+        or not _has_valid_semver_identifiers(
+            build, allow_numeric_leading_zero=True
+        )
+    ):
+        return False
+    release, prerelease_separator, prerelease = (
+        release_and_prerelease.partition("-")
+    )
+    numbers = release.split(".")
+    if len(numbers) != 3 or not all(
+        _is_semver_number(number) for number in numbers
+    ):
+        return False
+    return not prerelease_separator or _has_valid_semver_identifiers(
+        prerelease, allow_numeric_leading_zero=False
+    )
+
 
 
 def canonical_json(value: object) -> bytes:
@@ -109,6 +154,12 @@ def parse_json(text: str) -> object:
 
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+def sha256_public_network_data(value: bytes) -> str:
+    # Stellar network passphrases are public domain separators, not
+    # credentials. SHA-256 is required for network IDs and deterministic salts.
+    return hashlib.sha256(value).hexdigest()  # lgtm[py/weak-sensitive-data-hashing]
+
 
 
 def sha256_file(path: Path) -> str:

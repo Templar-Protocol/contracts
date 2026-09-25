@@ -14,7 +14,7 @@ from release_artifacts import (
     EVIDENCE_PATH,
     MANIFEST_PATH,
     ROOT,
-    SEMVER,
+    is_semver,
     SHA256,
     atomic_write,
     git_head,
@@ -82,7 +82,7 @@ def validate_manifest(
         not isinstance(cli, dict)
         or set(cli) != {"version", "output"}
         or not isinstance(cli["version"], str)
-        or not SEMVER.fullmatch(cli["version"])
+        or not is_semver(cli["version"])
         or not isinstance(cli["output"], str)
         or cli["output"] != cli["output"].strip()
         or stable_stellar_version(cli["output"]) != cli["version"]
@@ -129,7 +129,7 @@ def validate_manifest(
             or entry["max_optimized_size"] != artifact.max_optimized_size
         ):
             fail(f"{slug}: catalog or package metadata drift")
-        if not isinstance(entry["version"], str) or not SEMVER.fullmatch(
+        if not isinstance(entry["version"], str) or not is_semver(
             entry["version"]
         ):
             fail(f"{slug}: invalid package version")
