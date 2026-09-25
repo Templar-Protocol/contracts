@@ -79,8 +79,7 @@ fn hypernative_key_cannot_do_anything_else() {
         templar_proxy_oracle_soroban_common::ProxyConfig {
             sources,
             min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
+            max_cache_age_secs: 300,
         },
     );
 

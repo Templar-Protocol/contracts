@@ -152,8 +152,7 @@ impl Bootstrap {
         let config = ProxyConfig {
             sources: self.source_configs(&self.asset_btc),
             min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
+            max_cache_age_secs: 300,
         };
         self.submit_and_execute(
             &self.admin,
@@ -171,6 +170,8 @@ impl Bootstrap {
             sources.push_back(SourceConfig {
                 oracle,
                 asset: asset.clone(),
+                max_age_secs: 300,
+                max_clock_drift_secs: 60,
             });
         }
         sources

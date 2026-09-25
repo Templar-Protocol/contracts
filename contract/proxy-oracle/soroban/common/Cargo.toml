@@ -10,8 +10,12 @@ version = "0.1.2"
 crate-type = ["rlib"]
 path = "src/lib.rs"
 
+[features]
+owner-upgrade = ["dep:stellar-access"]
+
 [dependencies]
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
+stellar-access = { version = "0.7.1", optional = true }
 templar-primitives = { path = "../../../../primitives", default-features = false }
 
 [dev-dependencies]
