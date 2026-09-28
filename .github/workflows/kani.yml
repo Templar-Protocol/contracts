@@ -195,4 +195,4 @@ jobs:
             -p templar-vault-kernel
             --features action-refresh-fees
             --harness refresh_fees_zero_fee_rates_only_update_anchor
-            --harness refresh_fees_active_rates_only_mint_fee_shares_and_update_anchor
+            --harness refresh_fees_zero_anchor_active_rates_mint_no_shares_and_advance_checkpoint
