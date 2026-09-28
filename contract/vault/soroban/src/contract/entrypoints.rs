@@ -15,6 +15,7 @@ use super::helpers::{
     validate_and_rewrite_storage, virtual_offsets_locked, with_contract_vault_contract_error,
 };
 use super::*;
+use crate::fungible_vault::reconcile_actual_idle_assets;
 use crate::storage::{SorobanStorage, Storage};
 use templar_curator_primitives::governance::Restrictions as GovernanceRestrictions;
 use templar_soroban_shared_types::{
@@ -70,31 +71,23 @@ fn current_idle_assets(env: &Env) -> Result<u128, ContractError> {
     to_u128(client.balance(&env.current_contract_address()))
 }
 
-fn reconcile_current_idle_assets(
+fn reconcile_fees_and_current_idle_balance(
     env: &Env,
     vault: &mut ContractVault<'_>,
     now_ns: u64,
-) -> Result<(), RuntimeError> {
+) -> Result<(bool, bool), RuntimeError> {
+    if !vault.state()?.op_state.is_idle() {
+        return Err(RuntimeError::invalid_state(""));
+    }
+    let fees_refreshed = vault.get_fees().has_active_slot_fees()
+        && now_ns > vault.state()?.fee_anchor.timestamp_ns.as_u64();
+    if fees_refreshed {
+        vault.refresh_fees(now_ns)?;
+    }
     let actual_idle_assets =
         current_idle_assets(env).map_err(|_| RuntimeError::storage_error(""))?;
-    let state = vault.state_mut()?;
-    reconcile_actual_idle_assets(state, actual_idle_assets, now_ns);
-    Ok(())
-}
-
-fn reconcile_current_idle_assets_while_idle(
-    env: &Env,
-    vault: &mut ContractVault<'_>,
-    now_ns: u64,
-) -> Result<(), RuntimeError> {
-    if !vault.state()?.op_state.is_idle() {
-        return Err(RuntimeError::invalid_state(""));
-    }
-    reconcile_current_idle_assets(env, vault, now_ns)?;
-    if !vault.state()?.op_state.is_idle() {
-        return Err(RuntimeError::invalid_state(""));
-    }
-    Ok(())
+    let idle_changed = reconcile_actual_idle_assets(vault.state_mut()?, actual_idle_assets);
+    Ok((idle_changed, fees_refreshed))
 }
 
 fn apply_curator_config(env: &Env, new_curator: soroban_sdk::Address) -> Result<(), ContractError> {
@@ -576,7 +569,7 @@ fn deposit_with_min_impl(
     let mut shares_minted = 0u128;
     let mut is_capitalized = false;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        reconcile_current_idle_assets(env, vault, now_ns)?;
+        reconcile_fees_and_current_idle_balance(env, vault, now_ns)?;
         let (caller_k, receiver_k) = vault.map_pair(env, &owner, &receiver)?;
         let result = vault.deposit(caller_k, receiver_k, assets_u128, min_shares_u128, now_ns)?;
         shares_minted = result.shares_minted;
@@ -628,17 +621,16 @@ fn request_withdraw_impl(
 
 fn refresh_fees_impl(env: &Env) -> Result<(), ContractError> {
     let now_ns = ledger_timestamp_ns(env)?;
-
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        let anchor_before = vault.get_fee_anchor()?;
-        reconcile_current_idle_assets(env, vault, now_ns)?;
-        let anchor_after = vault.get_fee_anchor()?;
-        if anchor_before.timestamp_ns != anchor_after.timestamp_ns
-            && anchor_after.timestamp_ns.as_u64() == now_ns
-        {
-            return Ok(());
+        let (idle_changed, fees_refreshed) =
+            reconcile_fees_and_current_idle_balance(env, vault, now_ns)?;
+        if idle_changed {
+            vault.save_state()?;
         }
-        vault.refresh_fees(now_ns)
+        if !fees_refreshed && !idle_changed {
+            vault.refresh_fees(now_ns)?;
+        }
+        Ok(())
     };
     with_contract_vault_contract_error(env, &mut call)
 }
@@ -1124,9 +1116,8 @@ fn resync_idle_balance_impl(env: &Env) -> Result<(), ContractError> {
         return Err(ContractError::InvalidState);
     }
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        reconcile_current_idle_assets_while_idle(env, vault, now_ns)?;
-        vault.save_state()?;
-        Ok(())
+        reconcile_fees_and_current_idle_balance(env, vault, now_ns)?;
+        vault.save_state()
     };
     with_contract_vault_contract_error(env, &mut call)?;
     env.storage().instance().set(&last_key, &now_ns);

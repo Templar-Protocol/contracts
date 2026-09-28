@@ -7860,3 +7860,72 @@ mod storage_tests {
         assert_eq!(err, Err(Ok(crate::error::ContractError::InvalidInput)));
     }
 }
+
+#[cfg(test)]
+mod fee_anchor_capital_flow_tests {
+    use crate::fungible_vault::reconcile_actual_idle_assets;
+    use templar_vault_kernel::{
+        AllocatingState, FeeAccrualAnchor, OpState, TimestampNs, VaultState,
+    };
+
+    fn idle_state() -> VaultState {
+        VaultState {
+            total_assets: 1_000,
+            total_shares: 1_000,
+            idle_assets: 1_000,
+            fee_anchor: FeeAccrualAnchor::new(1_200, TimestampNs(42)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reconciliation_restates_balances_and_never_replaces_the_checkpoint() {
+        // A one-unit inflow restates both balances and raises the checkpoint by exactly that
+        // inflow. Whole-anchor replacement would write 1_001 and clobber the timestamp.
+        let mut state = idle_state();
+        assert!(reconcile_actual_idle_assets(&mut state, 1_001));
+        assert_eq!((state.idle_assets, state.total_assets), (1_001, 1_001));
+        assert_eq!(
+            state.fee_anchor,
+            FeeAccrualAnchor::new(1_201, TimestampNs(42))
+        );
+
+        // A shortfall restates both balances and leaves the checkpoint above the corrected total,
+        // so recovery is not recorded as profit. Replacement would drop it to 999.
+        let mut state = idle_state();
+        assert!(reconcile_actual_idle_assets(&mut state, 999));
+        assert_eq!((state.idle_assets, state.total_assets), (999, 999));
+        assert_eq!(
+            state.fee_anchor,
+            FeeAccrualAnchor::new(1_200, TimestampNs(42))
+        );
+
+        // Inflow addition saturates the checkpoint instead of panicking.
+        let mut state = idle_state();
+        state.fee_anchor = FeeAccrualAnchor::new(u128::MAX, TimestampNs(42));
+        assert!(reconcile_actual_idle_assets(&mut state, 5_000));
+        assert_eq!(
+            state.fee_anchor,
+            FeeAccrualAnchor::new(u128::MAX, TimestampNs(42))
+        );
+
+        // A matching balance and a non-idle vault are both left untouched.
+        let mut matched = idle_state();
+        assert!(!reconcile_actual_idle_assets(&mut matched, 1_000));
+        let mut allocating = idle_state();
+        allocating.op_state = OpState::Allocating(AllocatingState {
+            op_id: 7,
+            index: 0,
+            remaining: 1,
+            plan: alloc::vec![],
+        });
+        assert!(!reconcile_actual_idle_assets(&mut allocating, 1_001));
+        for state in [matched, allocating] {
+            assert_eq!((state.idle_assets, state.total_assets), (1_000, 1_000));
+            assert_eq!(
+                state.fee_anchor,
+                FeeAccrualAnchor::new(1_200, TimestampNs(42))
+            );
+        }
+    }
+}
