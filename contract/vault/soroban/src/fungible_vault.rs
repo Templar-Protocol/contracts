@@ -101,16 +101,17 @@ pub(crate) fn share_balance(env: &Env, owner: &SdkAddress) -> i128 {
 pub(crate) fn reconcile_actual_idle_assets(
     state: &mut VaultState,
     actual_idle_assets: u128,
-    now_ns: u64,
-) {
+) -> bool {
     if !state.is_idle() || state.idle_assets == actual_idle_assets {
-        return;
+        return false;
     }
-
+    let inflow = actual_idle_assets.saturating_sub(state.idle_assets);
     state.idle_assets = actual_idle_assets;
     state.sync_total_assets();
-    let observed_at = TimestampNs(now_ns);
-    state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, observed_at);
+    if inflow != 0 {
+        state.fee_anchor.total_assets = state.fee_anchor.total_assets.saturating_add(inflow);
+    }
+    true
 }
 
 /// Load kernel state and a default config for read-only conversion math.
@@ -129,10 +130,7 @@ pub(crate) fn reconcile_actual_idle_assets(
 pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfig), ContractError> {
     let storage = SorobanStorage::new(env);
     let stored_state = storage.load_state();
-    let mut state = runtime_to_contract(stored_state)?.unwrap_or_default();
-    let now_ns = ledger_timestamp_ns(env)?;
-    let actual_idle_assets = load_actual_idle_assets(env)?;
-    reconcile_actual_idle_assets(&mut state, actual_idle_assets, now_ns);
+    let state = runtime_to_contract(stored_state)?.unwrap_or_default();
     let (virtual_shares, virtual_assets) = load_virtual_offsets(env);
     let config = VaultConfig {
         fees: runtime_to_contract(load_fees_spec(env))?,
@@ -143,6 +141,8 @@ pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfi
         virtual_shares,
         virtual_assets,
     };
-    let fee_aware_state = preview_state_with_fee_accrual(env, state, &config)?;
+    let mut fee_aware_state = preview_state_with_fee_accrual(env, state, &config)?;
+    let actual_idle_assets = load_actual_idle_assets(env)?;
+    reconcile_actual_idle_assets(&mut fee_aware_state, actual_idle_assets);
     Ok((fee_aware_state, config))
 }

@@ -73,17 +73,24 @@ sequenceDiagram
 
 The Soroban vault treats unsolicited underlying transfers as idle assets for existing
 shareholders, not as profit that the next depositor can capture. Read-only conversion and preview
-helpers first compare the persisted `idle_assets` value with the asset token balance held by the
-vault and simulate the reconciled state before quoting shares or assets.
+helpers first simulate any elapsed management/performance fees against the persisted accounting,
+then apply the same capital-flow reconciliation to their in-memory copy before quoting shares
+or assets.
 
-State-changing paths that depend on current share pricing use the same lazy reconciliation rule
-before executing kernel actions. `DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance` all read
-the live asset token balance, update `idle_assets`, recompute `total_assets`, and reset the
-`fee_anchor` to the reconciled total at the current ledger timestamp. This keeps direct transfers,
-fee refreshes, and later deposits on one accounting baseline without requiring a separate keeper
-transaction before every user deposit.
-When fees are active, deposits first crystallize any elapsed management/performance fees before
-the post-deposit anchor is written, so deposit principal cannot erase already accrued fees.
+State-changing paths use one shared ordering before the kernel executes the requested deposit or
+refresh action. When any fee is configured and ledger time is newer than the stored checkpoint,
+`DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance` first crystallize elapsed management and
+performance fees against the persisted accounting and the stored `fee_anchor`. They then reconcile
+the live asset token balance as a capital flow: a positive delta raises `fee_anchor.total_assets`
+by exactly the delta under the no-panic safe-add convention with the checkpoint timestamp
+preserved, and a negative delta restates the balances and leaves both `fee_anchor` fields
+untouched so loss recovery is not recorded as profit. Reconciliation itself neither lowers nor
+advances the checkpoint. A successful deposit rewrites the checkpoint to the post-deposit total at
+deposit time. A `RefreshFees` execution re-anchors to the current recorded values at ledger time
+even when nothing is minted, and that re-anchor is skipped when reconciliation restates the
+balance. Later fee refresh and deposit checkpoint behavior remains today's model, so the
+checkpoint is not an all-time high-water mark and can move down when recorded AUM falls. Full
+per-share high-water-mark and loss-recovery fee handling remains ENG-701 scope.
 
 ### Governance Control-Plane Boundary
 
