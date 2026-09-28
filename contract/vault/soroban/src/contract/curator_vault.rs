@@ -331,6 +331,12 @@ where
     ) -> Result<WithdrawRequestResult, RuntimeError> {
         self.authorize(ActionKind::RequestWithdraw, caller)?;
 
+        let fees_active = !self.config.fees.management.fee_wad.is_zero()
+            || !self.config.fees.performance.fee_wad.is_zero();
+        if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns.as_u64() {
+            self.refresh_fees(now_ns)?;
+        }
+
         let state = self.state()?;
         if state.total_shares == 0 {
             return Err(contract_error("no shares"));
