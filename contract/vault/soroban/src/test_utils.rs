@@ -16,7 +16,7 @@ use soroban_sdk::{Address as SdkAddress, Bytes, Env};
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord};
 use templar_curator_primitives::policy::market_lock::MarketLeaseRegistry;
 use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
-use templar_curator_primitives::policy::supply_queue::SupplyQueue;
+use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::PolicyState;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::{
@@ -25,6 +25,17 @@ use templar_vault_kernel::{
 };
 
 pub type AttemptId = u64;
+
+pub fn supply_queue_from_targets(targets: &[TargetId], amount: u128) -> SupplyQueue {
+    SupplyQueue::try_from_entries(
+        targets
+            .iter()
+            .map(|target_id| SupplyQueueEntry::new(*target_id, amount).unwrap())
+            .collect(),
+        None,
+    )
+    .unwrap()
+}
 
 pub mod fuzz_api {
     use super::*;

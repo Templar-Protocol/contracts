@@ -219,6 +219,33 @@ separately calls `execute_withdraw`. Off-chain indexers and reconciliation jobs 
 `execute_withdraw` and the emitted withdrawal / payout events as the settlement trigger for the
 async queue.
 
+### Supply Admission And Observation Re-Validation
+
+Every supply path — the typed `Allocate` entrypoint, `VaultCommand::Allocate`, and the internal
+curator allocation flow — is checked before any asset transfer or adapter call, and checked again
+after the adapter reports. Supply is admitted only when all of the following hold:
+
+- the market is configured and enabled;
+- the market is currently a member of the governance-configured supply queue;
+- the principal after the request stays within the market cap;
+- the market's cap group, if any, still has headroom under both its absolute cap and its relative
+  cap, where the relative cap is applied to the pre-allocation `total_assets` snapshot and the
+  group check counts the cumulative principal of every market in that group.
+
+After the adapter call, the reported total assets must stay within the active allocation step and
+must satisfy the same market and cap-group limits before any principal or accounting state is
+persisted. A violation returns `ContractError::InvalidState`, so the whole Soroban transaction
+reverts and token balances, adapter state, policy principals, and kernel accounting are unchanged.
+Measuring the group limits against the pre-allocation snapshot keeps an adapter from enlarging the
+denominator of a relative cap during the same allocation it is supposed to be bounded by, and
+re-checking after the call means the limit holds even if the adapter or a policy change makes the
+pre-request decision stale.
+
+Disabling supply for a market — by disabling it, setting its cap to zero, or removing it from the
+supply queue — blocks further supply while leaving that market's existing adapter binding in
+place, so withdrawals already deployed against that market keep settling through the same
+adapter.
+
 If withdrawal execution enters `Withdrawing` and cannot progress because idle
 liquidity remains below the kernel minimum, an allocator-emergency actor can
 submit `VaultCommand::AbortWithdrawing { caller, op_id }` through `execute`.
