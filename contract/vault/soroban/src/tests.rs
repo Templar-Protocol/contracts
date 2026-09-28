@@ -348,6 +348,7 @@ mod contract_tests {
     use crate::convert::ledger_timestamp_ns;
     use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
     use crate::error::RuntimeError;
+    use crate::storage::SOROBAN_MAX_PENDING_WITHDRAWALS;
     use crate::storage::{SorobanStorage, Storage};
     use crate::test_utils::{
         begin_allocating, finish_allocating, supply_queue_from_targets, MemoryStorage,
@@ -377,6 +378,7 @@ mod contract_tests {
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::fee::FeeSlot;
     use templar_vault_kernel::math::wad::{Wad, YEAR_NS};
+    use templar_vault_kernel::{convert_to_assets, VaultConfig};
     use templar_vault_kernel::{
         FeeAccrualAnchor, FeesSpec, OpState, Restrictions, TimestampNs, VaultState,
         WithdrawingState, MIN_WITHDRAWAL_ASSETS,
@@ -2966,6 +2968,271 @@ mod contract_tests {
                 templar_vault_kernel::TimestampNs(ledger_timestamp_ns(&env).expect("timestamp"))
             );
         });
+    }
+
+    type FeeVault = CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter>;
+
+    const FEE_REQUEST_OWNER: templar_vault_kernel::Address =
+        templar_vault_kernel::Address([10u8; 32]);
+    const MANAGEMENT_RECIPIENT: templar_vault_kernel::Address =
+        templar_vault_kernel::Address([7u8; 32]);
+    const PERFORMANCE_RECIPIENT: templar_vault_kernel::Address =
+        templar_vault_kernel::Address([8u8; 32]);
+
+    fn fee_config(management: bool, performance: bool) -> FeesSpec {
+        FeesSpec::new(
+            if performance {
+                FeeSlot::new(Wad::one() / 5, PERFORMANCE_RECIPIENT)
+            } else {
+                FeeSlot::zero()
+            },
+            if management {
+                FeeSlot::new(Wad::one() / 20, MANAGEMENT_RECIPIENT)
+            } else {
+                FeeSlot::zero()
+            },
+            None,
+        )
+    }
+
+    fn fee_vault(
+        management: bool,
+        performance: bool,
+        virtual_shares: u128,
+        virtual_assets: u128,
+    ) -> FeeVault {
+        let state = VaultState {
+            total_assets: if performance { 20_000 } else { 10_000 },
+            total_shares: 10_000,
+            idle_assets: if performance { 20_000 } else { 10_000 },
+            fee_anchor: FeeAccrualAnchor::new(10_000, TimestampNs(0)),
+            ..Default::default()
+        };
+        let config = test_config()
+            .with_fees(fee_config(management, performance))
+            .with_virtual_offsets(virtual_shares, virtual_assets);
+        let mut vault = CuratorVault::new(
+            config,
+            MemoryStorage::with_state(state),
+            TestPermissiveAuth,
+            MockInterpreter::new(),
+        );
+        vault.load_state().expect("load fee vault state");
+        vault
+    }
+
+    fn kernel_config(fees: FeesSpec, virtual_shares: u128, virtual_assets: u128) -> VaultConfig {
+        VaultConfig {
+            fees,
+            min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+            withdrawal_cooldown_ns: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+            max_pending_withdrawals: SOROBAN_MAX_PENDING_WITHDRAWALS,
+            paused: false,
+            virtual_shares,
+            virtual_assets,
+        }
+    }
+
+    fn recipient_mints(vault: &FeeVault, recipient: templar_vault_kernel::Address) -> u128 {
+        vault
+            .interpreter
+            .effects
+            .iter()
+            .filter_map(|effect| match effect {
+                KernelEffect::MintShares { owner, shares } if *owner == recipient => Some(*shares),
+                _ => None,
+            })
+            .sum()
+    }
+
+    fn recorded_asset_payout(vault: &FeeVault) -> bool {
+        vault.interpreter.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                KernelEffect::BurnShares { .. } | KernelEffect::TransferAssets { .. }
+            )
+        })
+    }
+
+    #[test]
+    fn test_explicit_refresh_before_request_matches_request_side_refresh() {
+        for (management, performance) in [(true, false), (false, true), (true, true)] {
+            for (virtual_shares, virtual_assets) in [(0u128, 0u128), (100u128, 200u128)] {
+                let mut explicit =
+                    fee_vault(management, performance, virtual_shares, virtual_assets);
+                let mut implicit =
+                    fee_vault(management, performance, virtual_shares, virtual_assets);
+                let pre = implicit.state().unwrap().clone();
+                let config = kernel_config(
+                    fee_config(management, performance),
+                    virtual_shares,
+                    virtual_assets,
+                );
+                explicit
+                    .refresh_fees(YEAR_NS)
+                    .expect("explicit refresh succeeds");
+                let explicit_request = explicit
+                    .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, YEAR_NS)
+                    .expect("request after explicit refresh succeeds");
+                let implicit_request = implicit
+                    .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, YEAR_NS)
+                    .expect("request without explicit refresh succeeds");
+                assert_eq!(explicit_request.request_id, implicit_request.request_id);
+                let state = implicit.state().unwrap();
+                assert_eq!(explicit.state().unwrap(), state);
+                let (request_id, queued) = state.withdraw_queue.head().expect("queued request");
+                assert_eq!(request_id, implicit_request.request_id);
+                assert_eq!(queued.escrow_shares, implicit_request.shares_escrowed);
+                assert!(queued.expected_assets < convert_to_assets(&pre, &config, 5_000));
+                let management_mint = recipient_mints(&implicit, MANAGEMENT_RECIPIENT);
+                let performance_mint = recipient_mints(&implicit, PERFORMANCE_RECIPIENT);
+                assert_eq!(
+                    management_mint,
+                    recipient_mints(&explicit, MANAGEMENT_RECIPIENT)
+                );
+                assert_eq!(
+                    performance_mint,
+                    recipient_mints(&explicit, PERFORMANCE_RECIPIENT)
+                );
+                assert_eq!(management_mint > 0, management);
+                assert_eq!(performance_mint > 0, performance);
+                assert_eq!(
+                    management_mint + performance_mint,
+                    state.total_shares - pre.total_shares
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_request_withdraw_enforces_minimum_and_slippage_after_fees() {
+        let config = kernel_config(fee_config(false, true), 0, 0);
+        let mut control = fee_vault(false, true, 0, 0);
+        control
+            .refresh_fees(YEAR_NS)
+            .expect("explicit refresh succeeds");
+        let post = control.state().unwrap().clone();
+        assert_eq!(convert_to_assets(&post, &config, 501), 901);
+        assert_eq!(
+            convert_to_assets(&post, &config, 556),
+            MIN_WITHDRAWAL_ASSETS
+        );
+
+        for (shares, min_assets_out) in [
+            (501u128, 0u128),
+            (556u128, 0u128),
+            (5_000u128, 10_000u128),
+            (5_000u128, 9_000u128),
+        ] {
+            let mut vault = fee_vault(false, true, 0, 0);
+            let result = vault.request_withdraw(
+                FEE_REQUEST_OWNER,
+                FEE_REQUEST_OWNER,
+                shares,
+                min_assets_out,
+                YEAR_NS,
+            );
+            if convert_to_assets(&post, &config, shares) < min_assets_out
+                || convert_to_assets(&post, &config, shares) < MIN_WITHDRAWAL_ASSETS
+            {
+                assert!(result.is_err());
+                assert!(vault.state().unwrap().withdraw_queue.head().is_none());
+                assert!(!vault
+                    .interpreter
+                    .effects
+                    .iter()
+                    .any(|effect| matches!(effect, KernelEffect::TransferShares { .. })));
+                assert_eq!(vault.state().unwrap().total_shares, post.total_shares);
+                assert_eq!(vault.state().unwrap().fee_anchor, post.fee_anchor);
+            } else {
+                result.expect("valid post-fee request succeeds");
+                assert_eq!(
+                    vault
+                        .state()
+                        .unwrap()
+                        .withdraw_queue
+                        .head()
+                        .expect("queued request")
+                        .1
+                        .expected_assets,
+                    convert_to_assets(&post, &config, shares),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_request_withdraw_advances_anchor_when_fee_floors_to_zero() {
+        let mut vault = fee_vault(true, false, 0, 0);
+        vault
+            .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, 1)
+            .expect("request succeeds when pro-rated fee floors to zero");
+        assert_eq!(recipient_mints(&vault, MANAGEMENT_RECIPIENT), 0);
+        let state = vault.state().unwrap();
+        assert_eq!(state.total_shares, 10_000);
+        assert_eq!(
+            state.fee_anchor,
+            FeeAccrualAnchor::new(10_000, TimestampNs(1))
+        );
+        assert_eq!(
+            state
+                .withdraw_queue
+                .head()
+                .expect("queued request")
+                .1
+                .expected_assets,
+            5_000
+        );
+    }
+
+    #[test]
+    fn test_all_supply_request_preserves_fee_recipient_backing() {
+        let config = kernel_config(fee_config(true, false), 0, 0);
+        let mut control = fee_vault(true, false, 0, 0);
+        control
+            .refresh_fees(YEAR_NS)
+            .expect("explicit refresh succeeds");
+        assert!(recipient_mints(&control, MANAGEMENT_RECIPIENT) > 0);
+        let post = control.state().unwrap().clone();
+        assert!(post.total_shares > 10_000);
+
+        let mut vault = fee_vault(true, false, 0, 0);
+        let request = vault
+            .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 10_000, 0, YEAR_NS)
+            .expect("all-supply request succeeds after fee crystallization");
+        let state = vault.state().unwrap();
+        assert_eq!(state.total_shares, post.total_shares);
+        assert_eq!(state.withdraw_queue.len(), 1);
+        let (request_id, queued) = state.withdraw_queue.head().expect("queued request");
+        assert_eq!(queued.escrow_shares, 10_000);
+        assert_eq!(
+            queued.expected_assets,
+            convert_to_assets(&post, &config, 10_000)
+        );
+        assert_eq!(request_id, request.request_id);
+        let recipient_shares = recipient_mints(&vault, MANAGEMENT_RECIPIENT);
+        assert!(recipient_shares > 0);
+        let recipient_backing = convert_to_assets(&post, &config, recipient_shares);
+        assert!(recipient_backing > 0);
+        assert!(queued.expected_assets + recipient_backing <= state.total_assets);
+    }
+
+    #[test]
+    fn test_queued_request_remains_fixed_while_fees_continue_accruing() {
+        let mut vault = fee_vault(true, false, 0, 0);
+        vault
+            .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, YEAR_NS)
+            .expect("request succeeds after fee crystallization");
+        let queue_before = vault.state().unwrap().withdraw_queue.clone();
+        let mint_before = recipient_mints(&vault, MANAGEMENT_RECIPIENT);
+
+        // ENG-697: post-request fees credit recipients but do not settle this claim.
+        vault
+            .refresh_fees(2 * YEAR_NS)
+            .expect("post-request crystallization succeeds");
+        assert!(recipient_mints(&vault, MANAGEMENT_RECIPIENT) > mint_before);
+        assert_eq!(vault.state().unwrap().withdraw_queue, queue_before);
+        assert!(!recorded_asset_payout(&vault));
     }
 
     #[test]
