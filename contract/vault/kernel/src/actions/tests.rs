@@ -2796,6 +2796,39 @@ fn refresh_fees_mints_performance_fee_shares() {
     ));
     assert_eq!(result.state.total_shares, 1_000 + 34);
 }
+#[test]
+fn refresh_fees_nonzero_anchor_at_one_nanosecond_mints_performance_shares() {
+    let mut state = idle_state(100, 100);
+    state.fee_anchor = FeeAccrualAnchor::new(50, TimestampNs::ZERO);
+    let recipient = addr(0x66);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, recipient),
+        FeeSlot::zero(),
+        None,
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::refresh_fees(TimestampNs::from_nanos(1)),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        result.effects.first(),
+        Some(KernelEffect::MintShares { owner, shares: 5 })
+            if owner == &recipient
+    ));
+    assert_eq!(result.state.total_shares, 105);
+    assert_eq!(result.state.fee_anchor.total_assets, 100);
+    assert_eq!(
+        result.state.fee_anchor.timestamp_ns,
+        TimestampNs::from_nanos(1)
+    );
+}
 
 #[test]
 fn refresh_fees_mints_management_fee_shares() {

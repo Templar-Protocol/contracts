@@ -237,17 +237,6 @@ mod kani_proofs {
         }
     }
 
-    #[cfg(feature = "action-refresh-fees")]
-    fn assert_mint_shares_effect(effect: &KernelEffect) -> u128 {
-        match effect {
-            KernelEffect::MintShares { shares, .. } => {
-                assert!(*shares > 0);
-                *shares
-            }
-            _ => panic!("refresh fees must not move assets or non-fee shares"),
-        }
-    }
-
     fn assert_refund_owner_is_owner(refund_owner: Option<Address>) {
         match refund_owner {
             Some(owner) => assert_address_eq(owner, OWNER),
@@ -1720,16 +1709,15 @@ mod kani_proofs {
     #[cfg(feature = "action-refresh-fees")]
     #[kani::proof]
     #[kani::unwind(8)]
-    fn refresh_fees_active_rates_only_mint_fee_shares_and_update_anchor() {
+    fn refresh_fees_zero_anchor_active_rates_mint_no_shares_and_advance_checkpoint() {
         let idle = 100u128;
         let external = 0u128;
         let shares = 100u128;
-        let anchor_assets = 0u128;
         let now = TimestampNs::from_nanos(1);
 
         let mut state =
             VaultState::with_initial(idle + external, shares, idle, external, TimestampNs::ZERO);
-        state.fee_anchor = FeeAccrualAnchor::new(anchor_assets, TimestampNs::ZERO);
+        state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs::ZERO);
         let before = state.clone();
         let before_queue = before.withdraw_queue.status();
 
@@ -1742,16 +1730,15 @@ mod kani_proofs {
         )
         .unwrap();
 
-        assert_eq!(result.effects.len(), 2);
-        let minted = assert_mint_shares_effect(&result.effects[0]);
-        assert_emit_event_effect(&result.effects[1]);
-
-        assert!(minted > 0);
+        // A zero fee checkpoint excludes the existing balance from the
+        // fee-accrual basis, so even active fee rates must crystallize
+        // nothing until a legitimate checkpoint exists.
+        assert_eq!(result.effects.len(), 1);
+        assert_emit_event_effect(&result.effects[0]);
+        assert_eq!(result.state.total_shares, before.total_shares);
         assert_eq!(result.state.idle_assets, before.idle_assets);
         assert_eq!(result.state.external_assets, before.external_assets);
         assert_eq!(result.state.total_assets, before.total_assets);
-        assert!(result.state.total_shares >= before.total_shares);
-        assert_eq!(result.state.total_shares, before.total_shares + minted);
         assert_eq!(
             result.state.fee_anchor.total_assets,
             result.state.total_assets

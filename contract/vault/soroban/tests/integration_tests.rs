@@ -3020,8 +3020,8 @@ fn eng700_step(
         StellarAssetClient::new(&fixture.env, &fixture.asset_token)
             .mint(&fixture.depositor, &ENG700_DEPOSIT_ASSETS);
     }
-    eng700_set_ledger(&fixture, ENG700_LEDGER_SECONDS);
-    let deposit_shares = eng700_run_trigger(&fixture, trigger);
+    eng700_set_ledger(fixture, ENG700_LEDGER_SECONDS);
+    let deposit_shares = eng700_run_trigger(fixture, trigger);
     let (stored, vault_balance, management, performance, depositor) = eng700_observe(fixture);
     assert_eq!(deposit_shares > 0, trigger == 1);
     assert_eq!(depositor, deposit_shares);
