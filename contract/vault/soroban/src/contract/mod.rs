@@ -47,8 +47,9 @@ use templar_soroban_shared_types::VaultCommand;
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::error::InvalidStateCode;
 use templar_vault_kernel::{
-    apply_action, convert_to_assets, convert_to_assets_bounded, convert_to_assets_ceil_bounded,
-    convert_to_shares, convert_to_shares_bounded, convert_to_shares_ceil_bounded, plan_idle_payout,
+    apply_action, convert_to_assets_bounded, convert_to_assets_ceil_bounded,
+    convert_to_redeem_assets, convert_to_redeem_assets_bounded, convert_to_shares_bounded,
+    convert_to_withdraw_shares_ceil_bounded, convert_to_withdrawable_shares, plan_idle_payout,
     withdrawal_settled, Address, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, KernelResult,
     OpState, PayoutOutcome, Restrictions, TargetId, TimestampNs, VaultConfig, VaultState, Wad,
     DEFAULT_COOLDOWN_NS, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD, MIN_WITHDRAWAL_ASSETS,

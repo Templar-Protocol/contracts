@@ -447,7 +447,15 @@ fn fee_aware_preview_state(env: &Env, mut state: VaultState, config: &VaultConfi
     let now_ns = env.ledger().timestamp().saturating_mul(1_000_000_000);
     let anchor = state.fee_anchor;
 
-    if state.total_shares == 0 || now_ns <= anchor.timestamp_ns.as_u64() {
+    let same_timestamp_performance_due = now_ns == anchor.timestamp_ns.as_u64()
+        && config.fees.max_total_assets_growth_rate.is_none()
+        && !config.fees.performance.fee_wad.is_zero()
+        && state.total_assets > anchor.total_assets;
+    if state.total_shares == 0
+        || !config.fees.has_active_slot_fees()
+        || now_ns < anchor.timestamp_ns.as_u64()
+        || (now_ns == anchor.timestamp_ns.as_u64() && !same_timestamp_performance_due)
+    {
         return state;
     }
 
@@ -769,7 +777,7 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
     let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
 
     env.ledger().set(LedgerInfo {
-        timestamp: 100,
+        timestamp: 0,
         protocol_version: 25,
         ..Default::default()
     });

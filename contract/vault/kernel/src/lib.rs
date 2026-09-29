@@ -35,10 +35,12 @@ pub const ACTION_PAUSE_ENABLED: bool = cfg!(feature = "action-pause");
 
 pub use actions::{
     apply_action, convert_to_assets, convert_to_assets_bounded, convert_to_assets_ceil,
-    convert_to_assets_ceil_bounded, convert_to_shares, convert_to_shares_bounded,
-    convert_to_shares_ceil, convert_to_shares_ceil_bounded, effective_totals, plan_idle_payout,
-    preview_deposit_shares, preview_withdraw_assets, EffectiveTotals, IdlePayoutPlan, KernelAction,
-    KernelResult, PayoutOutcome,
+    convert_to_assets_ceil_bounded, convert_to_redeem_assets, convert_to_redeem_assets_bounded,
+    convert_to_shares, convert_to_shares_bounded, convert_to_shares_ceil,
+    convert_to_shares_ceil_bounded, convert_to_withdraw_shares_ceil_bounded,
+    convert_to_withdrawable_shares, effective_totals, plan_idle_payout, preview_deposit_shares,
+    preview_withdraw_assets, should_refresh_fees_for_value_transfer, EffectiveTotals,
+    IdlePayoutPlan, KernelAction, KernelResult, PayoutOutcome,
 };
 pub use address_book::AddressBook;
 pub use fee::{Fee, FeeSlot, Fees, FeesSpec};
