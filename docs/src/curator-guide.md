@@ -462,8 +462,25 @@ The accounting behavior differs by direction:
   vault token-balance delta matches the adapter's return value, and subtracts
   the realized amount. It does not refresh the adapter's remaining NAV.
 - `refresh-markets` reads `total_assets(asset)` for the selected routes and
-  replaces their stored principals. Run it after yield, loss, or a custodial NAV
-  report and before fee/share-rate decisions.
+  stages their new principals together. Each refreshed principal is checked
+  against its market cap, and every final cap group is checked before anything
+  is persisted. A refresh that would breach a cap fails atomically with
+  `InvalidState` and changes nothing. Run it after yield, loss, or a custodial
+  NAV report and before fee/share-rate decisions.
+
+Relative group caps are final-state concentration limits. Refresh measures
+them against the prospective committed total assets (`idle_assets` plus the
+final staged `external_assets`), unlike supply admission, which measures
+against a frozen pre-allocation total. Every group is checked even when none
+of its markets are refreshed, because a loss in one market shrinks the
+denominator for all relative caps. After a large loss or a governance cap
+tightening, refreshes can keep failing until the vault is de-risked with
+`allocate-withdraw` or governance adjusts the caps; alert on repeated refresh
+failures rather than retrying an unchanged payload. Refresh records reported
+NAV without authenticating it, and markets left out of a refresh keep their
+stale stored NAV, so keep adapters vetted, monitor reported totals against the
+fixed market and absolute group caps, and refresh all markets on a regular
+cadence.
 
 Two maintenance calls are permissionless even though they are grouped under
 `curator` in the CLI:

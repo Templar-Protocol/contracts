@@ -1008,13 +1008,6 @@ where
         Ok(new_external)
     }
 
-    #[inline]
-    fn classify_refreshed_positions(
-        refreshed_positions: &[(TargetId, u128)],
-    ) -> Vec<(TargetId, u128)> {
-        refreshed_positions.to_vec()
-    }
-
     fn validate_refreshed_positions_against_plan(
         &self,
         refreshed_positions: &[(TargetId, u128)],
@@ -1058,10 +1051,19 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
-        let refreshed_positions = Self::classify_refreshed_positions(refreshed_positions);
-        self.validate_refreshed_positions_against_plan(&refreshed_positions)?;
-        let staged_policy = self.stage_refreshed_positions(&refreshed_positions)?;
+        self.validate_refreshed_positions_against_plan(refreshed_positions)?;
+        let staged_policy = self.stage_refreshed_positions(refreshed_positions)?;
         let new_external_assets = staged_policy.external_assets()?;
+        let prospective_total_assets =
+            self.state()?
+                .idle_assets
+                .checked_add(new_external_assets)
+                .ok_or_else(|| invalid_state_error("total assets overflow on refresh"))?;
+        for (_, record) in staged_policy.cap_groups().iter() {
+            record
+                .enforce(0, prospective_total_assets)
+                .map_err(|_| invalid_state_error("refresh exceeds cap group limit"))?;
+        }
         self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         let result = self.finish_refreshing(caller, op_id, now_ns)?;
         self.policy_state = staged_policy;

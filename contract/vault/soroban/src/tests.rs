@@ -1416,6 +1416,156 @@ mod contract_tests {
         assert_eq!(vault.policy_state().principal_for(0), Some(999));
     }
 
+    #[rstest]
+    #[case::absolute_boundary([1_000, 1_000, 0], vec![(0, 2_000)], false, true)]
+    #[case::absolute_excess([1_000, 1_000, 0], vec![(0, 2_001)], false, false)]
+    #[case::prospective_relative_boundary([500, 500, 0], vec![(0, 1_000)], true, true)]
+    #[case::prospective_relative_excess([500, 500, 0], vec![(0, 1_001)], true, false)]
+    #[case::outside_group_loss_boundary([1_000, 1_000, 1_000], vec![(2, 334)], true, true)]
+    #[case::outside_group_loss_excess([1_000, 1_000, 1_000], vec![(2, 333)], true, false)]
+    #[case::rebalance_increase_first(
+        [1_000, 2_000, 0],
+        vec![(0, 2_000), (1, 1_000)],
+        false,
+        true
+    )]
+    #[case::rebalance_decrease_first(
+        [1_000, 2_000, 0],
+        vec![(1, 1_000), (0, 2_000)],
+        false,
+        true
+    )]
+    #[case::rebalance_excess_increase_first(
+        [1_000, 2_000, 0],
+        vec![(0, 2_001), (1, 1_000)],
+        false,
+        false
+    )]
+    #[case::rebalance_excess_decrease_first(
+        [1_000, 2_000, 0],
+        vec![(1, 1_000), (0, 2_001)],
+        false,
+        false
+    )]
+    #[case::downward_to_boundary([2_500, 1_000, 0], vec![(0, 2_000)], false, true)]
+    #[case::downward_still_over_cap([2_500, 1_000, 0], vec![(0, 2_001)], false, false)]
+    #[case::duplicate_final_boundary(
+        [1_000, 1_000, 0],
+        vec![(0, 2_001), (0, 2_000)],
+        false,
+        true
+    )]
+    #[case::duplicate_final_excess(
+        [1_000, 1_000, 0],
+        vec![(0, 2_000), (0, 2_001)],
+        false,
+        false
+    )]
+    fn test_complete_refresh_enforces_final_cap_groups(
+        #[case] initial_principals: [u128; 3],
+        #[case] observations: Vec<(u32, u128)>,
+        #[case] relative_cap: bool,
+        #[case] accepted: bool,
+    ) {
+        let mut vault = create_test_vault();
+        let group_id = enroll_cap_group(&mut vault, "refresh-cap", &[0, 1], &[10_000; 2]);
+        vault
+            .policy_state_mut()
+            .set_market_config(2, MarketConfig::new(true, 10_000, None))
+            .unwrap();
+        if relative_cap {
+            vault.policy_state_mut().set_cap_group_relative_cap(
+                group_id.clone(),
+                Some(Wad::from(600_000_000_000_000_000u128)),
+            );
+        } else {
+            vault
+                .policy_state_mut()
+                .set_cap_group_absolute_cap(group_id.clone(), Some(3_000));
+        }
+        for (market, principal) in initial_principals.iter().enumerate() {
+            vault
+                .policy_state_mut()
+                .set_principal(market as u32, *principal)
+                .unwrap();
+        }
+        set_test_assets(&mut vault, 1_000, initial_principals.iter().sum());
+        let initial_policy = vault.policy_state().clone();
+        vault.storage.save_policy_state(&initial_policy).unwrap();
+
+        // The plan contains each market once, even when observations repeat it.
+        let mut plan = Vec::new();
+        for (market, _) in &observations {
+            if !plan.contains(market) {
+                plan.push(*market);
+            }
+        }
+        let markets_refreshed = plan.len() as u32;
+        let op_id = vault.begin_refreshing(caller(), plan, 1_500).unwrap();
+        vault.save_state().unwrap();
+        let state_before = crate::storage::encode_state_blob(vault.state().unwrap());
+        let policy_bytes = |policy: &PolicyState| {
+            (
+                crate::storage::encode_markets(policy.markets()),
+                crate::storage::encode_principals(policy.principals()),
+                crate::storage::encode_cap_groups(policy.cap_groups()),
+                crate::storage::encode_policy_locks(policy.leases()),
+                crate::storage::encode_supply_queue(policy.supply_queue()),
+            )
+        };
+        let policy_before = policy_bytes(&initial_policy);
+        let result = vault.complete_refresh_with_positions(caller(), &observations, op_id, 1_600);
+
+        if accepted {
+            assert_eq!(result.unwrap().markets_refreshed, markets_refreshed);
+            let mut final_principals = initial_principals;
+            for (market, principal) in observations {
+                final_principals[market as usize] = principal;
+            }
+            let external_assets: u128 = final_principals.iter().sum();
+            let state = vault.state().unwrap();
+            assert!(state.op_state.is_idle());
+            assert_eq!(state.idle_assets, 1_000);
+            assert_eq!(state.external_assets, external_assets);
+            assert_eq!(state.total_assets, 1_000 + external_assets);
+            for (market, principal) in final_principals.iter().enumerate() {
+                assert_eq!(
+                    vault.policy_state().principal_for(market as u32),
+                    Some(*principal)
+                );
+            }
+            assert_eq!(
+                vault
+                    .policy_state()
+                    .cap_groups()
+                    .get(&group_id)
+                    .unwrap()
+                    .principal,
+                final_principals[0] + final_principals[1]
+            );
+            assert_eq!(
+                policy_bytes(&vault.storage.load_policy_state().unwrap().unwrap()),
+                policy_bytes(vault.policy_state())
+            );
+        } else {
+            assert_eq!(result.unwrap_err(), RuntimeError::InvalidState);
+            assert!(vault.state().unwrap().op_state.is_refreshing());
+            assert_eq!(
+                crate::storage::encode_state_blob(vault.state().unwrap()),
+                state_before
+            );
+            assert_eq!(
+                crate::storage::encode_state_blob(&vault.storage.load_state().unwrap().unwrap()),
+                state_before
+            );
+            assert_eq!(policy_bytes(vault.policy_state()), policy_before);
+            assert_eq!(
+                policy_bytes(&vault.storage.load_policy_state().unwrap().unwrap()),
+                policy_before
+            );
+        }
+    }
+
     #[test]
     fn test_complete_refresh_allows_adapter_reported_decrease_within_cap() {
         let mut vault = create_test_vault();

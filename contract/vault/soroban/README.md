@@ -260,6 +260,33 @@ operators (`allocator`, `sentinel`, and `curator`), not ordinary users. The
 transition restores any `Withdrawing.collected` amount to idle accounting before
 refunding escrowed shares, dequeuing the head request, and returning to `Idle`.
 
+### Refresh Observation Validation
+
+Refresh stages all selected adapter observations before synchronizing kernel accounting or
+persisting policy. Each observation must name a configured market and stay within its market cap,
+and every final cap-group principal must satisfy its absolute and relative caps before commit.
+
+Relative caps are final-state concentration limits: each group must stay at or below
+`floor(relative_cap * prospective_total_assets)`, where the denominator is the checked sum of
+current `idle_assets` and final staged `external_assets`. Unlike supply's frozen pre-allocation
+snapshot, this prospective total includes the NAV gains or losses that refresh will commit.
+
+Every group is checked, including untouched groups, because a loss outside a group can shrink
+the global denominator and breach that group's relative cap. Group checks use the final staged
+state, not intermediate observation order, and repeated market observations retain the last value.
+
+A cap violation returns `ContractError::InvalidState` and rolls back the entire public refresh,
+including adapter transaction state. After a loss or cap tightening, even a downward refresh can
+remain over cap and require de-risking, market withdrawal, or authorized governance remediation
+before retrying.
+
+Existing exposure in disabled or unqueued markets remains refreshable when these checks pass.
+Refresh does not authenticate adapter NAV, and partial refresh leaves unqueried NAV stale.
+
+Use vetted adapters and monitor NAV changes and report freshness across all markets.
+Market caps and absolute group caps provide report-independent ceilings, while relative caps
+constrain concentration in the accounted state rather than prove that reported assets exist.
+
 ## Prerequisites
 
 ### Stellar CLI
