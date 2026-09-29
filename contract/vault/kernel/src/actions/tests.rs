@@ -549,6 +549,126 @@ fn atomic_redeem_delegated_operator_uses_burn_from_effect() {
         }) if *event_owner == owner && *event_receiver == receiver
     ));
 }
+#[test]
+fn atomic_redeem_caps_virtual_quote_at_real_pro_rata_value() {
+    let mut state = idle_state(1_500, 1_034);
+    state.fee_anchor = FeeAccrualAnchor::new(1_500, TimestampNs(0));
+    let mut config = test_config();
+    config.virtual_shares = 100;
+    config.virtual_assets = 200;
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::AtomicRedeem {
+            owner: addr(1),
+            receiver: addr(2),
+            operator: addr(1),
+            shares: 100,
+            min_assets_out: 145,
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.state.total_assets, 1_355);
+    assert_eq!(result.state.total_shares, 934);
+    assert!(matches!(
+        result.effects.get(1),
+        Some(KernelEffect::TransferAssets { amount: 145, .. })
+    ));
+    assert!(
+        convert_to_assets(&result.state, &config, result.state.total_shares)
+            > result.state.total_assets
+    );
+    assert_eq!(
+        convert_to_redeem_assets(&result.state, &config, result.state.total_shares),
+        result.state.total_assets
+    );
+}
+
+#[test]
+fn atomic_withdraw_burns_real_pro_rata_shares_with_virtual_offsets() {
+    let mut state = idle_state(1_500, 1_034);
+    state.fee_anchor = FeeAccrualAnchor::new(1_500, TimestampNs(0));
+    let mut config = test_config();
+    config.virtual_shares = 100;
+    config.virtual_assets = 200;
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::AtomicWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            operator: addr(1),
+            assets_out: 145,
+            max_shares_burned: 100,
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.state.total_assets, 1_355);
+    assert_eq!(result.state.total_shares, 934);
+    assert!(matches!(
+        result.effects.first(),
+        Some(KernelEffect::BurnShares { shares: 100, .. })
+    ));
+}
+
+#[test]
+fn atomic_exits_crystallize_same_timestamp_performance_fees_before_pricing() {
+    let actions = [
+        KernelAction::AtomicWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            operator: addr(1),
+            assets_out: 1_450,
+            max_shares_burned: 1_000,
+            now_ns: TimestampNs(500),
+        },
+        KernelAction::AtomicRedeem {
+            owner: addr(1),
+            receiver: addr(2),
+            operator: addr(1),
+            shares: 1_000,
+            min_assets_out: 1_450,
+            now_ns: TimestampNs(500),
+        },
+    ];
+
+    for action in actions {
+        let mut state = idle_state(1_500, 1_000);
+        state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(500));
+        let mut config = test_config();
+        config.virtual_shares = 100;
+        config.virtual_assets = 200;
+        config.fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, addr(0xAA)),
+            FeeSlot::zero(),
+            None,
+        );
+
+        let result = apply_action(state, &config, None, &addr(0xFF), action).unwrap();
+
+        assert!(matches!(
+            result.effects.first(),
+            Some(KernelEffect::MintShares { owner, shares: 34 })
+                if owner == &addr(0xAA)
+        ));
+        assert_eq!(result.state.total_assets, 50);
+        assert_eq!(result.state.total_shares, 34);
+        assert!(result
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, KernelEffect::TransferAssets { amount: 1_450, .. })));
+    }
+}
 
 #[test]
 fn atomic_withdraw_slippage_reports_user_limit_as_minimum() {
@@ -4107,4 +4227,410 @@ fn refresh_fees_rejects_non_advancing_timestamp() {
             InvalidStateCode::FeeRefreshTimestampMustAdvance
         ))
     ));
+}
+
+#[test]
+fn refresh_fees_at_anchor_timestamp_crystallizes_due_performance_fee() {
+    // Anchor booked at 1_000 at timestamp 500; an external NAV increase
+    // lifted real assets to 1_500 at the same ledger timestamp. Refreshing
+    // at that equal timestamp must crystallize the accrued performance fee
+    // instead of being rejected for non-advancing time.
+    let mut state = idle_state(1_500, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(500));
+
+    let perf_recipient = addr(0xAA);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, perf_recipient), // 10% performance fee
+        FeeSlot::zero(),                               // no management fee
+        None,
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(500),
+        },
+    )
+    .expect("equal-timestamp refresh with a due performance fee must succeed");
+
+    // Profit = 500; fee_assets = 50; shares = floor(50 * 1000 / 1450) = 34.
+    assert!(matches!(
+        result.effects.first(),
+        Some(KernelEffect::MintShares { owner, shares: 34 })
+            if *owner == perf_recipient
+    ));
+    assert_eq!(result.state.total_shares, 1_034);
+    assert_eq!(result.state.fee_anchor.total_assets, 1_500);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(500));
+}
+
+#[test]
+fn request_withdraw_at_anchor_timestamp_advances_subunit_fee_growth() {
+    let mut state = idle_state(1_001, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(500));
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, addr(0xAA)),
+        FeeSlot::zero(),
+        None,
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RequestWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            shares: 100,
+            min_assets_out: 0,
+            now_ns: TimestampNs(500),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.state.total_shares, 1_000);
+    assert_eq!(result.state.fee_anchor.total_assets, 1_001);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(500));
+    assert_eq!(minted_shares_for(&result.effects, addr(0xAA)), 0);
+}
+
+#[test]
+fn request_withdraw_crystallizes_due_performance_fee_at_anchor_timestamp() {
+    // Attack shape from ENG-699: external NAV increase booked at the anchor
+    // timestamp, then a withdrawal requested at that same timestamp. The
+    // request must force fee crystallization first and be priced against the
+    // post-fee state, not the pre-fee rate.
+    let mut state = idle_state(1_500, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(500));
+
+    let perf_recipient = addr(0xAA);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, perf_recipient), // 10% performance fee
+        FeeSlot::zero(),                               // no management fee
+        None,
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RequestWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            shares: 100,
+            min_assets_out: 0,
+            now_ns: TimestampNs(500),
+        },
+    )
+    .expect("request must succeed after forced fee crystallization");
+
+    // Crystallized fee effects are ordered first.
+    assert!(matches!(
+        result.effects.first(),
+        Some(KernelEffect::MintShares { owner, shares: 34 })
+            if *owner == perf_recipient
+    ));
+    assert_eq!(result.state.total_shares, 1_034);
+    assert_eq!(result.state.fee_anchor.total_assets, 1_500);
+
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    let (head_id, head) = result
+        .state
+        .withdraw_queue
+        .head()
+        .expect("withdrawal should be queued");
+    assert_eq!(head_id, 0);
+    assert_eq!(head.escrow_shares, 100);
+    // Post-crystallization pricing: floor(100 * 1501 / 1035) = 145.
+    // The pre-fee price would have been floor(100 * 1501 / 1001) = 149.
+    assert_eq!(head.expected_assets, 145);
+    assert_eq!(
+        head.expected_assets,
+        convert_to_assets(&result.state, &config, head.escrow_shares)
+    );
+}
+
+#[test]
+fn request_withdraw_crystallizes_due_performance_fee_when_time_advances() {
+    let mut state = idle_state(1_500, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0));
+
+    let perf_recipient = addr(0xAA);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, perf_recipient), // 10% performance fee
+        FeeSlot::zero(),                               // no management fee
+        None,
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RequestWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            shares: 100,
+            min_assets_out: 0,
+            now_ns: TimestampNs(YEAR_NS),
+        },
+    )
+    .expect("request must succeed after forced fee crystallization");
+
+    assert!(matches!(
+        result.effects.first(),
+        Some(KernelEffect::MintShares { owner, shares: 34 })
+            if *owner == perf_recipient
+    ));
+    assert_eq!(result.state.total_shares, 1_034);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(YEAR_NS));
+
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    let (_, head) = result
+        .state
+        .withdraw_queue
+        .head()
+        .expect("withdrawal should be queued");
+    assert_eq!(head.escrow_shares, 100);
+    assert_eq!(head.expected_assets, 145);
+}
+
+#[test]
+fn request_withdraw_at_anchor_timestamp_preserves_growth_capped_anchor() {
+    // With a growth-rate cap configured, a gain booked at the anchor
+    // timestamp accrues no fee at zero elapsed time. The equal-timestamp
+    // request must not mint fees and must not re-anchor the capped gain
+    // away uncharged; the later time-advanced refresh charges the capped
+    // fee from the preserved anchor.
+    let mut state = idle_state(1_500, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(500));
+
+    let perf_recipient = addr(0xAA);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, perf_recipient), // 10% performance fee
+        FeeSlot::zero(),                               // no management fee
+        Some(Wad::one() / 20),                         // 5% growth cap
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RequestWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            shares: 100,
+            min_assets_out: 0,
+            now_ns: TimestampNs(500),
+        },
+    )
+    .expect("capped equal-time request should succeed without crystallization");
+
+    assert!(result
+        .effects
+        .iter()
+        .all(|e| !matches!(e, KernelEffect::MintShares { .. })));
+    assert_eq!(result.state.total_shares, 1_000);
+    assert_eq!(result.state.fee_anchor.total_assets, 1_000);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(500));
+
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    let (_, head) = result
+        .state
+        .withdraw_queue
+        .head()
+        .expect("withdrawal should be queued");
+    assert_eq!(
+        head.expected_assets,
+        convert_to_assets(&result.state, &config, head.escrow_shares)
+    );
+
+    // A year later the preserved anchor still anchors the gain: the refresh
+    // applies the cap (fee base 1_050) and charges the capped fee.
+    let state = result.state;
+    let refresh = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(500 + YEAR_NS),
+        },
+    )
+    .expect("capped refresh after elapsed time must succeed");
+
+    // Capped profit = 50; fee_assets = 5; shares = floor(5 * 1000 / 1495) = 3.
+    assert!(matches!(
+        refresh.effects.first(),
+        Some(KernelEffect::MintShares { owner, shares: 3 })
+            if *owner == perf_recipient
+    ));
+    assert_eq!(refresh.state.total_shares, 1_003);
+    assert_eq!(refresh.state.fee_anchor.total_assets, 1_500);
+    assert_eq!(
+        refresh.state.fee_anchor.timestamp_ns,
+        TimestampNs(500 + YEAR_NS)
+    );
+}
+
+#[test]
+fn request_withdraw_crystallizes_fee_with_nonzero_virtual_offsets() {
+    // Nonzero virtual offsets must not let a request bypass crystallization.
+    // Pre-crystallization pricing with these offsets would have queued
+    // floor(100 * 1700 / 1100) = 154 assets.
+    let mut state = idle_state(1_500, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(500));
+
+    let perf_recipient = addr(0xAA);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, perf_recipient), // 10% performance fee
+        FeeSlot::zero(),                               // no management fee
+        None,
+    );
+    config.virtual_shares = 100;
+    config.virtual_assets = 200;
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RequestWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            shares: 100,
+            min_assets_out: 0,
+            now_ns: TimestampNs(500),
+        },
+    )
+    .expect("request must succeed after forced fee crystallization");
+
+    assert!(matches!(
+        result.effects.first(),
+        Some(KernelEffect::MintShares { owner, shares: 34 })
+            if *owner == perf_recipient
+    ));
+    assert_eq!(result.state.total_shares, 1_034);
+    assert_eq!(result.state.fee_anchor.total_assets, 1_500);
+
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    let (_, head) = result
+        .state
+        .withdraw_queue
+        .head()
+        .expect("withdrawal should be queued");
+    assert_eq!(head.escrow_shares, 100);
+    assert_eq!(
+        head.expected_assets,
+        convert_to_redeem_assets(&result.state, &config, head.escrow_shares)
+    );
+    assert_eq!(head.expected_assets, 145);
+}
+#[test]
+fn request_withdraw_preserves_implicit_virtual_reserve_pricing() {
+    let state = idle_state(445_013_723, 906_593_173_726);
+    let config = test_config();
+    let shares = 708_506_333_511;
+
+    assert_eq!(convert_to_assets(&state, &config, shares), 347_780_075);
+    assert_eq!(
+        convert_to_redeem_assets(&state, &config, shares),
+        347_780_075
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RequestWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            shares,
+            min_assets_out: 0,
+            now_ns: TimestampNs(1),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result
+            .state
+            .withdraw_queue
+            .head()
+            .expect("withdrawal should be queued")
+            .1
+            .expected_assets,
+        347_780_075
+    );
+}
+
+#[test]
+fn refresh_fees_at_anchor_timestamp_rejected_without_due_fee() {
+    let mut state = idle_state(1_000, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(500));
+
+    let perf_recipient = addr(0xAA);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, perf_recipient),
+        FeeSlot::zero(),
+        None,
+    );
+
+    for now_ns in [TimestampNs(400), TimestampNs(500)] {
+        let result = apply_action(
+            state.clone(),
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RefreshFees { now_ns },
+        );
+        assert!(matches!(
+            result,
+            Err(KernelError::InvalidState(
+                InvalidStateCode::FeeRefreshTimestampMustAdvance
+            ))
+        ));
+    }
+}
+
+#[test]
+fn request_withdraw_at_anchor_timestamp_unchanged_without_fees() {
+    let state = idle_state(1_000, 1_000);
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RequestWithdraw {
+            owner: addr(1),
+            receiver: addr(2),
+            shares: 100,
+            min_assets_out: 0,
+            now_ns: TimestampNs(0),
+        },
+    )
+    .expect("zero-fee request must be unaffected by the crystallization gate");
+
+    assert_eq!(result.effects.len(), 2);
+    assert!(matches!(
+        result.effects.first(),
+        Some(KernelEffect::TransferShares { .. })
+    ));
+    assert_eq!(result.state.fee_anchor.total_assets, 1_000);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(0));
 }

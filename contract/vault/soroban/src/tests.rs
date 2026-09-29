@@ -2419,6 +2419,90 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_request_withdraw_at_anchor_timestamp_crystallizes_performance_fee() {
+        // ENG-699: a gain booked at the fee anchor timestamp must not allow
+        // a same-timestamp withdrawal request to price against the pre-fee
+        // rate. The kernel forces fee crystallization before the request is
+        // recorded, so fee shares are minted and the queued claim is priced
+        // post-fee for both zero and nonzero virtual offsets.
+        for (virtual_shares, virtual_assets) in [(0u128, 0u128), (100u128, 200u128)] {
+            let mut vault = fee_vault(false, true, virtual_shares, virtual_assets);
+            let pre = vault.state().unwrap().clone();
+            let config = kernel_config(fee_config(false, true), virtual_shares, virtual_assets);
+            assert_eq!(
+                pre.fee_anchor.timestamp_ns,
+                templar_vault_kernel::TimestampNs(0)
+            );
+
+            let request = vault
+                .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, 0)
+                .expect("same-timestamp request must succeed after forced crystallization");
+
+            assert!(recipient_mints(&vault, PERFORMANCE_RECIPIENT) > 0);
+            let state = vault.state().unwrap();
+            assert_eq!(state.fee_anchor.total_assets, pre.total_assets);
+            assert!(state.total_shares > pre.total_shares);
+
+            let (request_id, queued) = state.withdraw_queue.head().expect("queued request");
+            assert_eq!(request_id, request.request_id);
+            assert_eq!(queued.escrow_shares, request.shares_escrowed);
+            assert!(queued.expected_assets < convert_to_assets(&pre, &config, 5_000));
+        }
+    }
+
+    #[test]
+    fn test_request_withdraw_at_anchor_timestamp_preserves_capped_gain_anchor() {
+        // With a growth-rate cap configured, the equal-time gain accrues no
+        // fee, so the anchor must stay in place and the request must not be
+        // repriced at the pre-fee-to-capped-gain rate uncharged. A later
+        // time-advanced refresh still crystallizes the capped fee from the
+        // preserved anchor.
+        let performance = FeeSlot::new(Wad::one() / 5, PERFORMANCE_RECIPIENT);
+        let fees = FeesSpec::new(performance, FeeSlot::zero(), Some(Wad::one() / 5));
+        let state = VaultState {
+            total_assets: 20_000,
+            total_shares: 10_000,
+            idle_assets: 20_000,
+            fee_anchor: FeeAccrualAnchor::new(10_000, templar_vault_kernel::TimestampNs(0)),
+            ..Default::default()
+        };
+        let config = kernel_config(fees, 0, 0);
+        let mut vault = CuratorVault::new(
+            test_config().with_fees(fees),
+            MemoryStorage::with_state(state),
+            TestPermissiveAuth,
+            MockInterpreter::new(),
+        );
+        vault.load_state().expect("load capped vault state");
+        let pre = vault.state().unwrap().clone();
+
+        vault
+            .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, 0)
+            .expect("capped equal-time request succeeds without crystallization");
+
+        assert_eq!(recipient_mints(&vault, PERFORMANCE_RECIPIENT), 0);
+        let state = vault.state().unwrap();
+        assert_eq!(state.fee_anchor.total_assets, pre.fee_anchor.total_assets);
+        assert_eq!(state.fee_anchor.timestamp_ns, pre.fee_anchor.timestamp_ns);
+        let (_, queued) = state.withdraw_queue.head().expect("queued request");
+        assert_eq!(
+            queued.expected_assets,
+            convert_to_assets(&pre, &config, 5_000)
+        );
+
+        vault
+            .refresh_fees(YEAR_NS)
+            .expect("capped refresh after elapsed time must succeed");
+        assert!(recipient_mints(&vault, PERFORMANCE_RECIPIENT) > 0);
+        let state = vault.state().unwrap();
+        assert_eq!(state.fee_anchor.total_assets, 20_000);
+        assert_eq!(
+            state.fee_anchor.timestamp_ns,
+            templar_vault_kernel::TimestampNs(YEAR_NS)
+        );
+    }
+
+    #[test]
     fn test_request_withdraw_enforces_minimum_and_slippage_after_fees() {
         let config = kernel_config(fee_config(false, true), 0, 0);
         let mut control = fee_vault(false, true, 0, 0);
@@ -2439,6 +2523,7 @@ mod contract_tests {
             (5_000u128, 9_000u128),
         ] {
             let mut vault = fee_vault(false, true, 0, 0);
+            let pre_request = vault.state().unwrap().clone();
             let result = vault.request_withdraw(
                 FEE_REQUEST_OWNER,
                 FEE_REQUEST_OWNER,
@@ -2456,8 +2541,11 @@ mod contract_tests {
                     .effects
                     .iter()
                     .any(|effect| matches!(effect, KernelEffect::TransferShares { .. })));
-                assert_eq!(vault.state().unwrap().total_shares, post.total_shares);
-                assert_eq!(vault.state().unwrap().fee_anchor, post.fee_anchor);
+                assert_eq!(
+                    vault.state().unwrap().total_shares,
+                    pre_request.total_shares
+                );
+                assert_eq!(vault.state().unwrap().fee_anchor, pre_request.fee_anchor);
             } else {
                 result.expect("valid post-fee request succeeds");
                 assert_eq!(
@@ -3873,7 +3961,7 @@ mod market_tests {
 
 mod storage_tests {
     use crate::contract::helpers::{
-        get_config_address, set_config_address, set_migration_in_progress,
+        get_config_address, set_config_address, set_migration_in_progress, store_virtual_offsets,
     };
     use crate::contract::{adapter_for_market, supply_adapter_for_market, SorobanVaultContract};
     use crate::error::{ContractError, RuntimeError};
@@ -4413,6 +4501,118 @@ mod storage_tests {
                     .instance()
                     .get::<_, bool>(&soroban_sdk::symbol_short!("migrate")),
                 None
+            );
+        });
+    }
+    #[test]
+    fn migrate_rejects_existing_queue_with_virtual_assets() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                100,
+                200,
+            )
+            .unwrap();
+            store_virtual_offsets(&env, 100, 200);
+
+            let pending = PendingWithdrawal::new(
+                KernelAddress([1u8; 32]),
+                KernelAddress([2u8; 32]),
+                10_000,
+                9_599,
+                TimestampNs(0),
+            );
+            let mut state = VaultState {
+                total_assets: 10_000,
+                idle_assets: 10_000,
+                total_shares: 10_526,
+                withdraw_queue: WithdrawQueue::with_state([(0, pending)], 0, 1),
+                ..Default::default()
+            };
+            state.fee_anchor = FeeAccrualAnchor::new(10_000, TimestampNs(0));
+            let mut storage = SorobanStorage::new(&env);
+            Storage::save_state(&mut storage, &state).unwrap();
+            set_migration_in_progress(&env, true);
+
+            assert_eq!(
+                SorobanVaultContract::migrate(env.clone(), governance.clone()),
+                Err(ContractError::InvalidState)
+            );
+
+            let persisted = Storage::load_state(&storage).unwrap().unwrap();
+            assert_eq!(
+                persisted
+                    .withdraw_queue
+                    .head()
+                    .expect("queued request")
+                    .1
+                    .expected_assets,
+                9_599
+            );
+        });
+    }
+
+    #[test]
+    fn migrate_allows_existing_queue_with_only_virtual_shares() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                100,
+                200,
+            )
+            .unwrap();
+            store_virtual_offsets(&env, 200, 0);
+
+            let pending = PendingWithdrawal::new(
+                KernelAddress([1u8; 32]),
+                KernelAddress([2u8; 32]),
+                10_000,
+                9_599,
+                TimestampNs(0),
+            );
+            let mut state = VaultState {
+                total_assets: 10_000,
+                idle_assets: 10_000,
+                total_shares: 10_526,
+                withdraw_queue: WithdrawQueue::with_state([(0, pending)], 0, 1),
+                ..Default::default()
+            };
+            state.fee_anchor = FeeAccrualAnchor::new(10_000, TimestampNs(0));
+            let mut storage = SorobanStorage::new(&env);
+            Storage::save_state(&mut storage, &state).unwrap();
+            set_migration_in_progress(&env, true);
+
+            SorobanVaultContract::migrate(env.clone(), governance).unwrap();
+            assert_eq!(
+                Storage::load_state(&storage)
+                    .unwrap()
+                    .unwrap()
+                    .withdraw_queue
+                    .head()
+                    .expect("queued request")
+                    .1
+                    .expected_assets,
+                9_599
             );
         });
     }

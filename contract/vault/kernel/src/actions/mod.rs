@@ -31,10 +31,9 @@ use crate::{
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::math::wad::total_assets_for_fee_accrual;
 #[cfg(any(feature = "action-refresh-fees", test))]
-use crate::math::wad::{
-    compute_fee_shares_from_assets, compute_management_fee_shares, total_assets_for_fee_accrual,
-};
+use crate::math::wad::{compute_fee_shares_from_assets, compute_management_fee_shares};
 #[cfg(any(feature = "action-recovery", test))]
 use crate::transitions::stop_withdrawal;
 
@@ -557,6 +556,42 @@ pub fn convert_to_assets_bounded(
     conversions::convert_to_assets_bounded(state, config, shares, cap, error)
 }
 
+/// Convert shares to redeemable assets without exceeding real pro-rata backing.
+pub fn convert_to_redeem_assets(state: &VaultState, config: &VaultConfig, shares: u128) -> u128 {
+    conversions::convert_to_redeem_assets(state, config, shares)
+}
+
+/// Convert shares to redeemable assets and enforce an operation cap.
+pub fn convert_to_redeem_assets_bounded(
+    state: &VaultState,
+    config: &VaultConfig,
+    shares: u128,
+    cap: u128,
+    error: InvalidStateCode,
+) -> Result<u128, KernelError> {
+    conversions::convert_to_redeem_assets_bounded(state, config, shares, cap, error)
+}
+
+/// Convert withdrawal assets to shares without consuming remaining holders' backing.
+pub fn convert_to_withdraw_shares_ceil_bounded(
+    state: &VaultState,
+    config: &VaultConfig,
+    assets: u128,
+    cap: u128,
+    error: InvalidStateCode,
+) -> Result<u128, KernelError> {
+    conversions::convert_to_withdraw_shares_ceil_bounded(state, config, assets, cap, error)
+}
+
+/// Return shares withdrawable against available assets on both virtual and real bases.
+pub fn convert_to_withdrawable_shares(
+    state: &VaultState,
+    config: &VaultConfig,
+    assets: u128,
+) -> u128 {
+    conversions::convert_to_withdrawable_shares(state, config, assets)
+}
+
 /// Convert assets to shares with ceil rounding and reject quotients above the operation's cap.
 pub fn convert_to_shares_ceil_bounded(
     state: &VaultState,
@@ -590,7 +625,7 @@ pub fn preview_deposit_shares(state: &VaultState, config: &VaultConfig, assets: 
 #[inline]
 #[must_use]
 pub fn preview_withdraw_assets(state: &VaultState, config: &VaultConfig, shares: u128) -> u128 {
-    convert_to_assets(state, config, shares)
+    convert_to_redeem_assets(state, config, shares)
 }
 
 #[cfg(any(feature = "action-recovery", feature = "action-sync-external", test))]
@@ -749,7 +784,7 @@ fn handle_deposit(
 
     let mut effects = Vec::new();
     #[cfg(any(feature = "action-refresh-fees", test))]
-    if should_refresh_fees_before_deposit(&state, config, now_ns) {
+    if should_refresh_fees_for_value_transfer(&state, config, now_ns) {
         let mut refresh = handle_refresh_fees(state, config, now_ns)?;
         state = refresh.state;
         effects.append(&mut refresh.effects);
@@ -809,16 +844,55 @@ fn handle_deposit(
     Ok(KernelResult::new(state, effects))
 }
 
-#[cfg(any(feature = "action-refresh-fees", test))]
 #[inline]
-fn should_refresh_fees_before_deposit(
+pub fn should_refresh_fees_for_value_transfer(
     state: &VaultState,
     config: &VaultConfig,
     now_ns: TimestampNs,
 ) -> bool {
-    state.total_shares > 0
-        && config.fees.has_active_slot_fees()
-        && now_ns > state.fee_anchor.timestamp_ns
+    if state.total_shares == 0 || !config.fees.has_active_slot_fees() {
+        return false;
+    }
+    if now_ns > state.fee_anchor.timestamp_ns {
+        return true;
+    }
+    now_ns == state.fee_anchor.timestamp_ns && performance_fee_is_due(state, config)
+}
+
+/// Returns true when a performance fee is accrued against the fee anchor
+/// right now. The evaluation window is the anchor's own timestamp: without a
+/// `max_total_assets_growth_rate` cap any gain over the anchor is
+/// fee-relevant and due immediately. With a cap configured, the
+/// zero-elapsed-time window clamps the fee base back to the anchor, so an
+/// equal-time gain accrues no fee and the prior anchor must be preserved.
+#[inline]
+fn performance_fee_is_due(state: &VaultState, config: &VaultConfig) -> bool {
+    if state.total_shares == 0 || config.fees.performance.fee_wad.is_zero() {
+        return false;
+    }
+    total_assets_for_fee_accrual(
+        state.total_assets,
+        state.fee_anchor.total_assets,
+        state.fee_anchor.timestamp_ns.into(),
+        state.fee_anchor.timestamp_ns.into(),
+        config.fees.max_total_assets_growth_rate,
+    ) > state.fee_anchor.total_assets
+}
+fn refresh_fees_before_value_transfer(
+    state: VaultState,
+    config: &VaultConfig,
+    now_ns: TimestampNs,
+) -> Result<(VaultState, Vec<KernelEffect>), KernelError> {
+    if should_refresh_fees_for_value_transfer(&state, config, now_ns) {
+        #[cfg(any(feature = "action-refresh-fees", test))]
+        {
+            let result = handle_refresh_fees(state, config, now_ns)?;
+            return Ok((result.state, result.effects));
+        }
+        #[cfg(not(any(feature = "action-refresh-fees", test)))]
+        return Err(KernelError::NotImplemented);
+    }
+    Ok((state, Vec::new()))
 }
 
 #[inline]
@@ -996,7 +1070,7 @@ fn plan_withdrawal_request(
     shares: u128,
     min_assets_out: u128,
 ) -> Result<WithdrawalRequestPlan, KernelError> {
-    let expected_assets = convert_to_assets_bounded(
+    let expected_assets = convert_to_redeem_assets_bounded(
         state,
         config,
         shares,
@@ -1133,7 +1207,7 @@ fn next_withdrawal_queue_outcome(
 
 #[allow(clippy::too_many_arguments)]
 fn handle_atomic_withdraw(
-    mut state: VaultState,
+    state: VaultState,
     config: &VaultConfig,
     restrictions: Option<&Restrictions>,
     self_id: &Address,
@@ -1142,6 +1216,7 @@ fn handle_atomic_withdraw(
     operator: Address,
     assets_out: u128,
     max_shares_burned: u128,
+    now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
     enforce_withdrawal_actors(config, restrictions, self_id, &owner, &receiver)?;
     require_idle_with_nonzero_amount(
@@ -1149,8 +1224,9 @@ fn handle_atomic_withdraw(
         InvalidStateCode::AtomicWithdrawRequiresIdle,
         assets_out,
     )?;
+    let (mut state, mut effects) = refresh_fees_before_value_transfer(state, config, now_ns)?;
 
-    let shares = convert_to_shares_ceil_bounded(
+    let shares = convert_to_withdraw_shares_ceil_bounded(
         &state,
         config,
         assets_out,
@@ -1185,7 +1261,6 @@ fn handle_atomic_withdraw(
         .checked_sub(assets_out)
         .ok_or_else(|| KernelError::from(InvalidStateCode::AtomicWithdrawTotalAssetsUnderflow))?;
 
-    let mut effects = Vec::new();
     push_atomic_burn_shares(&mut effects, owner, operator, shares);
     effects.push(KernelEffect::TransferAssets {
         to: receiver,
@@ -1204,7 +1279,7 @@ fn handle_atomic_withdraw(
 
 #[allow(clippy::too_many_arguments)]
 fn handle_atomic_redeem(
-    mut state: VaultState,
+    state: VaultState,
     config: &VaultConfig,
     restrictions: Option<&Restrictions>,
     self_id: &Address,
@@ -1213,11 +1288,14 @@ fn handle_atomic_redeem(
     operator: Address,
     shares: u128,
     min_assets_out: u128,
+    now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
     enforce_withdrawal_actors(config, restrictions, self_id, &owner, &receiver)?;
     require_idle_with_nonzero_amount(&state, InvalidStateCode::AtomicWithdrawRequiresIdle, shares)?;
 
-    let assets_out = convert_to_assets_bounded(
+    let (mut state, mut effects) = refresh_fees_before_value_transfer(state, config, now_ns)?;
+
+    let assets_out = convert_to_redeem_assets_bounded(
         &state,
         config,
         shares,
@@ -1252,7 +1330,6 @@ fn handle_atomic_redeem(
         .checked_sub(assets_out)
         .ok_or_else(|| KernelError::from(InvalidStateCode::AtomicWithdrawTotalAssetsUnderflow))?;
 
-    let mut effects = Vec::new();
     push_atomic_burn_shares(&mut effects, owner, operator, shares);
     effects.push(KernelEffect::TransferAssets {
         to: receiver,
@@ -1295,10 +1372,13 @@ fn handle_request_withdraw(
         shares,
     )?;
 
+    let (state, mut effects) = refresh_fees_before_value_transfer(state, config, now_ns)?;
     let request_plan =
         plan_withdrawal_request(&state, config, owner, receiver, shares, min_assets_out)?;
-
-    apply_withdrawal_request_plan(state, config, self_id, request_plan, now_ns)
+    let mut result = apply_withdrawal_request_plan(state, config, self_id, request_plan, now_ns)?;
+    effects.append(&mut result.effects);
+    result.effects = effects;
+    Ok(result)
 }
 
 /// Execute the next queued withdrawal after cooldown.
@@ -1698,7 +1778,7 @@ fn handle_refresh_fees(
     }
 
     // Reject backwards time to prevent fee calculation issues
-    if now_ns <= state.fee_anchor.timestamp_ns {
+    if now_ns < state.fee_anchor.timestamp_ns {
         return Err(KernelError::from(
             InvalidStateCode::FeeRefreshTimestampMustAdvance,
         ));
@@ -1709,6 +1789,17 @@ fn handle_refresh_fees(
     let anchor = state.fee_anchor;
     let mut effects = Vec::new();
 
+    // An equal-timestamp refresh is permitted only when an actual performance
+    // fee is due right now, so a gain booked at the anchor timestamp cannot
+    // bypass fee crystallization via a same-ledger withdrawal or refresh.
+    // When the configured growth-rate cap excludes the equal-time gain from
+    // fee accrual, no fee is chargeable at zero elapsed time and the refresh
+    // is rejected instead of re-anchoring that gain away uncharged.
+    if now_ns == anchor.timestamp_ns && !performance_fee_is_due(&state, config) {
+        return Err(KernelError::from(
+            InvalidStateCode::FeeRefreshTimestampMustAdvance,
+        ));
+    }
     if total_supply > 0 && anchor.is_uninitialized() && cur_total_assets == 0 {
         state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
         effects.push(KernelEffect::EmitEvent {
@@ -2016,6 +2107,42 @@ mod conversions {
         mul_div_floor_bounded_u128(shares, t.assets, t.supply, cap, error)
     }
 
+    fn redeem_asset_quote(state: &VaultState, config: &VaultConfig, shares: u128) -> Number {
+        let t = effective_totals(state, config);
+        let virtual_quote = mul_div_floor(
+            Number::from(shares),
+            Number::from(t.assets),
+            Number::from(t.supply),
+        );
+        if config.virtual_assets == 0 || state.total_shares == 0 {
+            return virtual_quote;
+        }
+        let real_quote = mul_div_floor(
+            Number::from(shares),
+            Number::from(state.total_assets),
+            Number::from(state.total_shares),
+        );
+        virtual_quote.min(real_quote)
+    }
+
+    pub(super) fn convert_to_redeem_assets(
+        state: &VaultState,
+        config: &VaultConfig,
+        shares: u128,
+    ) -> u128 {
+        u128::from(redeem_asset_quote(state, config, shares))
+    }
+
+    pub(super) fn convert_to_redeem_assets_bounded(
+        state: &VaultState,
+        config: &VaultConfig,
+        shares: u128,
+        cap: u128,
+        error: InvalidStateCode,
+    ) -> Result<u128, KernelError> {
+        bounded_u128(redeem_asset_quote(state, config, shares), cap, error)
+    }
+
     pub(super) fn convert_to_shares_ceil(
         state: &VaultState,
         config: &VaultConfig,
@@ -2038,6 +2165,51 @@ mod conversions {
     ) -> Result<u128, KernelError> {
         let t = effective_totals(state, config);
         mul_div_ceil_bounded_u128(assets, t.supply, t.assets, cap, error)
+    }
+    pub(super) fn convert_to_withdraw_shares_ceil_bounded(
+        state: &VaultState,
+        config: &VaultConfig,
+        assets: u128,
+        cap: u128,
+        error: InvalidStateCode,
+    ) -> Result<u128, KernelError> {
+        let t = effective_totals(state, config);
+        let virtual_quote = mul_div_ceil(
+            Number::from(assets),
+            Number::from(t.supply),
+            Number::from(t.assets),
+        );
+        if config.virtual_assets == 0 || state.total_assets == 0 {
+            return bounded_u128(virtual_quote, cap, error);
+        }
+        let real_quote = mul_div_ceil(
+            Number::from(assets),
+            Number::from(state.total_shares),
+            Number::from(state.total_assets),
+        );
+        bounded_u128(virtual_quote.max(real_quote), cap, error)
+    }
+
+    pub(super) fn convert_to_withdrawable_shares(
+        state: &VaultState,
+        config: &VaultConfig,
+        assets: u128,
+    ) -> u128 {
+        let t = effective_totals(state, config);
+        let virtual_quote = mul_div_floor(
+            Number::from(assets),
+            Number::from(t.supply),
+            Number::from(t.assets),
+        );
+        if config.virtual_assets == 0 || state.total_assets == 0 {
+            return u128::from(virtual_quote);
+        }
+        let real_quote = mul_div_floor(
+            Number::from(assets),
+            Number::from(state.total_shares),
+            Number::from(state.total_assets),
+        );
+        u128::from(virtual_quote.max(real_quote))
     }
 
     pub(super) fn convert_to_assets_ceil(
@@ -2162,7 +2334,7 @@ mod dispatch {
                 operator,
                 assets_out,
                 max_shares_burned,
-                now_ns: _,
+                now_ns,
             } => handle_atomic_withdraw(
                 state,
                 config,
@@ -2173,6 +2345,7 @@ mod dispatch {
                 operator,
                 assets_out,
                 max_shares_burned,
+                now_ns,
             ),
 
             KernelAction::AtomicRedeem {
@@ -2181,7 +2354,7 @@ mod dispatch {
                 operator,
                 shares,
                 min_assets_out,
-                now_ns: _,
+                now_ns,
             } => handle_atomic_redeem(
                 state,
                 config,
@@ -2192,6 +2365,7 @@ mod dispatch {
                 operator,
                 shares,
                 min_assets_out,
+                now_ns,
             ),
 
             KernelAction::RequestWithdraw {
