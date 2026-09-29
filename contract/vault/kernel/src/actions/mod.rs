@@ -10,10 +10,7 @@ use core::mem;
 use crate::effects::{KernelEffect, KernelEvent, WithdrawalSkipReason};
 use crate::error::{InvalidConfigCode, InvalidStateCode, KernelError};
 use crate::{
-    math::{
-        number::Number,
-        wad::{mul_div_ceil, mul_div_floor},
-    },
+    math::number::Number,
     restrictions::{RestrictionKind, Restrictions},
 };
 use crate::{
@@ -2087,17 +2084,69 @@ mod conversions {
         }
     }
 
+    #[inline]
+    fn real_basis_active(config: &VaultConfig, real_denominator: u128) -> bool {
+        config.virtual_assets != 0 && real_denominator != 0
+    }
+
+    #[inline(never)]
+    fn virtual_basis_quote(
+        state: &VaultState,
+        config: &VaultConfig,
+        amount: u128,
+        to_shares: bool,
+        round_up: bool,
+    ) -> Number {
+        let t = effective_totals(state, config);
+        let (numerator, denominator) = if to_shares {
+            (t.supply, t.assets)
+        } else {
+            (t.assets, t.supply)
+        };
+        Number::mul_div_with_rounding(
+            Number::from(amount),
+            Number::from(numerator),
+            Number::from(denominator),
+            round_up,
+        )
+    }
+
+    #[inline(never)]
+    fn dual_basis_quote(
+        state: &VaultState,
+        config: &VaultConfig,
+        amount: u128,
+        to_shares: bool,
+        round_up: bool,
+    ) -> Number {
+        let virtual_quote = virtual_basis_quote(state, config, amount, to_shares, round_up);
+        let (real_numerator, real_denominator) = if to_shares {
+            (state.total_shares, state.total_assets)
+        } else {
+            (state.total_assets, state.total_shares)
+        };
+        if !real_basis_active(config, real_denominator) {
+            return virtual_quote;
+        }
+        let real_quote = Number::mul_div_with_rounding(
+            Number::from(amount),
+            Number::from(real_numerator),
+            Number::from(real_denominator),
+            round_up,
+        );
+        if to_shares {
+            virtual_quote.max(real_quote)
+        } else {
+            virtual_quote.min(real_quote)
+        }
+    }
+
     pub(super) fn convert_to_shares(
         state: &VaultState,
         config: &VaultConfig,
         assets: u128,
     ) -> u128 {
-        let t = effective_totals(state, config);
-        u128::from(mul_div_floor(
-            Number::from(assets),
-            Number::from(t.supply),
-            Number::from(t.assets),
-        ))
+        u128::from(virtual_basis_quote(state, config, assets, true, false))
     }
 
     pub(super) fn convert_to_shares_bounded(
@@ -2107,8 +2156,11 @@ mod conversions {
         cap: u128,
         error: InvalidStateCode,
     ) -> Result<u128, KernelError> {
-        let t = effective_totals(state, config);
-        mul_div_floor_bounded_u128(assets, t.supply, t.assets, cap, error)
+        bounded_u128(
+            virtual_basis_quote(state, config, assets, true, false),
+            cap,
+            error,
+        )
     }
 
     pub(super) fn convert_to_assets(
@@ -2116,12 +2168,7 @@ mod conversions {
         config: &VaultConfig,
         shares: u128,
     ) -> u128 {
-        let t = effective_totals(state, config);
-        u128::from(mul_div_floor(
-            Number::from(shares),
-            Number::from(t.assets),
-            Number::from(t.supply),
-        ))
+        u128::from(virtual_basis_quote(state, config, shares, false, false))
     }
 
     pub(super) fn convert_to_assets_bounded(
@@ -2131,26 +2178,11 @@ mod conversions {
         cap: u128,
         error: InvalidStateCode,
     ) -> Result<u128, KernelError> {
-        let t = effective_totals(state, config);
-        mul_div_floor_bounded_u128(shares, t.assets, t.supply, cap, error)
-    }
-
-    fn redeem_asset_quote(state: &VaultState, config: &VaultConfig, shares: u128) -> Number {
-        let t = effective_totals(state, config);
-        let virtual_quote = mul_div_floor(
-            Number::from(shares),
-            Number::from(t.assets),
-            Number::from(t.supply),
-        );
-        if config.virtual_assets == 0 || state.total_shares == 0 {
-            return virtual_quote;
-        }
-        let real_quote = mul_div_floor(
-            Number::from(shares),
-            Number::from(state.total_assets),
-            Number::from(state.total_shares),
-        );
-        virtual_quote.min(real_quote)
+        bounded_u128(
+            virtual_basis_quote(state, config, shares, false, false),
+            cap,
+            error,
+        )
     }
 
     pub(super) fn convert_to_redeem_assets(
@@ -2158,7 +2190,7 @@ mod conversions {
         config: &VaultConfig,
         shares: u128,
     ) -> u128 {
-        redeem_asset_quote(state, config, shares).as_u128_saturating()
+        dual_basis_quote(state, config, shares, false, false).as_u128_saturating()
     }
 
     pub(super) fn convert_to_redeem_assets_bounded(
@@ -2168,7 +2200,11 @@ mod conversions {
         cap: u128,
         error: InvalidStateCode,
     ) -> Result<u128, KernelError> {
-        bounded_u128(redeem_asset_quote(state, config, shares), cap, error)
+        bounded_u128(
+            dual_basis_quote(state, config, shares, false, false),
+            cap,
+            error,
+        )
     }
 
     pub(super) fn convert_to_shares_ceil(
@@ -2176,12 +2212,7 @@ mod conversions {
         config: &VaultConfig,
         assets: u128,
     ) -> u128 {
-        let t = effective_totals(state, config);
-        u128::from(mul_div_ceil(
-            Number::from(assets),
-            Number::from(t.supply),
-            Number::from(t.assets),
-        ))
+        u128::from(virtual_basis_quote(state, config, assets, true, true))
     }
 
     pub(super) fn convert_to_shares_ceil_bounded(
@@ -2191,8 +2222,11 @@ mod conversions {
         cap: u128,
         error: InvalidStateCode,
     ) -> Result<u128, KernelError> {
-        let t = effective_totals(state, config);
-        mul_div_ceil_bounded_u128(assets, t.supply, t.assets, cap, error)
+        bounded_u128(
+            virtual_basis_quote(state, config, assets, true, true),
+            cap,
+            error,
+        )
     }
     pub(super) fn convert_to_withdraw_shares_ceil_bounded(
         state: &VaultState,
@@ -2201,21 +2235,11 @@ mod conversions {
         cap: u128,
         error: InvalidStateCode,
     ) -> Result<u128, KernelError> {
-        let t = effective_totals(state, config);
-        let virtual_quote = mul_div_ceil(
-            Number::from(assets),
-            Number::from(t.supply),
-            Number::from(t.assets),
-        );
-        if config.virtual_assets == 0 || state.total_assets == 0 {
-            return bounded_u128(virtual_quote, cap, error);
-        }
-        let real_quote = mul_div_ceil(
-            Number::from(assets),
-            Number::from(state.total_shares),
-            Number::from(state.total_assets),
-        );
-        bounded_u128(virtual_quote.max(real_quote), cap, error)
+        bounded_u128(
+            dual_basis_quote(state, config, assets, true, true),
+            cap,
+            error,
+        )
     }
 
     pub(super) fn convert_to_withdrawable_shares(
@@ -2223,21 +2247,7 @@ mod conversions {
         config: &VaultConfig,
         assets: u128,
     ) -> u128 {
-        let t = effective_totals(state, config);
-        let virtual_quote = mul_div_floor(
-            Number::from(assets),
-            Number::from(t.supply),
-            Number::from(t.assets),
-        );
-        if config.virtual_assets == 0 || state.total_assets == 0 {
-            return virtual_quote.as_u128_saturating();
-        }
-        let real_quote = mul_div_floor(
-            Number::from(assets),
-            Number::from(state.total_shares),
-            Number::from(state.total_assets),
-        );
-        virtual_quote.max(real_quote).as_u128_saturating()
+        dual_basis_quote(state, config, assets, true, false).as_u128_saturating()
     }
 
     pub(super) fn convert_to_assets_ceil(
@@ -2245,12 +2255,7 @@ mod conversions {
         config: &VaultConfig,
         shares: u128,
     ) -> u128 {
-        let t = effective_totals(state, config);
-        u128::from(mul_div_ceil(
-            Number::from(shares),
-            Number::from(t.assets),
-            Number::from(t.supply),
-        ))
+        u128::from(virtual_basis_quote(state, config, shares, false, true))
     }
 
     pub(super) fn convert_to_assets_ceil_bounded(
@@ -2260,33 +2265,8 @@ mod conversions {
         cap: u128,
         error: InvalidStateCode,
     ) -> Result<u128, KernelError> {
-        let t = effective_totals(state, config);
-        mul_div_ceil_bounded_u128(shares, t.assets, t.supply, cap, error)
-    }
-
-    fn mul_div_floor_bounded_u128(
-        x: u128,
-        y: u128,
-        denominator: u128,
-        cap: u128,
-        error: InvalidStateCode,
-    ) -> Result<u128, KernelError> {
         bounded_u128(
-            mul_div_floor(Number::from(x), Number::from(y), Number::from(denominator)),
-            cap,
-            error,
-        )
-    }
-
-    fn mul_div_ceil_bounded_u128(
-        x: u128,
-        y: u128,
-        denominator: u128,
-        cap: u128,
-        error: InvalidStateCode,
-    ) -> Result<u128, KernelError> {
-        bounded_u128(
-            mul_div_ceil(Number::from(x), Number::from(y), Number::from(denominator)),
+            virtual_basis_quote(state, config, shares, false, true),
             cap,
             error,
         )
