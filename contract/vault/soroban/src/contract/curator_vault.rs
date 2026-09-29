@@ -865,30 +865,29 @@ where
         let principal = policy
             .principal_for(market)
             .ok_or_else(|| invalid_state_error("unknown market principal on supply"))?;
-        if principal
+        let candidate_principal = principal
             .checked_add(amount)
-            .ok_or_else(|| invalid_state_error("principal overflow on supply"))?
-            > config.cap
-        {
-            return Err(invalid_state_error("supply exceeds market cap"));
-        }
-        Self::enforce_cap_group_headroom(
+            .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
+        Self::enforce_supply_caps(
             policy,
-            config.cap_group_id.as_ref(),
+            config,
+            candidate_principal,
             amount,
             pre_allocation_total_assets,
         )
     }
 
-    /// Enforce the absolute and relative limits of a cap group against the
-    /// cumulative principal allocated to every market in that group.
-    fn enforce_cap_group_headroom(
+    fn enforce_supply_caps(
         policy: &PolicyState,
-        cap_group_id: Option<&CapGroupId>,
-        amount: u128,
+        config: &MarketConfig,
+        candidate_principal: u128,
+        delta: u128,
         pre_allocation_total_assets: u128,
     ) -> Result<(), RuntimeError> {
-        let Some(cap_group_id) = cap_group_id else {
+        if candidate_principal > config.cap {
+            return Err(invalid_state_error("supply exceeds market cap"));
+        }
+        let Some(cap_group_id) = config.cap_group_id.as_ref() else {
             return Ok(());
         };
         let record = policy
@@ -896,7 +895,7 @@ where
             .ok_or_else(|| invalid_state_error("unknown cap group on supply"))?;
         record
             .cap
-            .enforce(record.principal, amount, pre_allocation_total_assets)
+            .enforce(record.principal, delta, pre_allocation_total_assets)
             .map_err(|_| invalid_state_error("supply exceeds cap group limit"))
     }
 
@@ -919,12 +918,10 @@ where
         let config = policy
             .market_config(market)
             .ok_or_else(|| invalid_state_error("unknown market on supply"))?;
-        if observed_total_assets > config.cap {
-            return Err(invalid_state_error("supply observation exceeds market cap"));
-        }
-        Self::enforce_cap_group_headroom(
+        Self::enforce_supply_caps(
             policy,
-            config.cap_group_id.as_ref(),
+            config,
+            observed_total_assets,
             observed_total_assets - previous_principal,
             pre_allocation_total_assets,
         )
