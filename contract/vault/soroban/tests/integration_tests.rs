@@ -30,7 +30,7 @@ use templar_soroban_shared_types::{
     VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
     GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_SENTINEL,
     GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
-    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
+    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::{
@@ -1467,6 +1467,7 @@ struct RealSupplyFixture {
     asset: SdkAddress,
     allocator: SdkAddress,
     adapter: SdkAddress,
+    governance: SdkAddress,
 }
 
 fn invoke_vault(env: &Env, contract: &SdkAddress, command: &VaultCommand) -> Bytes {
@@ -1520,6 +1521,10 @@ impl LocalMarketAdapter {
     }
 
     pub fn total_assets(env: Env, _asset: SdkAddress) -> i128 {
+        env.storage().instance().set(
+            &Symbol::new(&env, "reads"),
+            &(Self::read_count(env.clone()) + 1),
+        );
         let position: i128 = env
             .storage()
             .instance()
@@ -1531,6 +1536,13 @@ impl LocalMarketAdapter {
             .get(&Symbol::new(&env, "overage"))
             .unwrap_or(0);
         position + overage
+    }
+
+    pub fn read_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&Symbol::new(&env, "reads"))
+            .unwrap_or(0)
     }
 
     pub fn progress_withdrawal(
@@ -1673,6 +1685,7 @@ fn real_supply_fixture(supply_amount: i128) -> RealSupplyFixture {
         asset,
         allocator,
         adapter,
+        governance,
     }
 }
 
@@ -1813,6 +1826,189 @@ fn supply_exclusion_preserves_binding_and_settlement(#[case] exclusion: u32) {
         vault_invariants(&fixture),
         (true, 0, 10_000, 0, Some(fixture.adapter.clone()))
     );
+}
+
+const REFRESH_CAP_GROUP: &str = "eng698-refresh";
+
+fn set_refresh_group_cap(fixture: &RealSupplyFixture, absolute_cap: i128) {
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_GROUP,
+            target_ids: None,
+            mode: Some(0),
+            accounts: None,
+            market_id: None,
+            cap_group_id: Some(REFRESH_CAP_GROUP.to_string()),
+            value: Some(absolute_cap),
+            value_b: None,
+            value_c: None,
+        },
+    );
+}
+
+fn set_refresh_group_membership(fixture: &RealSupplyFixture, market: u32) {
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_GROUP,
+            target_ids: None,
+            mode: Some(2),
+            accounts: None,
+            market_id: Some(market),
+            cap_group_id: Some(REFRESH_CAP_GROUP.to_string()),
+            value: None,
+            value_b: None,
+            value_c: None,
+        },
+    );
+}
+
+fn refresh(
+    fixture: &RealSupplyFixture,
+    markets: &[u32],
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    try_invoke_vault(
+        &fixture.env,
+        &fixture.contract,
+        &VaultCommand::RefreshMarkets {
+            caller: sdk_wire(&fixture.allocator),
+            markets: markets.to_vec(),
+        },
+    )
+    .map(|bytes| I128Receipt::decode(&bytes.to_alloc_vec()).unwrap().value)
+}
+
+fn adapter_reads(fixture: &RealSupplyFixture) -> u32 {
+    fixture.env.invoke_contract(
+        &fixture.adapter,
+        &Symbol::new(&fixture.env, "read_count"),
+        soroban_sdk::Vec::new(&fixture.env),
+    )
+}
+
+#[derive(Debug, PartialEq)]
+struct RefreshSnapshot {
+    idle: bool,
+    next_op_id: u64,
+    total_assets: u128,
+    idle_assets: u128,
+    external_assets: u128,
+    principals: Vec<u128>,
+    group_principal: u128,
+    policy_blobs: [Option<Vec<u8>>; 4],
+    adapter_reads: u32,
+}
+
+fn refresh_snapshot(fixture: &RealSupplyFixture) -> RefreshSnapshot {
+    let mut snapshot = fixture.env.as_contract(&fixture.contract, || {
+        let storage = SorobanStorage::new(&fixture.env);
+        let state = storage.load_state().unwrap().unwrap();
+        let policy = storage.load_policy_state().unwrap().unwrap();
+        let mut group_principal = 0u128;
+        for (_, record) in policy.cap_groups().iter() {
+            group_principal = record.principal;
+        }
+        RefreshSnapshot {
+            idle: state.op_state.is_idle(),
+            next_op_id: state.next_op_id,
+            total_assets: state.total_assets,
+            idle_assets: state.idle_assets,
+            external_assets: state.external_assets,
+            principals: vec![
+                policy.principal_for(0).unwrap_or_default(),
+                policy.principal_for(1).unwrap_or_default(),
+            ],
+            group_principal,
+            policy_blobs: [
+                storage.load_policy_markets().unwrap(),
+                storage.load_policy_principals().unwrap(),
+                storage.load_policy_cap_groups().unwrap(),
+                storage.load_policy_supply_queue().unwrap(),
+            ],
+            adapter_reads: 0,
+        }
+    });
+    snapshot.adapter_reads = adapter_reads(fixture);
+    snapshot
+}
+
+#[test]
+fn refresh_aggregate_cap_group_breach_rolls_back_and_boundary_persists() {
+    // Two markets each valid under their own market cap share one absolute cap group, so only
+    // the final staged group principal can breach. The refusal must roll back the adapter reads
+    // performed before it, proving cross-contract atomicity through the public execute entry.
+    let fixture = real_supply_fixture(1_000);
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_CAP,
+            target_ids: None,
+            mode: None,
+            accounts: None,
+            market_id: Some(1),
+            cap_group_id: None,
+            value: Some(2_000),
+            value_b: None,
+            value_c: None,
+        },
+    );
+    set_refresh_group_cap(&fixture, 1_999);
+    set_refresh_group_membership(&fixture, 0);
+    set_refresh_group_membership(&fixture, 1);
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+            target_ids: Some(vec![0, 1]),
+            mode: None,
+            accounts: Some(vec![sdk_wire(&fixture.adapter), sdk_wire(&fixture.adapter)]),
+            market_id: None,
+            cap_group_id: None,
+            value: None,
+            value_b: None,
+            value_c: None,
+        },
+    );
+
+    let before = refresh_snapshot(&fixture);
+    assert_eq!(before.principals, vec![1_000, 0]);
+    assert_eq!(before.group_principal, 1_000);
+
+    // Each adapter report (1_000) stays below its market cap (2_000); only the staged group
+    // principal (2_000) breaches the aggregate absolute cap (1_999).
+    assert_eq!(
+        refresh(&fixture, &[0, 1]),
+        Err(templar_soroban_runtime::ContractError::InvalidState)
+    );
+    assert_eq!(
+        refresh_snapshot(&fixture),
+        before,
+        "the failing refresh must roll back vault, policy, and adapter state"
+    );
+
+    set_refresh_group_cap(&fixture, 2_000);
+    assert_eq!(adapter_reads(&fixture), before.adapter_reads);
+
+    assert_eq!(refresh(&fixture, &[0, 1]), Ok(2_000));
+    let after = refresh_snapshot(&fixture);
+    assert!(after.idle);
+    assert_eq!(after.next_op_id, before.next_op_id + 1);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (11_000, 9_000, 2_000)
+    );
+    assert_eq!(after.principals, vec![1_000, 1_000]);
+    assert_eq!(after.group_principal, 2_000);
+    assert_eq!(after.adapter_reads, before.adapter_reads + 2);
 }
 
 // Deposit Flow Tests
