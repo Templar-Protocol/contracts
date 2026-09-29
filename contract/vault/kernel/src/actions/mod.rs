@@ -31,9 +31,10 @@ use crate::{
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::math::wad::total_assets_for_fee_accrual;
-#[cfg(any(feature = "action-refresh-fees", test))]
-use crate::math::wad::{compute_fee_shares_from_assets, compute_management_fee_shares};
+use crate::fee::FeesSpec;
+use crate::math::wad::{
+    compute_fee_shares_from_assets, compute_management_fee_shares, total_assets_for_fee_accrual,
+};
 #[cfg(any(feature = "action-recovery", test))]
 use crate::transitions::stop_withdrawal;
 
@@ -701,33 +702,6 @@ fn push_refund_shares(
     }
 }
 
-#[cfg(any(feature = "action-refresh-fees", test))]
-#[inline]
-fn mint_fee_shares(
-    effects: &mut Vec<KernelEffect>,
-    total_supply: &mut u128,
-    shares: Number,
-    recipient: Address,
-) -> Result<(), KernelError> {
-    if shares > Number::zero() {
-        let remaining = u128::MAX.saturating_sub(*total_supply);
-        if shares > Number::from(remaining) {
-            return Err(KernelError::from(
-                InvalidStateCode::FeeMintOverflowTotalSupply,
-            ));
-        }
-        let minted = shares.as_u128_trunc();
-        *total_supply = total_supply
-            .checked_add(minted)
-            .ok_or_else(|| KernelError::from(InvalidStateCode::FeeMintOverflowTotalSupply))?;
-        effects.push(KernelEffect::MintShares {
-            owner: recipient,
-            shares: minted,
-        });
-    }
-    Ok(())
-}
-
 #[inline]
 fn map_transition_result<T>(result: Result<T, TransitionError>) -> Result<T, KernelError> {
     result.map_err(KernelError::Transition)
@@ -867,17 +841,94 @@ pub fn should_refresh_fees_for_value_transfer(
 /// equal-time gain accrues no fee and the prior anchor must be preserved.
 #[inline]
 fn performance_fee_is_due(state: &VaultState, config: &VaultConfig) -> bool {
-    if state.total_shares == 0 || config.fees.performance.fee_wad.is_zero() {
-        return false;
-    }
-    total_assets_for_fee_accrual(
-        state.total_assets,
-        state.fee_anchor.total_assets,
-        state.fee_anchor.timestamp_ns.into(),
-        state.fee_anchor.timestamp_ns.into(),
-        config.fees.max_total_assets_growth_rate,
-    ) > state.fee_anchor.total_assets
+    state.total_shares > 0
+        && !config.fees.performance.fee_wad.is_zero()
+        && config.fees.max_total_assets_growth_rate.is_none()
+        && state.total_assets > state.fee_anchor.total_assets
 }
+
+/// Shares minted and anchor produced by one fee-accrual pass.
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FeeAccrualOutcome {
+    pub management_shares: u128,
+    pub performance_shares: u128,
+    pub new_total_shares: u128,
+    pub new_anchor: FeeAccrualAnchor,
+}
+
+/// Fee accrual would push total shares past `u128::MAX`.
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FeeAccrualOverflow;
+
+/// Compute fee shares and the replacement anchor for one accrual pass.
+///
+/// Callers retain their own state, timestamp, and effect guards.
+pub fn compute_fee_accrual(
+    current_assets: u128,
+    total_shares: u128,
+    anchor: FeeAccrualAnchor,
+    fees: &FeesSpec,
+    now_ns: TimestampNs,
+) -> Result<FeeAccrualOutcome, FeeAccrualOverflow> {
+    if !fees.has_active_slot_fees() {
+        return Ok(FeeAccrualOutcome {
+            management_shares: 0,
+            performance_shares: 0,
+            new_total_shares: total_shares,
+            new_anchor: FeeAccrualAnchor::new(current_assets, now_ns),
+        });
+    }
+
+    let fee_assets_base = total_assets_for_fee_accrual(
+        current_assets,
+        anchor.total_assets,
+        anchor.timestamp_ns.as_u64(),
+        now_ns.as_u64(),
+        fees.max_total_assets_growth_rate,
+    );
+    let management_shares = compute_management_fee_shares(
+        fee_assets_base,
+        current_assets,
+        total_shares,
+        fees.management.fee_wad,
+        anchor.timestamp_ns.as_u64(),
+        now_ns.as_u64(),
+    );
+    let remaining = u128::MAX.saturating_sub(total_shares);
+    if management_shares > Number::from(remaining) {
+        return Err(FeeAccrualOverflow);
+    }
+    let management_shares = management_shares.as_u128_trunc();
+    let supply_after_management = total_shares
+        .checked_add(management_shares)
+        .ok_or(FeeAccrualOverflow)?;
+
+    let profit = fee_assets_base.saturating_sub(anchor.total_assets);
+    let performance_fee_assets = fees.performance.fee_wad.apply_floored(Number::from(profit));
+    let performance_shares = compute_fee_shares_from_assets(
+        performance_fee_assets,
+        Number::from(current_assets),
+        Number::from(supply_after_management),
+    );
+    let remaining = u128::MAX.saturating_sub(supply_after_management);
+    if performance_shares > Number::from(remaining) {
+        return Err(FeeAccrualOverflow);
+    }
+    let performance_shares = performance_shares.as_u128_trunc();
+    let new_total_shares = supply_after_management
+        .checked_add(performance_shares)
+        .ok_or(FeeAccrualOverflow)?;
+
+    Ok(FeeAccrualOutcome {
+        management_shares,
+        performance_shares,
+        new_total_shares,
+        new_anchor: FeeAccrualAnchor::new(current_assets, now_ns),
+    })
+}
+
 fn refresh_fees_before_value_transfer(
     state: VaultState,
     config: &VaultConfig,
@@ -1785,7 +1836,6 @@ fn handle_refresh_fees(
     }
 
     let cur_total_assets = state.total_assets;
-    let mut total_supply = state.total_shares;
     let anchor = state.fee_anchor;
     let mut effects = Vec::new();
 
@@ -1800,7 +1850,7 @@ fn handle_refresh_fees(
             InvalidStateCode::FeeRefreshTimestampMustAdvance,
         ));
     }
-    if total_supply > 0 && anchor.is_uninitialized() && cur_total_assets == 0 {
+    if state.total_shares > 0 && anchor.is_uninitialized() && cur_total_assets == 0 {
         state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
         effects.push(KernelEffect::EmitEvent {
             event: crate::effects::KernelEvent::FeesRefreshed {
@@ -1811,52 +1861,30 @@ fn handle_refresh_fees(
         return Ok(KernelResult::new(state, effects));
     }
 
-    // Cap effective total_assets for fee accrual (mitigates donation attacks)
-    let fee_total_assets = total_assets_for_fee_accrual(
+    let accrual = compute_fee_accrual(
         cur_total_assets,
-        anchor.total_assets,
-        anchor.timestamp_ns.into(),
-        now_ns.into(),
-        config.fees.max_total_assets_growth_rate,
-    );
+        state.total_shares,
+        anchor,
+        &config.fees,
+        now_ns,
+    )
+    .map_err(|_| KernelError::from(InvalidStateCode::FeeMintOverflowTotalSupply))?;
 
-    // Management fees (time-based, pro-rated over elapsed time)
-    let mgmt_shares = compute_management_fee_shares(
-        fee_total_assets,
-        cur_total_assets,
-        total_supply,
-        config.fees.management.fee_wad,
-        anchor.timestamp_ns.into(),
-        now_ns.into(),
-    );
-    mint_fee_shares(
-        &mut effects,
-        &mut total_supply,
-        mgmt_shares,
-        config.fees.management.recipient,
-    )?;
+    if accrual.management_shares > 0 {
+        effects.push(KernelEffect::MintShares {
+            owner: config.fees.management.recipient,
+            shares: accrual.management_shares,
+        });
+    }
+    if accrual.performance_shares > 0 {
+        effects.push(KernelEffect::MintShares {
+            owner: config.fees.performance.recipient,
+            shares: accrual.performance_shares,
+        });
+    }
 
-    // Performance fees (profit-based)
-    let profit = fee_total_assets.saturating_sub(anchor.total_assets);
-    let fee_assets = config
-        .fees
-        .performance
-        .fee_wad
-        .apply_floored(Number::from(profit));
-    let perf_shares = compute_fee_shares_from_assets(
-        fee_assets,
-        Number::from(cur_total_assets),
-        Number::from(total_supply),
-    );
-    mint_fee_shares(
-        &mut effects,
-        &mut total_supply,
-        perf_shares,
-        config.fees.performance.recipient,
-    )?;
-
-    state.total_shares = total_supply;
-    state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
+    state.total_shares = accrual.new_total_shares;
+    state.fee_anchor = accrual.new_anchor;
 
     effects.push(KernelEffect::EmitEvent {
         event: crate::effects::KernelEvent::FeesRefreshed {
@@ -2130,7 +2158,7 @@ mod conversions {
         config: &VaultConfig,
         shares: u128,
     ) -> u128 {
-        u128::from(redeem_asset_quote(state, config, shares))
+        redeem_asset_quote(state, config, shares).as_u128_saturating()
     }
 
     pub(super) fn convert_to_redeem_assets_bounded(
@@ -2202,14 +2230,14 @@ mod conversions {
             Number::from(t.assets),
         );
         if config.virtual_assets == 0 || state.total_assets == 0 {
-            return u128::from(virtual_quote);
+            return virtual_quote.as_u128_saturating();
         }
         let real_quote = mul_div_floor(
             Number::from(assets),
             Number::from(state.total_shares),
             Number::from(state.total_assets),
         );
-        u128::from(virtual_quote.max(real_quote))
+        virtual_quote.max(real_quote).as_u128_saturating()
     }
 
     pub(super) fn convert_to_assets_ceil(
