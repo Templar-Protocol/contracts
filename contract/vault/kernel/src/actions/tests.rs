@@ -4577,6 +4577,19 @@ fn request_withdraw_preserves_implicit_virtual_reserve_pricing() {
 }
 
 #[test]
+fn unbounded_redemption_quotes_saturate_on_overflow() {
+    let config = test_config();
+    assert_eq!(
+        convert_to_redeem_assets(&idle_state(u128::MAX, 1), &config, u128::MAX),
+        u128::MAX
+    );
+    assert_eq!(
+        convert_to_withdrawable_shares(&idle_state(1, u128::MAX), &config, u128::MAX),
+        u128::MAX
+    );
+}
+
+#[test]
 fn refresh_fees_at_anchor_timestamp_rejected_without_due_fee() {
     let mut state = idle_state(1_000, 1_000);
     state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(500));
