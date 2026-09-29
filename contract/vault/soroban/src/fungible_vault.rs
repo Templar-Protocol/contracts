@@ -6,9 +6,8 @@
 
 use soroban_sdk::{token, Address as SdkAddress, Env};
 use templar_vault_kernel::{
-    compute_fee_shares_from_assets, compute_management_fee_shares,
-    should_refresh_fees_for_value_transfer, total_assets_for_fee_accrual, FeeAccrualAnchor, Number,
-    TimestampNs, VaultConfig, VaultState, MIN_WITHDRAWAL_ASSETS,
+    compute_fee_accrual, should_refresh_fees_for_value_transfer, FeeAccrualAnchor, TimestampNs,
+    VaultConfig, VaultState, MIN_WITHDRAWAL_ASSETS,
 };
 
 use crate::contract::{
@@ -37,48 +36,16 @@ fn preview_state_with_fee_accrual(
         return Ok(state);
     }
 
-    let current_assets = state.total_assets;
-    let fee_assets_base = total_assets_for_fee_accrual(
-        current_assets,
-        anchor.total_assets,
-        anchor.timestamp_ns.as_u64(),
-        now_ns,
-        config.fees.max_total_assets_growth_rate,
-    );
-
-    let management_shares = compute_management_fee_shares(
-        fee_assets_base,
-        current_assets,
+    let accrual = compute_fee_accrual(
+        state.total_assets,
         state.total_shares,
-        config.fees.management.fee_wad,
-        anchor.timestamp_ns.as_u64(),
-        now_ns,
-    );
-    let max_supply = Number::from(u128::MAX);
-    let supply_after_management =
-        Number::from(state.total_shares).saturating_add(management_shares);
-    if supply_after_management > max_supply {
-        return Err(ContractError::ConversionOverflow);
-    }
-
-    let profit = fee_assets_base.saturating_sub(anchor.total_assets);
-    let performance_fee_assets = config
-        .fees
-        .performance
-        .fee_wad
-        .apply_floored(Number::from(profit));
-    let performance_shares = compute_fee_shares_from_assets(
-        performance_fee_assets,
-        Number::from(current_assets),
-        supply_after_management,
-    );
-
-    let total_supply = supply_after_management.saturating_add(performance_shares);
-    if total_supply > max_supply {
-        return Err(ContractError::ConversionOverflow);
-    }
-    state.total_shares = total_supply.as_u128_trunc();
-    state.fee_anchor = FeeAccrualAnchor::new(current_assets, TimestampNs(now_ns));
+        anchor,
+        &config.fees,
+        TimestampNs(now_ns),
+    )
+    .map_err(|_| ContractError::ConversionOverflow)?;
+    state.total_shares = accrual.new_total_shares;
+    state.fee_anchor = accrual.new_anchor;
 
     Ok(state)
 }
