@@ -20,7 +20,7 @@ use crate::{
     state::{
         op_state::{AllocationPlanEntry, OpState, PayoutState, TargetId},
         queue::{compute_idle_settlement, is_past_cooldown, QueueError, WithdrawQueue},
-        vault::{FeeAccrualAnchor, VaultConfig, VaultState},
+        vault::{VaultConfig, VaultState},
     },
     transitions::TransitionResult,
 };
@@ -28,6 +28,15 @@ use crate::{
     transitions::{start_withdrawal, TransitionError, WithdrawalRequest},
     types::{Address, TimestampNs},
 };
+
+#[cfg(any(
+    feature = "action-immediate-deposit",
+    feature = "action-epoch-settlement",
+    feature = "action-refresh-fees",
+    feature = "action-recovery",
+    test
+))]
+use crate::state::vault::FeeAccrualAnchor;
 
 #[cfg(feature = "action-epoch-settlement")]
 use crate::state::queue::MIN_WITHDRAWAL_ASSETS;
@@ -821,35 +830,6 @@ fn map_queue_error(err: QueueError) -> KernelError {
 }
 
 #[cfg(feature = "action-immediate-deposit")]
-fn immediate_deposit_available() -> Result<(), KernelError> {
-    Ok(())
-}
-
-#[cfg(not(feature = "action-immediate-deposit"))]
-fn immediate_deposit_available() -> Result<(), KernelError> {
-    Err(KernelError::NotImplemented)
-}
-
-#[cfg(feature = "action-atomic-exit")]
-fn atomic_withdraw_available() -> Result<(), KernelError> {
-    Ok(())
-}
-
-#[cfg(not(feature = "action-atomic-exit"))]
-fn atomic_withdraw_available() -> Result<(), KernelError> {
-    Err(KernelError::NotImplemented)
-}
-
-#[cfg(feature = "action-atomic-exit")]
-fn atomic_redeem_available() -> Result<(), KernelError> {
-    Ok(())
-}
-
-#[cfg(not(feature = "action-atomic-exit"))]
-fn atomic_redeem_available() -> Result<(), KernelError> {
-    Err(KernelError::NotImplemented)
-}
-
 /// Process a deposit: validate restrictions, convert assets→shares, update totals.
 #[allow(clippy::too_many_arguments)]
 fn handle_deposit(
@@ -934,7 +914,10 @@ fn handle_deposit(
     Ok(KernelResult::new(state, effects))
 }
 
-#[cfg(any(feature = "action-refresh-fees", test))]
+#[cfg(all(
+    feature = "action-immediate-deposit",
+    any(feature = "action-refresh-fees", test)
+))]
 #[inline]
 fn should_refresh_fees_before_deposit(
     state: &VaultState,
@@ -946,6 +929,7 @@ fn should_refresh_fees_before_deposit(
         && now_ns > state.fee_anchor.timestamp_ns
 }
 
+#[cfg(feature = "action-atomic-exit")]
 #[inline]
 fn push_atomic_burn_shares(
     effects: &mut Vec<KernelEffect>,
@@ -1467,6 +1451,7 @@ fn next_withdrawal_queue_outcome_legacy(
     }
 }
 
+#[cfg(feature = "action-atomic-exit")]
 #[allow(clippy::too_many_arguments)]
 fn handle_atomic_withdraw(
     mut state: VaultState,
@@ -1538,6 +1523,7 @@ fn handle_atomic_withdraw(
     Ok(KernelResult::new(state, effects))
 }
 
+#[cfg(feature = "action-atomic-exit")]
 #[allow(clippy::too_many_arguments)]
 fn handle_atomic_redeem(
     mut state: VaultState,
@@ -3144,85 +3130,70 @@ mod dispatch {
         action: KernelAction,
     ) -> Result<KernelResult, KernelError> {
         match action {
-            #[allow(clippy::too_many_arguments)]
-            KernelAction::Deposit { .. } => {
-                immediate_deposit_available()?;
-                let (owner, receiver, assets_in, min_shares_out, now_ns) = match action {
-                    KernelAction::Deposit {
-                        owner,
-                        receiver,
-                        assets_in,
-                        min_shares_out,
-                        now_ns,
-                    } => (owner, receiver, assets_in, min_shares_out, now_ns),
-                    _ => unreachable!("deposit action was matched above"),
-                };
-                handle_deposit(
-                    state,
-                    config,
-                    restrictions,
-                    self_id,
-                    owner,
-                    receiver,
-                    assets_in,
-                    min_shares_out,
-                    now_ns,
-                )
-            }
+            #[cfg(feature = "action-immediate-deposit")]
+            KernelAction::Deposit {
+                owner,
+                receiver,
+                assets_in,
+                min_shares_out,
+                now_ns,
+            } => handle_deposit(
+                state,
+                config,
+                restrictions,
+                self_id,
+                owner,
+                receiver,
+                assets_in,
+                min_shares_out,
+                now_ns,
+            ),
+            #[cfg(not(feature = "action-immediate-deposit"))]
+            KernelAction::Deposit { .. } => Err(KernelError::NotImplemented),
 
-            #[allow(clippy::too_many_arguments)]
-            KernelAction::AtomicWithdraw { .. } => {
-                atomic_withdraw_available()?;
-                let (owner, receiver, operator, assets_out, max_shares_burned) = match action {
-                    KernelAction::AtomicWithdraw {
-                        owner,
-                        receiver,
-                        operator,
-                        assets_out,
-                        max_shares_burned,
-                        ..
-                    } => (owner, receiver, operator, assets_out, max_shares_burned),
-                    _ => unreachable!("atomic withdrawal action was matched above"),
-                };
-                handle_atomic_withdraw(
-                    state,
-                    config,
-                    restrictions,
-                    self_id,
-                    owner,
-                    receiver,
-                    operator,
-                    assets_out,
-                    max_shares_burned,
-                )
-            }
+            #[cfg(feature = "action-atomic-exit")]
+            KernelAction::AtomicWithdraw {
+                owner,
+                receiver,
+                operator,
+                assets_out,
+                max_shares_burned,
+                ..
+            } => handle_atomic_withdraw(
+                state,
+                config,
+                restrictions,
+                self_id,
+                owner,
+                receiver,
+                operator,
+                assets_out,
+                max_shares_burned,
+            ),
+            #[cfg(not(feature = "action-atomic-exit"))]
+            KernelAction::AtomicWithdraw { .. } => Err(KernelError::NotImplemented),
 
-            #[allow(clippy::too_many_arguments)]
-            KernelAction::AtomicRedeem { .. } => {
-                atomic_redeem_available()?;
-                let (owner, receiver, operator, shares, min_assets_out) = match action {
-                    KernelAction::AtomicRedeem {
-                        owner,
-                        receiver,
-                        operator,
-                        shares,
-                        min_assets_out,
-                        ..
-                    } => (owner, receiver, operator, shares, min_assets_out),
-                    _ => unreachable!("atomic redemption action was matched above"),
-                };
-                handle_atomic_redeem(
-                    state,
-                    config,
-                    restrictions,
-                    self_id,
-                    owner,
-                    receiver,
-                    operator,
-                    shares,
-                    min_assets_out,
-                )
-            }
+            #[cfg(feature = "action-atomic-exit")]
+            KernelAction::AtomicRedeem {
+                owner,
+                receiver,
+                operator,
+                shares,
+                min_assets_out,
+                ..
+            } => handle_atomic_redeem(
+                state,
+                config,
+                restrictions,
+                self_id,
+                owner,
+                receiver,
+                operator,
+                shares,
+                min_assets_out,
+            ),
+            #[cfg(not(feature = "action-atomic-exit"))]
+            KernelAction::AtomicRedeem { .. } => Err(KernelError::NotImplemented),
 
             KernelAction::RequestWithdraw {
                 owner,

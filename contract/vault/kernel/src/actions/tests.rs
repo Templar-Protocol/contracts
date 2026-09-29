@@ -4242,6 +4242,87 @@ fn addr(tag: u8) -> Address {
     Address([tag; 32])
 }
 
+#[cfg(any(
+    not(feature = "action-immediate-deposit"),
+    not(feature = "action-atomic-exit")
+))]
+fn feature_off_config() -> VaultConfig {
+    VaultConfig {
+        fees: FeesSpec::zero(),
+        min_withdrawal_assets: 0,
+        withdrawal_cooldown_ns: 0,
+        max_pending_withdrawals: 10,
+        paused: false,
+        virtual_shares: 0,
+        virtual_assets: 0,
+    }
+}
+
+#[cfg(all(test, not(feature = "action-immediate-deposit")))]
+#[test]
+fn immediate_deposit_rejects_validation_before_feature_dispatch() {
+    assert_eq!(
+        apply_action(
+            VaultState::new(),
+            &feature_off_config(),
+            None,
+            &addr(0xFF),
+            KernelAction::Deposit {
+                owner: addr(1),
+                receiver: addr(2),
+                assets_in: 0,
+                min_shares_out: u128::MAX,
+                now_ns: TimestampNs(0),
+            },
+        ),
+        Err(KernelError::NotImplemented),
+    );
+}
+
+#[cfg(all(test, not(feature = "action-atomic-exit")))]
+#[test]
+fn atomic_withdraw_rejects_validation_before_feature_dispatch() {
+    assert_eq!(
+        apply_action(
+            VaultState::new(),
+            &feature_off_config(),
+            None,
+            &addr(0xFF),
+            KernelAction::AtomicWithdraw {
+                owner: addr(1),
+                receiver: addr(2),
+                operator: addr(3),
+                assets_out: 0,
+                max_shares_burned: 0,
+                now_ns: TimestampNs(0),
+            },
+        ),
+        Err(KernelError::NotImplemented),
+    );
+}
+
+#[cfg(all(test, not(feature = "action-atomic-exit")))]
+#[test]
+fn atomic_redeem_rejects_validation_before_feature_dispatch() {
+    assert_eq!(
+        apply_action(
+            VaultState::new(),
+            &feature_off_config(),
+            None,
+            &addr(0xFF),
+            KernelAction::AtomicRedeem {
+                owner: addr(1),
+                receiver: addr(2),
+                operator: addr(3),
+                shares: 0,
+                min_assets_out: u128::MAX,
+                now_ns: TimestampNs(0),
+            },
+        ),
+        Err(KernelError::NotImplemented),
+    );
+}
+
 #[cfg(feature = "action-epoch-settlement")]
 mod epoch_law_constants {
     pub(super) const CUT_NS: u64 = 1_000;

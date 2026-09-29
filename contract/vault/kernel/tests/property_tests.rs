@@ -1035,6 +1035,7 @@ fn fee_refresh_rejects_backwards_timestamp() {
 }
 
 #[cfg(feature = "action-epoch-settlement")]
+#[cfg(feature = "action-refresh-fees")]
 /// Fee anchor updates correctly on RefreshFees.
 #[test]
 fn fee_refresh_updates_anchor() {
@@ -1587,6 +1588,7 @@ fn allocation_step_overflow_rejected() {
 }
 
 #[cfg(feature = "action-epoch-settlement")]
+#[cfg(all(feature = "action-allocation-lifecycle", feature = "action-recovery"))]
 /// AbortAllocating: returns to Idle and adds `restore_idle` back to idle_assets.
 ///
 /// By design the kernel does NOT decrement `idle_assets` on `BeginAllocating`.
@@ -1824,14 +1826,13 @@ fn regression_invariant_check_minimal_delta() {
 }
 
 // Cross-Executor Parity Tests
-#[cfg(feature = "action-epoch-settlement")]
-use core::mem;
 // Both NEAR and Soroban executors call the same kernel `apply_action`. These
 // tests verify kernel determinism and that the state-preparation patterns both
 // executors use (decrement idle_assets before kernel, restore on abort, etc.)
 // produce consistent results.
 
 #[cfg(feature = "action-epoch-settlement")]
+#[cfg(all(feature = "action-allocation-lifecycle", feature = "action-recovery"))]
 /// Parity: the executor pattern of decrementing idle_assets before calling
 /// kernel BeginAllocating, then using kernel's AbortAllocating with
 /// restore_idle, produces balanced accounting.
@@ -1887,6 +1888,7 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
 }
 
 #[cfg(feature = "action-epoch-settlement")]
+#[cfg(all(feature = "action-allocation-lifecycle", feature = "action-sync-external"))]
 /// Parity: kernel BeginAllocating decrements idle_assets, SyncExternalAssets
 /// updates external_assets, FinishAllocating returns to Idle.
 ///
@@ -1964,6 +1966,7 @@ fn parity_executor_full_allocation_cycle() {
 }
 
 #[cfg(feature = "action-epoch-settlement")]
+#[cfg(all(feature = "action-refresh-lifecycle", feature = "action-sync-external"))]
 /// Parity: refresh cycle with external growth updates share price identically
 /// for both executors.
 #[test]

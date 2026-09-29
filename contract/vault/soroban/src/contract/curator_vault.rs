@@ -189,16 +189,16 @@ where
         action: KernelAction,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
-        let (_, summary) = self.apply_kernel_action_result(action, now_ns)?;
+        let (_, summary) = self.apply_kernel_action_effects(action, now_ns)?;
         Ok(summary)
     }
 
     #[inline(never)]
-    fn apply_kernel_action_result(
+    fn apply_kernel_action_effects(
         &mut self,
         action: KernelAction,
         now_ns: u64,
-    ) -> Result<(KernelResult, EffectSummary), RuntimeError> {
+    ) -> Result<(Vec<KernelEffect>, EffectSummary), RuntimeError> {
         let config = self.kernel_config();
         let restrictions = self.restrictions.as_ref();
         let state = self
@@ -222,9 +222,9 @@ where
         let ctx = self.effect_context(now_ns);
         self.ensure_effect_addresses_mapped(&result.effects, &ctx)?;
         let summary = self.interpreter.execute_effects(&result.effects, &ctx)?;
-        self.state = Some(result.state.clone());
+        self.state = Some(result.state);
         self.save_state()?;
-        Ok((result, summary))
+        Ok((result.effects, summary))
     }
 
     #[inline(never)]
@@ -285,7 +285,7 @@ where
             return Err(contract_error("paused"));
         }
 
-        let (kernel_result, _) = self.apply_kernel_action_result(
+        let (effects, _) = self.apply_kernel_action_effects(
             KernelAction::Deposit {
                 owner: caller,
                 receiver,
@@ -295,8 +295,7 @@ where
             },
             now_ns,
         )?;
-        let shares_minted = kernel_result
-            .effects
+        let shares_minted = effects
             .iter()
             .find_map(|effect| match effect {
                 KernelEffect::EmitEvent {
@@ -1611,7 +1610,7 @@ where
 
         let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
         let receiver = self.register_sdk_address(env, receiver_sdk)?;
-        let (result, _) = self.apply_kernel_action_result(
+        let (effects, _) = self.apply_kernel_action_effects(
             KernelAction::SeedEpochSupply {
                 receiver,
                 assets_in: assets,
@@ -1619,8 +1618,7 @@ where
             },
             now_ns,
         )?;
-        let shares_minted = result
-            .effects
+        let shares_minted = effects
             .iter()
             .find_map(|effect| match effect {
                 KernelEffect::MintShares { owner, shares }
@@ -1974,7 +1972,7 @@ where
         };
         self.storage
             .record_accepted_report(epoch.intake_epoch, &report)?;
-        self.apply_kernel_action_result(
+        self.apply_kernel_action_effects(
             KernelAction::SettleEpoch {
                 report,
                 new_external_assets: aggregate_value,
@@ -2045,7 +2043,7 @@ where
         // law is applied; a present one maps the snapshot-priced mint to
         // exactly the recorded receiver, never to caller-supplied bytes.
         self.ensure_mapped(&record.owner)?;
-        let (result, _) = self.apply_kernel_action_result(
+        let (effects, _) = self.apply_kernel_action_effects(
             KernelAction::AdmitPendingDeposit {
                 receiver: record.owner,
                 assets_in: record.assets,
@@ -2055,8 +2053,7 @@ where
             },
             now_ns,
         )?;
-        let shares_out = result
-            .effects
+        let shares_out = effects
             .iter()
             .find_map(|effect| match effect {
                 KernelEffect::MintShares { shares, .. } => Some(*shares),
@@ -2093,7 +2090,7 @@ where
         self.ensure_vault_mapped(env)?;
         let caller = kernel_address_from_sdk(env, owner_sdk);
         let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
-        let result = self.apply_kernel_action_result(
+        let (effects, _) = self.apply_kernel_action_effects(
             KernelAction::CancelPendingWithdrawal {
                 caller,
                 request_id,
@@ -2102,9 +2099,7 @@ where
             now_ns,
         )?;
         let (escrow_shares, epoch_id) =
-            result
-                .0
-                .effects
+            effects
                 .iter()
                 .find_map(|effect| match effect {
                     KernelEffect::EmitEvent {

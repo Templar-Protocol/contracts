@@ -52,8 +52,22 @@ custodial valuation. It shares no storage or asset authority with the immediate 
 split was selected by an automated prompt timeout, not approved by a human operator, and must not
 be deployed or released without explicit architecture approval.
 
-The optimized epoch artifact currently measures 136,546 bytes against Soroban's 131,072-byte
-limit, so it is not deployable. The immediate runtime remains the only release-qualified target.
+The optimized epoch artifact measures **129,295 bytes**, below Soroban's **131,072-byte**
+limit by 1,777 bytes. This uses Rust 1.89.0, Stellar CLI 26.0.0, `wasm32v1-none`,
+the Cargo `release` profile, locked dependencies, and spec shaking/optimization.
+SHA-256: `520b5f4c3dae72f58413cda2cb9dbded2cfbdbac9cef36f01c05bed3de61e360`.
+
+The size and eight-entrypoint ABI gates pass, but the epoch product remains release-blocked:
+
+- The shipped governor cannot yet configure or seed it through its real authorized path.
+- Per-adapter report sequencing/replay, pre-seed intake, pending-deposit liveness, and
+  migrated-withdrawal snapshot binding still have review findings.
+- NEAR asynchronous refund/migration findings and immediate-law fix propagation remain open.
+- Full epoch Kani/fuzz evidence, artifact CI qualification, and architecture approval are pending.
+
+Native settlement tests and optimized-WASM settlement/admission smoke checks use stub governance
+with mocked authorization. They verify accounting behavior, not the real governor/proxy deployment
+flow. WASM smoke invocations use the default host transaction budget after fixture registration.
 
 Fresh epoch deployments use the governance-only `SeedEpochSupply` command once, before intake,
 cutoff, reports, or settlement. The command requires nonzero real underlying custody already held

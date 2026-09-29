@@ -18,6 +18,25 @@ fn event_address(env: &Env, value: &templar_vault_kernel::Address) -> BytesN<32>
     BytesN::from_array(env, value.as_bytes())
 }
 
+/// Fail-closed error for a kernel event whose action family was excluded
+/// from this artifact. Mirrors the kernel's `KernelError::NotImplemented`
+/// runtime mapping: an uncompiled action family is a missing capability,
+/// never a silently ignored event.
+#[cfg(not(all(
+    feature = "action-allocation-lifecycle",
+    feature = "action-refresh-lifecycle",
+    feature = "action-sync-external",
+    feature = "action-refresh-fees",
+    feature = "action-recovery",
+    any(
+        feature = "immediate-entrypoints",
+        feature = "action-immediate-deposit"
+    ),
+    any(feature = "immediate-entrypoints", feature = "action-atomic-exit"),
+)))]
+const EVENT_FAMILY_DISABLED: RuntimeError = RuntimeError::MissingConfig;
+
+#[cfg(feature = "action-allocation-lifecycle")]
 #[contractevent]
 #[derive(Clone)]
 pub struct AllocationStartedEvent {
@@ -26,6 +45,7 @@ pub struct AllocationStartedEvent {
     pub plan_len: u32,
 }
 
+#[cfg(feature = "action-allocation-lifecycle")]
 #[contractevent]
 #[derive(Clone)]
 pub struct AllocationStepFailedEvent {
@@ -35,6 +55,7 @@ pub struct AllocationStepFailedEvent {
     pub total_allocated: u128,
 }
 
+#[cfg(feature = "action-allocation-lifecycle")]
 #[contractevent]
 #[derive(Clone)]
 pub struct AllocationCompletedEvent {
@@ -77,6 +98,7 @@ pub struct WithdrawalSkippedEvent {
     pub reason: u32,
 }
 
+#[cfg(feature = "action-refresh-lifecycle")]
 #[contractevent]
 #[derive(Clone)]
 pub struct RefreshStartedEvent {
@@ -84,6 +106,7 @@ pub struct RefreshStartedEvent {
     pub plan_len: u32,
 }
 
+#[cfg(feature = "action-refresh-lifecycle")]
 #[contractevent]
 #[derive(Clone)]
 pub struct RefreshCompletedEvent {
@@ -100,6 +123,7 @@ pub struct PayoutCompletedEvent {
     pub amount: u128,
 }
 
+#[cfg(any(feature = "immediate-entrypoints", feature = "action-immediate-deposit"))]
 #[contractevent]
 #[derive(Clone)]
 pub struct DepositProcessedEvent {
@@ -109,6 +133,7 @@ pub struct DepositProcessedEvent {
     pub shares_out: u128,
 }
 
+#[cfg(any(feature = "immediate-entrypoints", feature = "action-atomic-exit"))]
 #[contractevent]
 #[derive(Clone)]
 pub struct AtomicWithdrawProcessedEvent {
@@ -128,6 +153,7 @@ pub struct WithdrawalRequestedEvent {
     pub epoch_id: u64,
 }
 
+#[cfg(feature = "action-sync-external")]
 #[contractevent]
 #[derive(Clone)]
 pub struct ExternalAssetsSyncedEvent {
@@ -136,6 +162,7 @@ pub struct ExternalAssetsSyncedEvent {
     pub total_assets: u128,
 }
 
+#[cfg(feature = "action-refresh-fees")]
 #[contractevent]
 #[derive(Clone)]
 pub struct FeesRefreshedEvent {
@@ -149,6 +176,7 @@ pub struct PauseUpdatedEvent {
     pub paused: bool,
 }
 
+#[cfg(feature = "action-recovery")]
 #[contractevent]
 #[derive(Clone)]
 pub struct EmergencyResetCompletedEvent {
@@ -242,6 +270,7 @@ pub struct ReportMetadataConsumedEvent {
 #[inline(never)]
 pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), RuntimeError> {
     match event {
+        #[cfg(feature = "action-allocation-lifecycle")]
         KernelEvent::AllocationStarted {
             op_id,
             total,
@@ -252,6 +281,9 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             plan_len: *plan_len,
         }
         .publish(env),
+        #[cfg(not(feature = "action-allocation-lifecycle"))]
+        KernelEvent::AllocationStarted { .. } => return Err(EVENT_FAMILY_DISABLED),
+        #[cfg(feature = "action-allocation-lifecycle")]
         KernelEvent::AllocationStepFailed {
             op_id,
             index,
@@ -264,6 +296,9 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             total_allocated: *total_allocated,
         }
         .publish(env),
+        #[cfg(not(feature = "action-allocation-lifecycle"))]
+        KernelEvent::AllocationStepFailed { .. } => return Err(EVENT_FAMILY_DISABLED),
+        #[cfg(feature = "action-allocation-lifecycle")]
         KernelEvent::AllocationCompleted {
             op_id,
             has_withdrawal,
@@ -272,6 +307,8 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             has_withdrawal: *has_withdrawal,
         }
         .publish(env),
+        #[cfg(not(feature = "action-allocation-lifecycle"))]
+        KernelEvent::AllocationCompleted { .. } => return Err(EVENT_FAMILY_DISABLED),
         KernelEvent::WithdrawalStarted {
             op_id,
             amount,
@@ -320,14 +357,20 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             },
         }
         .publish(env),
+        #[cfg(feature = "action-refresh-lifecycle")]
         KernelEvent::RefreshStarted { op_id, plan_len } => RefreshStartedEvent {
             op_id: *op_id,
             plan_len: *plan_len,
         }
         .publish(env),
+        #[cfg(not(feature = "action-refresh-lifecycle"))]
+        KernelEvent::RefreshStarted { .. } => return Err(EVENT_FAMILY_DISABLED),
+        #[cfg(feature = "action-refresh-lifecycle")]
         KernelEvent::RefreshCompleted { op_id } => {
             RefreshCompletedEvent { op_id: *op_id }.publish(env)
         }
+        #[cfg(not(feature = "action-refresh-lifecycle"))]
+        KernelEvent::RefreshCompleted { .. } => return Err(EVENT_FAMILY_DISABLED),
         KernelEvent::PayoutCompleted {
             op_id,
             success,
@@ -342,6 +385,10 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             amount: *amount,
         }
         .publish(env),
+        #[cfg(any(
+            feature = "immediate-entrypoints",
+            feature = "action-immediate-deposit"
+        ))]
         KernelEvent::DepositProcessed {
             owner,
             receiver,
@@ -354,6 +401,15 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             shares_out: *shares_out,
         }
         .publish(env),
+        #[cfg(not(any(
+            feature = "immediate-entrypoints",
+            feature = "action-immediate-deposit"
+        )))]
+        KernelEvent::DepositProcessed { .. } => return Err(EVENT_FAMILY_DISABLED),
+        #[cfg(any(
+            feature = "immediate-entrypoints",
+            feature = "action-atomic-exit"
+        ))]
         KernelEvent::AtomicWithdrawProcessed {
             owner,
             receiver,
@@ -366,6 +422,11 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             assets_out: *assets_out,
         }
         .publish(env),
+        #[cfg(not(any(
+            feature = "immediate-entrypoints",
+            feature = "action-atomic-exit"
+        )))]
+        KernelEvent::AtomicWithdrawProcessed { .. } => return Err(EVENT_FAMILY_DISABLED),
         KernelEvent::WithdrawalRequested {
             id,
             owner,
@@ -380,6 +441,7 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             epoch_id: *epoch_id,
         }
         .publish(env),
+        #[cfg(feature = "action-sync-external")]
         KernelEvent::ExternalAssetsSynced {
             op_id,
             new_external_assets,
@@ -390,6 +452,9 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             total_assets: *total_assets,
         }
         .publish(env),
+        #[cfg(not(feature = "action-sync-external"))]
+        KernelEvent::ExternalAssetsSynced { .. } => return Err(EVENT_FAMILY_DISABLED),
+        #[cfg(feature = "action-refresh-fees")]
         KernelEvent::FeesRefreshed {
             now_ns,
             total_assets,
@@ -398,6 +463,8 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             total_assets: *total_assets,
         }
         .publish(env),
+        #[cfg(not(feature = "action-refresh-fees"))]
+        KernelEvent::FeesRefreshed { .. } => return Err(EVENT_FAMILY_DISABLED),
         KernelEvent::PauseUpdated { paused } => PauseUpdatedEvent { paused: *paused }.publish(env),
         #[cfg(feature = "epoch")]
         KernelEvent::EpochCutoffStarted { epoch_id, cutoff_ns } => EpochCutoffStartedEvent {
@@ -463,6 +530,7 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             shares_out: *shares_out,
         }
         .publish(env),
+        #[cfg(feature = "action-recovery")]
         KernelEvent::EmergencyResetCompleted { op_id, from_state } => {
             EmergencyResetCompletedEvent {
                 op_id: *op_id,
@@ -470,6 +538,8 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             }
             .publish(env)
         }
+        #[cfg(not(feature = "action-recovery"))]
+        KernelEvent::EmergencyResetCompleted { .. } => return Err(EVENT_FAMILY_DISABLED),
     }
     Ok(())
 }
@@ -1035,5 +1105,82 @@ where
                 "unsupported effect type for Soroban",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod event_family_tests {
+    use super::*;
+    use soroban_sdk::events::Event as _;
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{contract, contractimpl};
+
+    #[contract]
+    struct EventProbeContract;
+
+    #[contractimpl]
+    impl EventProbeContract {
+        pub fn noop(_env: Env) {}
+    }
+
+    /// A kernel event whose action family was excluded from this artifact
+    /// fails closed with the named error and emits no contract event.
+    #[cfg(not(feature = "action-recovery"))]
+    #[test]
+    fn disabled_emergency_reset_event_fails_closed_without_emitting() {
+        let env = Env::default();
+        let result = publish_kernel_event(
+            &env,
+            &KernelEvent::EmergencyResetCompleted {
+                op_id: 7,
+                from_state: 3,
+            },
+        );
+        assert_eq!(result, Err(EVENT_FAMILY_DISABLED));
+        assert!(
+            env.events().all().events().is_empty(),
+            "disabled event family must not emit"
+        );
+    }
+
+    #[cfg(not(any(
+        feature = "immediate-entrypoints",
+        feature = "action-immediate-deposit"
+    )))]
+    #[test]
+    fn disabled_deposit_processed_event_fails_closed_without_emitting() {
+        let env = Env::default();
+        let result = publish_kernel_event(
+            &env,
+            &KernelEvent::DepositProcessed {
+                owner: templar_vault_kernel::Address([1u8; 32]),
+                receiver: templar_vault_kernel::Address([2u8; 32]),
+                assets_in: 10,
+                shares_out: 5,
+            },
+        );
+        assert_eq!(result, Err(EVENT_FAMILY_DISABLED));
+        assert!(
+            env.events().all().events().is_empty(),
+            "disabled event family must not emit"
+        );
+    }
+
+    /// A retained event keeps its exact typed payload (topic + field map).
+    #[test]
+    fn retained_pause_event_payload_is_exact() {
+        let env = Env::default();
+        let contract_id = env.register(EventProbeContract, ());
+        env.as_contract(&contract_id, || {
+            publish_kernel_event(&env, &KernelEvent::PauseUpdated { paused: true })
+                .expect("pause events are retained in every profile");
+        });
+        let events = env.events().all().filter_by_contract(&contract_id);
+        let emitted = events.events();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(
+            emitted[0],
+            PauseUpdatedEvent { paused: true }.to_xdr(&env, &contract_id)
+        );
     }
 }

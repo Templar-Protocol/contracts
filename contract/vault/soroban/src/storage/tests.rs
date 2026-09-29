@@ -1218,8 +1218,10 @@ fn store_adapter_bindings(env: &Env, bindings: &soroban_sdk::Map<u32, soroban_sd
         .set(&crate::contract::VaultDataKey::AdapterBindings, bindings);
 }
 
-#[test]
-fn adapter_binding_enumeration_is_complete_and_ascending() {
+#[rstest::rstest]
+#[case([3, 1, 2])]
+#[case([u32::MAX, 0, 1 << 31])]
+fn adapter_binding_enumeration_is_complete_and_ascending(#[case] ids: [u32; 3]) {
     let env = Env::default();
     env.mock_all_auths();
     let id = contract_id(&env);
@@ -1227,9 +1229,9 @@ fn adapter_binding_enumeration_is_complete_and_ascending() {
         let storage = SorobanStorage::new(&env);
         storage
             .save_policy_markets(&encode_markets(&OrderedMap::from_iter([
-                market_entry(3),
-                market_entry(1),
-                market_entry(2),
+                market_entry(ids[0]),
+                market_entry(ids[1]),
+                market_entry(ids[2]),
             ])))
             .expect("markets stored");
         let adapter_one = soroban_sdk::Address::generate(&env);
@@ -1240,15 +1242,15 @@ fn adapter_binding_enumeration_is_complete_and_ascending() {
             &adapter_bindings(
                 &env,
                 &[
-                    (3, adapter_three.clone()),
-                    (1, adapter_one.clone()),
-                    (2, adapter_two.clone()),
+                    (ids[0], adapter_three.clone()),
+                    (ids[1], adapter_one.clone()),
+                    (ids[2], adapter_two.clone()),
                 ],
             ),
         );
 
         // Every persisted binding is enumerated exactly once, and the order
-        // is ascending by TargetId regardless of insertion or map order.
+        // is ascending by TargetId regardless of insertion order.
         let enumerated = storage
             .enumerate_market_adapter_bindings()
             .expect("lawful enumeration");
@@ -1260,9 +1262,9 @@ fn adapter_binding_enumeration_is_complete_and_ascending() {
         assert_eq!(
             enumerated,
             alloc::vec::Vec::from([
-                (1u32, adapter_one),
-                (2, adapter_two),
-                (3, adapter_three),
+                (ids[1], adapter_one),
+                (ids[2], adapter_two),
+                (ids[0], adapter_three),
             ])
         );
     });

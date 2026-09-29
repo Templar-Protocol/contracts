@@ -1732,9 +1732,10 @@ impl<'a> SorobanStorage<'a> {
             }
             enumerated.push((target_id, adapter));
         }
-        enumerated.sort_unstable_by_key(|(target_id, _)| *target_id);
-        if enumerated.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return Err(RuntimeError::storage_error("duplicate adapter binding target"));
+        // Soroban Map iteration is already key-ordered. Verify that contract
+        // here instead of linking a second sort implementation into the vault.
+        if enumerated.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(RuntimeError::storage_error("adapter bindings not strictly ordered"));
         }
         Ok(enumerated)
     }
