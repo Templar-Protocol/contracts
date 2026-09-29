@@ -20,12 +20,36 @@ serde = ["dep:serde", "templar-vault-kernel/serde"]
 schemars = ["dep:schemars", "templar-vault-kernel/schemars"]
 boundary = ["dep:near-sdk", "borsh-schema", "serde"]
 boundary-test = ["boundary", "near-sdk/unit-testing"]
+# Kernel action profile gates (forwarded; curator policy surface mirrors the
+# selected kernel action set exactly). Immediate action features keep the
+# origin/dev policy surface. Epoch settlement adds the epoch action kinds.
+action-immediate-deposit = ["templar-vault-kernel/action-immediate-deposit"]
+action-atomic-exit = ["templar-vault-kernel/action-atomic-exit"]
+action-recovery = ["templar-vault-kernel/action-recovery"]
+action-sync-external = ["templar-vault-kernel/action-sync-external"]
+action-refresh-fees = ["templar-vault-kernel/action-refresh-fees"]
+action-pause = ["templar-vault-kernel/action-pause"]
+action-allocation-lifecycle = ["templar-vault-kernel/action-allocation-lifecycle"]
+action-refresh-lifecycle = ["templar-vault-kernel/action-refresh-lifecycle"]
+action-epoch-settlement = ["templar-vault-kernel/action-epoch-settlement"]
+all-actions = [
+    "templar-vault-kernel/all-actions",
+    "action-immediate-deposit",
+    "action-atomic-exit",
+    "action-recovery",
+    "action-sync-external",
+    "action-refresh-fees",
+    "action-pause",
+    "action-allocation-lifecycle",
+    "action-refresh-lifecycle",
+    "action-epoch-settlement",
+]
 # Recovery action helpers (determine_recovery_action, handle_*_failure, etc.)
 recovery = []
 
 [dependencies]
 # Core dependency - vault kernel types
-templar-vault-kernel = { path = "../kernel", version = "1.0.1" }
+templar-vault-kernel = { path = "../kernel", version = "1.0.1", default-features = false }
 templar-vault-macros.workspace = true
 derive_more.workspace = true
 typed-builder = "0.20"

@@ -12,6 +12,8 @@ path = "src/lib.rs"
 
 [features]
 default = []
+immediate-commands = []
+epoch-commands = []
 testutils = ["soroban-sdk/testutils"]
 
 [dependencies]

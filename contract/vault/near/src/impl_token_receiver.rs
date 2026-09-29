@@ -11,9 +11,25 @@ use templar_vault_kernel::TimestampNs;
 
 use near_sdk_contract_tools::mt::{Nep245Receiver, TokenId};
 
-// Parses JSON-encoded DepositMsg or panics with a consistent message.
-fn parse_deposit_msg(msg: &str) -> DepositMsg {
-    near_sdk::serde_json::from_str(msg)
+// A depositor's share floor for a protected deposit. The canonical
+// `DepositMsg::Supply` message has no field for one, so a protected deposit is
+// stated in this separate form and carries the floor the depositor insists on.
+#[derive(near_sdk::serde::Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+struct ProtectedDeposit {
+    min_shares_out: near_sdk::json_types::U128,
+}
+
+// Parses a deposit message and returns it with the share floor its depositor
+// stated. A canonical `Supply` message states no floor, so its floor is zero,
+// which is the same unprotected intake has always had. Anything else is
+// rejected before custody is taken.
+fn parse_deposit_msg(msg: &str) -> (DepositMsg, u128) {
+    if let Ok(msg) = near_sdk::serde_json::from_str::<DepositMsg>(msg) {
+        return (msg, 0);
+    }
+    near_sdk::serde_json::from_str::<ProtectedDeposit>(msg)
+        .map(|protected| (DepositMsg::Supply, protected.min_shares_out.0))
         .unwrap_or_else(|_| templar_common::panic_with_message("Invalid deposit msg"))
 }
 
@@ -48,7 +64,7 @@ impl FungibleTokenReceiver for Contract {
         amount: U128,
         msg: String,
     ) -> PromiseOrValue<U128> {
-        let msg = parse_deposit_msg(&msg);
+        let (msg, min_shares_out) = parse_deposit_msg(&msg);
 
         let asset_id = env::predecessor_account_id();
 
@@ -58,7 +74,8 @@ impl FungibleTokenReceiver for Contract {
 
                 self.gate.enforce_policy(&sender_id);
 
-                let refund = self.execute_supply(sender_id, asset_id, amount.into());
+                let refund =
+                    self.execute_supply(sender_id, asset_id, amount.into(), min_shares_out);
                 PromiseOrValue::Value(refund.into())
             }
         }
@@ -78,7 +95,7 @@ impl Nep245Receiver for Contract {
         amounts: Vec<U128>,
         msg: String,
     ) -> PromiseOrValue<Vec<U128>> {
-        let msg = parse_deposit_msg(&msg);
+        let (msg, min_shares_out) = parse_deposit_msg(&msg);
 
         let (sender_id, token_id, amount) =
             validate_single_mt_input(&previous_owner_ids, &token_ids, &amounts);
@@ -96,7 +113,12 @@ impl Nep245Receiver for Contract {
                     "Invalid token ID"
                 );
 
-                let refund = self.execute_supply(sender_id.clone(), token_contract, amount.into());
+                let refund = self.execute_supply(
+                    sender_id.clone(),
+                    token_contract,
+                    amount.into(),
+                    min_shares_out,
+                );
 
                 PromiseOrValue::Value(vec![U128(refund)])
             }
@@ -110,6 +132,7 @@ impl Contract {
         sender_id: AccountId,
         asset_id: AccountId,
         deposit: u128,
+        min_shares_out: u128,
     ) -> u128 {
         // Invariant: Only the underlying token is accepted; others are fully refunded
         require!(
@@ -125,6 +148,18 @@ impl Contract {
 
         if self.idle_resync_inflight_op_id != 0 {
             templar_common::panic_with_message("Cannot deposit during idle resync");
+        }
+
+        // Delayed valuation is the only exit model this vault runs, so a deposit
+        // may only be priced while intake is open in a settlement epoch. When it
+        // is not, the assets are held for their depositor as a recorded
+        // liability and never enter total assets, the idle balance or supply. If
+        // no liability can be recorded, the transfer is handed back in full.
+        if !self.epoch.is_accepting_requests() {
+            if self.try_record_pending_deposit(&sender_id, deposit, min_shares_out) {
+                return 0;
+            }
+            return deposit;
         }
 
         self.internal_accrue_fee();
@@ -150,7 +185,7 @@ impl Contract {
                 owner: sender_address,
                 receiver: sender_address,
                 assets_in: accept,
-                min_shares_out: 0,
+                min_shares_out,
                 now_ns: TimestampNs(env::block_timestamp()),
             },
         )

@@ -101,7 +101,7 @@ stateDiagram-v2
     Allocating --> Idle: EmergencyReset
 
     Withdrawing --> Withdrawing: RebalanceWithdraw / collect more liquidity
-    Withdrawing --> Payout: withdrawal_settled(...)
+    Withdrawing --> Payout: withdrawal_collected / withdrawal_settled at the settled-epoch claim, burning the request's full escrow
     Withdrawing --> Idle: AbortWithdrawing
     Withdrawing --> Idle: EmergencyReset
 
@@ -137,12 +137,14 @@ sequenceDiagram
     Contract->>Vault: execute_withdraw(...)
     Vault->>Kernel: KernelAction::ExecuteWithdraw
     Kernel-->>Vault: transition Idle -> Withdrawing
-    alt enough idle liquidity
+    Note over Vault: the queue head's epoch settles against an accepted report; the payout claim is derived only from that immutable snapshot
+    alt the settled claim is payable in full from idle assets
         Vault->>Vault: complete_withdrawal_from_idle()
-        Vault->>Kernel: withdrawal_settled(...)
+        Vault->>Kernel: withdrawal_collected / withdrawal_settled(state, vault, op_id, min_withdrawal_assets)
+        Kernel-->>Vault: Payout at the snapshot-derived claim, full escrow burn
         Vault->>Asset: transfer assets to receiver
         Vault->>Kernel: KernelAction::SettlePayout
-        Vault->>Share: burn escrowed shares / refund remainder if needed
+        Vault->>Share: burn the request's full escrow once on success; refund the full escrow on failed payout
     else allocator must free market liquidity first
         Note over Vault: allocator path uses BeginAllocating + RebalanceWithdraw\nand later re-runs execute_withdraw
     end

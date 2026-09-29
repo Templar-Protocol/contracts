@@ -9,7 +9,8 @@ use super::helpers::{
     ensure_sentinel_identity, extend_storage_ttl, get_config_address, governance_caller,
     kernel_address_from_sdk, load_virtual_offsets, lock_virtual_offsets, migration_in_progress,
     require_contract_address, require_governance, require_governance_control_plane,
-    require_sentinel, require_signed, require_wasm_or_account_address, sdk_string_to_alloc,
+    require_immediate_execution_allowed, require_sentinel, require_signed,
+    require_wasm_or_account_address, sdk_string_to_alloc,
     set_config_address, set_migration_in_progress, store_fees_spec, store_idle_resync_cooldown_ns,
     store_virtual_offsets, store_withdrawal_cooldown_ns, supply_adapter_for_market,
     validate_and_rewrite_storage, virtual_offsets_locked, with_contract_vault_contract_error,
@@ -18,8 +19,8 @@ use super::*;
 use crate::storage::{SorobanStorage, Storage};
 use templar_curator_primitives::governance::Restrictions as GovernanceRestrictions;
 use templar_soroban_shared_types::{
-    DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus, GovernanceCommand,
-    I128Receipt, ReceiptAddress, RequestWithdrawReceipt, VaultCommand,
+    EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus, GovernanceCommand, I128Receipt,
+    ReceiptAddress, RequestWithdrawReceipt, VaultCommand,
     GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
     GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
     GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN, GOVERNANCE_CONFIG_KIND_SENTINEL,
@@ -29,6 +30,8 @@ use templar_soroban_shared_types::{
     GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
+#[cfg(feature = "immediate-entrypoints")]
+use templar_soroban_shared_types::DepositReceipt;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::{FeeAccrualAnchor, TimestampNs};
 
@@ -70,15 +73,26 @@ fn current_idle_assets(env: &Env) -> Result<u128, ContractError> {
     to_u128(client.balance(&env.current_contract_address()))
 }
 
+fn pending_custody_assets(env: &Env) -> Result<u128, ContractError> {
+    use crate::storage::deposit::PendingStorage;
+    Ok(SorobanStorage::new(env)
+        .pending_deposit_stats()
+        .map_err(|_| ContractError::InvalidState)?
+        .total_assets)
+}
+
 fn reconcile_current_idle_assets(
     env: &Env,
     vault: &mut ContractVault<'_>,
     now_ns: u64,
 ) -> Result<(), RuntimeError> {
-    let actual_idle_assets =
-        current_idle_assets(env).map_err(|_| RuntimeError::storage_error(""))?;
+    let measured = current_idle_assets(env).map_err(|_| RuntimeError::storage_error(""))?;
+    let held = pending_custody_assets(env).map_err(|_| RuntimeError::storage_error(""))?;
+    let available = measured
+        .checked_sub(held)
+        .ok_or_else(|| RuntimeError::storage_error(""))?;
     let state = vault.state_mut()?;
-    reconcile_actual_idle_assets(state, actual_idle_assets, now_ns);
+    reconcile_actual_idle_assets(state, available, now_ns);
     Ok(())
 }
 
@@ -548,6 +562,7 @@ fn normalize_fee_anchor(env: &Env) -> Result<(), ContractError> {
     Ok(())
 }
 
+#[cfg(feature = "immediate-entrypoints")]
 fn deposit_with_min_impl(
     env: &Env,
     owner: soroban_sdk::Address,
@@ -559,6 +574,7 @@ fn deposit_with_min_impl(
     if assets <= 0 {
         return Err(ContractError::InvalidInput);
     }
+    require_immediate_execution_allowed(env)?;
 
     let assets_u128 = to_u128(assets)?;
     let min_shares_u128 = if min_shares_out < 0 {
@@ -621,6 +637,7 @@ fn request_withdraw_impl(
     })
 }
 
+#[cfg(feature = "immediate-entrypoints")]
 fn refresh_fees_impl(env: &Env) -> Result<(), ContractError> {
     let now_ns = ledger_timestamp_ns(env)?;
 
@@ -714,6 +731,7 @@ fn abort_withdrawing_impl(
     with_contract_vault_contract_error(env, &mut call)
 }
 
+#[cfg(feature = "immediate-entrypoints")]
 fn atomic_withdraw_impl(
     env: &Env,
     owner: soroban_sdk::Address,
@@ -726,6 +744,7 @@ fn atomic_withdraw_impl(
         return Err(ContractError::InvalidInput);
     }
 
+    require_immediate_execution_allowed(env)?;
     let mut burned = 0i128;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         burned = vault.atomic_withdraw(
@@ -742,6 +761,7 @@ fn atomic_withdraw_impl(
     Ok(burned)
 }
 
+#[cfg(feature = "immediate-entrypoints")]
 fn atomic_redeem_impl(
     env: &Env,
     owner: soroban_sdk::Address,
@@ -753,6 +773,7 @@ fn atomic_redeem_impl(
     if shares <= 0 || min_assets_out < 0 {
         return Err(ContractError::InvalidInput);
     }
+    require_immediate_execution_allowed(env)?;
 
     let mut assets_out = 0i128;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
@@ -770,6 +791,7 @@ fn atomic_redeem_impl(
     Ok(assets_out)
 }
 
+#[cfg(feature = "immediate-entrypoints")]
 fn allocate_impl(
     env: &Env,
     caller: soroban_sdk::Address,
@@ -843,6 +865,7 @@ fn allocate_impl(
     to_i128(new_external)
 }
 
+#[cfg(feature = "immediate-entrypoints")]
 fn refresh_markets_impl(
     env: &Env,
     caller: soroban_sdk::Address,
@@ -1181,6 +1204,7 @@ fn require_governance_command_authorization(
 
 fn execute_public_command(env: &Env, command: VaultCommand) -> Result<Bytes, ContractError> {
     match command {
+        #[cfg(feature = "immediate-entrypoints")]
         VaultCommand::DepositWithMin {
             owner,
             receiver,
@@ -1219,6 +1243,7 @@ fn execute_public_command(env: &Env, command: VaultCommand) -> Result<Bytes, Con
             abort_withdrawing_impl(env, address_from_alloc_string(env, &caller)?, op_id)?;
             Ok(encode_receipt(env, &EmptyReceipt.encode()))
         }
+        #[cfg(feature = "immediate-entrypoints")]
         VaultCommand::AtomicWithdraw {
             owner,
             receiver,
@@ -1236,6 +1261,7 @@ fn execute_public_command(env: &Env, command: VaultCommand) -> Result<Bytes, Con
             )?;
             Ok(encode_receipt(env, &I128Receipt { value }.encode()))
         }
+        #[cfg(feature = "immediate-entrypoints")]
         VaultCommand::AtomicRedeem {
             owner,
             receiver,
@@ -1253,6 +1279,7 @@ fn execute_public_command(env: &Env, command: VaultCommand) -> Result<Bytes, Con
             )?;
             Ok(encode_receipt(env, &I128Receipt { value }.encode()))
         }
+        #[cfg(feature = "immediate-entrypoints")]
         VaultCommand::Allocate {
             caller,
             market,
@@ -1268,6 +1295,7 @@ fn execute_public_command(env: &Env, command: VaultCommand) -> Result<Bytes, Con
             )?;
             Ok(encode_receipt(env, &I128Receipt { value }.encode()))
         }
+        #[cfg(feature = "immediate-entrypoints")]
         VaultCommand::RefreshMarkets { caller, markets } => {
             let mut sdk_markets = soroban_sdk::Vec::new(env);
             for market in markets {
@@ -1277,22 +1305,216 @@ fn execute_public_command(env: &Env, command: VaultCommand) -> Result<Bytes, Con
                 refresh_markets_impl(env, address_from_alloc_string(env, &caller)?, sdk_markets)?;
             Ok(encode_receipt(env, &I128Receipt { value }.encode()))
         }
+        VaultCommand::ConfigureEpochSettlement {
+            caller,
+            max_report_age_ns,
+        } => {
+            require_governance(env, &address_from_alloc_string(env, &caller)?)?;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                vault.configure_epoch_settlement(max_report_age_ns)
+            })?;
+            Ok(encode_receipt(
+                env,
+                &templar_soroban_shared_types::ConfigureEpochSettlementReceipt { max_report_age_ns }
+                    .encode(),
+            ))
+        }
+        VaultCommand::SeedEpochSupply {
+            caller,
+            receiver,
+            assets,
+        } => {
+            let caller_addr = address_from_alloc_string(env, &caller)?;
+            require_governance(env, &caller_addr)?;
+            let receiver_addr = address_from_alloc_string(env, &receiver)?;
+            let mut captured: Option<super::curator_vault::SeedEpochSupplyResponse> = None;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                let result = vault.seed_epoch_supply(env, &caller_addr, &receiver_addr, assets);
+                captured = Some(result?);
+                Ok(())
+            })?;
+            let response = captured.ok_or(ContractError::InvalidState)?;
+            Ok(encode_receipt(
+                env,
+                &templar_soroban_shared_types::SeedEpochSupplyReceipt {
+                    assets_seeded: response.assets_seeded,
+                    shares_minted: response.shares_minted,
+                }
+                .encode(),
+            ))
+        }
+        VaultCommand::RequestDeposit {
+            owner,
+            assets,
+            min_shares_out,
+        } => {
+            let owner_addr = address_from_alloc_string(env, &owner)?;
+            let mut captured: Option<super::curator_vault::PendingDepositResponse> = None;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                let result = vault.request_deposit(env, &owner_addr, assets, min_shares_out);
+                captured = Some(result?);
+                Ok(())
+            })?;
+            let response = captured.ok_or(ContractError::InvalidState)?;
+            Ok(encode_receipt(
+                env,
+                &templar_soroban_shared_types::PendingDepositReceipt {
+                    request_id: response.request_id,
+                    assets: response.assets,
+                }
+                .encode(),
+            ))
+        }
+        VaultCommand::CancelPendingDeposit { owner, request_id } => {
+            let owner_addr = address_from_alloc_string(env, &owner)?;
+            let mut captured: Option<super::curator_vault::CancelPendingDepositResponse> = None;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                let result = vault.cancel_pending_deposit(env, &owner_addr, request_id);
+                captured = Some(result?);
+                Ok(())
+            })?;
+            let response = captured.ok_or(ContractError::InvalidState)?;
+            Ok(encode_receipt(
+                env,
+                &templar_soroban_shared_types::CancelPendingDepositReceipt {
+                    request_id: response.request_id,
+                    assets_refunded: response.assets_refunded,
+                }
+                .encode(),
+            ))
+        }
+        VaultCommand::BeginEpochCutoff { caller, cutoff_ns } => {
+            let caller_addr = address_from_alloc_string(env, &caller)?;
+            let mut captured: Option<super::curator_vault::BeginEpochCutoffResponse> = None;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                let result = vault.begin_epoch_cutoff(env, &caller_addr, cutoff_ns);
+                captured = Some(result?);
+                Ok(())
+            })?;
+            let response = captured.ok_or(ContractError::InvalidState)?;
+            Ok(encode_receipt(
+                env,
+                &templar_soroban_shared_types::BeginEpochCutoffReceipt {
+                    epoch_id: response.epoch_id,
+                    cutoff_ns: response.cutoff_ns,
+                }
+                .encode(),
+            ))
+        }
+        VaultCommand::SettleEpoch { caller } => {
+            let caller_addr = address_from_alloc_string(env, &caller)?;
+            let mut captured: Option<super::curator_vault::SettleEpochResponse> = None;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                let result = vault.settle_epoch(env, &caller_addr);
+                captured = Some(result?);
+                Ok(())
+            })?;
+            let response = captured.ok_or(ContractError::InvalidState)?;
+            Ok(encode_receipt(
+                env,
+                &templar_soroban_shared_types::SettleEpochReceipt {
+                    epoch_id: response.epoch_id,
+                    report_seq: response.report_seq,
+                    as_of_ns: response.as_of_ns,
+                    report_hash: response.report_hash,
+                    settlement_nav: response.settlement_nav,
+                    eligible_supply: response.eligible_supply,
+                    cutoff_ns: response.cutoff_ns,
+                }
+                .encode(),
+            ))
+        }
+        VaultCommand::AdmitPendingDeposit { caller, request_id } => {
+            let caller_addr = address_from_alloc_string(env, &caller)?;
+            let mut captured: Option<super::curator_vault::AdmitPendingDepositResponse> = None;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                let result = vault.admit_pending_deposit(env, &caller_addr, request_id);
+                captured = Some(result?);
+                Ok(())
+            })?;
+            let response = captured.ok_or(ContractError::InvalidState)?;
+            Ok(encode_receipt(
+                env,
+                &templar_soroban_shared_types::AdmitPendingDepositReceipt {
+                    request_id: response.request_id,
+                    shares_out: response.shares_out,
+                    assets_in: i128::try_from(response.assets_in)
+                        .map_err(|_| ContractError::ConversionOverflow)?,
+                }
+                .encode(),
+            ))
+        }
+        VaultCommand::CancelPendingWithdrawal { owner, request_id } => {
+            let owner_addr = address_from_alloc_string(env, &owner)?;
+            let mut captured: Option<super::curator_vault::CancelPendingWithdrawalResponse> = None;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                let result = vault.cancel_pending_withdrawal(env, &owner_addr, request_id);
+                captured = Some(result?);
+                Ok(())
+            })?;
+            let response = captured.ok_or(ContractError::InvalidState)?;
+            Ok(encode_receipt(
+                env,
+                &templar_soroban_shared_types::CancelPendingWithdrawalReceipt {
+                    request_id: response.request_id,
+                    shares_refunded: response.shares_refunded,
+                    epoch_id: response.epoch_id,
+                }
+                .encode(),
+            ))
+        }
+        VaultCommand::GetEpochState => {
+            let mut captured: Option<templar_soroban_shared_types::EpochStateViewReceipt> = None;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                let result = vault.epoch_state_view();
+                captured = Some(result?);
+                Ok(())
+            })?;
+            let receipt = captured.ok_or(ContractError::InvalidState)?;
+            Ok(encode_receipt(env, &receipt.encode()))
+        }
+        VaultCommand::GetEpochSnapshot { epoch_id } => {
+            let mut captured: Option<templar_soroban_shared_types::EpochSnapshotReceipt> = None;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                let result = vault.epoch_snapshot_view(epoch_id);
+                captured = Some(result?);
+                Ok(())
+            })?;
+            let receipt = captured.ok_or(ContractError::InvalidState)?;
+            Ok(encode_receipt(env, &receipt.encode()))
+        }
+        VaultCommand::GetCustodialReportMetadata { market_id } => {
+            let mut captured: Option<templar_soroban_shared_types::ReportMetadataReceipt> = None;
+            with_contract_vault_contract_error(env, &mut |vault: &mut ContractVault<'_>| {
+                let result = vault.custodial_report_metadata_view(env, market_id);
+                captured = Some(result?);
+                Ok(())
+            })?;
+            let receipt = captured.ok_or(ContractError::InvalidState)?;
+            Ok(encode_receipt(env, &receipt.encode()))
+        }
+        #[cfg(feature = "immediate-entrypoints")]
         VaultCommand::RefreshFees => {
             refresh_fees_impl(env)?;
             Ok(encode_receipt(env, &EmptyReceipt.encode()))
         }
+        #[cfg(feature = "immediate-entrypoints")]
         VaultCommand::ResyncIdleBalance => {
             resync_idle_balance_impl(env)?;
             Ok(encode_receipt(env, &EmptyReceipt.encode()))
         }
+        #[cfg(feature = "immediate-entrypoints")]
         VaultCommand::CancelMigration { caller } => {
             cancel_migration_impl(env, address_from_alloc_string(env, &caller)?)?;
             Ok(encode_receipt(env, &EmptyReceipt.encode()))
         }
+        #[cfg(feature = "immediate-entrypoints")]
         VaultCommand::ExtendTtl => {
             extend_storage_ttl(env);
             Ok(encode_receipt(env, &EmptyReceipt.encode()))
         }
+        #[cfg(not(feature = "immediate-entrypoints"))]
+        _ => Err(ContractError::InvalidInput),
     }
 }
 
@@ -1387,6 +1609,13 @@ fn execute_governance_command(
         ),
     }
 }
+// The contract identity type is present in every profile so the module
+// re-export stays stable. The `#[contract]` attribute itself contributes no
+// wasm export wrappers; only `#[contractimpl]` blocks do. The epoch-only
+// library profile therefore keeps this type while its exported command
+// surface is supplied exclusively by the thin epoch package, and every law
+// path remains reachable through the plain `*_law` functions in this module
+// and `crate::epoch_law`.
 #[contract]
 pub struct SorobanVaultContract;
 
@@ -1430,14 +1659,151 @@ fn initialize_impl(
     Ok(())
 }
 
+// Plain (non-exported) law entry points. These carry the exact logic the
+// exported lifecycle surface below forwards to. They are compiled in every
+// profile, so the epoch-only library build keeps every law path reachable
+// through `crate::epoch_law` and the thin epoch package without emitting a
+// single wasm export wrapper from this crate.
+
+/// Return the package version and the exact capability mask compiled into
+/// this artifact.
+pub(crate) fn version_law(env: &Env) -> (soroban_sdk::String, u64) {
+    (
+        soroban_sdk::String::from_str(env, crate::RUNTIME_VERSION),
+        crate::RUNTIME_FEATURE_FLAGS,
+    )
+}
+
+/// Initialize a vault with default operational cooldowns.
+pub(crate) fn initialize_default_law(
+    env: &Env,
+    curator: soroban_sdk::Address,
+    governance: soroban_sdk::Address,
+    asset_token: soroban_sdk::Address,
+    share_token: soroban_sdk::Address,
+    virtual_shares: i128,
+    virtual_assets: i128,
+) -> Result<(), ContractError> {
+    initialize_impl(
+        env,
+        curator,
+        governance,
+        asset_token,
+        share_token,
+        virtual_shares,
+        virtual_assets,
+        SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+        SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS,
+    )
+}
+
+/// Initialize a vault with an explicit withdrawal cooldown.
+pub(crate) fn initialize_with_config_law(
+    env: &Env,
+    curator: soroban_sdk::Address,
+    governance: soroban_sdk::Address,
+    asset_token: soroban_sdk::Address,
+    share_token: soroban_sdk::Address,
+    virtual_shares: i128,
+    virtual_assets: i128,
+    withdrawal_cooldown_ns: u64,
+) -> Result<(), ContractError> {
+    initialize_impl(
+        env,
+        curator,
+        governance,
+        asset_token,
+        share_token,
+        virtual_shares,
+        virtual_assets,
+        withdrawal_cooldown_ns,
+        SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS,
+    )
+}
+
+/// Initialize a vault with every operational cooldown explicit.
+pub(crate) fn initialize_with_full_config_law(
+    env: &Env,
+    curator: soroban_sdk::Address,
+    governance: soroban_sdk::Address,
+    asset_token: soroban_sdk::Address,
+    share_token: soroban_sdk::Address,
+    virtual_shares: i128,
+    virtual_assets: i128,
+    withdrawal_cooldown_ns: u64,
+    idle_resync_cooldown_ns: u64,
+) -> Result<(), ContractError> {
+    initialize_impl(
+        env,
+        curator,
+        governance,
+        asset_token,
+        share_token,
+        virtual_shares,
+        virtual_assets,
+        withdrawal_cooldown_ns,
+        idle_resync_cooldown_ns,
+    )
+}
+
+/// Decode and execute one vault command.
+pub(crate) fn execute_payload_law(env: &Env, payload: &Bytes) -> Result<Bytes, ContractError> {
+    let command = decode_command(payload)?;
+    execute_public_command(env, command)
+}
+
+/// Decode and execute one governance command under authorization.
+pub(crate) fn execute_governance_payload_law(
+    env: &Env,
+    caller: &soroban_sdk::Address,
+    payload: &Bytes,
+) -> Result<(), ContractError> {
+    let caller_kind = governance_command_caller_kind(env, caller)?;
+    let command = GovernanceCommand::decode(&payload.to_alloc_vec())
+        .map_err(|_| ContractError::InvalidInput)?;
+    require_governance_command_authorization(caller_kind, &command)?;
+    execute_governance_command(env, caller.clone(), command, true)
+}
+
+/// Upgrade the deployed wasm under governance authority.
+pub(crate) fn upgrade_law(
+    env: &Env,
+    new_wasm_hash: BytesN<32>,
+    operator: &soroban_sdk::Address,
+) -> Result<(), ContractError> {
+    require_governance(env, operator)?;
+    set_migration_in_progress(env, true);
+    env.deployer().update_current_contract_wasm(new_wasm_hash);
+    emit_admin_event(env, symbol_short!("upgrade"));
+    Ok(())
+}
+
+/// Complete a migration under governance authority.
+pub(crate) fn migrate_law(env: &Env, operator: &soroban_sdk::Address) -> Result<(), ContractError> {
+    require_governance(env, operator)?;
+    if !migration_in_progress(env) {
+        return Err(ContractError::InvalidState);
+    }
+
+    normalize_fee_anchor(env)?;
+    runtime_to_contract(validate_and_rewrite_storage(env))?;
+    extend_storage_ttl(env);
+    set_migration_in_progress(env, false);
+    emit_admin_event(env, symbol_short!("migrate"));
+    Ok(())
+}
+
+// The exported lifecycle surface exists only where an executable command
+// profile is selected. An epoch-only build compiles none of these wrappers,
+// so this crate contributes zero wasm exports in that profile and the thin
+// epoch package is the sole contributor of deployed exports for the epoch
+// product.
+#[cfg(any(not(feature = "epoch"), feature = "immediate-entrypoints"))]
 #[contractimpl]
 impl SorobanVaultContract {
     /// Return the package version and capabilities compiled into this runtime.
     pub fn version(env: Env) -> (soroban_sdk::String, u64) {
-        (
-            soroban_sdk::String::from_str(&env, crate::RUNTIME_VERSION),
-            crate::RUNTIME_FEATURE_FLAGS,
-        )
+        version_law(&env)
     }
 
     pub fn initialize(
@@ -1449,7 +1815,7 @@ impl SorobanVaultContract {
         virtual_shares: i128,
         virtual_assets: i128,
     ) -> Result<(), ContractError> {
-        initialize_impl(
+        initialize_default_law(
             &env,
             curator,
             governance,
@@ -1457,8 +1823,6 @@ impl SorobanVaultContract {
             share_token,
             virtual_shares,
             virtual_assets,
-            SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
-            SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS,
         )
     }
 
@@ -1472,7 +1836,7 @@ impl SorobanVaultContract {
         virtual_assets: i128,
         withdrawal_cooldown_ns: u64,
     ) -> Result<(), ContractError> {
-        initialize_impl(
+        initialize_with_config_law(
             &env,
             curator,
             governance,
@@ -1481,7 +1845,6 @@ impl SorobanVaultContract {
             virtual_shares,
             virtual_assets,
             withdrawal_cooldown_ns,
-            SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS,
         )
     }
 
@@ -1496,7 +1859,7 @@ impl SorobanVaultContract {
         withdrawal_cooldown_ns: u64,
         idle_resync_cooldown_ns: u64,
     ) -> Result<(), ContractError> {
-        initialize_impl(
+        initialize_with_full_config_law(
             &env,
             curator,
             governance,
@@ -1510,8 +1873,7 @@ impl SorobanVaultContract {
     }
 
     pub fn execute(env: Env, payload: Bytes) -> Result<Bytes, ContractError> {
-        let command = decode_command(&payload)?;
-        execute_public_command(&env, command)
+        execute_payload_law(&env, &payload)
     }
 
     pub fn execute_governance(
@@ -1519,13 +1881,29 @@ impl SorobanVaultContract {
         caller: soroban_sdk::Address,
         payload: Bytes,
     ) -> Result<(), ContractError> {
-        let caller_kind = governance_command_caller_kind(&env, &caller)?;
-        let command = GovernanceCommand::decode(&payload.to_alloc_vec())
-            .map_err(|_| ContractError::InvalidInput)?;
-        require_governance_command_authorization(caller_kind, &command)?;
-        execute_governance_command(&env, caller, command, true)
+        execute_governance_payload_law(&env, &caller, &payload)
     }
 
+    pub fn upgrade(
+        env: Env,
+        new_wasm_hash: BytesN<32>,
+        operator: soroban_sdk::Address,
+    ) -> Result<(), ContractError> {
+        upgrade_law(&env, new_wasm_hash, &operator)
+    }
+
+    pub fn migrate(env: Env, operator: soroban_sdk::Address) -> Result<(), ContractError> {
+        migrate_law(&env, &operator)
+    }
+}
+
+// The proxy view is an immediate-product ABI surface. It lives in its own
+// feature-gated contract implementation block so no cfg-gated function sits
+// inside the unconditional implementation block, which would otherwise
+// break the SDK dispatch table expansion in test builds.
+#[cfg(feature = "immediate-entrypoints")]
+#[contractimpl]
+impl SorobanVaultContract {
     /// Return the compact proxy view used by clients and tests.
     ///
     /// `maxWithdraw` and `maxRedeem` values in the preview tuple are bounded by
@@ -1619,7 +1997,7 @@ impl SorobanVaultContract {
                     &config,
                     shares_u128,
                     i128::MAX as u128,
-                    InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+                    InvalidStateCode::Unknown,
                 )
                 .map_err(|_| ContractError::ConversionOverflow)?,
             )?
@@ -1648,7 +2026,7 @@ impl SorobanVaultContract {
                     &config,
                     share_headroom,
                     i128::MAX as u128,
-                    InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+                    InvalidStateCode::DepositOverflowTotalAssets,
                 )
                 .map_err(|_| ContractError::ConversionOverflow)?
             };
@@ -1659,7 +2037,7 @@ impl SorobanVaultContract {
                 &config,
                 max_shares,
                 u128::MAX,
-                InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+                InvalidStateCode::MintOverflowTotalShares,
             );
             let max_mint = if matches!(assets_for_max_shares, Ok(assets) if assets <= asset_headroom)
             {
@@ -1700,7 +2078,7 @@ impl SorobanVaultContract {
                     &config,
                     shares_u128,
                     i128::MAX as u128,
-                    InvalidStateCode::RequestWithdrawExpectedAssetsExceedTotalAssets,
+                    InvalidStateCode::Unknown,
                 )
                 .map_err(|_| ContractError::ConversionOverflow)?,
             )?
@@ -1750,31 +2128,5 @@ impl SorobanVaultContract {
                 preview_withdraw_value,
             ),
         ))
-    }
-
-    pub fn upgrade(
-        env: Env,
-        new_wasm_hash: BytesN<32>,
-        operator: soroban_sdk::Address,
-    ) -> Result<(), ContractError> {
-        require_governance(&env, &operator)?;
-        set_migration_in_progress(&env, true);
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
-        emit_admin_event(&env, symbol_short!("upgrade"));
-        Ok(())
-    }
-
-    pub fn migrate(env: Env, operator: soroban_sdk::Address) -> Result<(), ContractError> {
-        require_governance(&env, &operator)?;
-        if !migration_in_progress(&env) {
-            return Err(ContractError::InvalidState);
-        }
-
-        normalize_fee_anchor(&env)?;
-        runtime_to_contract(validate_and_rewrite_storage(&env))?;
-        extend_storage_ttl(&env);
-        set_migration_in_progress(&env, false);
-        emit_admin_event(&env, symbol_short!("migrate"));
-        Ok(())
     }
 }

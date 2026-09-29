@@ -74,7 +74,6 @@ pub struct WithdrawalSkippedEvent {
     pub owner: BytesN<32>,
     pub receiver: BytesN<32>,
     pub escrow_shares: u128,
-    pub expected_assets: u128,
     pub reason: u32,
 }
 
@@ -126,7 +125,7 @@ pub struct WithdrawalRequestedEvent {
     pub owner: BytesN<32>,
     pub receiver: BytesN<32>,
     pub shares: u128,
-    pub expected_assets: u128,
+    pub epoch_id: u64,
 }
 
 #[contractevent]
@@ -155,6 +154,88 @@ pub struct PauseUpdatedEvent {
 pub struct EmergencyResetCompletedEvent {
     pub op_id: u64,
     pub from_state: u32,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct DepositPendingEvent {
+    pub owner: BytesN<32>,
+    pub request_id: u64,
+    pub assets: u128,
+    pub epoch_id: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct DepositAdmittedEvent {
+    pub receiver: BytesN<32>,
+    pub assets_in: u128,
+    pub shares_out: u128,
+    pub request_epoch_id: u64,
+    pub settlement_epoch_id: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct EpochSupplySeededEvent {
+    pub receiver: BytesN<32>,
+    pub assets_in: u128,
+    pub shares_out: u128,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct DepositCancelledEvent {
+    pub owner: BytesN<32>,
+    pub request_id: u64,
+    pub assets_refunded: u128,
+    pub epoch_id: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct EpochCutoffStartedEvent {
+    pub epoch_id: u64,
+    pub cutoff_ns: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct EpochSettledEvent {
+    pub epoch_id: u64,
+    pub report_seq: u64,
+    pub report_hash: BytesN<32>,
+    pub settlement_nav: u128,
+    pub eligible_supply: u128,
+    pub cutoff_ns: u64,
+    pub as_of_ns: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct WithdrawalCancelledEvent {
+    pub id: u64,
+    pub owner: BytesN<32>,
+    pub escrow_shares: u128,
+    pub epoch_id: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct ReportMetadataConsumedEvent {
+    pub epoch_id: u64,
+    pub market_id: u32,
+    pub report_seq: u64,
+    pub report_hash: BytesN<32>,
+    pub as_of_ns: u64,
 }
 
 /// Publish a KernelEvent as typed Soroban contract events.
@@ -228,16 +309,13 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             owner,
             receiver,
             escrow_shares,
-            expected_assets,
             reason,
         } => WithdrawalSkippedEvent {
             id: *id,
             owner: event_address(env, owner),
             receiver: event_address(env, receiver),
             escrow_shares: *escrow_shares,
-            expected_assets: *expected_assets,
             reason: match reason {
-                WithdrawalSkipReason::ZeroExpectedAssets => 0,
                 WithdrawalSkipReason::Restricted => 1,
             },
         }
@@ -293,13 +371,13 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             owner,
             receiver,
             shares,
-            expected_assets,
+            epoch_id,
         } => WithdrawalRequestedEvent {
             id: *id,
             owner: event_address(env, owner),
             receiver: event_address(env, receiver),
             shares: *shares,
-            expected_assets: *expected_assets,
+            epoch_id: *epoch_id,
         }
         .publish(env),
         KernelEvent::ExternalAssetsSynced {
@@ -321,6 +399,70 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
         }
         .publish(env),
         KernelEvent::PauseUpdated { paused } => PauseUpdatedEvent { paused: *paused }.publish(env),
+        #[cfg(feature = "epoch")]
+        KernelEvent::EpochCutoffStarted { epoch_id, cutoff_ns } => EpochCutoffStartedEvent {
+            epoch_id: *epoch_id,
+            cutoff_ns: *cutoff_ns,
+        }
+        .publish(env),
+        #[cfg(feature = "epoch")]
+        KernelEvent::EpochSettled {
+            epoch_id,
+            report_seq,
+            report_hash,
+            settlement_nav,
+            eligible_supply,
+            cutoff_ns,
+            as_of_ns,
+        } => EpochSettledEvent {
+            epoch_id: *epoch_id,
+            report_seq: *report_seq,
+            report_hash: BytesN::from_array(env, report_hash),
+            settlement_nav: *settlement_nav,
+            eligible_supply: *eligible_supply,
+            cutoff_ns: *cutoff_ns,
+            as_of_ns: *as_of_ns,
+        }
+        .publish(env),
+        #[cfg(feature = "epoch")]
+        KernelEvent::WithdrawalCancelled {
+            id,
+            owner,
+            escrow_shares,
+            epoch_id,
+        } => WithdrawalCancelledEvent {
+            id: *id,
+            owner: event_address(env, owner),
+            escrow_shares: *escrow_shares,
+            epoch_id: *epoch_id,
+        }
+        .publish(env),
+        #[cfg(feature = "epoch")]
+        KernelEvent::DepositAdmitted {
+            receiver,
+            assets_in,
+            shares_out,
+            request_epoch_id,
+            settlement_epoch_id,
+        } => DepositAdmittedEvent {
+            receiver: event_address(env, receiver),
+            assets_in: *assets_in,
+            shares_out: *shares_out,
+            request_epoch_id: *request_epoch_id,
+            settlement_epoch_id: *settlement_epoch_id,
+        }
+        .publish(env),
+        #[cfg(feature = "epoch")]
+        KernelEvent::EpochSupplySeeded {
+            receiver,
+            assets_in,
+            shares_out,
+        } => EpochSupplySeededEvent {
+            receiver: event_address(env, receiver),
+            assets_in: *assets_in,
+            shares_out: *shares_out,
+        }
+        .publish(env),
         KernelEvent::EmergencyResetCompleted { op_id, from_state } => {
             EmergencyResetCompletedEvent {
                 op_id: *op_id,
@@ -329,6 +471,56 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             .publish(env)
         }
     }
+    Ok(())
+}
+
+/// Publish a pending-deposit custody event for a recorded liability.
+///
+/// Pending custody is runtime-only: the kernel records the liability but
+/// emits no `KernelEvent` for it, so this is the sole lawful publisher for
+/// the custody-confirmation event. The owner bytes are exactly the kernel
+/// address bytes of the depositor, never a Soroban SDK address.
+#[cfg(feature = "epoch")]
+#[inline(never)]
+pub fn publish_deposit_pending(
+    env: &Env,
+    owner: &templar_vault_kernel::Address,
+    request_id: u64,
+    assets: u128,
+    epoch_id: u64,
+) -> Result<(), RuntimeError> {
+    DepositPendingEvent {
+        owner: event_address(env, owner),
+        request_id,
+        assets,
+        epoch_id,
+    }
+    .publish(env);
+    Ok(())
+}
+
+/// Publish a pending-deposit cancellation event for an owner-bound refund.
+///
+/// Refund completion is runtime-only: the kernel cancels the liability but
+/// emits no `KernelEvent` for it, so this is the sole lawful publisher for
+/// the refund event. The owner bytes are exactly the kernel address bytes
+/// of the depositor, never a Soroban SDK address.
+#[cfg(feature = "epoch")]
+#[inline(never)]
+pub fn publish_deposit_cancelled(
+    env: &Env,
+    owner: &templar_vault_kernel::Address,
+    request_id: u64,
+    assets_refunded: u128,
+    epoch_id: u64,
+) -> Result<(), RuntimeError> {
+    DepositCancelledEvent {
+        owner: event_address(env, owner),
+        request_id,
+        assets_refunded,
+        epoch_id,
+    }
+    .publish(env);
     Ok(())
 }
 

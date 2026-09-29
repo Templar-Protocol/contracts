@@ -18,7 +18,7 @@ path = "uniffi-bindgen.rs"
 [dependencies]
 uniffi = { workspace = true, features = ["cli", "tokio"] }
 templar-common.workspace = true
-templar-vault-kernel = { path = "../../contract/vault/kernel", features = ["serde"] }
+templar-vault-kernel = { path = "../../contract/vault/kernel", default-features = false, features = ["serde", "action-immediate-deposit", "action-atomic-exit", "action-recovery", "action-sync-external", "action-refresh-fees", "action-allocation-lifecycle", "action-refresh-lifecycle", "action-pause"] }
 near-jsonrpc-client.workspace = true
 near-crypto.workspace = true
 near-account-id.workspace = true

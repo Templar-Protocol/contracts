@@ -104,6 +104,7 @@ pub enum KernelCallback {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
 pub enum WithdrawalSkipReason {
+    #[cfg(not(feature = "action-epoch-settlement"))]
     ZeroExpectedAssets,
     Restricted,
 }
@@ -163,6 +164,7 @@ pub enum KernelEvent {
         owner: Address,
         receiver: Address,
         escrow_shares: u128,
+        #[cfg(not(feature = "action-epoch-settlement"))]
         expected_assets: u128,
         reason: WithdrawalSkipReason,
     },
@@ -197,7 +199,10 @@ pub enum KernelEvent {
         owner: Address,
         receiver: Address,
         shares: u128,
+        #[cfg(not(feature = "action-epoch-settlement"))]
         expected_assets: u128,
+        #[cfg(feature = "action-epoch-settlement")]
+        epoch_id: u64,
     },
     /// External assets synchronized for an operation.
     ExternalAssetsSynced {
@@ -211,6 +216,48 @@ pub enum KernelEvent {
     PauseUpdated { paused: bool },
     /// Emergency reset forced the vault back to Idle.
     EmergencyResetCompleted { op_id: u64, from_state: u32 },
+    /// Epoch intake closed at a cutoff.
+    #[cfg(feature = "action-epoch-settlement")]
+    EpochCutoffStarted { epoch_id: u64, cutoff_ns: u64 },
+    /// An epoch settled against an accepted valuation report.
+    #[cfg(feature = "action-epoch-settlement")]
+    EpochSettled {
+        epoch_id: u64,
+        report_seq: u64,
+        report_hash: [u8; 32],
+        settlement_nav: u128,
+        eligible_supply: u128,
+        cutoff_ns: u64,
+        as_of_ns: u64,
+    },
+    /// A pending withdrawal was cancelled by its owner and fully refunded.
+    #[cfg(feature = "action-epoch-settlement")]
+    WithdrawalCancelled {
+        id: u64,
+        owner: Address,
+        escrow_shares: u128,
+        epoch_id: u64,
+    },
+    /// A pending deposit was admitted against its settled epoch snapshot and
+    /// shares were minted to its receiver. Custody already occurred at request
+    /// time, so admission emits no asset transfer.
+    #[cfg(feature = "action-epoch-settlement")]
+    DepositAdmitted {
+        receiver: Address,
+        assets_in: u128,
+        shares_out: u128,
+        request_epoch_id: u64,
+        settlement_epoch_id: u64,
+    },
+    /// A governed one-time backed seed transfer was custodied and exactly
+    /// matching shares were minted to the receiver. The runtime verified the
+    /// observed custody delta before the mint was admitted.
+    #[cfg(feature = "action-epoch-settlement")]
+    EpochSupplySeeded {
+        receiver: Address,
+        assets_in: u128,
+        shares_out: u128,
+    },
 }
 
 impl From<KernelEvent> for KernelEffect {
@@ -257,6 +304,12 @@ impl KernelEvent {
             KernelEvent::WithdrawalSkipped {
                 owner, receiver, ..
             } => alloc::vec![*owner, *receiver],
+            #[cfg(feature = "action-epoch-settlement")]
+            KernelEvent::WithdrawalCancelled { owner, .. } => alloc::vec![*owner],
+            #[cfg(feature = "action-epoch-settlement")]
+            KernelEvent::DepositAdmitted { receiver, .. } => alloc::vec![*receiver],
+            #[cfg(feature = "action-epoch-settlement")]
+            KernelEvent::EpochSupplySeeded { receiver, .. } => alloc::vec![*receiver],
             _ => alloc::vec![],
         }
     }

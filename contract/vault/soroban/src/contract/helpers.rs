@@ -480,8 +480,11 @@ pub(crate) fn with_contract_vault(
 }
 
 #[inline]
-pub(crate) fn transition_to_runtime<T, E>(result: Result<T, E>) -> Result<T, RuntimeError> {
-    result.map_err(|_| RuntimeError::transition_error())
+pub(crate) fn transition_to_runtime<T, E>(result: Result<T, E>) -> Result<T, RuntimeError>
+where
+    E: Into<RuntimeError>,
+{
+    result.map_err(Into::into)
 }
 
 #[inline]
@@ -569,4 +572,36 @@ pub(crate) fn require_governance_control_plane(
 pub(crate) fn governance_caller(env: &Env, caller: &SdkAddress) -> Result<Address, ContractError> {
     require_governance(env, caller)?;
     Ok(kernel_address_from_sdk(env, caller))
+}
+
+/// Shared delayed-mode guard for immediate-valuation paths.
+///
+/// Immediate deposits and atomic exits price against the pre-settlement NAV,
+/// so they must fail closed whenever settlement law governs the vault: epoch
+/// settlement is configured, any accepted valuation report exists, pending
+/// deposit custody is held outside [`VaultState`], or the vault carries
+/// external exposure while epoch settlement is unconfigured. Request
+/// withdrawal, cancellations, configuration, and reads remain available;
+/// settlement admits and prices them from accepted reports. A vault-state
+/// read failure fails closed.
+#[inline(never)]
+pub(crate) fn require_immediate_execution_allowed(env: &Env) -> Result<(), ContractError> {
+    use crate::storage::deposit::PendingStorage;
+    let storage = SorobanStorage::new(env);
+    let state = storage
+        .load_state()
+        .map_err(|_| ContractError::InvalidState)?;
+    let held_custody = storage
+        .pending_deposit_stats()
+        .map_err(|_| ContractError::InvalidState)?;
+    if storage.epoch_mode_active()
+        || storage
+            .any_accepted_reports()
+            .map_err(|_| ContractError::InvalidState)?
+        || held_custody.count > 0
+        || state.is_some_and(|state| state.external_assets > 0)
+    {
+        return Err(ContractError::InvalidState);
+    }
+    Ok(())
 }

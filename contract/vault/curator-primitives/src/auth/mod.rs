@@ -33,6 +33,8 @@ pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
         | ActionKind::RequestWithdraw
         | ActionKind::AtomicWithdraw
         | ActionKind::AtomicRedeem => AuthPolicyClass::Public,
+        #[cfg(feature = "action-epoch-settlement")]
+        ActionKind::CancelPendingWithdrawal => AuthPolicyClass::Public,
         ActionKind::ExecuteWithdraw
         | ActionKind::BeginAllocating
         | ActionKind::FinishAllocating
@@ -42,10 +44,16 @@ pub const fn canonical_policy_class(action: ActionKind) -> AuthPolicyClass {
         | ActionKind::FinishRefreshing
         | ActionKind::SettlePayout
         | ActionKind::RefreshFees => AuthPolicyClass::Allocator,
+        #[cfg(feature = "action-epoch-settlement")]
+        ActionKind::BeginEpochCutoff
+        | ActionKind::SettleEpoch
+        | ActionKind::AdmitPendingDeposit => AuthPolicyClass::Allocator,
         ActionKind::Pause | ActionKind::SetRestrictions => AuthPolicyClass::Sentinel,
         ActionKind::AbortAllocating
         | ActionKind::AbortWithdrawing
         | ActionKind::AbortRefreshing => AuthPolicyClass::AllocatorEmergency,
+        #[cfg(feature = "action-epoch-settlement")]
+        ActionKind::SeedEpochSupply => AuthPolicyClass::Curator,
         ActionKind::ManualReconcile | ActionKind::EmergencyReset | ActionKind::PolicyAdmin => {
             AuthPolicyClass::Curator
         }
@@ -62,6 +70,14 @@ pub const fn boundary_policy_class(action: ActionKind) -> AuthPolicyClass {
 #[inline]
 #[must_use]
 pub const fn allowed_while_paused(action: ActionKind) -> bool {
+    #[cfg(feature = "action-epoch-settlement")]
+    if matches!(action, ActionKind::CancelPendingWithdrawal) {
+        return true;
+    }
+    #[cfg(feature = "action-epoch-settlement")]
+    if matches!(action, ActionKind::SeedEpochSupply) {
+        return true;
+    }
     matches!(
         action,
         ActionKind::Pause
@@ -84,6 +100,18 @@ pub enum ActionKind {
     RequestWithdraw,
     /// Execute pending withdrawal.
     ExecuteWithdraw,
+    /// Move the open epoch to cutoff and block new settlement intake.
+    #[cfg(feature = "action-epoch-settlement")]
+    BeginEpochCutoff,
+    /// Settle a cutoff epoch from an accepted valuation report.
+    #[cfg(feature = "action-epoch-settlement")]
+    SettleEpoch,
+    /// Admit an already-custodied deposit against an immutable epoch snapshot.
+    #[cfg(feature = "action-epoch-settlement")]
+    AdmitPendingDeposit,
+    /// Cancel an unsettled withdrawal and refund its escrowed shares.
+    #[cfg(feature = "action-epoch-settlement")]
+    CancelPendingWithdrawal,
     /// Pause/unpause the vault.
     Pause,
     /// Set kernel restrictions (pause/allowlist/denylist).
@@ -118,6 +146,9 @@ pub enum ActionKind {
     /// Atomic withdraw (by assets, idle-only fast path).
     AtomicWithdraw,
     AtomicRedeem,
+    /// Governed one-time backed seed for a fresh epoch deployment.
+    #[cfg(feature = "action-epoch-settlement")]
+    SeedEpochSupply,
 }
 
 impl ActionKind {
@@ -149,6 +180,16 @@ impl From<&KernelAction> for ActionKind {
             KernelAction::AbortAllocating { .. } => Self::AbortAllocating,
             KernelAction::AbortWithdrawing { .. } => Self::AbortWithdrawing,
             KernelAction::RefreshFees { .. } => Self::RefreshFees,
+            #[cfg(feature = "action-epoch-settlement")]
+            KernelAction::BeginEpochCutoff { .. } => Self::BeginEpochCutoff,
+            #[cfg(feature = "action-epoch-settlement")]
+            KernelAction::SettleEpoch { .. } => Self::SettleEpoch,
+            #[cfg(feature = "action-epoch-settlement")]
+            KernelAction::AdmitPendingDeposit { .. } => Self::AdmitPendingDeposit,
+            #[cfg(feature = "action-epoch-settlement")]
+            KernelAction::CancelPendingWithdrawal { .. } => Self::CancelPendingWithdrawal,
+            #[cfg(feature = "action-epoch-settlement")]
+            KernelAction::SeedEpochSupply { .. } => Self::SeedEpochSupply,
             KernelAction::Pause { .. } => Self::Pause,
             KernelAction::EmergencyReset => Self::EmergencyReset,
         }

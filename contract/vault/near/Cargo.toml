@@ -36,8 +36,15 @@ near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 near-contract-standards.workspace = true
 templar-common.workspace = true
-templar-curator-primitives = { path = "../curator-primitives", features = ["borsh", "serde", "schemars", "std", "boundary", "recovery"] }
-templar-vault-kernel.workspace = true
+templar-curator-primitives = { path = "../curator-primitives", features = ["borsh", "serde", "schemars", "std", "boundary", "recovery", "action-epoch-settlement"] }
+# Delayed valuation is the only withdrawal model this runtime supports, so the
+# epoch cutoff, settlement and cancellation handlers must always be compiled in.
+templar-vault-kernel = { workspace = true, features = [
+  "action-epoch-settlement",
+  # Ordinary member intake is live on this runtime: deposits are admitted and
+  # shares minted through the same kernel action a real depositor reaches.
+  "action-immediate-deposit",
+] }
 itertools.workspace = true
 primitive-types = { version = "0.14.0", features = ["serde"] }
 borsh.workspace = true

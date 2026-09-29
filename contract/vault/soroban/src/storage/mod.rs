@@ -15,13 +15,17 @@ use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
 use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::PolicyState;
 use templar_vault_kernel::{
-    Address, AllocatingState, AllocationPlanEntry, FeeAccrualAnchor, OpState, PayoutState,
-    PendingWithdrawal, RefreshingState, Restrictions, TargetId, VaultState, Wad, WithdrawQueue,
-    WithdrawingState,
+    Address, AllocatingState, AllocationPlanEntry, EpochId, EpochPhase, EpochSnapshot, EpochState,
+    FeeAccrualAnchor, OpState, PayoutState, PendingWithdrawal, RefreshingState, Restrictions,
+    TargetId, ValuationReportRef, VaultState, Wad, WithdrawQueue, WithdrawingState,
 };
 
 use crate::error::RuntimeError;
 
+pub(crate) mod deposit;
+pub(crate) mod epoch;
+#[cfg(test)]
+mod tests;
 /// Re-extend TTL when remaining TTL drops below ~30 days (at ~5s/ledger).
 pub(crate) const DEFAULT_TTL_THRESHOLD: u32 = 518_400;
 /// Extend TTL to the Soroban maximum (~6 months at ~5s/ledger).
@@ -39,8 +43,15 @@ const BLOB_INLINE: u8 = 0;
 const BLOB_PAGED: u8 = 1;
 const STORAGE_MAGIC: [u8; 3] = *b"TVS";
 const STORAGE_VERSION_CURRENT: u8 = 1;
+#[cfg(feature = "immediate-entrypoints")]
 const STORAGE_VERSION_STATE_PAGED: u8 = 2;
+const STORAGE_VERSION_STATE_EPOCH: u8 = 3;
 const WITHDRAW_QUEUE_PAGE_SIZE: u64 = 128;
+const WITHDRAW_PAGE_MAGIC: [u8; 3] = *b"TWP";
+const WITHDRAW_PAGE_FORMAT_EPOCH: u8 = 1;
+const WITHDRAW_PAGE_ITEM_BYTES: usize = 120;
+#[cfg(feature = "immediate-entrypoints")]
+const LEGACY_WITHDRAW_PAGE_ITEM_BYTES: usize = 112;
 const STORAGE_KIND_STATE: u8 = 1;
 const STORAGE_KIND_RESTRICTIONS: u8 = 2;
 const STORAGE_KIND_SUPPLY_QUEUE: u8 = 3;
@@ -48,9 +59,15 @@ const STORAGE_KIND_MARKETS: u8 = 4;
 const STORAGE_KIND_PRINCIPALS: u8 = 5;
 const STORAGE_KIND_CAP_GROUPS: u8 = 6;
 const STORAGE_KIND_POLICY_LOCKS: u8 = 7;
+const STORAGE_KIND_EPOCH_STATE: u8 = 8;
+const STORAGE_KIND_ACCEPTED_REPORT: u8 = 9;
+const STORAGE_KIND_MAX_REPORT_AGE: u8 = 13;
+/// Upper bound on a single versioned law record (epoch lifecycle, accepted
+/// report tracking, or governance config). Records above this are corrupt.
+const MAX_VERSIONED_RECORD_BYTES: usize = 4096;
 
 #[derive(Clone, Copy)]
-enum StorageKind {
+pub(crate) enum StorageKind {
     State,
     Restrictions,
     SupplyQueue,
@@ -58,6 +75,9 @@ enum StorageKind {
     Principals,
     CapGroups,
     PolicyLocks,
+    EpochState,
+    AcceptedReport,
+    MaxReportAge,
 }
 
 impl StorageKind {
@@ -70,6 +90,9 @@ impl StorageKind {
             Self::Principals => STORAGE_KIND_PRINCIPALS,
             Self::CapGroups => STORAGE_KIND_CAP_GROUPS,
             Self::PolicyLocks => STORAGE_KIND_POLICY_LOCKS,
+            Self::EpochState => STORAGE_KIND_EPOCH_STATE,
+            Self::AcceptedReport => STORAGE_KIND_ACCEPTED_REPORT,
+            Self::MaxReportAge => STORAGE_KIND_MAX_REPORT_AGE,
         }
     }
 }
@@ -532,7 +555,12 @@ fn decode_markets_v1(bytes: &[u8]) -> Result<OrderedMap<TargetId, MarketConfig>,
             1 => Some(decode_cap_group_id(bytes, &mut cursor)?),
             _ => return Err(RuntimeError::storage_error("")),
         };
-        let _ = markets.insert(target_id, MarketConfig::new(enabled, cap, cap_group_id));
+        if markets
+            .insert(target_id, MarketConfig::new(enabled, cap, cap_group_id))
+            .is_some()
+        {
+            return Err(RuntimeError::storage_error("duplicate market target"));
+        }
     }
     finish_decode(bytes, cursor)?;
     Ok(markets)
@@ -638,87 +666,12 @@ fn decode_policy_locks_v1(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeEr
     ))
 }
 
-#[allow(dead_code, reason = "kept for storage codec regression and fuzz tests")]
-fn encode_withdraw_queue(queue: &WithdrawQueue, out: &mut Vec<u8>) {
-    push_u64(out, queue.next_withdraw_to_execute);
-    push_u64(out, queue.next_pending_withdrawal_id);
-    let entries: Vec<_> = queue.iter().collect();
-    push_u32(out, entries.len() as u32);
-    for (id, withdrawal) in entries {
-        push_u64(out, id);
-        push_address(out, &withdrawal.owner);
-        push_address(out, &withdrawal.receiver);
-        push_u128(out, withdrawal.escrow_shares);
-        push_u128(out, withdrawal.expected_assets);
-        push_u64(out, withdrawal.requested_at_ns.as_u64());
-    }
-}
-
-#[allow(dead_code, reason = "kept for storage codec regression and fuzz tests")]
-fn decode_withdraw_queue(bytes: &[u8], cursor: &mut usize) -> Result<WithdrawQueue, RuntimeError> {
-    let next_withdraw_to_execute = read_u64(bytes, cursor)?;
-    let next_pending_withdrawal_id = read_u64(bytes, cursor)?;
-    let count = read_u32(bytes, cursor)? as usize;
-    if count > SOROBAN_MAX_PENDING_WITHDRAWALS as usize {
-        return Err(RuntimeError::storage_error("withdraw queue too large"));
-    }
-    let count =
-        bounded_count_for_fixed_items(bytes, *cursor, count, 112, "withdraw queue too large")?;
-    if next_withdraw_to_execute > next_pending_withdrawal_id {
-        return Err(RuntimeError::storage_error("withdraw queue invalid ids"));
-    }
-    if count == 0 && next_withdraw_to_execute != next_pending_withdrawal_id {
-        return Err(RuntimeError::storage_error(
-            "empty withdraw queue invalid ids",
-        ));
-    }
-    let mut entries = Vec::with_capacity(count);
-    let mut previous_id = None;
-    for _ in 0..count {
-        let id = read_u64(bytes, cursor)?;
-        if id < next_withdraw_to_execute || id >= next_pending_withdrawal_id {
-            return Err(RuntimeError::storage_error(
-                "withdraw queue id out of range",
-            ));
-        }
-        if let Some(previous) = previous_id {
-            if id <= previous {
-                return Err(RuntimeError::storage_error("withdraw queue ids unsorted"));
-            }
-        } else if id != next_withdraw_to_execute {
-            return Err(RuntimeError::storage_error("withdraw queue head missing"));
-        }
-        previous_id = Some(id);
-        let withdrawal = PendingWithdrawal::new(
-            read_address(bytes, cursor)?,
-            read_address(bytes, cursor)?,
-            read_u128(bytes, cursor)?,
-            read_u128(bytes, cursor)?,
-            templar_vault_kernel::TimestampNs(read_u64(bytes, cursor)?),
-        );
-        entries.push((id, withdrawal));
-    }
-    let queue = WithdrawQueue::with_state(
-        entries,
-        next_withdraw_to_execute,
-        next_pending_withdrawal_id,
-    );
-    if queue.check_invariants() {
-        Ok(queue)
-    } else {
-        Err(RuntimeError::storage_error(
-            "withdraw queue invariant failed",
-        ))
-    }
-}
-
 #[derive(Clone, Copy)]
 struct WithdrawQueueHeader {
     next_withdraw_to_execute: u64,
     next_pending_withdrawal_id: u64,
     pending_count: u32,
 }
-
 struct StoredStateHeader {
     total_assets: u128,
     total_shares: u128,
@@ -727,6 +680,7 @@ struct StoredStateHeader {
     fee_anchor: FeeAccrualAnchor,
     op_state: OpState,
     withdraw_queue: WithdrawQueueHeader,
+    epoch: EpochState,
     next_op_id: u64,
 }
 
@@ -801,14 +755,17 @@ pub(crate) fn encode_withdraw_queue_page<'a>(
 ) -> Vec<u8> {
     let entries: Vec<_> = entries.into_iter().collect();
     let mut out = Vec::new();
+    out.extend_from_slice(&WITHDRAW_PAGE_MAGIC);
+    push_u8(&mut out, WITHDRAW_PAGE_FORMAT_EPOCH);
     push_u32(&mut out, entries.len() as u32);
     for (id, withdrawal) in entries {
         push_u64(&mut out, id);
         push_address(&mut out, &withdrawal.owner);
         push_address(&mut out, &withdrawal.receiver);
         push_u128(&mut out, withdrawal.escrow_shares);
-        push_u128(&mut out, withdrawal.expected_assets);
+        push_u128(&mut out, withdrawal.min_assets_out);
         push_u64(&mut out, withdrawal.requested_at_ns.as_u64());
+        push_u64(&mut out, withdrawal.epoch_id.as_u64());
     }
     out
 }
@@ -816,23 +773,106 @@ pub(crate) fn encode_withdraw_queue_page<'a>(
 pub(crate) fn decode_withdraw_queue_page(
     bytes: &[u8],
 ) -> Result<Vec<(u64, PendingWithdrawal)>, RuntimeError> {
+    if bytes.len() >= 4 && bytes[..3] == WITHDRAW_PAGE_MAGIC {
+        return decode_withdraw_queue_page_epoch(bytes);
+    }
+    // Dedicated epoch deployments are fresh: pre-epoch (immediate-style)
+    // queue pages can never legally exist in their storage. Reading one
+    // fails closed instead of migrating an immediate vault's queue into a
+    // fresh epoch contract.
+    #[cfg(feature = "immediate-entrypoints")]
+    {
+        return decode_withdraw_queue_page_legacy(bytes);
+    }
+    #[cfg(not(feature = "immediate-entrypoints"))]
+    {
+        Err(RuntimeError::storage_error("unsupported withdraw page format"))
+    }
+}
+
+fn decode_withdraw_queue_page_epoch(
+    bytes: &[u8],
+) -> Result<Vec<(u64, PendingWithdrawal)>, RuntimeError> {
+    let mut cursor = 3usize;
+    if read_u8(bytes, &mut cursor)? != WITHDRAW_PAGE_FORMAT_EPOCH {
+        return Err(RuntimeError::storage_error("unsupported withdraw page format"));
+    }
+    let count = read_u32(bytes, &mut cursor)? as usize;
+    if count > WITHDRAW_QUEUE_PAGE_SIZE as usize {
+        return Err(RuntimeError::storage_error("withdraw queue page too large"));
+    }
+    let count = bounded_count_for_fixed_items(
+        bytes,
+        cursor,
+        count,
+        WITHDRAW_PAGE_ITEM_BYTES,
+        "withdraw queue page too large",
+    )?;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let id = read_u64(bytes, &mut cursor)?;
+        let owner = read_address(bytes, &mut cursor)?;
+        let receiver = read_address(bytes, &mut cursor)?;
+        let escrow_shares = read_u128(bytes, &mut cursor)?;
+        let min_assets_out = read_u128(bytes, &mut cursor)?;
+        let requested_at_ns = templar_vault_kernel::TimestampNs(read_u64(bytes, &mut cursor)?);
+        let epoch_id = EpochId::new(read_u64(bytes, &mut cursor)?);
+        let withdrawal = if epoch_id == EpochId::MIGRATION_INTAKE {
+            if min_assets_out != 0 {
+                return Err(RuntimeError::storage_error(
+                    "migrated intake carries claim authority",
+                ));
+            }
+            PendingWithdrawal::migrated_legacy(owner, receiver, escrow_shares, requested_at_ns)
+        } else {
+            PendingWithdrawal::new(
+                owner,
+                receiver,
+                escrow_shares,
+                min_assets_out,
+                requested_at_ns,
+                epoch_id,
+            )
+        }
+        .map_err(|_| RuntimeError::storage_error("withdraw queue page entry invalid"))?;
+        if withdrawal.min_assets_out != min_assets_out || withdrawal.epoch_id != epoch_id {
+            return Err(RuntimeError::storage_error("withdraw queue page entry mismatch"));
+        }
+        entries.push((id, withdrawal));
+    }
+    finish_decode(bytes, cursor)?;
+    Ok(entries)
+}
+
+#[cfg(feature = "immediate-entrypoints")]
+fn decode_withdraw_queue_page_legacy(
+    bytes: &[u8],
+) -> Result<Vec<(u64, PendingWithdrawal)>, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     if count > WITHDRAW_QUEUE_PAGE_SIZE as usize {
         return Err(RuntimeError::storage_error("withdraw queue page too large"));
     }
-    let count =
-        bounded_count_for_fixed_items(bytes, cursor, count, 112, "withdraw queue page too large")?;
+    let count = bounded_count_for_fixed_items(
+        bytes,
+        cursor,
+        count,
+        LEGACY_WITHDRAW_PAGE_ITEM_BYTES,
+        "withdraw queue page too large",
+    )?;
     let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
         let id = read_u64(bytes, &mut cursor)?;
-        let withdrawal = PendingWithdrawal::new(
-            read_address(bytes, &mut cursor)?,
-            read_address(bytes, &mut cursor)?,
-            read_u128(bytes, &mut cursor)?,
-            read_u128(bytes, &mut cursor)?,
-            templar_vault_kernel::TimestampNs(read_u64(bytes, &mut cursor)?),
-        );
+        let owner = read_address(bytes, &mut cursor)?;
+        let receiver = read_address(bytes, &mut cursor)?;
+        let escrow_shares = read_u128(bytes, &mut cursor)?;
+        // The legacy fixed asset claim is dropped on migration: pending
+        // intake must not carry pre-settlement claim authority.
+        let _legacy_expected_assets = read_u128(bytes, &mut cursor)?;
+        let requested_at_ns = templar_vault_kernel::TimestampNs(read_u64(bytes, &mut cursor)?);
+        let withdrawal =
+            PendingWithdrawal::migrated_legacy(owner, receiver, escrow_shares, requested_at_ns)
+                .map_err(|_| RuntimeError::storage_error("withdraw queue page entry invalid"))?;
         entries.push((id, withdrawal));
     }
     finish_decode(bytes, cursor)?;
@@ -950,25 +990,9 @@ fn decode_op_state(bytes: &[u8], cursor: &mut usize) -> Result<OpState, RuntimeE
     }
 }
 
-#[allow(dead_code, reason = "kept for storage codec regression and fuzz tests")]
-pub(crate) fn encode_state_blob(state: &VaultState) -> Vec<u8> {
-    let mut out = Vec::new();
-    push_storage_header(&mut out, STORAGE_KIND_STATE);
-    push_u128(&mut out, state.total_assets);
-    push_u128(&mut out, state.total_shares);
-    push_u128(&mut out, state.idle_assets);
-    push_u128(&mut out, state.external_assets);
-    push_u128(&mut out, state.fee_anchor.total_assets);
-    push_u64(&mut out, state.fee_anchor.timestamp_ns.as_u64());
-    encode_op_state(&state.op_state, &mut out);
-    encode_withdraw_queue(&state.withdraw_queue, &mut out);
-    push_u64(&mut out, state.next_op_id);
-    out
-}
-
 fn encode_state_header_blob(state: &VaultState) -> Vec<u8> {
     let mut out = Vec::new();
-    push_storage_header_version(&mut out, STORAGE_KIND_STATE, STORAGE_VERSION_STATE_PAGED);
+    push_storage_header_version(&mut out, STORAGE_KIND_STATE, STORAGE_VERSION_STATE_EPOCH);
     push_u128(&mut out, state.total_assets);
     push_u128(&mut out, state.total_shares);
     push_u128(&mut out, state.idle_assets);
@@ -978,55 +1002,194 @@ fn encode_state_header_blob(state: &VaultState) -> Vec<u8> {
     encode_op_state(&state.op_state, &mut out);
     encode_withdraw_queue_header(&state.withdraw_queue, &mut out);
     push_u64(&mut out, state.next_op_id);
+    encode_epoch_state(&state.epoch, &mut out);
     out
 }
 
-#[allow(dead_code, reason = "kept for storage codec regression and fuzz tests")]
-pub(crate) fn decode_state_blob(bytes: &[u8]) -> Result<VaultState, RuntimeError> {
-    decode_storage_payload(
-        bytes,
-        StorageKind::State,
-        &[StorageVersionDecoder::current(decode_state_blob_v1)],
-    )
+/// Encode the epoch lifecycle law fields: phase, monotonic intake epoch,
+/// cutoff binding, and the immutable last-settled snapshot. Persisting the
+/// snapshot is what makes accepted-report replay across settlement
+/// impossible: settlement only advances through [`EpochState::apply_settled`]
+/// against this stored state.
+pub(crate) fn encode_epoch_state(epoch: &EpochState, out: &mut Vec<u8>) {
+    let phase = match epoch.phase {
+        EpochPhase::Open => 0u8,
+        EpochPhase::Cutoff => 1u8,
+        EpochPhase::Settled => 2u8,
+    };
+    push_u8(out, phase);
+    push_u64(out, epoch.intake_epoch.as_u64());
+    match epoch.cutoff_ns {
+        None => push_u8(out, 0),
+        Some(cutoff_ns) => {
+            push_u8(out, 1);
+            push_u64(out, cutoff_ns.as_u64());
+        }
+    }
+    match &epoch.last_settled {
+        None => push_u8(out, 0),
+        Some(snapshot) => {
+            push_u8(out, 1);
+            push_u64(out, snapshot.epoch_id().as_u64());
+            push_u64(out, snapshot.report_seq());
+            out.extend_from_slice(snapshot.report_hash());
+            push_u64(out, snapshot.as_of_ns().as_u64());
+            push_u128(out, snapshot.settlement_nav());
+            push_u128(out, snapshot.eligible_supply());
+            push_u64(out, snapshot.cutoff_ns().as_u64());
+        }
+    }
 }
 
-#[allow(dead_code, reason = "kept for storage codec regression and fuzz tests")]
-fn decode_state_blob_v1(bytes: &[u8]) -> Result<VaultState, RuntimeError> {
-    let mut cursor = 0usize;
-    let state = VaultState {
-        total_assets: read_u128(bytes, &mut cursor)?,
-        total_shares: read_u128(bytes, &mut cursor)?,
-        idle_assets: read_u128(bytes, &mut cursor)?,
-        external_assets: read_u128(bytes, &mut cursor)?,
-        fee_anchor: FeeAccrualAnchor::new(
-            read_u128(bytes, &mut cursor)?,
-            templar_vault_kernel::TimestampNs(read_u64(bytes, &mut cursor)?),
-        ),
-        op_state: decode_op_state(bytes, &mut cursor)?,
-        withdraw_queue: decode_withdraw_queue(bytes, &mut cursor)?,
-        next_op_id: read_u64(bytes, &mut cursor)?,
+pub(crate) fn decode_epoch_state(bytes: &[u8], cursor: &mut usize) -> Result<EpochState, RuntimeError> {
+    let phase = match read_u8(bytes, cursor)? {
+        0 => EpochPhase::Open,
+        1 => EpochPhase::Cutoff,
+        2 => EpochPhase::Settled,
+        _ => return Err(RuntimeError::storage_error("epoch phase invalid")),
     };
-
-    if cursor != bytes.len() {
-        return Err(RuntimeError::storage_error(
-            "state blob trailing bytes are invalid",
-        ));
+    let intake_epoch = EpochId::new(read_u64(bytes, cursor)?);
+    let cutoff_ns = match read_u8(bytes, cursor)? {
+        0 => None,
+        1 => Some(templar_vault_kernel::TimestampNs(read_u64(bytes, cursor)?)),
+        _ => return Err(RuntimeError::storage_error("epoch cutoff flag invalid")),
+    };
+    let last_settled = match read_u8(bytes, cursor)? {
+        0 => None,
+        1 => {
+            let epoch_id = EpochId::new(read_u64(bytes, cursor)?);
+            let report_seq = read_u64(bytes, cursor)?;
+            let hash_bytes = read_exact(bytes, cursor, 32)?;
+            let mut report_hash = [0u8; 32];
+            report_hash.copy_from_slice(hash_bytes);
+            let as_of_ns = templar_vault_kernel::TimestampNs(read_u64(bytes, cursor)?);
+            let settlement_nav = read_u128(bytes, cursor)?;
+            let eligible_supply = read_u128(bytes, cursor)?;
+            let cutoff_ns = templar_vault_kernel::TimestampNs(read_u64(bytes, cursor)?);
+            let snapshot = EpochSnapshot::bind(
+                epoch_id,
+                cutoff_ns,
+                &ValuationReportRef {
+                    report_seq,
+                    as_of_ns,
+                    report_hash,
+                },
+                settlement_nav,
+                eligible_supply,
+            )
+            .map_err(|_| RuntimeError::storage_error("epoch snapshot invalid"))?;
+            if snapshot.epoch_id() != epoch_id
+                || snapshot.report_seq() != report_seq
+                || snapshot.report_hash() != &report_hash
+                || snapshot.as_of_ns() != as_of_ns
+                || snapshot.settlement_nav() != settlement_nav
+                || snapshot.eligible_supply() != eligible_supply
+                || snapshot.cutoff_ns() != cutoff_ns
+            {
+                return Err(RuntimeError::storage_error("epoch snapshot mismatch"));
+            }
+            Some(snapshot)
+        }
+        _ => return Err(RuntimeError::storage_error("epoch snapshot flag invalid")),
+    };
+    let epoch = EpochState {
+        phase,
+        intake_epoch,
+        cutoff_ns,
+        last_settled,
+    };
+    if epoch.check_invariants() {
+        Ok(epoch)
+    } else {
+        Err(RuntimeError::storage_error("epoch state invariant failed"))
     }
-
-    Ok(state)
 }
 
 fn decode_state_header_blob(bytes: &[u8]) -> Result<StoredStateHeader, RuntimeError> {
     let (version, payload) = storage_payload(bytes, StorageKind::State)?;
-    if version != STORAGE_VERSION_STATE_PAGED {
-        return Err(RuntimeError::storage_error(
+    match version {
+        // Dedicated epoch deployments are fresh: pre-epoch (v2) vault-state
+        // headers can never legally exist in their storage. Reading one
+        // fails closed instead of migrating an immediate vault's header
+        // into a fresh epoch contract.
+        #[cfg(feature = "immediate-entrypoints")]
+        STORAGE_VERSION_STATE_PAGED => decode_state_header_blob_v2(payload),
+        // Current storage law: paged header plus the epoch lifecycle tail.
+        STORAGE_VERSION_STATE_EPOCH => decode_state_header_blob_v3(payload),
+        _ => Err(RuntimeError::storage_error(
             "unsupported state storage version",
-        ));
+        )),
     }
-    decode_state_header_blob_v2(payload)
 }
 
+/// The epoch lifecycle state mirrored into a stored vault-state header.
+/// The header and the dedicated epoch record are two views of the same law:
+/// a divergent view fails closed and never becomes a second epoch authority.
+pub(crate) fn epoch_state_from_state_header_blob(
+    bytes: &[u8],
+) -> Result<EpochState, RuntimeError> {
+    // The vault-state header may be stored inline behind the blob envelope
+    // or supplied already unwrapped. Both views must resolve to the same
+    // state header record before the epoch mirror is read; a corrupt or
+    // paged envelope fails closed rather than inventing authority.
+    let inner = match decode_blob_manifest(bytes)? {
+        Some(BlobManifest::Inline) => {
+            let mut cursor = 5usize;
+            let len = read_u32(bytes, &mut cursor)? as usize;
+            if bytes.len().saturating_sub(cursor) != len {
+                return Err(RuntimeError::storage_error("invalid inline state header blob"));
+            }
+            &bytes[cursor..cursor + len]
+        }
+        Some(BlobManifest::Paged { .. }) => {
+            return Err(RuntimeError::storage_error(
+                "paged state header blob requires contract context",
+            ));
+        }
+        None => bytes,
+    };
+    Ok(decode_state_header_blob(inner)?.epoch)
+}
+
+#[cfg(feature = "immediate-entrypoints")]
 fn decode_state_header_blob_v2(bytes: &[u8]) -> Result<StoredStateHeader, RuntimeError> {
+    let header = read_state_header_fields(bytes)?;
+    Ok(StoredStateHeader {
+        epoch: EpochState::genesis(),
+        ..header
+    })
+}
+
+fn decode_state_header_blob_v3(bytes: &[u8]) -> Result<StoredStateHeader, RuntimeError> {
+    let mut cursor = 0usize;
+    let total_assets = read_u128(bytes, &mut cursor)?;
+    let total_shares = read_u128(bytes, &mut cursor)?;
+    let idle_assets = read_u128(bytes, &mut cursor)?;
+    let external_assets = read_u128(bytes, &mut cursor)?;
+    let fee_anchor = FeeAccrualAnchor::new(
+        read_u128(bytes, &mut cursor)?,
+        templar_vault_kernel::TimestampNs(read_u64(bytes, &mut cursor)?),
+    );
+    let op_state = decode_op_state(bytes, &mut cursor)?;
+    let withdraw_queue = decode_withdraw_queue_header(bytes, &mut cursor)?;
+    let next_op_id = read_u64(bytes, &mut cursor)?;
+    let epoch = decode_epoch_state(bytes, &mut cursor)?;
+    finish_decode(bytes, cursor)?;
+    Ok(StoredStateHeader {
+        total_assets,
+        total_shares,
+        idle_assets,
+        external_assets,
+        fee_anchor,
+        op_state,
+        withdraw_queue,
+        epoch,
+        next_op_id,
+    })
+}
+
+#[cfg(feature = "immediate-entrypoints")]
+fn read_state_header_fields(bytes: &[u8]) -> Result<StoredStateHeader, RuntimeError> {
     let mut cursor = 0usize;
     let header = StoredStateHeader {
         total_assets: read_u128(bytes, &mut cursor)?,
@@ -1039,12 +1202,12 @@ fn decode_state_header_blob_v2(bytes: &[u8]) -> Result<StoredStateHeader, Runtim
         ),
         op_state: decode_op_state(bytes, &mut cursor)?,
         withdraw_queue: decode_withdraw_queue_header(bytes, &mut cursor)?,
+        epoch: EpochState::genesis(),
         next_op_id: read_u64(bytes, &mut cursor)?,
     };
     finish_decode(bytes, cursor)?;
     Ok(header)
 }
-
 fn compose_state_from_header(
     header: StoredStateHeader,
     withdraw_queue: WithdrawQueue,
@@ -1059,6 +1222,9 @@ fn compose_state_from_header(
             "withdraw queue pages do not match state header",
         ));
     }
+    if !header.epoch.check_invariants() {
+        return Err(RuntimeError::storage_error("epoch state invariant failed"));
+    }
     Ok(VaultState {
         total_assets: header.total_assets,
         total_shares: header.total_shares,
@@ -1067,6 +1233,7 @@ fn compose_state_from_header(
         fee_anchor: header.fee_anchor,
         op_state: header.op_state,
         withdraw_queue,
+        epoch: header.epoch,
         next_op_id: header.next_op_id,
     })
 }
@@ -1118,6 +1285,85 @@ impl<'a> SorobanStorage<'a> {
     const SK_ADDRBOOK: Symbol = symbol_short!("addrbook");
     const SK_BLOBPAGE: Symbol = symbol_short!("blobpage");
     const SK_WQPAGE: Symbol = symbol_short!("wqpage");
+    const SK_EPOCHSTATE: Symbol = symbol_short!("epochst");
+    const SK_ACCEPTEDRPT: Symbol = symbol_short!("accrep");
+    const SK_MAXRPTAGE: Symbol = symbol_short!("maxrage");
+
+    fn versioned_record_key(kind: StorageKind) -> Option<Symbol> {
+        match kind {
+            StorageKind::EpochState => Some(Self::SK_EPOCHSTATE),
+            StorageKind::AcceptedReport => Some(Self::SK_ACCEPTEDRPT),
+            StorageKind::MaxReportAge => Some(Self::SK_MAXRPTAGE),
+            _ => None,
+        }
+    }
+
+    /// Persist a versioned law record (epoch lifecycle state, accepted
+    /// valuation report tracking, or governance configuration) under the
+    /// kind's dedicated persistent key. The record envelope must carry the
+    /// current storage version and a payload within the law-record size
+    /// bound, so a corrupt or oversized record can never be written.
+    pub(crate) fn save_versioned(
+        &self,
+        kind: StorageKind,
+        record: &[u8],
+    ) -> Result<(), RuntimeError> {
+        let Some(key) = Self::versioned_record_key(kind) else {
+            return Err(RuntimeError::storage_error("unversioned storage kind"));
+        };
+        if record.len() > MAX_VERSIONED_RECORD_BYTES {
+            return Err(RuntimeError::storage_error(
+                "versioned law record exceeds size bound",
+            ));
+        }
+        let (version, payload) = storage_payload(record, kind)?;
+        if version != STORAGE_VERSION_CURRENT {
+            return Err(RuntimeError::storage_error(
+                "versioned law record storage version invalid",
+            ));
+        }
+        if payload.is_empty() {
+            return Err(RuntimeError::storage_error(
+                "versioned law record payload empty",
+            ));
+        }
+        self.save_blob(&key, record)?;
+        self.extend_blob_ttl(&key, DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+        Ok(())
+    }
+
+    /// Load a versioned law record, returning `None` when the kind has no
+    /// stored record. Any present record is validated against its envelope
+    /// and size bound; corruption fails closed, never silently absent.
+    pub(crate) fn load_versioned(
+        &self,
+        kind: StorageKind,
+    ) -> Result<Option<Vec<u8>>, RuntimeError> {
+        let Some(key) = Self::versioned_record_key(kind) else {
+            return Err(RuntimeError::storage_error("unversioned storage kind"));
+        };
+        let Some(record) = self.load_blob(&key)? else {
+            return Ok(None);
+        };
+        if record.len() > MAX_VERSIONED_RECORD_BYTES {
+            return Err(RuntimeError::storage_error(
+                "versioned law record exceeds size bound",
+            ));
+        }
+        let (version, payload) = storage_payload(&record, kind)?;
+        if version != STORAGE_VERSION_CURRENT {
+            return Err(RuntimeError::storage_error(
+                "versioned law record storage version invalid",
+            ));
+        }
+        if payload.is_empty() {
+            return Err(RuntimeError::storage_error(
+                "versioned law record payload empty",
+            ));
+        }
+        Ok(Some(record))
+    }
+
 
     fn address_key(&self, kernel_addr: &Address) -> (Symbol, BytesN<32>) {
         (
@@ -1443,6 +1689,56 @@ impl<'a> SorobanStorage<'a> {
         self.save_blob(&SorobanStorageKey::PolicyCapGroups, state)
     }
 
+    /// Enumerate every persisted market adapter binding in ascending
+    /// `TargetId` order.
+    ///
+    /// This is the single authoritative enumeration used by epoch
+    /// settlement: the binding map persisted by governance is the only
+    /// source, never a policy-state-only reconstruction. It fails closed
+    /// when either the binding record or the markets record is absent or
+    /// corrupt, rejects any binding whose target is not an exposed market,
+    /// rejects any binding count that exceeds the exposed-market bound, and
+    /// rejects duplicate binding targets. Callers must consume the returned
+    /// list in order and read authenticated valuation metadata from each
+    /// bound adapter; the list is derived only from authenticated ledger
+    /// storage, never from caller input.
+    pub fn enumerate_market_adapter_bindings(
+        &self,
+    ) -> Result<Vec<(TargetId, SdkAddress)>, RuntimeError> {
+        let Some(bindings) = self
+            .env
+            .storage()
+            .instance()
+            .get::<_, soroban_sdk::Map<u32, SdkAddress>>(
+                &crate::contract::VaultDataKey::AdapterBindings,
+            )
+        else {
+            return Err(RuntimeError::storage_error("adapter bindings record missing"));
+        };
+        let Some(stored_markets) = self.load_policy_markets()? else {
+            return Err(RuntimeError::storage_error("markets record missing"));
+        };
+        let markets = decode_markets(&stored_markets)?;
+        if usize::try_from(bindings.len())
+            .unwrap_or(usize::MAX)
+            > usize::try_from(markets.len()).unwrap_or(usize::MAX)
+        {
+            return Err(RuntimeError::storage_error("adapter bindings exceed market bound"));
+        }
+        let mut enumerated = Vec::new();
+        for (target_id, adapter) in bindings.iter() {
+            if !markets.contains_key(&target_id) {
+                return Err(RuntimeError::storage_error("adapter binding unknown target"));
+            }
+            enumerated.push((target_id, adapter));
+        }
+        enumerated.sort_unstable_by_key(|(target_id, _)| *target_id);
+        if enumerated.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(RuntimeError::storage_error("duplicate adapter binding target"));
+        }
+        Ok(enumerated)
+    }
+
     /// Load restrictions from persistent storage.
     pub fn load_restrictions(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
         self.load_blob(&SorobanStorageKey::Restrictions)
@@ -1503,6 +1799,9 @@ impl<'a> SorobanStorage<'a> {
         ] {
             self.extend_blob_ttl(key, threshold, extend_to);
         }
+        self.extend_blob_ttl(&Self::SK_EPOCHSTATE, threshold, extend_to);
+        self.extend_blob_ttl(&Self::SK_ACCEPTEDRPT, threshold, extend_to);
+        self.extend_blob_ttl(&Self::SK_MAXRPTAGE, threshold, extend_to);
         if let Ok(Some(stored)) = self.load_state_blob() {
             if let Ok(header) = decode_state_header_blob(&stored) {
                 self.extend_withdraw_queue_page_ttls(header.withdraw_queue, threshold, extend_to);
@@ -1514,7 +1813,6 @@ impl<'a> SorobanStorage<'a> {
             }
         }
     }
-
     fn extend_default_ttl(&self) {
         self.extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
     }
@@ -1543,6 +1841,7 @@ impl Storage for SorobanStorage<'_> {
         self.save_withdraw_queue_pages(&state.withdraw_queue)?;
         let state_blob = encode_state_header_blob(state);
         self.save_state_blob(&state_blob)?;
+        self.save_epoch_state(&state.epoch)?;
         self.extend_default_ttl();
         Ok(())
     }

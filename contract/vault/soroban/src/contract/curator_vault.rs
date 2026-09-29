@@ -2,9 +2,19 @@ use super::helpers::{
     contract_error, invalid_state_error, kernel_address_from_sdk, require_signed,
 };
 use super::*;
+use crate::storage::deposit::PendingStorage;
+use soroban_sdk::{IntoVal, Symbol};
 use templar_curator_primitives::policy::state::PolicyStateError;
+use templar_soroban_shared_types::{
+    EpochSnapshotReceipt, EpochStateViewReceipt, ReportMetadataReceipt, EPOCH_PHASE_CUTOFF,
+    EPOCH_PHASE_OPEN, EPOCH_PHASE_SETTLED,
+};
 use templar_vault_kernel::abort;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
+use templar_soroban_shared_types::CustodialValuationView;
+use templar_vault_kernel::{
+    EpochId, EpochPhase, PendingDeposit, TimestampNs, ValuationReportRef,
+};
 
 #[derive(Clone, Copy)]
 struct SupplyAllocationDecision {
@@ -583,13 +593,22 @@ where
             shares_burned: burn_shares,
         };
 
+        let ctx = self.effect_context(now_ns);
+        let progressed = {
+            let op_state = mem::take(&mut self.state_mut()?.op_state);
+            transition_to_runtime(withdrawal_step_callback(op_state, op_id, assets_out))?
+        };
+        self.ensure_effect_addresses_mapped(&progressed.effects, &ctx)?;
+        let mut summary = self.interpreter.execute_effects(&progressed.effects, &ctx)?;
+        self.state_mut()?.op_state = progressed.new_state;
+
         let collected = {
             let op_state = mem::take(&mut self.state_mut()?.op_state);
-            transition_to_runtime(withdrawal_settled(op_state, op_id, assets_out, burn_shares))?
+            let vault = self.state()?;
+            transition_to_runtime(withdrawal_settled(op_state, vault, op_id, min_withdrawal_assets))?
         };
-        let ctx = self.effect_context(now_ns);
         self.ensure_effect_addresses_mapped(&collected.effects, &ctx)?;
-        let mut summary = self.interpreter.execute_effects(&collected.effects, &ctx)?;
+        summary.merge(self.interpreter.execute_effects(&collected.effects, &ctx)?);
         self.state_mut()?.op_state = collected.new_state;
 
         if !matches!(self.state()?.op_state, OpState::Payout(_)) {
@@ -1437,5 +1456,789 @@ where
             .iter()
             .map(|entry| entry.target_id)
             .collect()
+    }
+}
+
+/// Outcome of recording a pending-deposit liability for a receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingDepositResponse {
+    pub request_id: u64,
+    pub assets: i128,
+}
+
+/// Outcome of an owner-bound pending-deposit cancellation refund.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CancelPendingDepositResponse {
+    pub request_id: u64,
+    pub assets_refunded: i128,
+}
+
+/// Outcome of an epoch-intake cutoff for a receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BeginEpochCutoffResponse {
+    pub epoch_id: u64,
+    pub cutoff_ns: u64,
+}
+
+/// Full settled-snapshot metadata for a settlement receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettleEpochResponse {
+    pub epoch_id: u64,
+    pub report_seq: u64,
+    pub as_of_ns: u64,
+    pub report_hash: [u8; 32],
+    pub settlement_nav: i128,
+    pub eligible_supply: i128,
+    pub cutoff_ns: u64,
+}
+
+/// Outcome of a pending-deposit admission for a receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdmitPendingDepositResponse {
+    pub request_id: u64,
+    pub shares_out: i128,
+    pub assets_in: u128,
+}
+
+/// Outcome of an owner-bound withdrawal cancellation for a receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CancelPendingWithdrawalResponse {
+    pub request_id: u64,
+    pub shares_refunded: i128,
+    pub epoch_id: u64,
+}
+
+/// Outcome of a governed one-time backed seed for a receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeedEpochSupplyResponse {
+    pub assets_seeded: i128,
+    pub shares_minted: i128,
+}
+
+impl<'a, A, E> CuratorVault<SorobanStorage<'a>, A, E>
+where
+    A: AuthAdapter,
+    E: EffectInterpreter + AddressRegistrar,
+{
+
+    /// Record an epoch settlement freshness configuration. Storage rejects
+    /// a zero bound, so a configured value can never silently disable the
+    /// staleness law. Governance authorization is enforced by the proxy
+    /// entrypoint; this path performs no kernel action.
+    pub(crate) fn configure_epoch_settlement(
+        &mut self,
+        max_report_age_ns: u64,
+    ) -> Result<(), RuntimeError> {
+        if max_report_age_ns == 0 {
+            return Err(RuntimeError::invalid_input("epoch freshness bound zero"));
+        }
+        self.storage.save_max_report_age_ns(max_report_age_ns)
+    }
+
+    /// Execute the governed one-time backed seed for a fresh epoch
+    /// deployment.
+    ///
+    /// Governance authorization is enforced by the proxy entrypoint and is
+    /// bound to the full command payload, matching the governance-only
+    /// settlement-configuration operation. The asset is always the vault
+    /// asset held in instance storage. Caller, amount, and receiver are
+    /// bound by law and authorization.
+    /// Governance first moves its own assets into vault custody through the
+    /// asset contract's transfer entrypoint, signed by governance itself,
+    /// because the classic asset contract authenticates only the source
+    /// account and cannot be debited by proxy from inside this contract.
+    /// This command observes custody before any mint law is dispatched:
+    /// vault custody of the vault asset must equal the requested amount
+    /// exactly, which rejects zero, partial, fee-skimmed, and excessive
+    /// custody before any mint law is dispatched.
+    ///
+    /// Replay exclusion is derived from durable state, not a new field: the
+    /// operation applies only while vault accounting is zero, the epoch is
+    /// genesis with no cutoff, accepted report, or settlement snapshot, and
+    /// the intake ledger has never recorded a request. Any intake record,
+    /// cutoff, report, settlement, or prior seed leaves durable state that
+    /// can never return to this pristine condition, so the operation can
+    /// execute exactly once and never after any epoch or intake progression.
+    /// Failure leaves no mint and no state progression. Pause semantics
+    /// follow initialization and governance safety: the bootstrap remains
+    /// available while paused.
+    #[inline(never)]
+    pub fn seed_epoch_supply(
+        &mut self,
+        env: &Env,
+        _caller_sdk: &SdkAddress,
+        receiver_sdk: &SdkAddress,
+        assets_i128: i128,
+    ) -> Result<SeedEpochSupplyResponse, RuntimeError> {
+        self.ensure_vault_mapped(env)?;
+        if !self.storage.epoch_mode_active() {
+            return Err(invalid_state_error("epoch mode disabled"));
+        }
+        let assets =
+            to_u128(assets_i128).map_err(|_| RuntimeError::invalid_input("seed assets"))?;
+        if assets == 0 {
+            return Err(RuntimeError::invalid_input("zero epoch seed"));
+        }
+        if self.state()?.total_assets != 0 || self.state()?.total_shares != 0 {
+            return Err(invalid_state_error("epoch seed requires zero accounting"));
+        }
+        let epoch = self.storage.load_epoch_state()?;
+        if epoch.phase != EpochPhase::Open
+            || epoch.intake_epoch != EpochId::FIRST_SETTLEMENT
+            || epoch.cutoff_ns.is_some()
+            || epoch.last_settled.is_some()
+        {
+            return Err(invalid_state_error("epoch seed requires genesis state"));
+        }
+        if self.storage.pending_deposit_stats()?.count > 0 {
+            return Err(invalid_state_error("epoch seed requires pristine intake"));
+        }
+        if self.storage.next_deposit_request_id()? > 1 {
+            return Err(invalid_state_error("epoch seed blocked by prior intake"));
+        }
+
+        // Custody observation before mint law: the vault's own balance of
+        // the vault asset must equal the amount exactly. The kernel law
+        // re-checks pristine state and mints one-for-one against this
+        // observed custody, so a seed can never mint synthetic shares.
+        let asset_token = get_config_address(env, &VaultDataKey::AssetToken)
+            .map_err(|_| RuntimeError::storage_error("asset address missing"))?;
+        let vault_sdk = env.current_contract_address();
+        let token = soroban_sdk::token::Client::new(env, &asset_token);
+        if token.balance(&vault_sdk) != assets_i128 {
+            return Err(invalid_state_error("seed custody observation mismatch"));
+        }
+
+        let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
+        let receiver = self.register_sdk_address(env, receiver_sdk)?;
+        let (result, _) = self.apply_kernel_action_result(
+            KernelAction::SeedEpochSupply {
+                receiver,
+                assets_in: assets,
+                now_ns: TimestampNs(now_ns),
+            },
+            now_ns,
+        )?;
+        let shares_minted = result
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                KernelEffect::MintShares { owner, shares }
+                    if *owner == receiver && *shares == assets =>
+                {
+                    Some(*shares)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| invalid_state_error("seed mint missing"))?;
+        Ok(SeedEpochSupplyResponse {
+            assets_seeded: assets_i128,
+            shares_minted: to_i128(shares_minted)
+                .map_err(|_| RuntimeError::invalid_input(""))?,
+        })
+    }
+
+    /// Take custody of a pending deposit and record the liability.
+    ///
+    /// The depositor must sign; custody transfers the assets into the vault
+    /// contract before the ledger record exists, so a refundable liability
+    /// can never be recorded against assets nobody custodied. The stored
+    /// share floor travels with the record: the runtime never accepts a
+    /// caller replacement.
+    #[inline(never)]
+    pub fn request_deposit(
+        &mut self,
+        env: &Env,
+        owner_sdk: &SdkAddress,
+        assets_i128: i128,
+        min_shares_out_i128: i128,
+    ) -> Result<PendingDepositResponse, RuntimeError> {
+        require_signed(owner_sdk);
+        self.ensure_vault_mapped(env)?;
+        if !self.storage.epoch_mode_active() {
+            return Err(invalid_state_error("epoch mode disabled"));
+        }
+        let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
+        if self.paused {
+            return Err(contract_error("paused"));
+        }
+        let owner = kernel_address_from_sdk(env, owner_sdk);
+        let assets = to_u128(assets_i128).map_err(|_| RuntimeError::invalid_input(""))?;
+        let min_shares_out =
+            to_u128(min_shares_out_i128).map_err(|_| RuntimeError::invalid_input(""))?;
+        let epoch = self.storage.load_epoch_state()?;
+        if epoch.phase != EpochPhase::Open || !epoch.intake_epoch.is_settlement_epoch() {
+            return Err(invalid_state_error("intake not open"));
+        }
+        // Lawful mapping on-ramp for the authenticated depositor. The
+        // owner's Soroban account signed this call and is the exact source
+        // of the custody transfer below, so the registered pair can only
+        // ever bind the signer to its own deterministic kernel AccountId:
+        // `register_sdk_address` derives the key from `owner_sdk` alone and
+        // never accepts caller-supplied target bytes, so replaying the
+        // registration rewrites the identical pair. The gate this replaces
+        // could never pass for a first-time depositor and stranded every
+        // lawful intake; it is subsumed here because every recorded
+        // liability now carries a durable owner binding that admission
+        // resolves after settlement for the snapshot-priced mint. Any
+        // failure below aborts the whole invocation, so a request that
+        // never took custody leaves no mapping, no record, and no mint.
+        self.register_sdk_address(env, owner_sdk)?;
+        if assets == 0 {
+            return Err(RuntimeError::invalid_input("zero pending deposit"));
+        }
+        if self.storage.pending_deposit_stats()?.count > 0 {
+            return Err(invalid_state_error("pending custody outstanding"));
+        }
+        // Custody first: assets must be held by the vault contract before a
+        // refundable liability can be recorded against them.
+        let asset_token = get_config_address(env, &VaultDataKey::AssetToken)
+            .map_err(|_| RuntimeError::storage_error("asset address missing"))?;
+        soroban_sdk::token::Client::new(env, &asset_token).transfer(
+            owner_sdk,
+            &env.current_contract_address(),
+            &assets_i128,
+        );
+        let deposit = PendingDeposit::new(
+            owner,
+            assets,
+            TimestampNs(now_ns),
+            epoch.intake_epoch,
+        )
+        .map_err(|_| RuntimeError::invalid_input("pending deposit law failed"))?;
+        let request_id = self
+            .storage
+            .create_pending_deposit(&deposit, min_shares_out)?;
+        crate::effects::publish_deposit_pending(
+            env,
+            &owner,
+            request_id,
+            assets,
+            epoch.intake_epoch.as_u64(),
+        )?;
+        Ok(PendingDepositResponse {
+            request_id,
+            assets: to_i128(assets).map_err(|_| RuntimeError::invalid_input(""))?,
+        })
+    }
+
+    /// Cancel the caller's own pending deposit, refund the exact recorded
+    /// assets once, and publish the cancellation event.
+    ///
+    /// The ledger removal is the at-most-once authority: once the record is
+    /// gone the refund cannot be replayed, and a transaction that fails
+    /// after removal rolls the refund and the removal back together.
+    #[inline(never)]
+    pub fn cancel_pending_deposit(
+        &mut self,
+        env: &Env,
+        owner_sdk: &SdkAddress,
+        request_id: u64,
+    ) -> Result<CancelPendingDepositResponse, RuntimeError> {
+        require_signed(owner_sdk);
+        self.ensure_vault_mapped(env)?;
+        let owner = kernel_address_from_sdk(env, owner_sdk);
+        let record = self
+            .storage
+            .load_pending_deposit(request_id)?
+            .ok_or_else(|| RuntimeError::storage_error("pending deposit not found"))?;
+        if record.owner != owner {
+            return Err(RuntimeError::storage_error("pending deposit not owner"));
+        }
+        self.storage
+            .cancel_pending_deposit(&owner, request_id)?;
+        let asset_token = get_config_address(env, &VaultDataKey::AssetToken)
+            .map_err(|_| RuntimeError::storage_error("asset address missing"))?;
+        soroban_sdk::token::Client::new(env, &asset_token).transfer(
+            &env.current_contract_address(),
+            owner_sdk,
+            &to_i128(record.assets).map_err(|_| RuntimeError::invalid_input(""))?,
+        );
+        crate::effects::publish_deposit_cancelled(
+            env,
+            &record.owner,
+            request_id,
+            record.assets,
+            record.epoch_id.as_u64(),
+        )?;
+        Ok(CancelPendingDepositResponse {
+            request_id,
+            assets_refunded: to_i128(record.assets).map_err(|_| RuntimeError::invalid_input(""))?,
+        })
+    }
+
+    /// Close intake for the settling epoch. Allocator-authorized and
+    /// Idle-only; the cutoff never prices anything.
+    #[inline(never)]
+    pub fn begin_epoch_cutoff(
+        &mut self,
+        env: &Env,
+        caller_sdk: &SdkAddress,
+        cutoff_ns: u64,
+    ) -> Result<BeginEpochCutoffResponse, RuntimeError> {
+        require_signed(caller_sdk);
+        self.ensure_vault_mapped(env)?;
+        if !self.storage.epoch_mode_active() {
+            return Err(invalid_state_error("epoch mode disabled"));
+        }
+        let caller = kernel_address_from_sdk(env, caller_sdk);
+        self.authorize(ActionKind::BeginEpochCutoff, caller)?;
+        let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
+        self.apply_kernel_action(
+            KernelAction::BeginEpochCutoff {
+                cutoff_ns: TimestampNs(cutoff_ns),
+                now_ns: TimestampNs(now_ns),
+            },
+            now_ns,
+        )?;
+        let epoch = self.storage.load_epoch_state()?;
+        if epoch.phase != EpochPhase::Cutoff {
+            return Err(invalid_state_error("epoch cutoff not recorded"));
+        }
+        let cutoff = epoch
+            .cutoff_ns
+            .ok_or_else(|| invalid_state_error("epoch cutoff bound missing"))?;
+        Ok(BeginEpochCutoffResponse {
+            epoch_id: epoch.intake_epoch.as_u64(),
+            cutoff_ns: cutoff.as_u64(),
+        })
+    }
+
+    /// Settle the closed epoch against the complete set of authenticated
+    /// adapter valuation views, read in ascending market order.
+    ///
+    /// Every enumerated market adapter must expose an accepted, hash-bound
+    /// valuation covering the cutoff and fresh under the configured bound;
+    /// a missing, erroring, or stale view fails the whole settlement closed.
+    /// Values aggregate deterministically with checked arithmetic, the
+    /// settlement report sequence strictly exceeds every previously accepted
+    /// and settled sequence, the accepted report is recorded before dispatch,
+    /// and the settlement is applied only through the kernel settlement law.
+    #[inline(never)]
+    pub fn settle_epoch(
+        &mut self,
+        env: &Env,
+        caller_sdk: &SdkAddress,
+    ) -> Result<SettleEpochResponse, RuntimeError> {
+        require_signed(caller_sdk);
+        self.ensure_vault_mapped(env)?;
+        if !self.storage.epoch_mode_active() {
+            return Err(invalid_state_error("epoch mode disabled"));
+        }
+        let caller = kernel_address_from_sdk(env, caller_sdk);
+        self.authorize(ActionKind::SettleEpoch, caller)?;
+        let settle_now_ns = ledger_timestamp_ns(env)
+            .map_err(|_| invalid_state_error("settlement clock unavailable"))?;
+        let epoch = self.storage.load_epoch_state()?;
+        if epoch.phase != EpochPhase::Cutoff {
+            return Err(invalid_state_error("epoch not at cutoff"));
+        }
+        let cutoff = epoch
+            .cutoff_ns
+            .ok_or_else(|| invalid_state_error("epoch cutoff bound missing"))?;
+        let cutoff_ns = cutoff.as_u64();
+        let max_report_age_ns = self
+            .storage
+            .load_max_report_age_ns()?
+            .filter(|age| *age > 0)
+            .ok_or_else(|| invalid_state_error("epoch freshness unconfigured"))?;
+        self.storage.verify_pending_deposit_integrity()?;
+        if self
+            .storage
+            .any_pending_deposit_before_epoch(epoch.intake_epoch)?
+        {
+            return Err(invalid_state_error("settlement-eligible intake outstanding"));
+        }
+
+        // The vault asset passed to each custodial adapter valuation comes
+        // only from the vault's own instance storage, never a caller argument.
+        let asset_address = get_config_address(env, &VaultDataKey::AssetToken)
+            .map_err(|_| invalid_state_error("vault asset address missing"))?;
+
+        let mut settlement_markets: Vec<TargetId> = Vec::new();
+        let mut settlement_seq: Option<u64> = None;
+        let mut settlement_as_of_ns: Option<u64> = None;
+        let mut aggregate_value: u128 = 0;
+        for (market, adapter) in self.storage.enumerate_market_adapter_bindings()? {
+            settlement_markets.push(market);
+            // An adapter error is indistinguishable from "no accepted
+            // valuation" and therefore fails the settlement closed.
+            let invoke_result = env.try_invoke_contract::<
+                Option<CustodialValuationView>,
+                soroban_sdk::Error,
+            >(
+                &adapter,
+                &Symbol::new(env, "valuation"),
+                (asset_address.clone(),).into_val(env),
+            );
+            let (seq, as_of_s, submitted_at, value, report_hash) = match invoke_result {
+                Ok(Ok(Some(view))) => view,
+                Ok(Ok(None)) => {
+                    return Err(invalid_state_error("adapter valuation missing"))
+                }
+                Ok(Err(_)) => {
+                    return Err(invalid_state_error("adapter valuation invalid"))
+                }
+                Err(_) => return Err(invalid_state_error("adapter valuation unavailable")),
+            };
+            if seq == 0 || submitted_at == 0 {
+                return Err(invalid_state_error("adapter report sequence invalid"));
+            }
+            if report_hash.is_none() {
+                return Err(invalid_state_error("adapter report hash missing"));
+            }
+            if as_of_s == 0 {
+                return Err(invalid_state_error("adapter report valuation time zero"));
+            }
+            let as_of_ns = as_of_s
+                .checked_mul(1_000_000_000)
+                .ok_or_else(|| invalid_state_error("adapter report valuation time overflow"))?;
+            if as_of_ns <= cutoff_ns {
+                return Err(invalid_state_error("adapter report not after cutoff"));
+            }
+            if as_of_ns > settle_now_ns {
+                return Err(invalid_state_error("adapter report future-dated"));
+            }
+            let age = settle_now_ns
+                .checked_sub(as_of_ns)
+                .ok_or_else(|| invalid_state_error("adapter report age underflow"))?;
+            if age > max_report_age_ns {
+                return Err(invalid_state_error("adapter report stale"));
+            }
+            match settlement_seq {
+                None => settlement_seq = Some(seq),
+                Some(previous) => {
+                    if seq <= previous {
+                        return Err(invalid_state_error(
+                            "adapter report sequence not increasing",
+                        ));
+                    }
+                }
+            }
+            settlement_as_of_ns = Some(match settlement_as_of_ns {
+                None => as_of_ns,
+                Some(earliest) => earliest.min(as_of_ns),
+            });
+            if value < 0 {
+                return Err(invalid_state_error("adapter report value negative"));
+            }
+            let value_u128 = to_u128(value).map_err(|_| invalid_state_error("report value"))?;
+            aggregate_value = aggregate_value
+                .checked_add(value_u128)
+                .ok_or_else(|| invalid_state_error("adapter valuation overflow"))?;
+        }
+
+        if settlement_seq.is_none() {
+            return Err(invalid_state_error("no authenticated adapter metadata"));
+        }
+        let as_of_ns = settlement_as_of_ns
+            .ok_or_else(|| invalid_state_error("no authenticated adapter metadata"))?;
+
+        // The settlement NAV and eligible supply are bound from the vault's
+        // own book, never from caller input.
+        let settlement_nav = self.state()?.total_assets;
+        let eligible_supply = self.state()?.total_shares;
+
+        // The settlement report sequence strictly advances every previously
+        // accepted and settled sequence, so a replayed or stale adapter
+        // sequence can never settle.
+        let last_settled_seq = epoch
+            .last_settled
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.report_seq());
+        let previous_accepted = self.storage.load_accepted_report()?;
+        let previous_accepted_seq =
+            previous_accepted.map_or(0, |record| record.report.report_seq);
+        let report_seq = last_settled_seq
+            .max(previous_accepted_seq)
+            .checked_add(1)
+            .ok_or_else(|| invalid_state_error("settlement sequence exhausted"))?;
+        if let Some(previous) = &previous_accepted {
+            if report_seq <= previous.report.report_seq {
+                return Err(invalid_state_error("settlement report sequence not increasing"));
+            }
+        }
+
+        let report = ValuationReportRef {
+            report_seq,
+            as_of_ns: TimestampNs(as_of_ns),
+            report_hash: Self::settlement_header_digest(
+                env,
+                epoch.intake_epoch.as_u64(),
+                cutoff_ns,
+                report_seq,
+                as_of_ns,
+                settlement_nav,
+                eligible_supply,
+            ),
+        };
+        self.storage
+            .record_accepted_report(epoch.intake_epoch, &report)?;
+        self.apply_kernel_action_result(
+            KernelAction::SettleEpoch {
+                report,
+                new_external_assets: aggregate_value,
+                max_report_age_ns,
+                settle_now_ns: TimestampNs(settle_now_ns),
+            },
+            settle_now_ns,
+        )?;
+        let settled = self.storage.load_epoch_state()?;
+        let snapshot = settled
+            .last_settled
+            .as_ref()
+            .ok_or_else(|| invalid_state_error("settled snapshot not persisted"))?;
+        if snapshot.epoch_id() != epoch.intake_epoch {
+            return Err(invalid_state_error("settled snapshot epoch mismatch"));
+        }
+        // Publish exactly one consumption record per enumerated market for
+        // the consumed settlement report. The kernel already emitted the
+        // single EpochSettled event during settlement.
+        for market in settlement_markets.iter() {
+            crate::effects::ReportMetadataConsumedEvent {
+                epoch_id: snapshot.epoch_id().as_u64(),
+                market_id: *market,
+                report_seq: snapshot.report_seq(),
+                report_hash: BytesN::from_array(env, snapshot.report_hash()),
+                as_of_ns: snapshot.as_of_ns().as_u64(),
+            }
+            .publish(env);
+        }
+        Ok(SettleEpochResponse {
+            epoch_id: snapshot.epoch_id().as_u64(),
+            report_seq: snapshot.report_seq(),
+            as_of_ns: snapshot.as_of_ns().as_u64(),
+            report_hash: *snapshot.report_hash(),
+            settlement_nav: to_i128(snapshot.settlement_nav())
+                .map_err(|_| invalid_state_error("settlement nav"))?,
+            eligible_supply: to_i128(snapshot.eligible_supply())
+                .map_err(|_| invalid_state_error("eligible supply"))?,
+            cutoff_ns: snapshot.cutoff_ns().as_u64(),
+        })
+    }
+
+    /// Admit one recorded pending deposit against the settled epoch that
+    /// covers it, using only the stored liability fields and floor.
+    ///
+    /// The kernel admission law is applied first; the liability record is
+    /// consumed atomically with the mint afterwards, so a rejected admission
+    /// can never orphan custody and an accepted one can never be replayed.
+    #[inline(never)]
+    pub fn admit_pending_deposit(
+        &mut self,
+        env: &Env,
+        caller_sdk: &SdkAddress,
+        request_id: u64,
+    ) -> Result<AdmitPendingDepositResponse, RuntimeError> {
+        require_signed(caller_sdk);
+        self.ensure_vault_mapped(env)?;
+        let caller = kernel_address_from_sdk(env, caller_sdk);
+        self.authorize(ActionKind::AdmitPendingDeposit, caller)?;
+        let record = self
+            .storage
+            .load_pending_deposit(request_id)?
+            .ok_or_else(|| RuntimeError::storage_error("pending deposit not found"))?;
+        let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
+        // Admission resolves the recorded depositor through the durable
+        // binding the intake path registered for the same authenticated
+        // owner. A missing or corrupt binding fails closed before any mint
+        // law is applied; a present one maps the snapshot-priced mint to
+        // exactly the recorded receiver, never to caller-supplied bytes.
+        self.ensure_mapped(&record.owner)?;
+        let (result, _) = self.apply_kernel_action_result(
+            KernelAction::AdmitPendingDeposit {
+                receiver: record.owner,
+                assets_in: record.assets,
+                min_shares_out: record.min_shares_out(),
+                request_epoch_id: record.epoch_id,
+                now_ns: TimestampNs(now_ns),
+            },
+            now_ns,
+        )?;
+        let shares_out = result
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                KernelEffect::MintShares { shares, .. } => Some(*shares),
+                _ => None,
+            })
+            .ok_or_else(|| invalid_state_error("admission mint missing"))?;
+        let taken = self.storage.take_pending_deposit(request_id)?;
+        if taken.owner != record.owner
+            || taken.assets != record.assets
+            || taken.epoch_id != record.epoch_id
+            || taken.min_shares_out() != record.min_shares_out()
+        {
+            return Err(invalid_state_error("admitted record mismatch"));
+        }
+        Ok(AdmitPendingDepositResponse {
+            request_id,
+            shares_out: to_i128(shares_out).map_err(|_| RuntimeError::invalid_input(""))?,
+            assets_in: record.assets,
+        })
+    }
+
+    /// Cancel the caller's own queued exit and refund its escrow.
+    ///
+    /// Owner binding is enforced by the kernel cancellation law; a stranger
+    /// leaves the queue, the escrow, and the claim untouched.
+    #[inline(never)]
+    pub fn cancel_pending_withdrawal(
+        &mut self,
+        env: &Env,
+        owner_sdk: &SdkAddress,
+        request_id: u64,
+    ) -> Result<CancelPendingWithdrawalResponse, RuntimeError> {
+        require_signed(owner_sdk);
+        self.ensure_vault_mapped(env)?;
+        let caller = kernel_address_from_sdk(env, owner_sdk);
+        let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
+        let result = self.apply_kernel_action_result(
+            KernelAction::CancelPendingWithdrawal {
+                caller,
+                request_id,
+                now_ns: TimestampNs(now_ns),
+            },
+            now_ns,
+        )?;
+        let (escrow_shares, epoch_id) =
+            result
+                .0
+                .effects
+                .iter()
+                .find_map(|effect| match effect {
+                    KernelEffect::EmitEvent {
+                        event:
+                            templar_vault_kernel::effects::KernelEvent::WithdrawalCancelled {
+                                escrow_shares,
+                                epoch_id,
+                                ..
+                            },
+                    } => Some((*escrow_shares, *epoch_id)),
+                    _ => None,
+                })
+                .ok_or_else(|| invalid_state_error("cancellation event missing"))?;
+        Ok(CancelPendingWithdrawalResponse {
+            request_id,
+            shares_refunded: to_i128(escrow_shares).map_err(|_| RuntimeError::invalid_input(""))?,
+            epoch_id,
+        })
+    }
+
+    /// Read-only epoch lifecycle view. Reports the phase code, intake epoch,
+    /// cutoff, and the last settled epoch and report sequence from stored
+    /// state only; it never mutates.
+    #[inline(never)]
+    pub fn epoch_state_view(&self) -> Result<EpochStateViewReceipt, RuntimeError> {
+        let epoch = self.storage.load_epoch_state()?;
+        let phase = match epoch.phase {
+            EpochPhase::Open => EPOCH_PHASE_OPEN,
+            EpochPhase::Cutoff => EPOCH_PHASE_CUTOFF,
+            EpochPhase::Settled => EPOCH_PHASE_SETTLED,
+        };
+        let last_settled = epoch.last_settled.as_ref();
+        Ok(EpochStateViewReceipt {
+            phase,
+            intake_epoch: epoch.intake_epoch.as_u64(),
+            cutoff_ns: epoch.cutoff_ns.map(|cutoff| cutoff.as_u64()),
+            last_settled_epoch_id: last_settled.map(|snapshot| snapshot.epoch_id().as_u64()),
+            last_report_seq: last_settled.map(|snapshot| snapshot.report_seq()),
+        })
+    }
+
+    /// Read-only settled-snapshot view for `epoch_id`. Reports the accepted
+    /// report sequence, valuation time, report hash, settlement NAV, eligible
+    /// supply, and cutoff from the immutable bound snapshot; it never mutates.
+    #[inline(never)]
+    pub fn epoch_snapshot_view(
+        &self,
+        epoch_id: u64,
+    ) -> Result<EpochSnapshotReceipt, RuntimeError> {
+        let epoch = self.storage.load_epoch_state()?;
+        let snapshot = epoch
+            .last_settled
+            .as_ref()
+            .filter(|snapshot| snapshot.epoch_id().as_u64() == epoch_id)
+            .ok_or(RuntimeError::EpochSnapshotUnavailable)?;
+        Ok(EpochSnapshotReceipt {
+            epoch_id: snapshot.epoch_id().as_u64(),
+            report_seq: snapshot.report_seq(),
+            as_of_ns: snapshot.as_of_ns().as_u64(),
+            report_hash: *snapshot.report_hash(),
+            settlement_nav: to_i128(snapshot.settlement_nav())
+                .map_err(|_| invalid_state_error("settlement nav"))?,
+            eligible_supply: to_i128(snapshot.eligible_supply())
+                .map_err(|_| invalid_state_error("eligible supply"))?,
+            cutoff_ns: snapshot.cutoff_ns().as_u64(),
+        })
+    }
+
+    /// Read-only per-market custodial report metadata view. Reports the
+    /// latest accepted adapter valuation metadata from an authenticated
+    /// adapter view, or an unavailable marker when none exists; it never
+    /// mutates and never trusts caller-supplied report data.
+    #[inline(never)]
+    pub fn custodial_report_metadata_view(
+        &self,
+        env: &Env,
+        market_id: TargetId,
+    ) -> Result<ReportMetadataReceipt, RuntimeError> {
+        let unavailable = || ReportMetadataReceipt::Unavailable { market_id };
+        let adapter = match adapter_for_market(env, market_id) {
+            Ok(adapter) => adapter,
+            Err(_) => return Ok(unavailable()),
+        };
+        let asset_address = match get_config_address(env, &VaultDataKey::AssetToken) {
+            Ok(asset_address) => asset_address,
+            Err(_) => return Ok(unavailable()),
+        };
+        let view = match env.try_invoke_contract::<
+            Option<CustodialValuationView>,
+            soroban_sdk::Error,
+        >(
+            &adapter,
+            &Symbol::new(env, "valuation"),
+            (asset_address,).into_val(env),
+        ) {
+            Ok(Ok(Some(view))) => view,
+            _ => return Ok(unavailable()),
+        };
+        let (seq, as_of, submitted_at, assets_value, report_hash) = view;
+        Ok(ReportMetadataReceipt::Available {
+            market_id,
+            seq,
+            as_of,
+            submitted_at,
+            assets_value,
+            report_hash: report_hash.map(|hash| hash.to_array()),
+        })
+    }
+
+    /// Domain-bound settlement header digest. The vault binds the exact
+    /// values it is settling for this epoch, cutoff, and its own contract
+    /// identity, so a settlement cannot cite a report that was never bound
+    /// to this vault.
+    fn settlement_header_digest(
+        env: &Env,
+        epoch_id: u64,
+        cutoff_ns: u64,
+        report_seq: u64,
+        as_of_ns: u64,
+        settlement_nav: u128,
+        eligible_supply: u128,
+    ) -> [u8; 32] {
+        const SETTLEMENT_HEADER_DOMAIN: &[u8] = b"templar:soroban:settlement:v1";
+        let mut preimage = soroban_sdk::Bytes::new(env);
+        preimage.extend_from_slice(SETTLEMENT_HEADER_DOMAIN);
+        preimage.extend_from_slice(&epoch_id.to_be_bytes());
+        preimage.extend_from_slice(&cutoff_ns.to_be_bytes());
+        preimage.extend_from_slice(&report_seq.to_be_bytes());
+        preimage.extend_from_slice(&as_of_ns.to_be_bytes());
+        preimage.extend_from_slice(&settlement_nav.to_be_bytes());
+        preimage.extend_from_slice(&eligible_supply.to_be_bytes());
+        preimage.extend_from_slice(
+            kernel_address_from_sdk(env, &env.current_contract_address()).as_bytes(),
+        );
+        env.crypto().sha256(&preimage).to_bytes().to_array()
     }
 }

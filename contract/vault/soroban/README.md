@@ -45,6 +45,23 @@ EFFECTS["SorobanEffectInterpreter\nshare + asset token effects\ntyped kernel eve
     EFFECTS --> ASSET["underlying asset token"]
 ```
 
+### Epoch Runtime Release Hold
+
+`contract/vault/soroban/epoch-runtime` is a separate, fresh-deployment target for delayed
+custodial valuation. It shares no storage or asset authority with the immediate runtime. This
+split was selected by an automated prompt timeout, not approved by a human operator, and must not
+be deployed or released without explicit architecture approval.
+
+The optimized epoch artifact currently measures 136,546 bytes against Soroban's 131,072-byte
+limit, so it is not deployable. The immediate runtime remains the only release-qualified target.
+
+Fresh epoch deployments use the governance-only `SeedEpochSupply` command once, before intake,
+cutoff, reports, or settlement. The command requires nonzero real underlying custody already held
+by the vault, zero existing asset/share/escrow accounting, and a pristine epoch and intake ledger.
+It mints matching genesis shares to the configured receiver and then becomes permanently
+unavailable. It does not verify off-chain custodian holdings or replace authenticated valuation
+reports for later settlements.
+
 ### Main Execution Loop
 
 ```mermaid
@@ -123,25 +140,32 @@ including `max_shares_burned` and `min_assets_out` slippage guards. Its existing
 immediate idle-liquidity exit must use the explicit atomic methods.
 
 The async queue is not a strict FIFO fairness boundary against atomic exits. It coordinates
-cooldowns, escrow, fixed asset claims, and allocator-driven liquidity recovery, but it does not
+cooldowns, escrow, settlement-derived claims, and allocator-driven liquidity recovery, but it does not
 reserve idle assets for queued requests while the vault remains idle. A later holder can still use
 atomic `withdraw` / `redeem` against currently idle liquidity before an allocator executes the
 queued head. This mirrors the Morpho-style model where immediate idle-liquidity exits are primary
 and queued or forced-liquidity paths are recovery/coordination mechanisms rather than global
 priority locks.
 
-`request_withdraw` converts the escrowed shares into a fixed `expected_assets` claim at request
-time. Execution later pays that stored claim rather than repricing the shares. This protects the
-queued withdrawer's requested slippage bound, but it also means later NAV declines are absorbed by
-the remaining share supply rather than by the already-queued request. This is an intentional
-accounting tradeoff of the queued path and should be considered when setting withdrawal cooldowns,
-allocator response processes, and adapter risk limits.
+Under the settlement model, `request_withdraw` escrows shares and records only the owner floor,
+request time, and intake epoch — no asset claim is stored at request time. At execution the kernel
+recomputes the payable amount exclusively from the immutable settled-epoch snapshot that covers the
+request's intake epoch: `floor(escrow_shares × settlement NAV ÷ eligible supply)`. Shares escrowed
+by queued requests bear exactly the same pro-rata loss as freely held shares, so losses occurring
+between request and settlement reduce queued claims at settlement instead of being absorbed by the
+remaining share supply.
 
-There is no user-callable cancellation path for queued withdrawals in this version. A queued user
-can exit only when the request is executed, skipped by policy as a zero/restricted request, or
-handled by an authorized recovery action such as `AbortWithdrawing` after execution has entered a
-recoverable withdrawal state. Adding `cancel_withdraw(request_id)` is deferred because it needs
-explicit FIFO, escrow refund, restriction, pause, and queue-removal semantics.
+The owner of a queued request may cancel it with `CancelPendingWithdrawal`: escrowed shares are
+refunded and the entry is removed from the queue. Cancellation is owner-bound — a non-owner caller
+receives `CancelRequestNotFound`, and cancellation remains available while the vault is paused.
+
+Pending deposits are held in custody at request time but stay outside NAV until an Allocator admits
+them against the snapshot of their own intake epoch. Epoch cutoff, settlement, and admission are
+Allocator-authorized; each epoch settles exactly once, settled snapshots are immutable, and
+settlement accepts only fresh, domain-bound, hash-bound custodial reports with monotonic sequence.
+Once a vault operates in delayed valuation mode (external exposure or a configured settlement
+policy), immediate deposits and the atomic `withdraw` / `redeem` fast paths fail closed with
+`InvalidState`, so idle-liquidity exits can no longer precede queued claims.
 
 ```mermaid
 sequenceDiagram
@@ -160,17 +184,21 @@ sequenceDiagram
     Vault->>Share: transfer owner shares into escrow
     Contract-->>User: request_id
 
+    Allocator->>Contract: BeginEpochCutoff / SettleEpoch (allocator-authorized)
+    Contract->>Kernel: epoch cutoff, then settlement from a fresh, domain-bound,\nhash-bound custodial report
+    Kernel-->>Contract: immutable settled-epoch snapshot (one settlement per epoch)
+
     Keeper->>Contract: execute_withdraw(caller)
     Contract->>Vault: execute_withdraw(...)
     Vault->>Vault: authorize ActionKind::ExecuteWithdraw
     Vault->>Kernel: ExecuteWithdraw
-    alt queue head is cooled down and fully idle-funded
-        Vault->>Vault: complete_withdrawal_from_idle()
+    alt epoch settled, head cooled down, and settlement-derived claim is idle-funded
+        Vault->>Vault: complete_withdrawal_from_idle() (claim = floor(escrow x snapshot NAV / supply))
         Vault->>Asset: transfer assets to receiver
         Vault->>Kernel: SettlePayout
         Vault->>Share: burn escrow shares / refund remainder
-    else liquidity must be freed first
-        Note over Vault: transaction fails atomically; no partial payout is made\nallocator path must free liquidity before retry
+    else unsettled, below floor, or liquidity must be freed first
+        Note over Vault: transaction fails atomically; no partial payout is made and\nthe queue head is not skipped; settlement and liquidity must progress first
     end
     Contract-->>Keeper: ok
 ```
@@ -178,7 +206,9 @@ sequenceDiagram
 `execute_withdraw` is not a public user exit. The Soroban entrypoint requires the caller's
 signature and the vault then authorizes the caller under `ActionKind::ExecuteWithdraw`, which is
 the allocator policy class in the default RBAC policy. Ordinary users use atomic `withdraw` /
-`redeem` for idle liquidity or `request_withdraw` for the queued path.
+`redeem` for idle liquidity only in immediate-valuation mode, or `request_withdraw` for the
+queued path; in delayed valuation mode both atomic exits and immediate deposits fail closed, and
+queued requests are priced only by the settled epoch snapshot and remain owner-cancellable.
 
 The typed entrypoints keep returning their stable contract ABI values. The generic
 `execute(payload)` command path returns compact typed receipt bytes:
@@ -203,9 +233,11 @@ Both receipt variants include `status`, which carries `op_state_before`, `op_sta
 
 Keepers should treat a failed `ExecuteWithdraw` with the kernel low-liquidity error as a signal to
 free market liquidity before retrying. The error is intentionally compact and does not carry
-`needed` / `available` amounts; automation should derive the head request's `expected_assets` from
-the indexed `WithdrawalRequested` event stream and compare it with the current idle assets exposed
-by `proxy_view` before choosing how much liquidity to free. A `NoPayout` receipt means no request
+`needed` / `available` amounts; automation should recompute the head request's payable claim from
+the immutable settled-epoch snapshot that covers its intake epoch (via the `GetEpochSnapshot`
+read), not from the indexed `WithdrawalRequested` event stream — events record the escrowed shares,
+owner floor, request time, and intake epoch of a request, not a price — and compare it with the
+current idle assets exposed by `proxy_view` before choosing how much liquidity to free. A `NoPayout` receipt means no request
 settled and should be handled as a signal to free liquidity and retry once the head can be covered.
 A `Completed` receipt with `assets_out == 0` is an unexpected no-progress state and should be
 alerted. The A-002 fix is intended to reject zero-progress transitions before they are persisted,
@@ -379,9 +411,19 @@ The additive `reported_at(asset)` query returns the ledger timestamp of the late
 explicit report, or `None` for adapters/assets that have never received one. Allocation and
 withdrawal lifecycle updates intentionally do not refresh that timestamp.
 Returned idle balances are not auto-counted as NAV because the adapter cannot prove their offchain
-source. When the adapter is paused, vault and custodian reports are blocked, but the adapter admin
-can still submit reported-NAV corrections for incident recovery. The `report_nonce` is an exact
+source. When the adapter is paused, every settlement-eligible report submission is blocked,
+including from the admin. The admin may still correct reported NAV through
+`set_reported_assets` for incident recovery. The `report_nonce` is an exact
 NAV revision and must increase by one from the current value.
+
+Settlement eligibility comes only from `submit_report(caller, report)`, which accepts a full
+custodial valuation envelope (vault, adapter, asset, network id, strictly increasing sequence,
+valuation `as_of`, assets value, optional report hash) from the configured custodian. The adapter
+rejects foreign domain bindings, zero or non-advancing sequences, future or non-monotonic
+valuation times, and negative values, and it exposes accepted report metadata through
+`valuation(asset)` for epoch settlement to bind. Successful `set_reported_assets`, `supply`,
+`withdraw`, and `progress_withdrawal` calls invalidate that eligibility until a new full report
+is accepted; `valuation(asset)` then returns `None` and settlement fails closed.
 
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
