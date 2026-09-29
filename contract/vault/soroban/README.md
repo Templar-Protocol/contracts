@@ -148,6 +148,17 @@ timestamp are not settled against that fixed claim today: only fee-recipient
 crediting occurs after request time, and settling post-request fees at a
 settlement boundary is the pending ENG-697 epoch-settlement work.
 
+Redemption conversions use the lower of the configured virtual-offset quote and
+the holder's real-asset pro-rata value, while deposit and mint pricing keeps the
+configured virtual basis. Virtual offsets can defend deposits against donation
+attacks, but cannot make queued or atomic exits consume assets that back the
+remaining real shares.
+
+Upgrade migration fails closed when a vault with configured virtual assets has
+pending withdrawals. Operators must settle the existing fixed claims before
+upgrading because their request-time real-asset basis cannot be reconstructed
+safely from current state.
+
 There is no user-callable cancellation path for queued withdrawals in this version. A queued user
 can exit only when the request is executed, skipped by policy as a zero/restricted request, or
 handled by an authorized recovery action such as `AbortWithdrawing` after execution has entered a

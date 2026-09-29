@@ -537,13 +537,18 @@ fn apply_fees_policy(
     Ok(())
 }
 
-fn normalize_fee_anchor(env: &Env) -> Result<(), ContractError> {
+fn normalize_migrated_state(env: &Env) -> Result<(), ContractError> {
     let mut storage = SorobanStorage::new(env);
     let Some(mut state) = storage.load_state()? else {
         return Ok(());
     };
     state.fee_anchor =
         FeeAccrualAnchor::new(state.total_assets, TimestampNs(ledger_timestamp_ns(env)?));
+
+    if load_virtual_offsets(env).1 > 0 && !state.withdraw_queue.is_empty() {
+        return Err(ContractError::InvalidState);
+    }
+
     storage.save_state(&state)?;
     Ok(())
 }
@@ -1621,7 +1626,7 @@ impl SorobanVaultContract {
         } else {
             let shares_u128 = to_u128(shares)?;
             to_i128(
-                convert_to_assets_bounded(
+                convert_to_redeem_assets_bounded(
                     &state,
                     &config,
                     shares_u128,
@@ -1688,10 +1693,13 @@ impl SorobanVaultContract {
 
         let owner_shares = share_balance(&env, &owner).max(0) as u128;
         let (max_withdraw_value, max_redeem_value) = if state.op_state.is_idle() && !config.paused {
-            let max_redeem_u128 =
-                owner_shares.min(convert_to_shares(&state, &config, state.idle_assets));
+            let max_redeem_u128 = owner_shares.min(convert_to_withdrawable_shares(
+                &state,
+                &config,
+                state.idle_assets,
+            ));
             let max_withdraw_u128 =
-                convert_to_assets(&state, &config, owner_shares).min(state.idle_assets);
+                convert_to_redeem_assets(&state, &config, owner_shares).min(state.idle_assets);
             (to_i128(max_withdraw_u128)?, to_i128(max_redeem_u128)?)
         } else {
             (0, 0)
@@ -1718,7 +1726,7 @@ impl SorobanVaultContract {
         } else {
             let assets_u128 = to_u128(assets)?;
             to_i128(
-                convert_to_shares_ceil_bounded(
+                convert_to_withdraw_shares_ceil_bounded(
                     &state,
                     &config,
                     assets_u128,
@@ -1777,7 +1785,7 @@ impl SorobanVaultContract {
             return Err(ContractError::InvalidState);
         }
 
-        normalize_fee_anchor(&env)?;
+        normalize_migrated_state(&env)?;
         runtime_to_contract(validate_and_rewrite_storage(&env))?;
         extend_storage_ttl(&env);
         set_migration_in_progress(&env, false);
