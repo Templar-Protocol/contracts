@@ -1054,16 +1054,14 @@ where
         self.validate_refreshed_positions_against_plan(refreshed_positions)?;
         let staged_policy = self.stage_refreshed_positions(refreshed_positions)?;
         let new_external_assets = staged_policy.external_assets()?;
-        let prospective_total_assets =
-            self.state()?
-                .idle_assets
-                .checked_add(new_external_assets)
-                .ok_or_else(|| invalid_state_error("total assets overflow on refresh"))?;
-        for (_, record) in staged_policy.cap_groups().iter() {
-            record
-                .enforce(0, prospective_total_assets)
-                .map_err(|_| invalid_state_error("refresh exceeds cap group limit"))?;
-        }
+        // Refresh reports actual exposure. Absolute/relative cap groups are supply admission
+        // controls: they gate new supply, they do not refuse recognition of a gain or loss the
+        // adapters already observed. This aggregate is still a checked add, and keeping it here
+        // preserves the InvalidState public error for refresh callers.
+        self.state()?
+            .idle_assets
+            .checked_add(new_external_assets)
+            .ok_or_else(|| invalid_state_error("total assets overflow on refresh"))?;
         self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         let result = self.finish_refreshing(caller, op_id, now_ns)?;
         self.policy_state = staged_policy;

@@ -463,24 +463,28 @@ The accounting behavior differs by direction:
   the realized amount. It does not refresh the adapter's remaining NAV.
 - `refresh-markets` reads `total_assets(asset)` for the selected routes and
   stages their new principals together. Each refreshed principal is checked
-  against its market cap, and every final cap group is checked before anything
-  is persisted. A refresh that would breach a cap fails atomically with
-  `InvalidState` and changes nothing. Run it after yield, loss, or a custodial
-  NAV report and before fee/share-rate decisions.
+  against its own market cap, and the sum of idle plus final staged external
+  assets is a checked add. A refresh that breaches either fails atomically with
+  `InvalidState` and changes nothing, including adapter transaction state. Run
+  it after yield, loss, or a custodial NAV report and before fee/share-rate
+  decisions.
 
-Relative group caps are final-state concentration limits. Refresh measures
-them against the prospective committed total assets (`idle_assets` plus the
-final staged `external_assets`), unlike supply admission, which measures
-against a frozen pre-allocation total. Every group is checked even when none
-of its markets are refreshed, because a loss in one market shrinks the
-denominator for all relative caps. After a large loss or a governance cap
-tightening, refreshes can keep failing until the vault is de-risked with
-`allocate-withdraw` or governance adjusts the caps; alert on repeated refresh
-failures rather than retrying an unchanged payload. Refresh records reported
-NAV without authenticating it, and markets left out of a refresh keep their
-stale stored NAV, so keep adapters vetted, monitor reported totals against the
-fixed market and absolute group caps, and refresh all markets on a regular
-cadence.
+Cap groups do not gate refresh. Absolute and relative group caps are supply
+admission controls — they decide whether new supply may be deployed (against a
+frozen pre-allocation total), not whether a gain or loss the adapters already
+reported may be booked. A group principal can therefore sit above
+`min(absolute_cap, relative_cap × total_assets)` after a loss in a market
+outside the group, after a permissionless withdrawal shrinks the denominator, or
+after governance tightens a cap. That is honest accounting, not a bypass: while a
+group is over cap, `allocate-supply` into any of its markets is refused before
+any transfer, and `allocate-withdraw` keeps working until the principal falls
+back under the cap. Alert on a group that stays over cap and on repeated supply
+refusals rather than on a refresh that merely reports the exposure.
+
+Refresh records reported NAV without authenticating it, and markets left out of
+a refresh keep their stale stored NAV, so keep adapters vetted, monitor reported
+totals against the fixed market caps and against the group caps that still gate
+supply, and refresh all markets on a regular cadence.
 
 Two maintenance calls are permissionless even though they are grouped under
 `curator` in the CLI:

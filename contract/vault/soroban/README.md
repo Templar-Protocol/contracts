@@ -263,29 +263,31 @@ refunding escrowed shares, dequeuing the head request, and returning to `Idle`.
 ### Refresh Observation Validation
 
 Refresh stages all selected adapter observations before synchronizing kernel accounting or
-persisting policy. Each observation must name a configured market and stay within its market cap,
-and every final cap-group principal must satisfy its absolute and relative caps before commit.
+persisting policy. Each observation must name a configured market and stay within that market's
+cap, and the aggregate of current `idle_assets` plus final staged `external_assets` must not
+overflow. A violation returns `ContractError::InvalidState` and rolls back the entire public
+refresh, including adapter transaction state.
 
-Relative caps are final-state concentration limits: each group must stay at or below
-`floor(relative_cap * prospective_total_assets)`, where the denominator is the checked sum of
-current `idle_assets` and final staged `external_assets`. Unlike supply's frozen pre-allocation
-snapshot, this prospective total includes the NAV gains or losses that refresh will commit.
+Refresh reports actual exposure; it does not gate it. Absolute and relative group caps are supply
+admission controls: they decide whether new supply may be deployed, not whether a gain or loss the
+adapters already observed may be recognised. Booked group principals can therefore sit above
+`min(absolute_cap, floor(relative_cap * total_assets))` after an out-of-group loss, after a
+permissionless withdrawal shrinks the denominator, or after governance tightens a cap. Observation
+alone is not authenticated by caps — refresh never proves that reported assets exist.
 
-Every group is checked, including untouched groups, because a loss outside a group can shrink
-the global denominator and breach that group's relative cap. Group checks use the final staged
-state, not intermediate observation order, and repeated market observations retain the last value.
+Group principals are recorded from the final staged state, so a repeated market observation
+retains its last value.
 
-A cap violation returns `ContractError::InvalidState` and rolls back the entire public refresh,
-including adapter transaction state. After a loss or cap tightening, even a downward refresh can
-remain over cap and require de-risking, market withdrawal, or authorized governance remediation
-before retrying.
+While a group sits over cap, new supply to any of its markets is refused with
+`ContractError::InvalidState` before any transfer, and withdrawals that reduce exposure keep
+working; the group becomes admissible again as soon as its principal falls back under the cap.
 
-Existing exposure in disabled or unqueued markets remains refreshable when these checks pass.
-Refresh does not authenticate adapter NAV, and partial refresh leaves unqueried NAV stale.
+Existing exposure in disabled or unqueued markets remains refreshable. Refresh does not
+authenticate adapter NAV, and partial refresh leaves unqueried NAV stale.
 
-Use vetted adapters and monitor NAV changes and report freshness across all markets.
-Market caps and absolute group caps provide report-independent ceilings, while relative caps
-constrain concentration in the accounted state rather than prove that reported assets exist.
+Use vetted adapters and monitor NAV changes and report freshness across all markets. Market caps
+bound refresh reports, while absolute and relative group caps bound new supply and concentration
+in the accounted state rather than prove that reported assets exist.
 
 ## Prerequisites
 
