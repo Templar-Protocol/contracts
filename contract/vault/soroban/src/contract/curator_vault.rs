@@ -173,6 +173,21 @@ where
         }
     }
 
+    /// Whether accrued fees must crystallize before a value transfer or an
+    /// observed-balance reconciliation at `now_ns`. A strictly later ledger
+    /// always crystallizes elapsed fees; an equal-ledger transfer crystallizes
+    /// only a performance fee that is actually due against the checkpoint, so
+    /// a gain booked at the checkpoint timestamp cannot be re-priced uncharged.
+    pub(super) fn fees_due_for_value_transfer(&self, now_ns: u64) -> Result<bool, RuntimeError> {
+        Ok(
+            templar_vault_kernel::should_refresh_fees_for_value_transfer(
+                self.state()?,
+                &self.kernel_config(),
+                TimestampNs(now_ns),
+            ),
+        )
+    }
+
     #[inline(never)]
     fn apply_kernel_action(
         &mut self,
@@ -441,6 +456,7 @@ where
         let receiver_kernel = self.register_sdk_address(env, receiver)?;
         let operator_kernel = self.register_sdk_address(env, operator)?;
         let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
+
 
         Ok((
             owner_kernel,

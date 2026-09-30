@@ -93,8 +93,9 @@ can differ.
 Operational details:
 
 - **Checkpoint, not all-time high-water mark.** When any fee is configured and ledger time is
-  newer than the stored `fee_anchor`, `DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance`
-  first crystallize elapsed management and performance fees, then restate any live-balance
+  newer than the stored `fee_anchor`, or equal to it while an uncapped performance fee is
+  actually due against the checkpoint, `DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance`
+  first crystallize the due management and performance fees, then restate any live-balance
   mismatch as a capital flow: a positive delta raises `fee_anchor.total_assets` by exactly the
   delta with the timestamp preserved, and a negative delta leaves both checkpoint fields
   untouched so recovery from a loss is not recorded as profit. Reconciliation itself neither
@@ -108,6 +109,10 @@ Operational details:
   AUM is allowed to count for fee accrual:
   `effective_AUM = min(current, last × (1 + max_rate × dt/yr))`. Relaxing or
   removing this cap is timelocked.
+  Because a capped fee base is clamped back to the checkpoint at zero elapsed time, a gain booked
+  at the checkpoint ledger is not chargeable there. Absent an intervening deposit, whose success
+  rewrites the checkpoint to the post-deposit total by design, that gain stays accrued against the
+  preserved checkpoint and is charged by a later time-advanced refresh.
 - **Refresh order matters.** `curator refresh-fees` reconciles the live idle
   token balance, but it does not query every adapter. Refresh changed markets
   first, then crystallize fees against the resulting aggregate NAV.
