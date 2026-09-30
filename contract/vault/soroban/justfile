@@ -8,7 +8,7 @@ set dotenv-load := false
 #   1. just setup              # Build, configure network, create & fund identity
 #   2. just deploy-all         # Deploy vault + share token + governance + test token, initialize
 #   3. just demo-deposit       # Deposit test tokens
-#   4. just demo-withdraw      # Atomic idle withdrawal, or request async withdrawal
+#   4. just demo-withdraw      # Atomic idle withdrawal, or request async withdrawal (needs the opt-in intake build)
 #
 # WITH BLEND INTEGRATION (for yield):
 #   1. just setup
@@ -187,6 +187,7 @@ verify-runtime-feature-matrix:
 	run_capability_test -p templar-soroban-runtime || exit $?; \
 	run_capability_test -p templar-soroban-runtime --no-default-features || exit $?; \
 	run_capability_test -p templar-soroban-runtime --no-default-features --features action-pause || exit $?; \
+	run_capability_test -p templar-soroban-runtime --features async-withdrawals || exit $?; \
 	run_capability_test -p templar-soroban-runtime -p templar-common || exit $?
 	@echo "✓ Runtime feature matrix verified"
 
@@ -209,6 +210,11 @@ check-4626-proxy:
 		--target wasm32-unknown-unknown \
 		-p templar-4626-proxy-soroban
 	@echo "✓ Checked: templar-4626-proxy-soroban"
+
+# Run runtime and proxy suites with queued-withdrawal intake enabled (opt-in).
+test-async-withdrawals:
+	@cargo test --manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime --features async-withdrawals
+	@cargo test --manifest-path "{{root}}/Cargo.toml" -p templar-4626-proxy-soroban --features async-withdrawals
 
 # Build all WASMs (vault + governance + share token + adapters + curator proxy).
 build-all: build build-blend-adapter build-custodial-adapter build-curator-proxy
@@ -1021,6 +1027,7 @@ demo-deposit:
 # =============================================================================
 
 # Request an async withdrawal (queues shares; does not pull adapter liquidity itself).
+# Requires a vault deployed from the opt-in `async-withdrawals` build; default builds reject new requests.
 # Usage: just request-withdraw <owner> <receiver> <shares> [min_assets_out]
 request-withdraw owner receiver shares min_assets_out="0":
 	@echo "Requesting withdrawal of {{shares}} shares..."

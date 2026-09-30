@@ -26,6 +26,9 @@
 //! The callable `version()` entrypoint reports the package version and exact
 //! compiled runtime-capability mask. The reserved companion-upgrade capability
 //! remains unset until the runtime can authorize companion-contract upgrades.
+//! New queued-withdrawal intake is disabled by default and requires the opt-in
+//! `async-withdrawals` feature. It is not a kernel capability bit, so the mask
+//! above is unchanged. Existing queued claims still settle; atomic exits work.
 //!
 //! - `std` - Enable std library support (for testing)
 
