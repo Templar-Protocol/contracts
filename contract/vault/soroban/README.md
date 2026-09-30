@@ -73,13 +73,26 @@ sequenceDiagram
 
 The Soroban vault treats unsolicited underlying transfers as idle assets for existing
 shareholders, not as profit that the next depositor can capture. Read-only conversion and preview
-helpers first simulate any elapsed management/performance fees against the persisted accounting,
+helpers first simulate any elapsed management/performance fees, and any performance fee accrued
+against a gain booked at the checkpoint ledger, against the persisted accounting, and
 then apply the same capital-flow reconciliation to their in-memory copy before quoting shares
 or assets.
 
 State-changing paths use one shared ordering before the kernel executes the requested deposit or
-refresh action. When any fee is configured and ledger time is newer than the stored checkpoint,
-`DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance` first crystallize elapsed management and
+refresh action, decided by the kernel predicate `should_refresh_fees_for_value_transfer` and reused
+by deposits, atomic exits, preview helpers, and balance reconciliation. The predicate crystallizes
+fees when ledger time is newer than the stored checkpoint, and also when ledger time equals the
+checkpoint while a performance fee is actually due against it. A market gain booked by
+`RefreshMarkets` at the checkpoint ledger therefore still pays its performance fee before a
+same-ledger deposit, donation reconciliation, or `RefreshFees` call can re-price or re-anchor it.
+With a `max_total_assets_growth_rate` cap configured, the zero-elapsed window clamps the fee base
+back to the checkpoint, so nothing is chargeable at that ledger: the predicate declines to refresh,
+and the kernel rejects a `RefreshFees` action at the checkpoint timestamp. That rejection only
+surfaces when no idle reconciliation happens, because a command that also observes a changed idle
+balance still reconciles it and succeeds, leaving the capped gain accrued against the preserved
+checkpoint rather than re-anchored away.
+
+`DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance` first crystallize the due management and
 performance fees against the persisted accounting and the stored `fee_anchor`. They then reconcile
 the live asset token balance as a capital flow: a positive delta raises `fee_anchor.total_assets`
 by exactly the delta under the no-panic safe-add convention with the checkpoint timestamp

@@ -6,8 +6,9 @@
 
 use soroban_sdk::{token, Address as SdkAddress, Env};
 use templar_vault_kernel::{
-    compute_fee_shares_from_assets, compute_management_fee_shares, total_assets_for_fee_accrual,
-    FeeAccrualAnchor, Number, TimestampNs, VaultConfig, VaultState, MIN_WITHDRAWAL_ASSETS,
+    compute_fee_shares_from_assets, compute_management_fee_shares,
+    should_refresh_fees_for_value_transfer, total_assets_for_fee_accrual, FeeAccrualAnchor, Number,
+    TimestampNs, VaultConfig, VaultState, MIN_WITHDRAWAL_ASSETS,
 };
 
 use crate::contract::{
@@ -32,7 +33,11 @@ fn preview_state_with_fee_accrual(
         state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(now_ns));
         return Ok(state);
     }
-    if now_ns <= anchor.timestamp_ns.as_u64() {
+    // Match the execution path: elapsed fees and any performance fee accrued
+    // against an equal-ledger gain must be simulated before the observed idle
+    // balance is reconciled below, so a preview priced at the current ledger
+    // cannot over-mint against profit the depositor has not bought.
+    if !should_refresh_fees_for_value_transfer(&state, config, TimestampNs(now_ns)) {
         return Ok(state);
     }
 

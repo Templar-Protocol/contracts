@@ -4,6 +4,7 @@
 
 use rstest::{fixture, rstest};
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
     Address as SdkAddress, Bytes, Env,
@@ -24,9 +25,10 @@ use templar_soroban_runtime::{
 };
 use templar_soroban_shared_types::{
     DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, GovernanceCommand, VaultCommand,
-    GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_CURATOR,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
-    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
+    GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
+    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::{
@@ -2817,6 +2819,33 @@ fn set_fee_policy(
         2 => (Wad::one() / 5, Wad::one() / 20),
         _ => (Wad::zero(), Wad::zero()),
     };
+    set_fee_policy_with_growth_cap(
+        env,
+        governance,
+        performance_recipient,
+        management_recipient,
+        performance_fee_wad.as_u128_trunc() as i128,
+        management_fee_wad.as_u128_trunc() as i128,
+        None,
+    );
+}
+
+// Configure the fee legs and the optional total-asset growth-rate cap through
+// the governance bridge. Callers must already be inside the vault contract
+// context.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test bridge mirrors the wire command"
+)]
+fn set_fee_policy_with_growth_cap(
+    env: &Env,
+    governance: &soroban_sdk::Address,
+    performance_recipient: &soroban_sdk::Address,
+    management_recipient: &soroban_sdk::Address,
+    performance_fee_wad: i128,
+    management_fee_wad: i128,
+    max_growth_rate_wad: Option<i128>,
+) {
     VaultProxy::new(env)
         .execute_governance_unit(
             governance,
@@ -2830,9 +2859,9 @@ fn set_fee_policy(
                 ]),
                 market_id: None,
                 cap_group_id: None,
-                value: Some(performance_fee_wad.as_u128_trunc() as i128),
-                value_b: Some(management_fee_wad.as_u128_trunc() as i128),
-                value_c: None,
+                value: Some(performance_fee_wad),
+                value_b: Some(management_fee_wad),
+                value_c: max_growth_rate_wad,
             },
         )
         .expect("configure fees");
@@ -3159,5 +3188,327 @@ fn soroban_contract_eng700_loss_then_recovery_resyncs_keep_checkpoint_and_charge
             ENG700_ASSETS,
             templar_vault_kernel::TimestampNs(ENG700_RECOVERY_NS)
         )
+    );
+}
+
+// Same-ledger fee ordering regression.
+//
+// Every step runs at one ledger timestamp. A public `DepositWithMin` creates
+// the fee checkpoint, `Allocate` deploys the balance, `RefreshMarkets` books
+// an external market gain against that checkpoint, real tokens are donated to
+// the vault, and a deposit is then previewed and executed with
+// `min_shares_out = preview`. The accrued performance fee must crystallize
+// against the pre-donation accounting before the donation is reconciled, so
+// the performance recipient owns exactly the shares earned by the market gain,
+// the donation is never charged as profit, and the preview cannot drift from
+// execution.
+const SAME_LEDGER_TS_SECONDS: u64 = 100;
+const SAME_LEDGER_TS_NS: u64 = SAME_LEDGER_TS_SECONDS * 1_000_000_000;
+const SAME_LEDGER_SEED_DEPOSIT: i128 = 1_000;
+const SAME_LEDGER_DEPLOYED: i128 = 1_000;
+const SAME_LEDGER_GAIN: i128 = 500;
+const SAME_LEDGER_DONATION: i128 = 1_500;
+const SAME_LEDGER_PURCHASE: i128 = 1_000;
+
+/// Reports the asset tokens it actually holds, so minting to it models an
+/// external market whose value rises.
+#[contract]
+pub struct BalanceReportingAdapter;
+
+#[contractimpl]
+impl BalanceReportingAdapter {
+    pub fn supply(_env: Env, _vault: SdkAddress, _asset: SdkAddress, _amount: i128) {}
+
+    pub fn total_assets(env: Env, asset: SdkAddress) -> i128 {
+        soroban_sdk::token::Client::new(&env, &asset).balance(&env.current_contract_address())
+    }
+}
+
+struct SameLedgerFixture {
+    env: Env,
+    contract_id: SdkAddress,
+    asset_token: SdkAddress,
+    share_token: SdkAddress,
+    adapter: SdkAddress,
+    allocator: SdkAddress,
+    performance_recipient: SdkAddress,
+    management_recipient: SdkAddress,
+    depositor: SdkAddress,
+}
+
+fn same_ledger_fixture(max_growth_rate_wad: Option<i128>) -> SameLedgerFixture {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: SAME_LEDGER_TS_SECONDS,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let allocator = SdkAddress::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&allocator, &contract_id, &(0u64)),
+    );
+    let asset_token = env
+        .register_stellar_asset_contract_v2(SdkAddress::generate(&env))
+        .address();
+    let share_token = env
+        .register_stellar_asset_contract_v2(contract_id.clone())
+        .address();
+    let adapter = env.register(BalanceReportingAdapter, ());
+    let performance_recipient = SdkAddress::generate(&env);
+    let management_recipient = SdkAddress::generate(&env);
+    let depositor = SdkAddress::generate(&env);
+
+    let proxy = VaultProxy::new(&env);
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            governance.clone(),
+            governance.clone(),
+            asset_token.clone(),
+            share_token.clone(),
+            0,
+            0,
+        )
+        .expect("initialize");
+    });
+    // The test host permits one authorization per contract frame, so every
+    // governance command runs in its own frame.
+    env.as_contract(&contract_id, || {
+        set_fee_policy_with_growth_cap(
+            &env,
+            &governance,
+            &performance_recipient,
+            &management_recipient,
+            (Wad::one() / 5).as_u128_trunc() as i128,
+            0,
+            max_growth_rate_wad,
+        );
+    });
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute_governance_unit(
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+                    primary: None,
+                    many: Some(vec![sdk_wire(&allocator)]),
+                    value_a: None,
+                    value_b: None,
+                },
+            )
+            .expect("configure allocators");
+    });
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        let mut policy_state = storage
+            .load_policy_state()
+            .expect("load policy state")
+            .unwrap_or_default();
+        policy_state
+            .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+            .expect("configure market");
+        storage
+            .save_policy_state(&policy_state)
+            .expect("save policy state");
+    });
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute_governance_unit(
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+                    primary: None,
+                    many: Some(vec![sdk_wire(&adapter)]),
+                    value_a: None,
+                    value_b: None,
+                },
+            )
+            .expect("allow adapter");
+    });
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute_governance_unit(
+                &governance,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(vec![0u32]),
+                    mode: None,
+                    accounts: Some(vec![sdk_wire(&adapter)]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                },
+            )
+            .expect("configure supply queue");
+    });
+
+    SameLedgerFixture {
+        env,
+        contract_id,
+        asset_token,
+        share_token,
+        adapter,
+        allocator,
+        performance_recipient,
+        management_recipient,
+        depositor,
+    }
+}
+
+#[rstest]
+// Cases: gain booked at the checkpoint ledger, growth-rate cap, expected accrued
+// fee shares, expected purchase shares. Uncapped, the 20% fee on the 500 gain
+// is 100 assets, so the pre-donation base of 1500 assets and 1000 shares mints
+// floor(100 * 1000 / (1500 - 100)) = 71 fee shares, and the 1000-asset purchase
+// then takes floor(1000 * 1071 / 3000) = 357. A configured cap clamps the
+// zero-elapsed fee base back to the checkpoint, so nothing is chargeable and the
+// purchase is plain pro-rata floor(1000 * 1000 / 3000) = 333. With no gain the
+// donation is pure capital flow: zero fee shares and floor(1000 * 1000 / 2500).
+#[case(0i128, None, 0u128, 400u128)]
+#[case(SAME_LEDGER_GAIN, None, 71u128, 357u128)]
+#[case(SAME_LEDGER_GAIN, Some((Wad::one() / 5).as_u128_trunc() as i128), 0u128, 333u128)]
+fn soroban_contract_same_ledger_gain_crystallizes_fees_before_donation_and_deposit(
+    #[case] gain: i128,
+    #[case] max_growth_rate_wad: Option<i128>,
+    #[case] expected_fee_shares: u128,
+    #[case] expected_purchase_shares: u128,
+) {
+    let fixture = same_ledger_fixture(max_growth_rate_wad);
+    let env = &fixture.env;
+    let proxy = VaultProxy::new(env);
+    let asset_admin = StellarAssetClient::new(env, &fixture.asset_token);
+    let share_client = soroban_sdk::token::Client::new(env, &fixture.share_token);
+
+    asset_admin.mint(
+        &fixture.depositor,
+        &(SAME_LEDGER_SEED_DEPOSIT + SAME_LEDGER_PURCHASE),
+    );
+
+    // 1. A public deposit creates the fee checkpoint at this ledger.
+    let seed_shares = env.as_contract(&fixture.contract_id, || {
+        let receipt = proxy
+            .execute(&VaultCommand::DepositWithMin {
+                owner: sdk_wire(&fixture.depositor),
+                receiver: sdk_wire(&fixture.depositor),
+                assets: SAME_LEDGER_SEED_DEPOSIT,
+                min_shares_out: 0,
+            })
+            .expect("anchoring deposit");
+        DepositReceipt::decode(&receipt.to_alloc_vec())
+            .expect("anchoring deposit receipt")
+            .shares_out
+    });
+    assert_eq!(seed_shares, SAME_LEDGER_SEED_DEPOSIT);
+
+    // 2. Deploy the whole balance, then book the external market gain at the
+    //    same ledger through the public refresh command.
+    env.as_contract(&fixture.contract_id, || {
+        proxy
+            .execute(&VaultCommand::Allocate {
+                caller: sdk_wire(&fixture.allocator),
+                market: 0,
+                amount: SAME_LEDGER_DEPLOYED,
+                supply: true,
+            })
+            .expect("deploy to market");
+    });
+    if gain > 0 {
+        asset_admin.mint(&fixture.adapter, &gain);
+    }
+    env.as_contract(&fixture.contract_id, || {
+        proxy
+            .execute(&VaultCommand::RefreshMarkets {
+                caller: sdk_wire(&fixture.allocator),
+                markets: vec![0u32],
+            })
+            .expect("refresh markets");
+    });
+
+    // 3. A donation of real tokens arrives. Reconciliation must treat it as a
+    //    capital flow, never as profit.
+    asset_admin.mint(&fixture.contract_id, &SAME_LEDGER_DONATION);
+
+    // Expected state: the purchase is priced after crystallization against the
+    // recorded pre-donation total, and after the donation is credited.
+    let recorded_pre_donation_assets = (SAME_LEDGER_SEED_DEPOSIT + gain) as u128;
+    let shares_after_crystallization = seed_shares as u128 + expected_fee_shares;
+    let reconciled_assets = recorded_pre_donation_assets + SAME_LEDGER_DONATION as u128;
+
+    // 4. Preview and execute at the same ledger, pinned to the preview.
+    let preview = env.as_contract(&fixture.contract_id, || {
+        proxy
+            .preview_deposit(SAME_LEDGER_PURCHASE)
+            .expect("preview deposit")
+    });
+    assert_eq!(
+        preview as u128, expected_purchase_shares,
+        "preview must price the purchase against the post-crystallization, post-reconciliation rate"
+    );
+
+    let executed = env.as_contract(&fixture.contract_id, || {
+        let receipt = proxy
+            .execute(&VaultCommand::DepositWithMin {
+                owner: sdk_wire(&fixture.depositor),
+                receiver: sdk_wire(&fixture.depositor),
+                assets: SAME_LEDGER_PURCHASE,
+                min_shares_out: preview,
+            })
+            .expect("deposit pinned to the preview must not slip");
+        DepositReceipt::decode(&receipt.to_alloc_vec())
+            .expect("deposit receipt")
+            .shares_out
+    });
+    assert_eq!(
+        executed, preview,
+        "execution must mint exactly the previewed shares"
+    );
+
+    // The fee recipient owns exactly the shares accrued against the
+    // pre-donation market gain: not diluted by the donation, not charged on it,
+    // and not re-anchored away uncharged when uncapped.
+    assert_eq!(
+        share_client.balance(&fixture.performance_recipient),
+        expected_fee_shares as i128,
+        "performance recipient must own the pre-donation accrued shares"
+    );
+    assert_eq!(
+        share_client.balance(&fixture.management_recipient),
+        0,
+        "no management leg is configured"
+    );
+
+    let stored = env.as_contract(&fixture.contract_id, || {
+        SorobanStorage::new(env)
+            .load_state()
+            .expect("load state")
+            .expect("state present")
+    });
+    let expected_total_assets = reconciled_assets + SAME_LEDGER_PURCHASE as u128;
+    assert_eq!(stored.total_assets, expected_total_assets);
+    assert_eq!(
+        stored.total_shares,
+        shares_after_crystallization + expected_purchase_shares
+    );
+    assert_eq!(
+        stored.idle_assets,
+        SAME_LEDGER_DONATION as u128 + SAME_LEDGER_PURCHASE as u128
+    );
+    assert_eq!(
+        stored.external_assets,
+        (SAME_LEDGER_DEPLOYED + gain) as u128
+    );
+    assert_eq!(
+        stored.fee_anchor,
+        FeeAccrualAnchor::new(
+            expected_total_assets,
+            templar_vault_kernel::TimestampNs(SAME_LEDGER_TS_NS)
+        ),
+        "the deposit re-anchors at the post-deposit total on this ledger"
     );
 }

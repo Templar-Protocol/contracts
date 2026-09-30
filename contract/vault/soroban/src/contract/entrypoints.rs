@@ -79,8 +79,12 @@ fn reconcile_fees_and_current_idle_balance(
     if !vault.state()?.op_state.is_idle() {
         return Err(RuntimeError::invalid_state(""));
     }
-    let fees_refreshed = vault.get_fees().has_active_slot_fees()
-        && now_ns > vault.state()?.fee_anchor.timestamp_ns.as_u64();
+    // Crystallize elapsed fees, and any performance fee accrued against an
+    // equal-ledger gain, before the observed idle balance is reconciled. A
+    // donation or shortfall is credited only after accrual, so reconciliation
+    // can neither dilute the crystallization base nor lift the checkpoint past
+    // a fee that is already due.
+    let fees_refreshed = vault.fees_due_for_value_transfer(now_ns)?;
     if fees_refreshed {
         vault.refresh_fees(now_ns)?;
     }
