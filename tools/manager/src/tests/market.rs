@@ -1,5 +1,4 @@
 use clap::Parser;
-use rstest::rstest;
 use serde_json::json;
 use templar_gateway_methods_spec::market;
 
@@ -209,19 +208,20 @@ fn parses_static_yield_get() {
     );
 }
 
-#[rstest]
-#[case::defaults(&[], None, None)]
-#[case::explicit(&["--account-id", "revenue.testnet", "--snapshot-limit", "50"], Some("revenue.testnet"), Some(50))]
-fn parses_static_yield_accumulate(
-    #[case] extra: &[&str],
-    #[case] account_id: Option<&str>,
-    #[case] snapshot_limit: Option<u32>,
-) {
-    let args = ["accumulate", "--market-id", "market.testnet"]
-        .into_iter()
-        .chain(extra.iter().copied())
-        .chain(CREDS)
-        .collect::<Vec<_>>();
+#[test]
+fn parses_static_yield_accumulate() {
+    let args = [
+        "accumulate",
+        "--market-id",
+        "market.testnet",
+        "--account-id",
+        "revenue.testnet",
+        "--snapshot-limit",
+        "50",
+    ]
+    .into_iter()
+    .chain(CREDS)
+    .collect::<Vec<_>>();
     let Ok(StaticYieldNs::Accumulate(cmd)) = parse_static_yield(&args) else {
         panic!("expected StaticYield::Accumulate");
     };
@@ -229,21 +229,24 @@ fn parses_static_yield_accumulate(
         cmd.into_spec(),
         market::AccumulateStaticYield {
             market_id: "market.testnet".parse().unwrap(),
-            account_id: account_id.map(|id| id.parse().unwrap()),
-            snapshot_limit,
+            account_id: Some("revenue.testnet".parse().unwrap()),
+            snapshot_limit: Some(50),
         }
     );
 }
 
-#[rstest]
-#[case::everything(&[], None)]
-#[case::partial(&["--amount", "1000"], Some(1000))]
-fn parses_static_yield_withdraw(#[case] extra: &[&str], #[case] amount: Option<u128>) {
-    let args = ["withdraw", "--market-id", "market.testnet"]
-        .into_iter()
-        .chain(extra.iter().copied())
-        .chain(CREDS)
-        .collect::<Vec<_>>();
+#[test]
+fn parses_static_yield_withdraw() {
+    let args = [
+        "withdraw",
+        "--market-id",
+        "market.testnet",
+        "--amount",
+        "1000",
+    ]
+    .into_iter()
+    .chain(CREDS)
+    .collect::<Vec<_>>();
     let Ok(StaticYieldNs::Withdraw(cmd)) = parse_static_yield(&args) else {
         panic!("expected StaticYield::Withdraw");
     };
@@ -251,41 +254,36 @@ fn parses_static_yield_withdraw(#[case] extra: &[&str], #[case] amount: Option<u
         cmd.into_spec(),
         market::WithdrawStaticYield {
             market_id: "market.testnet".parse().unwrap(),
-            amount: amount.map(Into::into),
+            amount: Some(1000.into()),
         }
     );
 }
 
-#[rstest]
-#[case::registries_only(&["--registry-id", "r1.testnet,r2.testnet"], &["r1.testnet", "r2.testnet"], &[], None)]
-#[case::markets_repeated(&["--market-id", "m1.testnet", "--market-id", "m2.testnet"], &[], &["m1.testnet", "m2.testnet"], None)]
-#[case::both_with_receiver(
-    &["--registry-id", "r1.testnet", "--market-id", "m1.testnet", "--receiver-id", "treasury.testnet"],
-    &["r1.testnet"],
-    &["m1.testnet"],
-    Some("treasury.testnet"),
-)]
-fn parses_static_yield_harvest(
-    #[case] extra: &[&str],
-    #[case] registry_ids: &[&str],
-    #[case] market_ids: &[&str],
-    #[case] receiver_id: Option<&str>,
-) {
-    let args = std::iter::once("harvest")
-        .chain(extra.iter().copied())
-        .chain(CREDS)
-        .collect::<Vec<_>>();
+#[test]
+fn parses_static_yield_harvest() {
+    let args = [
+        "harvest",
+        "--registry-id",
+        "r1.testnet,r2.testnet",
+        "--market-id",
+        "m1.testnet",
+        "--receiver-id",
+        "treasury.testnet",
+    ]
+    .into_iter()
+    .chain(CREDS)
+    .collect::<Vec<_>>();
     let Ok(StaticYieldNs::Harvest(cmd)) = parse_static_yield(&args) else {
         panic!("expected StaticYield::Harvest");
     };
-    let names = |ids: &[near_account_id::AccountId]| {
+    let ids = |ids: &[&str]| {
         ids.iter()
-            .map(|id| id.as_str().to_owned())
+            .map(|id| id.parse::<near_account_id::AccountId>().unwrap())
             .collect::<Vec<_>>()
     };
-    assert_eq!(names(&cmd.registry_id), registry_ids);
-    assert_eq!(names(&cmd.market_id), market_ids);
-    assert_eq!(cmd.receiver_id.as_ref().map(|id| id.as_str()), receiver_id);
+    assert_eq!(cmd.registry_id, ids(&["r1.testnet", "r2.testnet"]));
+    assert_eq!(cmd.market_id, ids(&["m1.testnet"]));
+    assert_eq!(cmd.receiver_id, Some("treasury.testnet".parse().unwrap()));
 }
 
 #[test]

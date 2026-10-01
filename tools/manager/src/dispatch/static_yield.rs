@@ -11,12 +11,12 @@ use templar_common::asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset};
 use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{contract, market, registry, storage, token};
 use templar_gateway_types::{
-    common::{Pagination, WriteOperationResult},
-    ContractKind, ManagedAccountId, Market, NearToken, OperationId,
+    common::Pagination, ContractKind, ManagedAccountId, Market, NearToken, OperationId,
 };
 
 use crate::commands::market::static_yield::Harvest;
 use crate::context::{failed_receipt_contracts, print_json, CliContext};
+use crate::spec::amount::Amount;
 
 pub(super) async fn harvest(ctx: CliContext, args: Harvest) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -38,19 +38,16 @@ pub(super) async fn harvest(ctx: CliContext, args: Harvest) -> anyhow::Result<()
         markets.push(MarketReport { market_id, outcome });
     }
 
-    let harvested = totals(&markets);
-    let transfers = match &args.receiver_id {
-        Some(receiver_id) => forward(&ctx, &client, &signer, receiver_id, &harvested).await,
-        None => Vec::new(),
-    };
+    let mut totals = totals(&markets);
+    if let Some(receiver_id) = &args.receiver_id {
+        for total in &mut totals {
+            total.forwarded = Some(forward(&ctx, &client, &signer, receiver_id, total).await);
+        }
+    }
 
-    let report = HarvestReport {
-        markets,
-        harvested,
-        transfers,
-    };
+    let report = HarvestReport { markets, totals };
     print_json(&report)?;
-    eprint!("{}", report.summary());
+    eprint!("{}", Summary(&report.totals));
     report.ensure_succeeded()
 }
 
@@ -76,55 +73,47 @@ async fn resolve_markets(
     Ok(markets)
 }
 
-/// Accumulate (where the market version requires it) and withdraw `signer`'s
-/// static yield on one market.
 async fn harvest_market(
     ctx: &CliContext,
     client: &Client,
     signer: &ManagedAccountId,
     market_id: &AccountId,
 ) -> anyhow::Result<MarketOutcome> {
-    let (version, configuration) = tokio::try_join!(
-        async {
-            client
-                .read(contract::GetVersion {
-                    contract_id: market_id.clone(),
-                })
-                .await
-                .context("read market version")
-        },
-        async {
-            client
-                .read(market::GetConfiguration {
-                    market_id: market_id.clone(),
-                })
-                .await
-                .context("read market configuration")
-        },
-    )?;
-    let version = version
-        .parsed
-        .map(|version| version.cast::<Market>())
-        .with_context(|| format!("unparseable market version {:?}", version.version_string))?;
+    let configuration = client
+        .read(market::GetConfiguration {
+            market_id: market_id.clone(),
+        })
+        .await
+        .context("read market configuration")?;
 
     // Accumulation panics for an account without a static weight, but protocol
     // fees credit `protocol_account_id`'s record directly, so read it regardless.
     let has_static_weight = configuration.yield_weights.r#static.contains_key(&signer.0);
-    let is_recipient = has_static_weight || configuration.protocol_account_id == signer.0;
-
-    if has_static_weight && version.requires_static_yield_accumulation() {
-        let result = client
-            .execute_as(
-                signer.clone(),
-                market::AccumulateStaticYield {
-                    market_id: market_id.clone(),
-                    account_id: None,
-                    snapshot_limit: None,
-                },
-            )
-            .await?;
-        ctx.report_checked(&result)
-            .context("accumulate static yield")?;
+    if has_static_weight {
+        let version = client
+            .read(contract::GetVersion {
+                contract_id: market_id.clone(),
+            })
+            .await
+            .context("read market version")?;
+        let version = version
+            .parsed
+            .map(|version| version.cast::<Market>())
+            .with_context(|| format!("unparseable market version {:?}", version.version_string))?;
+        if version.requires_static_yield_accumulation() {
+            let result = client
+                .execute_as(
+                    signer.clone(),
+                    market::AccumulateStaticYield {
+                        market_id: market_id.clone(),
+                        account_id: None,
+                        snapshot_limit: None,
+                    },
+                )
+                .await?;
+            ctx.report_checked(&result)
+                .context("accumulate static yield")?;
+        }
     }
 
     let amount = client
@@ -136,8 +125,9 @@ async fn harvest_market(
         .context("read static yield")?
         .borrow_asset_total();
     if amount.is_zero() {
+        let is_recipient = has_static_weight || configuration.protocol_account_id == signer.0;
         return Ok(if is_recipient {
-            MarketOutcome::NothingAccumulated
+            MarketOutcome::NothingToWithdraw
         } else {
             MarketOutcome::NotARecipient
         });
@@ -157,13 +147,20 @@ async fn harvest_market(
         .await?;
     ctx.report_checked(&result)
         .context("withdraw static yield")?;
-    ensure_delivered(&result)?;
+    // The market's callback absorbs a failed payout by restoring the yield, so
+    // the operation still reports success.
+    let failed = failed_receipt_contracts(&result);
+    anyhow::ensure!(
+        failed.is_empty(),
+        "payout failed on {}, so the yield stays on the market",
+        failed.join(", ")
+    );
     tracing::info!(%market_id, %amount, "withdrew static yield");
 
     Ok(MarketOutcome::Withdrawn(Withdrawal {
         asset: configuration.borrow_asset,
         amount,
-        decimals: u32::try_from(
+        decimals: u8::try_from(
             configuration
                 .price_oracle_configuration
                 .borrow_asset_decimals,
@@ -173,23 +170,8 @@ async fn harvest_market(
     }))
 }
 
-/// A withdrawal pays out through a token transfer whose failure the market's
-/// callback absorbs by restoring the yield record, leaving the operation
-/// `Succeeded` with nothing delivered.
-fn ensure_delivered(result: &WriteOperationResult) -> anyhow::Result<()> {
-    let failed = failed_receipt_contracts(result);
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "withdrawal transfer failed (receipts on {}); the yield stays on the market",
-            failed.join(", ")
-        )
-    }
-}
-
-/// Fail early when `signer` cannot receive the borrow asset. A token without
-/// NEP-145 storage bounds has no requirement to check.
+/// Fail before withdrawing when `signer` cannot receive the borrow asset. A
+/// token without NEP-145 storage bounds has no requirement to check.
 async fn ensure_storage_registered(
     client: &Client,
     asset_contract: &AccountIdRef,
@@ -225,133 +207,74 @@ async fn forward(
     client: &Client,
     signer: &ManagedAccountId,
     receiver_id: &AccountId,
-    harvested: &[Harvested],
-) -> Vec<TransferReport> {
-    let mut transfers = Vec::with_capacity(harvested.len());
-    for Harvested { asset, amount, .. } in harvested {
-        let outcome = match transfer(ctx, client, signer, receiver_id, asset, *amount).await {
-            Ok(operation_id) => TransferOutcome::Sent { operation_id },
-            Err(error) => {
-                let error = format!("{error:#}");
-                tracing::error!(%asset, %amount, %receiver_id, %error, "failed to forward yield");
-                TransferOutcome::Failed { error }
-            }
-        };
-        transfers.push(TransferReport {
-            asset: asset.clone(),
-            amount: *amount,
-            outcome,
-        });
+    total: &Total,
+) -> Forwarded {
+    let sent = async {
+        let result = client
+            .execute_as(
+                signer.clone(),
+                token::Transfer {
+                    token: token::TokenReference::from(&total.asset),
+                    receiver_id: receiver_id.clone(),
+                    amount: u128::from(total.amount).into(),
+                    memo: None,
+                },
+            )
+            .await?;
+        ctx.report_checked(&result)?;
+        anyhow::Ok(result.operation.id)
+    };
+    match sent.await {
+        Ok(operation_id) => Forwarded::Sent { operation_id },
+        Err(error) => {
+            let error = format!("{error:#}");
+            tracing::error!(asset = %total.asset, %receiver_id, %error, "failed to forward yield");
+            Forwarded::Failed { error }
+        }
     }
-    transfers
-}
-
-async fn transfer(
-    ctx: &CliContext,
-    client: &Client,
-    signer: &ManagedAccountId,
-    receiver_id: &AccountId,
-    asset: &FungibleAsset<BorrowAsset>,
-    amount: BorrowAssetAmount,
-) -> anyhow::Result<OperationId> {
-    let result = client
-        .execute_as(
-            signer.clone(),
-            token::Transfer {
-                token: token::TokenReference::from(asset),
-                receiver_id: receiver_id.clone(),
-                amount: u128::from(amount).into(),
-                memo: None,
-            },
-        )
-        .await?;
-    ctx.report_checked(&result)?;
-    Ok(result.operation.id)
 }
 
 /// Withdrawals summed per asset, so each asset is forwarded in one transfer.
-/// Decimals are dropped when the markets sharing an asset disagree on them.
-fn totals(markets: &[MarketReport]) -> Vec<Harvested> {
-    markets
-        .iter()
-        .filter_map(|market| match &market.outcome {
-            MarketOutcome::Withdrawn(withdrawal) => Some(withdrawal),
-            MarketOutcome::NothingAccumulated
-            | MarketOutcome::NotARecipient
-            | MarketOutcome::Failed { .. } => None,
-        })
-        .fold(
-            BTreeMap::<_, (BorrowAssetAmount, Option<u32>)>::new(),
-            |mut totals, withdrawal| {
-                totals
-                    .entry(withdrawal.asset.clone())
-                    .and_modify(|(amount, decimals)| {
-                        *amount += withdrawal.amount;
-                        if *decimals != withdrawal.decimals {
-                            *decimals = None;
-                        }
-                    })
-                    .or_insert((withdrawal.amount, withdrawal.decimals));
-                totals
-            },
-        )
-        .into_iter()
-        .map(|(asset, (amount, decimals))| Harvested {
-            asset,
-            amount,
-            decimals,
-        })
-        .collect()
-}
-
-/// `amount` in whole units, e.g. `1234.5` for 1234500000 at 6 decimals.
-fn format_units(amount: u128, decimals: u32) -> String {
-    let Some(scale) = 10u128.checked_pow(decimals) else {
-        return amount.to_string();
-    };
-    let whole = amount / scale;
-    let fraction = amount % scale;
-    if fraction == 0 {
-        return whole.to_string();
+fn totals(markets: &[MarketReport]) -> Vec<Total> {
+    let mut totals = BTreeMap::new();
+    for market in markets {
+        if let MarketOutcome::Withdrawn(withdrawal) = &market.outcome {
+            totals
+                .entry(&withdrawal.asset)
+                .or_insert_with(|| Total {
+                    asset: withdrawal.asset.clone(),
+                    amount: BorrowAssetAmount::zero(),
+                    decimals: withdrawal.decimals,
+                    forwarded: None,
+                })
+                .amount += withdrawal.amount;
+        }
     }
-    let width = decimals as usize;
-    let fraction = format!("{fraction:0width$}");
-    format!("{whole}.{}", fraction.trim_end_matches('0'))
+    totals.into_values().collect()
 }
 
 #[derive(Debug, Serialize)]
 struct HarvestReport {
     markets: Vec<MarketReport>,
-    harvested: Vec<Harvested>,
-    transfers: Vec<TransferReport>,
+    totals: Vec<Total>,
 }
 
 impl HarvestReport {
-    fn summary(&self) -> Summary<'_> {
-        Summary(&self.harvested)
-    }
-
     fn ensure_succeeded(&self) -> anyhow::Result<()> {
-        let failed_markets = self
+        let failed = self
             .markets
             .iter()
-            .filter(|market| matches!(market.outcome, MarketOutcome::Failed { .. }))
-            .count();
-        let failed_transfers = self
-            .transfers
-            .iter()
-            .filter(|transfer| matches!(transfer.outcome, TransferOutcome::Failed { .. }))
-            .count();
-        anyhow::ensure!(
-            failed_markets == 0 && failed_transfers == 0,
-            "{failed_markets} market(s) and {failed_transfers} transfer(s) failed"
-        );
+            .any(|market| matches!(market.outcome, MarketOutcome::Failed { .. }))
+            || self
+                .totals
+                .iter()
+                .any(|total| matches!(total.forwarded, Some(Forwarded::Failed { .. })));
+        anyhow::ensure!(!failed, "some markets or transfers failed; see the report");
         Ok(())
     }
 }
 
-/// The human-readable revenue line printed after the JSON report.
-struct Summary<'a>(&'a [Harvested]);
+struct Summary<'a>(&'a [Total]);
 
 impl fmt::Display for Summary<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -359,13 +282,12 @@ impl fmt::Display for Summary<'_> {
             return writeln!(f, "Harvested nothing.");
         }
         writeln!(f, "Harvested:")?;
-        for harvested in self.0 {
-            let amount = u128::from(harvested.amount);
-            match harvested.decimals {
-                Some(decimals) => write!(f, "  {}", format_units(amount, decimals))?,
-                None => write!(f, "  {amount} (raw units)")?,
-            }
-            writeln!(f, " {}", harvested.asset)?;
+        for total in self.0 {
+            let raw = u128::from(total.amount);
+            let amount = total.decimals.map_or(Amount::Atoms(raw), |decimals| {
+                Amount::from_base_units(raw, decimals)
+            });
+            writeln!(f, "  {}: {amount}", total.asset)?;
         }
         Ok(())
     }
@@ -382,7 +304,7 @@ struct MarketReport {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 enum MarketOutcome {
     Withdrawn(Withdrawal),
-    NothingAccumulated,
+    NothingToWithdraw,
     /// The signer neither has a static weight nor is the protocol account.
     NotARecipient,
     Failed {
@@ -394,31 +316,25 @@ enum MarketOutcome {
 struct Withdrawal {
     asset: FungibleAsset<BorrowAsset>,
     amount: BorrowAssetAmount,
-    /// The market's configured borrow-asset decimals; only used for display.
+    /// The market's configured borrow-asset decimals, for the summary only.
     #[serde(skip)]
-    decimals: Option<u32>,
+    decimals: Option<u8>,
     operation_id: OperationId,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
-struct Harvested {
+struct Total {
     asset: FungibleAsset<BorrowAsset>,
     amount: BorrowAssetAmount,
+    #[serde(skip)]
+    decimals: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    decimals: Option<u32>,
+    forwarded: Option<Forwarded>,
 }
 
-#[derive(Debug, Serialize)]
-struct TransferReport {
-    asset: FungibleAsset<BorrowAsset>,
-    amount: BorrowAssetAmount,
-    #[serde(flatten)]
-    outcome: TransferOutcome,
-}
-
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
-enum TransferOutcome {
+enum Forwarded {
     Sent { operation_id: OperationId },
     Failed { error: String },
 }
@@ -445,24 +361,21 @@ mod tests {
         }
     }
 
-    fn withdrawn(asset: FungibleAsset<BorrowAsset>, amount: u128, decimals: u32) -> MarketOutcome {
+    fn withdrawn(asset: FungibleAsset<BorrowAsset>, amount: u128) -> MarketOutcome {
         MarketOutcome::Withdrawn(Withdrawal {
             asset,
             amount: amount.into(),
-            decimals: Some(decimals),
+            decimals: Some(6),
             operation_id: OperationId("op".to_owned()),
         })
     }
 
-    fn harvested(
-        asset: FungibleAsset<BorrowAsset>,
-        amount: u128,
-        decimals: Option<u32>,
-    ) -> Harvested {
-        Harvested {
+    fn total(asset: FungibleAsset<BorrowAsset>, amount: u128, decimals: Option<u8>) -> Total {
+        Total {
             asset,
             amount: amount.into(),
             decimals,
+            forwarded: None,
         }
     }
 
@@ -475,104 +388,66 @@ mod tests {
     #[test]
     fn totals_sum_withdrawals_per_asset_and_ignore_the_rest() {
         let markets = [
-            market("a.testnet", withdrawn(usdc(), 10, 6)),
-            market("b.testnet", withdrawn(usdt(), 7, 6)),
-            market("c.testnet", withdrawn(usdc(), 5, 6)),
-            market("d.testnet", MarketOutcome::NothingAccumulated),
+            market("a.testnet", withdrawn(usdc(), 10)),
+            market("b.testnet", withdrawn(usdt(), 7)),
+            market("c.testnet", withdrawn(usdc(), 5)),
+            market("d.testnet", MarketOutcome::NothingToWithdraw),
             market("e.testnet", MarketOutcome::NotARecipient),
             market("f.testnet", failed()),
         ];
         assert_eq!(
             totals(&markets),
-            [
-                harvested(usdc(), 15, Some(6)),
-                harvested(usdt(), 7, Some(6))
-            ]
+            [total(usdc(), 15, Some(6)), total(usdt(), 7, Some(6))]
         );
-    }
-
-    #[test]
-    fn totals_drop_decimals_the_markets_disagree_on() {
-        let markets = [
-            market("a.testnet", withdrawn(usdc(), 10, 6)),
-            market("b.testnet", withdrawn(usdc(), 5, 18)),
-        ];
-        assert_eq!(totals(&markets), [harvested(usdc(), 15, None)]);
-    }
-
-    #[rstest]
-    #[case::whole(1_000_000, 6, "1")]
-    #[case::fraction_trimmed(1_234_500_000, 6, "1234.5")]
-    #[case::below_one(1, 6, "0.000001")]
-    #[case::zero(0, 6, "0")]
-    #[case::no_decimals(42, 0, "42")]
-    #[case::scale_overflows(42, 39, "42")]
-    fn formats_whole_units(#[case] amount: u128, #[case] decimals: u32, #[case] expected: &str) {
-        assert_eq!(format_units(amount, decimals), expected);
     }
 
     #[rstest]
     #[case::nothing(vec![], "Harvested nothing.\n")]
     #[case::scaled_and_raw(
-        vec![harvested(usdc(), 1_500_000, Some(6)), harvested(usdt(), 7, None)],
-        "Harvested:\n  1.5 nep141:usdc.testnet\n  7 (raw units) nep141:usdt.testnet\n"
+        vec![total(usdc(), 1_500_000, Some(6)), total(usdt(), 7, None)],
+        "Harvested:\n  nep141:usdc.testnet: 1.5 tokens\n  nep141:usdt.testnet: 7 atoms\n"
     )]
-    fn summarizes_harvested_quantities(#[case] harvested: Vec<Harvested>, #[case] expected: &str) {
-        let report = HarvestReport {
-            markets: Vec::new(),
-            harvested,
-            transfers: Vec::new(),
-        };
-        assert_eq!(report.summary().to_string(), expected);
+    fn summarizes_totals(#[case] totals: Vec<Total>, #[case] expected: &str) {
+        assert_eq!(Summary(&totals).to_string(), expected);
     }
 
     #[rstest]
-    #[case::all_ok(withdrawn(usdc(), 1, 6), None, true)]
+    #[case::all_ok(withdrawn(usdc(), 1), None, true)]
     #[case::not_a_recipient(MarketOutcome::NotARecipient, None, true)]
     #[case::market_failed(failed(), None, false)]
     #[case::transfer_failed(
-        withdrawn(usdc(), 1, 6),
-        Some(TransferOutcome::Failed { error: "boom".to_owned() }),
+        withdrawn(usdc(), 1),
+        Some(Forwarded::Failed { error: "boom".to_owned() }),
         false
     )]
     fn report_fails_on_any_failure(
-        #[case] market_outcome: MarketOutcome,
-        #[case] transfer_outcome: Option<TransferOutcome>,
+        #[case] outcome: MarketOutcome,
+        #[case] forwarded: Option<Forwarded>,
         #[case] succeeds: bool,
     ) {
-        let markets = vec![market("a.testnet", market_outcome)];
-        let report = HarvestReport {
-            harvested: totals(&markets),
-            markets,
-            transfers: transfer_outcome
-                .into_iter()
-                .map(|outcome| TransferReport {
-                    asset: usdc(),
-                    amount: 1.into(),
-                    outcome,
-                })
-                .collect(),
-        };
+        let markets = vec![market("a.testnet", outcome)];
+        let mut totals = totals(&markets);
+        if let Some(total) = totals.first_mut() {
+            total.forwarded = forwarded;
+        }
+        let report = HarvestReport { markets, totals };
         assert_eq!(report.ensure_succeeded().is_ok(), succeeds);
     }
 
     #[test]
     fn report_serializes_flat_tagged_outcomes() {
-        let markets = vec![
-            market("a.testnet", withdrawn(usdc(), 10, 6)),
-            market("b.testnet", MarketOutcome::NothingAccumulated),
-            market("c.testnet", MarketOutcome::NotARecipient),
-            market("d.testnet", failed()),
-        ];
         let report = HarvestReport {
-            harvested: totals(&markets),
-            markets,
-            transfers: vec![TransferReport {
-                asset: usdc(),
-                amount: 10.into(),
-                outcome: TransferOutcome::Sent {
+            markets: vec![
+                market("a.testnet", withdrawn(usdc(), 10)),
+                market("b.testnet", MarketOutcome::NothingToWithdraw),
+                market("c.testnet", MarketOutcome::NotARecipient),
+                market("d.testnet", failed()),
+            ],
+            totals: vec![Total {
+                forwarded: Some(Forwarded::Sent {
                     operation_id: OperationId("op".to_owned()),
-                },
+                }),
+                ..total(usdc(), 10, Some(6))
             }],
         };
         let usdc = serde_json::to_value(usdc()).unwrap();
@@ -587,19 +462,15 @@ mod tests {
                         "amount": "10",
                         "operation_id": "op",
                     },
-                    { "market_id": "b.testnet", "outcome": "nothing_accumulated" },
+                    { "market_id": "b.testnet", "outcome": "nothing_to_withdraw" },
                     { "market_id": "c.testnet", "outcome": "not_a_recipient" },
                     { "market_id": "d.testnet", "outcome": "failed", "error": "boom" },
                 ],
-                "harvested": [{ "asset": usdc, "amount": "10", "decimals": 6 }],
-                "transfers": [
-                    {
-                        "asset": usdc,
-                        "amount": "10",
-                        "outcome": "sent",
-                        "operation_id": "op",
-                    },
-                ],
+                "totals": [{
+                    "asset": usdc,
+                    "amount": "10",
+                    "forwarded": { "outcome": "sent", "operation_id": "op" },
+                }],
             })
         );
     }
