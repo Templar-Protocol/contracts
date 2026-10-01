@@ -19,7 +19,6 @@ use templar_proxy_oracle_near_common::price_transformer::Action;
 
 use super::scaled;
 use crate::context::CliContext;
-use crate::report::Reporter;
 use crate::spec::{
     check::{Check, Status},
     oracle::{AssetSpec, SourceSpec, DEFAULT_MAX_CLOCK_DRIFT},
@@ -33,39 +32,39 @@ pub(super) async fn checks(
     ctx: &CliContext,
     spec: &MarketSpec,
     deployed_oracle: Option<&near_account_id::AccountId>,
-    reporter: &mut Reporter,
-) -> (Option<Price>, Option<Price>) {
+) -> (Vec<Check>, Option<Price>, Option<Price>) {
     // Nothing to dry-run for a direct market: this reproduces a *proxy's*
     // aggregation, and an oracle we did not configure has none of ours to
     // reproduce. Reported as not run rather than silently passing. Its prices
     // still reach the reference cross-check — `oracle.serves_pair` reads them.
     if spec.oracle.is_direct() {
-        reporter.record(Check::new(
+        let skipped = Check::new(
             "oracle.aggregate.all",
             Status::Skipped {
                 reason: "this market reads an existing oracle; there is no \
                          proxy aggregation to reproduce"
                     .to_owned(),
             },
-        ));
-        return (None, None);
+        );
+        return (vec![skipped], None, None);
     }
-
-    let collateral = fetch_all(ctx, &spec.collateral).await;
-    let borrow = fetch_all(ctx, &spec.borrow).await;
-
-    // Sampled after the fetches, not before. Sequential RPCs can outlast the
-    // drift allowance, and a feed updated mid-sweep would then read as
-    // future-drifted against a clock taken before it was even requested.
-    let now = crate::spec::wall_clock();
 
     // Against the oracle's own breakers when one is deployed. An empty set is
     // right for `market plan` — the oracle does not exist yet — and wrong for
     // `market verify`: a tripped breaker means the live oracle prices nothing,
     // and resolving without it would report the aggregation healthy for a
     // market that is blocked.
-    let collateral_breakers = breakers(ctx, deployed_oracle, COLLATERAL_PRICE_ID).await;
-    let borrow_breakers = breakers(ctx, deployed_oracle, BORROW_PRICE_ID).await;
+    let (collateral, borrow, collateral_breakers, borrow_breakers) = futures::join!(
+        fetch_all(ctx, &spec.collateral),
+        fetch_all(ctx, &spec.borrow),
+        breakers(ctx, deployed_oracle, COLLATERAL_PRICE_ID),
+        breakers(ctx, deployed_oracle, BORROW_PRICE_ID),
+    );
+
+    // Sampled after the fetches, not before: a feed updated mid-sweep would
+    // otherwise read as future-drifted against a clock taken before it was
+    // even requested.
+    let now = crate::spec::wall_clock();
 
     // A deployed oracle means `market verify`, not `market plan`: feeds that
     // resolve to nothing are a market that cannot price, not one awaiting its
@@ -92,8 +91,7 @@ pub(super) async fn checks(
     );
     checks.extend(borrow_checks);
     checks.push(pair(collateral_price, borrow_price));
-    reporter.extend(checks);
-    (collateral_price, borrow_price)
+    (checks, collateral_price, borrow_price)
 }
 
 /// The oracle's configured breakers for a feed. A failed read is returned
@@ -127,11 +125,7 @@ async fn fetch_all<A: AssetClass>(
     ctx: &CliContext,
     asset: &AssetSpec<A>,
 ) -> Vec<anyhow::Result<Option<Price>>> {
-    let mut fetched = Vec::with_capacity(asset.sources.len());
-    for source in &asset.sources {
-        fetched.push(fetch(ctx, source).await);
-    }
-    fetched
+    futures::future::join_all(asset.sources.iter().map(|source| fetch(ctx, source))).await
 }
 
 /// One side: fetch every source, report each, then aggregate.

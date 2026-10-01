@@ -54,21 +54,33 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     let mut spec = crate::spec::extends::load(&args.path)?;
     let mut reporter = ctx.reporter(&args.skip_check);
 
-    super::preflight::run_all(
-        &ctx,
-        &mut spec,
-        false,
-        args.accept_decimals_mismatch,
-        None,
-        &mut reporter,
-    )
-    .await?;
     // Plan-time only, deliberately not in `run_all`: `spec check` validates a
     // spec, which stays valid after its market is deployed, while planning a
     // deployment needs its emitted target accounts free. `registry deploy` fails
     // on an occupied account, so a collision on a later target would otherwise
     // be discovered after earlier deployment stages had spent their deposits.
-    targets_available(&ctx, &spec, args.stop_after, &mut reporter).await?;
+    // Before the join, or the target reads would go to the wrong chain.
+    super::preflight::ensure_same_network(&ctx, &spec)?;
+    let targets = deployment_targets(&spec, args.stop_after);
+    let registry_id = spec.registry.clone();
+    let context = &ctx;
+    let (preflight, availability) = futures::join!(
+        super::preflight::run_all(
+            &ctx,
+            &mut spec,
+            false,
+            args.accept_decimals_mismatch,
+            None,
+            &mut reporter,
+        ),
+        async move {
+            let targets = targets?;
+            anyhow::Ok(availability(context, &registry_id, &targets).await)
+        },
+    );
+    preflight?;
+    reporter.phase("accounts this deploy would create");
+    reporter.extend(availability?);
 
     // Gated before `build`, which has hard bails of its own: letting it run
     // first would replace a full check report with a single unrelated error.
@@ -938,7 +950,7 @@ fn deploy_target(
     })?))
 }
 
-/// Why `account_id` cannot be deployed to, if it cannot.
+/// Why each of `targets` cannot be deployed to, if it cannot, in target order.
 ///
 /// A free account is not a free name: `registry.deploy` refuses any id its
 /// deployment map still holds, and `market remove` deletes the account without
@@ -949,16 +961,40 @@ fn deploy_target(
 /// another deploy has claimed but not yet finalized looks free. That costs a
 /// refused final step rather than a bad deployment, since the registry rejects
 /// it either way.
-async fn target_conflict(
+async fn target_conflicts(
+    ctx: &CliContext,
+    registry_id: &AccountId,
+    targets: &[AccountId],
+) -> Vec<anyhow::Result<Option<String>>> {
+    let (serves_entry_view, existing) = futures::join!(
+        super::preflight::serves_entry_and_version_views(ctx, registry_id),
+        futures::future::join_all(
+            targets
+                .iter()
+                .map(|account_id| super::preflight::exists(ctx, account_id))
+        ),
+    );
+    futures::future::join_all(
+        targets
+            .iter()
+            .zip(existing)
+            .map(|(account_id, exists)| async move {
+                if exists? {
+                    return Ok(Some(format!("`{account_id}` already exists")));
+                }
+                target_claim(ctx, registry_id, account_id, serves_entry_view).await
+            }),
+    )
+    .await
+}
+
+async fn target_claim(
     ctx: &CliContext,
     registry_id: &AccountId,
     account_id: &AccountId,
+    serves_entry_view: bool,
 ) -> anyhow::Result<Option<String>> {
-    if super::preflight::exists(ctx, account_id).await? {
-        return Ok(Some(format!("`{account_id}` already exists")));
-    }
-
-    let entry = if super::preflight::serves_entry_and_version_views(ctx, registry_id).await {
+    let entry = if serves_entry_view {
         ctx.client
             .read(registry::GetRegistryEntry {
                 registry_id: registry_id.clone(),
@@ -1004,14 +1040,11 @@ fn claimed_reason(
     }
 }
 
-/// Every account this deployment stage creates must be free.
-async fn targets_available(
-    ctx: &CliContext,
+/// Every account this deployment stage creates, labelled by what it becomes.
+fn deployment_targets(
     spec: &MarketSpec,
     stop_after: DeploymentStage,
-    reporter: &mut Reporter,
-) -> anyhow::Result<()> {
-    reporter.phase("accounts this deploy would create");
+) -> anyhow::Result<Vec<(&'static str, AccountId)>> {
     let targets = match spec.proxy() {
         Some(_) => {
             let mut targets = vec![spec.governance_id()?];
@@ -1026,26 +1059,49 @@ async fn targets_available(
         None => vec![spec.market_id()?],
     };
 
-    for account_id in targets {
-        let label = if account_id == spec.market_id()? {
-            "market"
-        } else if spec.own_proxy_id()?.as_ref() == Some(&account_id) {
-            "oracle"
-        } else if spec.proxy().is_some() && account_id == spec.governance_id()? {
-            "governance"
-        } else {
-            anyhow::bail!("the generated plan creates unexpected account `{account_id}`")
-        };
-        let status = match target_conflict(ctx, &spec.registry, &account_id).await {
-            Ok(None) => Status::passed(format!("`{account_id}` is free")),
-            Ok(Some(conflict)) => {
-                Status::failed(format!("{conflict}; the {label} deploy would fail"))
-            }
-            Err(error) => Status::failed(format!("{error:#}")),
-        };
-        reporter.record(Check::new(format!("deployment.available.{label}"), status));
-    }
-    Ok(())
+    targets
+        .into_iter()
+        .map(|account_id| {
+            let label = if account_id == spec.market_id()? {
+                "market"
+            } else if spec.own_proxy_id()?.as_ref() == Some(&account_id) {
+                "oracle"
+            } else if spec.proxy().is_some() && account_id == spec.governance_id()? {
+                "governance"
+            } else {
+                anyhow::bail!("the generated plan creates unexpected account `{account_id}`")
+            };
+            Ok((label, account_id))
+        })
+        .collect()
+}
+
+/// `deployment.available.*`, one per target and in target order.
+async fn availability(
+    ctx: &CliContext,
+    registry_id: &AccountId,
+    targets: &[(&'static str, AccountId)],
+) -> Vec<Check> {
+    let account_ids: Vec<_> = targets.iter().map(|(_, id)| id.clone()).collect();
+    let conflicts = target_conflicts(ctx, registry_id, &account_ids).await;
+    targets
+        .iter()
+        .zip(conflicts)
+        .map(|((label, account_id), conflict)| availability_check(label, account_id, conflict))
+        .collect()
+}
+
+fn availability_check(
+    label: &str,
+    account_id: &AccountId,
+    conflict: anyhow::Result<Option<String>>,
+) -> Check {
+    let status = match conflict {
+        Ok(None) => Status::passed(format!("`{account_id}` is free")),
+        Ok(Some(conflict)) => Status::failed(format!("{conflict}; the {label} deploy would fail")),
+        Err(error) => Status::failed(format!("{error:#}")),
+    };
+    Check::new(format!("deployment.available.{label}"), status)
 }
 
 async fn ensure_targets_free(
@@ -1054,8 +1110,8 @@ async fn ensure_targets_free(
     targets: &[AccountId],
 ) -> anyhow::Result<()> {
     let mut conflicts = Vec::new();
-    for account_id in targets {
-        conflicts.extend(target_conflict(ctx, registry_id, account_id).await?);
+    for conflict in target_conflicts(ctx, registry_id, targets).await {
+        conflicts.extend(conflict?);
     }
     anyhow::ensure!(
         conflicts.is_empty(),
@@ -1569,5 +1625,57 @@ mod tests {
             from_legacy(Some(deployment)),
             Some(RegistryEntryView::Deployed(_)),
         ));
+    }
+
+    #[rstest]
+    #[case::governance(DeploymentStage::Governance, &["governance"])]
+    #[case::proxy_oracle(DeploymentStage::ProxyOracle, &["governance", "oracle"])]
+    #[case::proxy_configuration(DeploymentStage::ProxyConfiguration, &["governance", "oracle"])]
+    #[case::market(DeploymentStage::Market, &["governance", "oracle", "market"])]
+    fn a_proxy_market_targets_each_account_its_stage_creates(
+        #[case] stop_after: DeploymentStage,
+        #[case] expected: &[&str],
+    ) {
+        let spec = alpha_market();
+        let targets = super::deployment_targets(&spec, stop_after).unwrap();
+
+        let labels: Vec<_> = targets.iter().map(|(label, _)| *label).collect();
+        assert_eq!(labels, expected);
+        let market = targets.iter().find(|(label, _)| *label == "market");
+        assert!(market.is_none_or(|(_, id)| *id == spec.market_id().unwrap()));
+    }
+
+    #[test]
+    fn a_direct_market_targets_only_itself() {
+        let mut spec = alpha_market();
+        spec.oracle = crate::spec::OracleMode::Direct {
+            account_id: "pyth-oracle.near".parse().unwrap(),
+        };
+
+        let targets = super::deployment_targets(&spec, DeploymentStage::Market).unwrap();
+
+        assert_eq!(targets, vec![("market", spec.market_id().unwrap())]);
+    }
+
+    /// A free target passes; a claimed or unreadable one fails rather than
+    /// reading as free.
+    #[rstest]
+    #[case::free(Ok(None), false)]
+    #[case::claimed(Ok(Some("taken".to_owned())), true)]
+    #[case::unreadable(Err(anyhow::anyhow!("unreadable")), true)]
+    fn availability_fails_unless_the_target_is_free(
+        #[case] conflict: anyhow::Result<Option<String>>,
+        #[case] failed: bool,
+    ) {
+        let account_id: AccountId = "market.v1.tmplr.near".parse().unwrap();
+
+        let check = super::availability_check("market", &account_id, conflict);
+
+        assert_eq!(check.id, "deployment.available.market");
+        assert_eq!(
+            matches!(check.status, crate::spec::check::Status::Failed { .. }),
+            failed,
+            "{check:#?}"
+        );
     }
 }

@@ -96,17 +96,7 @@ pub(super) async fn run_all(
             },
         ));
     } else {
-        // The spec names its own chain, and the CLI defaults to testnet. Reading
-        // a mainnet spec against testnet would report every account and version
-        // as missing — a page of confident, entirely wrong failures.
-        let declared = spec.network()?;
-        anyhow::ensure!(
-            declared == ctx.network(),
-            "this spec is for {declared} (its registry is `{}`), but the CLI is \
-             pointed at {}. Re-run with `--network {declared}`.",
-            spec.registry,
-            ctx.network(),
-        );
+        ensure_same_network(ctx, spec)?;
 
         // Online first, writing resolved decimals back into the spec. Otherwise
         // `config.validate` reports itself skipped for want of decimals this
@@ -126,8 +116,24 @@ pub(super) async fn run_all(
     Ok(())
 }
 
-/// Every check that needs the chain, in a stable order. Nothing propagates: a
-/// failed read is a failed *check*, so one RPC error cannot hide the rest.
+/// The spec names its own chain, and the CLI defaults to testnet. Reading a
+/// mainnet spec against testnet would report every account and version as
+/// missing — a page of confident, entirely wrong failures.
+pub(super) fn ensure_same_network(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Result<()> {
+    let declared = spec.network()?;
+    anyhow::ensure!(
+        declared == ctx.network(),
+        "this spec is for {declared} (its registry is `{}`), but the CLI is \
+         pointed at {}. Re-run with `--network {declared}`.",
+        spec.registry,
+        ctx.network(),
+    );
+    Ok(())
+}
+
+/// Every check that needs the chain, reported in a stable order whatever order
+/// the reads complete in. Nothing propagates: a failed read is a failed *check*,
+/// so one RPC error cannot hide the rest.
 async fn run(
     ctx: &CliContext,
     spec: &mut MarketSpec,
@@ -135,33 +141,49 @@ async fn run(
     deployed_oracle: Option<&AccountId>,
     reporter: &mut Reporter,
 ) {
+    let reference_source = super::reference::CoinGecko::from_env();
+    let (
+        (collateral_checks, collateral_decimals),
+        (borrow_checks, borrow_decimals),
+        version_checks,
+        (direct_checks, direct_collateral, direct_borrow),
+        account_checks,
+        (aggregate_checks, collateral, borrow),
+        references,
+    ) = futures::join!(
+        asset_checks(ctx, "collateral", &spec.collateral, accept_mismatch),
+        asset_checks(ctx, "borrow", &spec.borrow, accept_mismatch),
+        versions(ctx, spec),
+        direct_oracle(ctx, spec),
+        accounts(ctx, spec),
+        super::aggregate::checks(ctx, spec, deployed_oracle),
+        async {
+            match &reference_source {
+                Ok(source) => Ok(super::reference::fetch(source, spec).await),
+                Err(error) => Err(error),
+            }
+        },
+    );
+    spec.collateral.decimals = collateral_decimals;
+    spec.borrow.decimals = borrow_decimals;
+
     reporter.phase("assets and their sources");
-    asset_checks(
-        ctx,
-        "collateral",
-        &mut spec.collateral,
-        accept_mismatch,
-        reporter,
-    )
-    .await;
-    asset_checks(ctx, "borrow", &mut spec.borrow, accept_mismatch, reporter).await;
+    reporter.extend(collateral_checks);
+    reporter.extend(borrow_checks);
 
     reporter.phase("registry versions");
-    reporter.extend(versions(ctx, spec).await);
+    reporter.extend(version_checks);
 
-    let (direct_checks, direct_collateral, direct_borrow) = direct_oracle(ctx, spec).await;
     if !direct_checks.is_empty() {
         reporter.phase("the oracle this market reads");
         reporter.extend(direct_checks);
     }
 
     reporter.phase("yield recipients");
-    accounts(ctx, spec, reporter).await;
+    reporter.extend(account_checks);
 
-    // Aggregation before the cross-check: it produces the prices the reference
-    // source is compared against.
     reporter.phase("price aggregation");
-    let (collateral, borrow) = super::aggregate::checks(ctx, spec, deployed_oracle, reporter).await;
+    reporter.extend(aggregate_checks);
 
     // Exactly one mode produces prices: a proxy market from the aggregation
     // dry-run, a direct one from the call `oracle.serves_pair` already made. The
@@ -183,10 +205,8 @@ async fn run(
     ));
 
     reporter.phase("reference prices");
-    match super::reference::CoinGecko::from_env() {
-        Ok(source) => {
-            reporter.extend(super::reference::checks(&source, spec, collateral, borrow).await);
-        }
+    match references {
+        Ok(references) => reporter.extend(references.checks(spec, collateral, borrow)),
         // Failing to build a client is "could not check", like every other
         // reference-source problem.
         Err(error) => reporter.record(Check::new(
@@ -247,7 +267,8 @@ fn prices_are_usable(collateral: Leg, borrow: Leg) -> Status {
     }
 }
 
-/// Existence, decimals, and source checks for one side of the pair.
+/// Existence, decimals, and source checks for one side of the pair, and the
+/// decimals the market should use for it.
 ///
 /// Generic over the asset class rather than erasing it: the typed accessors on
 /// [`FungibleAsset`] identify the underlying token, and going through `Display`
@@ -255,35 +276,39 @@ fn prices_are_usable(collateral: Leg, borrow: Leg) -> Status {
 async fn asset_checks<A: AssetClass>(
     ctx: &CliContext,
     side: &str,
-    spec: &mut AssetSpec<A>,
+    spec: &AssetSpec<A>,
     accept_mismatch: bool,
-    reporter: &mut Reporter,
-) {
+) -> (Vec<Check>, Option<u8>) {
     let contract_id = spec.asset.contract_id().to_owned();
-    reporter.record(Check::new(
-        format!("asset.exists.{side}"),
+    let (exists, on_chain, sources) = futures::join!(
         exists_check(
             ctx,
             &contract_id,
             || Status::passed(spec.asset.to_string()),
             || Status::failed(format!("`{contract_id}` does not exist")),
-        )
-        .await,
-    ));
+        ),
+        underlying_decimals(ctx, side, &spec.asset),
+        futures::future::join_all(spec.sources.iter().map(|source| source_status(ctx, source))),
+    );
 
-    let (status, resolved) = match underlying_decimals(ctx, side, &spec.asset).await {
+    let (decimals, resolved) = match on_chain {
         Ok(on_chain) => reconcile_decimals(side, spec.decimals, on_chain, accept_mismatch),
         Err(status) => (status, None),
     };
-    spec.decimals = resolved;
-    reporter.record(Check::new(format!("asset.decimals.{side}"), status));
 
-    for (index, source) in spec.sources.iter().enumerate() {
-        reporter.record(Check::new(
-            format!("oracle.source.{side}.{index}"),
-            source_status(ctx, source).await,
-        ));
-    }
+    let checks = [
+        Check::new(format!("asset.exists.{side}"), exists),
+        Check::new(format!("asset.decimals.{side}"), decimals),
+    ]
+    .into_iter()
+    .chain(
+        sources
+            .into_iter()
+            .enumerate()
+            .map(|(index, status)| Check::new(format!("oracle.source.{side}.{index}"), status)),
+    )
+    .collect();
+    (checks, resolved)
 }
 
 /// The adapter must exist. Whether it currently carries a price is reported by
@@ -386,8 +411,7 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     }
 
     if serves_entry_and_version_views(ctx, &spec.registry).await {
-        let mut checks = Vec::with_capacity(labeled.len());
-        for (label, key) in labeled {
+        return futures::future::join_all(labeled.into_iter().map(|(label, key)| async move {
             let found = ctx
                 .client
                 .read(registry::GetVersion {
@@ -397,12 +421,12 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
                 .await
                 .map(|result| result.version)
                 .map_err(|error| error.to_string());
-            checks.push(Check::new(
+            Check::new(
                 format!("registry.version.{label}"),
                 version_status(key, &spec.registry, found),
-            ));
-        }
-        return checks;
+            )
+        }))
+        .await;
     }
 
     let registered = ctx
@@ -474,8 +498,7 @@ async fn direct_oracle(
         return (Vec::new(), None, None);
     };
 
-    let mut checks = vec![Check::new(
-        "oracle.exists",
+    let (exists, serves) = futures::join!(
         exists_check(
             ctx,
             account_id,
@@ -486,15 +509,17 @@ async fn direct_oracle(
                      oracle that is not there"
                 ))
             },
-        )
-        .await,
-    )];
+        ),
+        async {
+            let (collateral, borrow) = spec.price_identifiers().ok()?;
+            Some(serves_pair(ctx, spec, account_id, collateral, borrow).await)
+        },
+    );
 
-    let Ok((collateral, borrow)) = spec.price_identifiers() else {
+    let mut checks = vec![Check::new("oracle.exists", exists)];
+    let Some((status, collateral_price, borrow_price)) = serves else {
         return (checks, None, None);
     };
-    let (status, collateral_price, borrow_price) =
-        serves_pair(ctx, spec, account_id, collateral, borrow).await;
     checks.push(Check::new("oracle.serves_pair", status));
     (checks, collateral_price, borrow_price)
 }
@@ -593,19 +618,22 @@ async fn serves_pair(
 }
 
 /// Yield recipients must exist, or that share of yield is unclaimable.
-async fn accounts(ctx: &CliContext, spec: &MarketSpec, reporter: &mut Reporter) {
-    let protocol = account_check(ctx, "protocol", &spec.market.protocol_account_id).await;
-    reporter.record(protocol);
-
+async fn accounts(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     // Check ids are a contract — `--skip-check` and the plan artifact key on
     // them — so each recipient gets its own, in a stable order rather than
     // `HashMap`'s.
     let mut recipients: Vec<_> = spec.market.yield_weights.r#static.keys().collect();
     recipients.sort();
-    for account_id in recipients {
-        let check = account_check(ctx, &format!("yield_static.{account_id}"), account_id).await;
-        reporter.record(check);
-    }
+    let labeled = std::iter::once(("protocol".to_owned(), &spec.market.protocol_account_id)).chain(
+        recipients
+            .into_iter()
+            .map(|account_id| (format!("yield_static.{account_id}"), account_id)),
+    );
+    futures::future::join_all(
+        labeled
+            .map(|(label, account_id)| async move { account_check(ctx, &label, account_id).await }),
+    )
+    .await
 }
 
 async fn account_check(ctx: &CliContext, label: &str, account_id: &AccountId) -> Check {

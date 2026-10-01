@@ -115,9 +115,9 @@ pub(super) async fn checks(
     reporter: &mut Reporter,
 ) -> anyhow::Result<()> {
     reporter.phase("signer funding");
-    // A failed read is a failed *check*, matching `targets_available`: aborting
-    // the whole run on a transient RPC hiccup leaves no override, since the
-    // sibling checks degrade gracefully and this one would not.
+    // A failed read is a failed *check*, matching `deployment.available.*`:
+    // aborting the whole run on a transient RPC hiccup leaves no override, since
+    // the sibling checks degrade gracefully and this one would not.
     let gas_price = match ctx.client.read(chain::GetBlock { block_hash: None }).await {
         Ok(block) => block.gas_price,
         Err(error) => {
@@ -132,20 +132,24 @@ pub(super) async fn checks(
         }
     };
 
-    for (account_id, need) in simulate(steps, gas_price)? {
-        let status = match ctx
-            .client
-            .read(account::Get {
-                account_id: account_id.clone(),
-            })
-            .await
-        {
-            Ok(account) => verdict(&need, available(&account), steps),
-            // A balance that cannot be read is not a balance that suffices.
-            Err(error) => Status::failed(format!("could not read `{account_id}`: {error}")),
-        };
-        reporter.record(Check::new(format!("funding.{account_id}"), status));
-    }
+    let checks = futures::future::join_all(simulate(steps, gas_price)?.into_iter().map(
+        |(account_id, need)| async move {
+            let status = match ctx
+                .client
+                .read(account::Get {
+                    account_id: account_id.clone(),
+                })
+                .await
+            {
+                Ok(account) => verdict(&need, available(&account), steps),
+                // A balance that cannot be read is not a balance that suffices.
+                Err(error) => Status::failed(format!("could not read `{account_id}`: {error}")),
+            };
+            Check::new(format!("funding.{account_id}"), status)
+        },
+    ))
+    .await;
+    reporter.extend(checks);
     Ok(())
 }
 
