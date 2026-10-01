@@ -238,76 +238,107 @@ impl ReferencePriceSource for CoinGecko {
     }
 }
 
-/// `reference.price.{collateral,borrow,pair}`.
-pub(super) async fn checks(
-    source: &dyn ReferencePriceSource,
-    spec: &MarketSpec,
-    collateral: Option<Price>,
-    borrow: Option<Price>,
-) -> Vec<Check> {
-    let collateral_resolved = resolve(source, "collateral", &spec.collateral).await;
-    let borrow_resolved = resolve(source, "borrow", &spec.borrow).await;
+/// What the reference source says about both legs, read independently of the
+/// aggregate it is later judged against.
+pub(super) struct References {
+    label: &'static str,
+    /// `Err` is why nothing can be cross-checked.
+    quoted: Result<Quoted, String>,
+}
 
-    let wanted: Vec<String> = [&collateral_resolved, &borrow_resolved]
+struct Quoted {
+    collateral: Resolved,
+    borrow: Resolved,
+    quotes: BTreeMap<String, f64>,
+}
+
+pub(super) async fn fetch(source: &dyn ReferencePriceSource, spec: &MarketSpec) -> References {
+    let (collateral, borrow) = futures::join!(
+        resolve(source, "collateral", &spec.collateral),
+        resolve(source, "borrow", &spec.borrow),
+    );
+
+    let wanted: Vec<String> = [&collateral, &borrow]
         .into_iter()
         .filter_map(|resolved| Some(resolved.as_ref().ok()?.id.clone()))
         .collect();
 
     let quotes = if wanted.is_empty() {
-        BTreeMap::new()
+        Ok(BTreeMap::new())
     } else {
-        match source.prices(&wanted).await {
-            Ok(quotes) => quotes,
-            // Unreachable is "could not check", never "checked and agrees".
-            Err(error) => {
-                return skip_all(&format!(
-                    "{} did not answer ({error:#}), so nothing was cross-checked. \
-                     This is not evidence the prices agree.",
-                    source.label()
-                ))
-            }
-        }
+        // Unreachable is "could not check", never "checked and agrees".
+        source.prices(&wanted).await.map_err(|error| {
+            format!(
+                "{} did not answer ({error:#}), so nothing was cross-checked. \
+                 This is not evidence the prices agree.",
+                source.label()
+            )
+        })
     };
 
-    let collateral_tolerance = tolerance(&spec.collateral, spec);
-    let borrow_tolerance = tolerance(&spec.borrow, spec);
-    // The ratio carries both legs' deviations, so it is graded against the looser
-    // band. Using one leg's would contradict an override the operator set on the
-    // other — the override exists precisely for the leg that needs room.
-    let pair_tolerance = if collateral_tolerance > borrow_tolerance {
-        collateral_tolerance
-    } else {
-        borrow_tolerance
-    };
-    let (collateral_check, collateral_reference) = compare(
-        "collateral",
-        source.label(),
-        &collateral_resolved,
-        collateral,
-        &quotes,
-        collateral_tolerance,
-    );
-    let (borrow_check, borrow_reference) = compare(
-        "borrow",
-        source.label(),
-        &borrow_resolved,
-        borrow,
-        &quotes,
-        borrow_tolerance,
-    );
-
-    vec![
-        collateral_check,
-        borrow_check,
-        pair(
-            source.label(),
+    References {
+        label: source.label(),
+        quoted: quotes.map(|quotes| Quoted {
             collateral,
             borrow,
-            collateral_reference,
-            borrow_reference,
-            pair_tolerance,
-        ),
-    ]
+            quotes,
+        }),
+    }
+}
+
+impl References {
+    /// `reference.price.{collateral,borrow,pair}`.
+    pub(super) fn checks(
+        &self,
+        spec: &MarketSpec,
+        collateral: Option<Price>,
+        borrow: Option<Price>,
+    ) -> Vec<Check> {
+        let quoted = match &self.quoted {
+            Ok(quoted) => quoted,
+            Err(reason) => return skip_all(reason),
+        };
+
+        let collateral_tolerance = tolerance(&spec.collateral, spec);
+        let borrow_tolerance = tolerance(&spec.borrow, spec);
+        // The ratio carries both legs' deviations, so it is graded against the looser
+        // band. Using one leg's would contradict an override the operator set on the
+        // other — the override exists precisely for the leg that needs room.
+        let pair_tolerance = if collateral_tolerance > borrow_tolerance {
+            collateral_tolerance
+        } else {
+            borrow_tolerance
+        };
+        let (collateral_check, collateral_reference) = compare(
+            "collateral",
+            self.label,
+            &quoted.collateral,
+            collateral,
+            &quoted.quotes,
+            collateral_tolerance,
+        );
+        let (borrow_check, borrow_reference) = compare(
+            "borrow",
+            self.label,
+            &quoted.borrow,
+            borrow,
+            &quoted.quotes,
+            borrow_tolerance,
+        );
+
+        vec![
+            collateral_check,
+            borrow_check,
+            pair(
+                self.label,
+                collateral,
+                borrow,
+                collateral_reference,
+                borrow_reference,
+                pair_tolerance,
+            ),
+        ]
+    }
 }
 
 /// Report all three checks as not-run for one shared reason.
@@ -628,6 +659,17 @@ mod tests {
 
     use crate::spec::plan::testing::alpha_market as spec;
 
+    async fn checks(
+        source: &dyn ReferencePriceSource,
+        spec: &crate::spec::MarketSpec,
+        collateral: Option<templar_proxy_oracle_kernel::Price>,
+        borrow: Option<templar_proxy_oracle_kernel::Price>,
+    ) -> Vec<crate::spec::check::Check> {
+        super::fetch(source, spec)
+            .await
+            .checks(spec, collateral, borrow)
+    }
+
     fn price(value: i64, expo: i32) -> templar_proxy_oracle_kernel::Price {
         templar_proxy_oracle_kernel::Price {
             price: value,
@@ -652,7 +694,7 @@ mod tests {
     /// *and* name — which is how a human confirms the right coin was pulled.
     #[tokio::test]
     async fn agreement_passes_and_names_the_coin() {
-        let checks = super::checks(
+        let checks = checks(
             &Fixture::new(),
             &spec(),
             Some(price(300_100_000, -8)),
@@ -673,7 +715,7 @@ mod tests {
     /// "checked and disagrees" half of the distinction.
     #[tokio::test]
     async fn disagreement_fails() {
-        let checks = super::checks(
+        let checks = checks(
             &Fixture::new(),
             &spec(),
             // Reference says 3.0; claiming 6.0 is 100% out.
@@ -698,7 +740,7 @@ mod tests {
         let mut fixture = Fixture::new();
         fixture.listings_fail = true;
 
-        let checks = super::checks(
+        let checks = checks(
             &fixture,
             &spec(),
             Some(price(300_000_000, -8)),
@@ -724,7 +766,7 @@ mod tests {
             id: "ripple-typo".to_owned(),
         });
 
-        let checks = super::checks(
+        let checks = checks(
             &Fixture::new(),
             &spec,
             Some(price(300_000_000, -8)),
@@ -748,7 +790,7 @@ mod tests {
         spec.borrow.reference_tolerance = Some(templar_common::dec!("0.5"));
 
         // Borrow 20% off: inside its own 50% band, and the ratio must follow.
-        let checks = super::checks(
+        let checks = checks(
             &Fixture::new(),
             &spec,
             Some(price(300_000_000, -8)),
@@ -770,7 +812,7 @@ mod tests {
     #[tokio::test]
     async fn the_ratio_tolerates_uniform_drift() {
         // Both legs 10% high: each leg fails its own band, the ratio does not.
-        let checks = super::checks(
+        let checks = checks(
             &Fixture::new(),
             &spec(),
             Some(price(330_000_000, -8)),
