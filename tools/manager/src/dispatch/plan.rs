@@ -59,6 +59,8 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     // deployment needs its emitted target accounts free. `registry deploy` fails
     // on an occupied account, so a collision on a later target would otherwise
     // be discovered after earlier deployment stages had spent their deposits.
+    // Before the join, or the target reads would go to the wrong chain.
+    super::preflight::ensure_same_network(&ctx, &spec)?;
     let targets = deployment_targets(&spec, args.stop_after);
     let registry_id = spec.registry.clone();
     let context = &ctx;

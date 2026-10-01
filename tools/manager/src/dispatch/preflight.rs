@@ -96,17 +96,7 @@ pub(super) async fn run_all(
             },
         ));
     } else {
-        // The spec names its own chain, and the CLI defaults to testnet. Reading
-        // a mainnet spec against testnet would report every account and version
-        // as missing — a page of confident, entirely wrong failures.
-        let declared = spec.network()?;
-        anyhow::ensure!(
-            declared == ctx.network(),
-            "this spec is for {declared} (its registry is `{}`), but the CLI is \
-             pointed at {}. Re-run with `--network {declared}`.",
-            spec.registry,
-            ctx.network(),
-        );
+        ensure_same_network(ctx, spec)?;
 
         // Online first, writing resolved decimals back into the spec. Otherwise
         // `config.validate` reports itself skipped for want of decimals this
@@ -123,6 +113,21 @@ pub(super) async fn run_all(
     // Offline checks run last so they see those decimals.
     reporter.phase("the spec itself");
     reporter.extend(crate::spec::check::run_offline(spec));
+    Ok(())
+}
+
+/// The spec names its own chain, and the CLI defaults to testnet. Reading a
+/// mainnet spec against testnet would report every account and version as
+/// missing — a page of confident, entirely wrong failures.
+pub(super) fn ensure_same_network(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Result<()> {
+    let declared = spec.network()?;
+    anyhow::ensure!(
+        declared == ctx.network(),
+        "this spec is for {declared} (its registry is `{}`), but the CLI is \
+         pointed at {}. Re-run with `--network {declared}`.",
+        spec.registry,
+        ctx.network(),
+    );
     Ok(())
 }
 
