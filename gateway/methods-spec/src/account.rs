@@ -72,6 +72,27 @@ pub struct GetAccessKeyResult {
     pub permission: AccessKeyPermission,
 }
 
+/// List every access key on an account with its nonce and permission scope.
+///
+/// Mirrors NEAR's `view_access_key_list`, in the order the chain returns them.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "account.listAccessKeys", output = ListAccessKeysResult)]
+pub struct ListAccessKeys {
+    pub account_id: AccountId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ListAccessKeysResult {
+    pub keys: Vec<AccessKeyEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AccessKeyEntry {
+    pub public_key: PublicKey,
+    pub nonce: u64,
+    pub permission: AccessKeyPermission,
+}
+
 /// An access key's permission scope, in NEAR's own JSON encoding so a
 /// `getAccessKey` result can be fed back to `addKey` unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

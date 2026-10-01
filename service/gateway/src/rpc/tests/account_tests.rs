@@ -76,6 +76,49 @@ async fn account_add_key_and_delete_key_endpoints_manage_both_permissions() -> R
         restricted
     );
 
+    // No transaction lands between the two reads, so both see the same keys.
+    let listed_in_chain_order = || async {
+        let listed = stack
+            .controller
+            .request::<account::ListAccessKeys>(&account::ListAccessKeys {
+                account_id: account_id.0.clone(),
+            })
+            .await?
+            .keys;
+        let chain = near_api::Account(account_id.0.clone())
+            .list_keys()
+            .at(TEST_FINALITY_POLICY.query_reference())
+            .fetch_from(&stack.harness.network)
+            .await?
+            .data;
+        assert_eq!(
+            listed
+                .iter()
+                .map(|key| (key.public_key.clone(), key.nonce))
+                .collect::<Vec<_>>(),
+            chain
+                .into_iter()
+                .map(|(public_key, key)| (public_key.into(), key.nonce.0))
+                .collect::<Vec<_>>(),
+        );
+        Ok::<_, anyhow::Error>(listed)
+    };
+    let permission_of = |listed: &[account::AccessKeyEntry], public_key| {
+        listed
+            .iter()
+            .find(|key| key.public_key == public_key)
+            .map(|key| key.permission.clone())
+    };
+    let before_delete = listed_in_chain_order().await?;
+    assert_eq!(
+        permission_of(&before_delete, full_access.clone()),
+        Some(account::AccessKeyPermission::FullAccess)
+    );
+    assert_eq!(
+        permission_of(&before_delete, function_call.clone()),
+        Some(restricted.clone())
+    );
+
     let _ = stack
         .controller
         .request::<account::DeleteKey>(&WriteRequest {
@@ -87,7 +130,11 @@ async fn account_add_key_and_delete_key_endpoints_manage_both_permissions() -> R
         })
         .await?;
 
-    assert!(installed(function_call).await.is_err());
+    assert!(installed(function_call.clone()).await.is_err());
+    assert_eq!(
+        permission_of(&listed_in_chain_order().await?, function_call),
+        None
+    );
     assert_eq!(
         installed(full_access).await?.permission,
         account::AccessKeyPermission::FullAccess

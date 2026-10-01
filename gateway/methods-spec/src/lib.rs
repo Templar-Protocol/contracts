@@ -43,6 +43,7 @@ macro_rules! for_each_read_method {
         $callback!($crate::account::GetCode);
         $callback!($crate::account::ViewState);
         $callback!($crate::account::GetAccessKey);
+        $callback!($crate::account::ListAccessKeys);
         $callback!($crate::chain::GetBlock);
         $callback!($crate::chain::GetProtocolLimits);
         $callback!($crate::contract::ViewFunction);

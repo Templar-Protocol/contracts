@@ -142,6 +142,30 @@ impl<C: HasNearClient> DispatchRead<account::GetAccessKey, C> for Dispatch {
 }
 
 #[async_trait]
+impl<C: HasNearClient> DispatchRead<account::ListAccessKeys, C> for Dispatch {
+    async fn dispatch(
+        request: account::ListAccessKeys,
+        ctx: C,
+    ) -> GatewayResult<account::ListAccessKeysResult> {
+        let keys = ctx
+            .near_client()
+            .account()
+            .access_keys(request.account_id)
+            .await?
+            .into_iter()
+            .map(|(public_key, key)| {
+                Ok(account::AccessKeyEntry {
+                    public_key: public_key.into(),
+                    nonce: key.nonce.0,
+                    permission: permission_view(key.permission)?,
+                })
+            })
+            .collect::<GatewayResult<_>>()?;
+        Ok(account::ListAccessKeysResult { keys })
+    }
+}
+
+#[async_trait]
 impl<C: Send + 'static> PlanWrite<account::AddKey, C> for Dispatch {
     async fn plan(
         request: templar_gateway_types::common::WriteRequest<account::AddKey>,
