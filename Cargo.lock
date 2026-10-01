@@ -13565,6 +13565,7 @@ dependencies = [
  "futures",
  "hex",
  "json-patch",
+ "keyring",
  "near-account-id",
  "near-api",
  "near-crypto",

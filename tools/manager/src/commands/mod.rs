@@ -4,6 +4,7 @@ pub mod deploy_common;
 pub mod duration;
 pub mod ft;
 pub mod full_access_key;
+pub mod keychain;
 pub mod market;
 pub mod mpc;
 pub mod oracle;

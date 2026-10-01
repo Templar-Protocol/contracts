@@ -225,9 +225,10 @@ impl Authorization {
                 Signer::from_secret_key(*secret).context("build a signer from --secret-key")?
             }
             Mode::Keychain => {
-                Signer::from_keystore_with_search_for_keys(account_id.0.clone(), network)
+                let secret = super::keychain::find_secret_key(&account_id.0, network)
                     .await
-                    .context("find a usable key for this account in the OS keychain")?
+                    .context("find a usable key for this account in the OS keychain")?;
+                Signer::from_secret_key(secret).context("build a signer from the keychain key")?
             }
         };
 
@@ -238,8 +239,6 @@ impl Authorization {
         // An external backend can only be checked once it says which key it holds.
         ensure_asserted_key_is_held(&account_id, asserted_public_key, public_key)?;
 
-        // Both backends produce a single-key signer: `Signer::new` seeds its
-        // pool with one entry, the keychain's first matching key.
         let pooled = PooledSigner::from_signer(account_id, signer)
             .await
             .context("register the signing key as a gateway nonce lane")?;

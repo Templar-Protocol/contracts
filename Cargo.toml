@@ -89,6 +89,8 @@ itertools = "0.14.0"
 json-patch = "4.1.0"
 jsonrpsee = "0.26.0"
 k256 = "0.13.4"
+# No backend features: they unify with near-api's `keystore`, so both read the same store.
+keyring = { version = "3.6.3", default-features = false }
 libfuzzer-sys = "0.4"
 moka = { version = "0.12.10", features = ["future", "sync"] }
 near-account-id = "2.6"
