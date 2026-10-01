@@ -1,5 +1,15 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
-use templar_common::market::{DepositMsg, LiquidateMsg, MarketConfiguration, RepayAccountMsg};
+use near_account_id::AccountId;
+use templar_common::{
+    asset::BorrowAssetAmount,
+    borrow::{BorrowPosition, BorrowStatus},
+    market::{DepositMsg, LiquidateMsg, MarketConfiguration, RepayAccountMsg},
+    snapshot::Snapshot,
+    supply::SupplyPosition,
+    withdrawal_queue::WithdrawalRequestStatus,
+};
 use templar_gateway_core::{
     client::{
         market::{
@@ -63,12 +73,11 @@ impl<C: HasNearClient> DispatchRead<market::ListFinalizedSnapshots, C> for Dispa
     async fn dispatch(
         request: market::ListFinalizedSnapshots,
         ctx: C,
-    ) -> GatewayResult<market::ListFinalizedSnapshotsResult> {
+    ) -> GatewayResult<Vec<Snapshot>> {
         ctx.near_client()
             .market(request.market_id)
             .list_finalized_snapshots(request.args)
             .await
-            .map(|snapshots| market::ListFinalizedSnapshotsResult { snapshots })
     }
 }
 
@@ -90,12 +99,11 @@ impl<C: HasNearClient> DispatchRead<market::ListBorrowPositions, C> for Dispatch
     async fn dispatch(
         request: market::ListBorrowPositions,
         ctx: C,
-    ) -> GatewayResult<market::ListBorrowPositionsResult> {
+    ) -> GatewayResult<HashMap<AccountId, BorrowPosition>> {
         ctx.near_client()
             .market(request.market_id)
             .list_borrow_positions(request.args)
             .await
-            .map(|positions| market::ListBorrowPositionsResult { positions })
     }
 }
 
@@ -104,14 +112,13 @@ impl<C: HasNearClient> DispatchRead<market::GetBorrowPosition, C> for Dispatch {
     async fn dispatch(
         request: market::GetBorrowPosition,
         ctx: C,
-    ) -> GatewayResult<market::GetBorrowPositionResult> {
+    ) -> GatewayResult<Option<BorrowPosition>> {
         ctx.near_client()
             .market(request.market_id)
             .get_borrow_position(AccountIdArg {
                 account_id: request.account_id,
             })
             .await
-            .map(|position| market::GetBorrowPositionResult { position })
     }
 }
 
@@ -120,7 +127,7 @@ impl<C: HasNearClient> DispatchRead<market::GetBorrowPositionPendingInterest, C>
     async fn dispatch(
         request: market::GetBorrowPositionPendingInterest,
         ctx: C,
-    ) -> GatewayResult<market::GetBorrowPositionPendingInterestResult> {
+    ) -> GatewayResult<Option<BorrowAssetAmount>> {
         let params = request;
         ctx.near_client()
             .market(params.market_id)
@@ -129,7 +136,6 @@ impl<C: HasNearClient> DispatchRead<market::GetBorrowPositionPendingInterest, C>
                 snapshot_limit: params.snapshot_limit,
             })
             .await
-            .map(|amount| market::GetBorrowPositionPendingInterestResult { amount })
     }
 }
 
@@ -138,7 +144,7 @@ impl<C: HasNearClient> DispatchRead<market::GetBorrowStatus, C> for Dispatch {
     async fn dispatch(
         request: market::GetBorrowStatus,
         ctx: C,
-    ) -> GatewayResult<market::GetBorrowStatusResult> {
+    ) -> GatewayResult<Option<BorrowStatus>> {
         let params = request;
         ctx.near_client()
             .market(params.market_id)
@@ -147,7 +153,6 @@ impl<C: HasNearClient> DispatchRead<market::GetBorrowStatus, C> for Dispatch {
                 oracle_response: params.oracle_response,
             })
             .await
-            .map(|status| market::GetBorrowStatusResult { status })
     }
 }
 
@@ -156,12 +161,11 @@ impl<C: HasNearClient> DispatchRead<market::ListSupplyPositions, C> for Dispatch
     async fn dispatch(
         request: market::ListSupplyPositions,
         ctx: C,
-    ) -> GatewayResult<market::ListSupplyPositionsResult> {
+    ) -> GatewayResult<HashMap<AccountId, SupplyPosition>> {
         ctx.near_client()
             .market(request.market_id)
             .list_supply_positions(request.args)
             .await
-            .map(|positions| market::ListSupplyPositionsResult { positions })
     }
 }
 
@@ -170,14 +174,13 @@ impl<C: HasNearClient> DispatchRead<market::GetSupplyPosition, C> for Dispatch {
     async fn dispatch(
         request: market::GetSupplyPosition,
         ctx: C,
-    ) -> GatewayResult<market::GetSupplyPositionResult> {
+    ) -> GatewayResult<Option<SupplyPosition>> {
         ctx.near_client()
             .market(request.market_id)
             .get_supply_position(AccountIdArg {
                 account_id: request.account_id,
             })
             .await
-            .map(|position| market::GetSupplyPositionResult { position })
     }
 }
 
@@ -186,7 +189,7 @@ impl<C: HasNearClient> DispatchRead<market::GetSupplyPositionPendingYield, C> fo
     async fn dispatch(
         request: market::GetSupplyPositionPendingYield,
         ctx: C,
-    ) -> GatewayResult<market::GetSupplyPositionPendingYieldResult> {
+    ) -> GatewayResult<Option<BorrowAssetAmount>> {
         let params = request;
         ctx.near_client()
             .market(params.market_id)
@@ -195,7 +198,6 @@ impl<C: HasNearClient> DispatchRead<market::GetSupplyPositionPendingYield, C> fo
                 snapshot_limit: params.snapshot_limit,
             })
             .await
-            .map(|amount| market::GetSupplyPositionPendingYieldResult { amount })
     }
 }
 
@@ -204,14 +206,13 @@ impl<C: HasNearClient> DispatchRead<market::GetSupplyWithdrawalRequestStatus, C>
     async fn dispatch(
         request: market::GetSupplyWithdrawalRequestStatus,
         ctx: C,
-    ) -> GatewayResult<market::GetSupplyWithdrawalRequestStatusResult> {
+    ) -> GatewayResult<Option<WithdrawalRequestStatus>> {
         ctx.near_client()
             .market(request.market_id)
             .get_supply_withdrawal_request_status(AccountIdArg {
                 account_id: request.account_id,
             })
             .await
-            .map(|status| market::GetSupplyWithdrawalRequestStatusResult { status })
     }
 }
 
@@ -246,23 +247,22 @@ impl<C: HasNearClient> DispatchRead<market::GetStaticYield, C> for Dispatch {
     async fn dispatch(
         request: market::GetStaticYield,
         ctx: C,
-    ) -> GatewayResult<market::GetStaticYieldResult> {
-        ctx.near_client()
+    ) -> GatewayResult<Option<market::StaticYield>> {
+        let record = ctx
+            .near_client()
             .market(request.market_id)
             .get_static_yield(AccountIdArg {
                 account_id: request.account_id,
             })
-            .await
-            .map(|record| market::GetStaticYieldResult {
-                record: record.map(|record| match record {
-                    StaticYieldRecord::Split { borrow_asset, .. } => market::StaticYield::Legacy {
-                        borrow_asset_total: borrow_asset,
-                    },
-                    StaticYieldRecord::Accumulator(accumulator) => {
-                        market::StaticYield::Accumulator { accumulator }
-                    }
-                }),
-            })
+            .await?;
+        Ok(record.map(|record| match record {
+            StaticYieldRecord::Split { borrow_asset, .. } => market::StaticYield::Legacy {
+                borrow_asset_total: borrow_asset,
+            },
+            StaticYieldRecord::Accumulator(accumulator) => {
+                market::StaticYield::Accumulator { accumulator }
+            }
+        }))
     }
 }
 

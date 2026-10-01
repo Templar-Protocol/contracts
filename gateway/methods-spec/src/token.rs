@@ -42,15 +42,10 @@ impl<T: AssetClass> From<&FungibleAsset<T>> for TokenReference {
 
 /// Get a token balance across supported standards.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "token.getBalanceOf", output = GetBalanceOfResult)]
+#[method(read = "token.getBalanceOf", output = SU128)]
 pub struct GetBalanceOf {
     pub token: TokenReference,
     pub account_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfResult {
-    pub balance: SU128,
 }
 
 /// Transfer a token across supported standards.

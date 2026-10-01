@@ -19,16 +19,14 @@ impl<C: HasNearClient> DispatchRead<storage::GetBalanceBounds, C> for Dispatch {
     async fn dispatch(
         request: storage::GetBalanceBounds,
         ctx: C,
-    ) -> GatewayResult<storage::GetBalanceBoundsResult> {
+    ) -> GatewayResult<StorageBalanceBounds> {
         ctx.near_client()
             .storage(request.contract_id)
             .cached_storage_balance_bounds()
             .await
-            .map(|bounds| storage::GetBalanceBoundsResult {
-                bounds: StorageBalanceBounds {
-                    min: bounds.min,
-                    max: bounds.max,
-                },
+            .map(|bounds| StorageBalanceBounds {
+                min: bounds.min,
+                max: bounds.max,
             })
     }
 }
@@ -38,19 +36,18 @@ impl<C: HasNearClient> DispatchRead<storage::GetBalanceOf, C> for Dispatch {
     async fn dispatch(
         request: storage::GetBalanceOf,
         ctx: C,
-    ) -> GatewayResult<storage::GetBalanceOfResult> {
-        ctx.near_client()
+    ) -> GatewayResult<Option<StorageBalance>> {
+        let balance = ctx
+            .near_client()
             .storage(request.contract_id)
             .storage_balance_of(StorageBalanceOfArgs {
                 account_id: request.account_id,
             })
-            .await
-            .map(|balance| storage::GetBalanceOfResult {
-                balance: balance.map(|balance| StorageBalance {
-                    total: balance.total,
-                    available: balance.available,
-                }),
-            })
+            .await?;
+        Ok(balance.map(|balance| StorageBalance {
+            total: balance.total,
+            available: balance.available,
+        }))
     }
 }
 

@@ -9,16 +9,11 @@ use templar_gateway_types::{common::ContractArgs, contract::ContractKind, Contra
 /// This is the generic escape hatch for read-only contract calls when a
 /// more specific typed RPC method is not available.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "contract.viewFunction", output = ViewFunctionResult)]
+#[method(read = "contract.viewFunction", output = serde_json::Value)]
 pub struct ViewFunction {
     pub contract_id: AccountId,
     pub method_name: ContractMethodName,
     pub args: ContractArgs,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ViewFunctionResult {
-    pub value: serde_json::Value,
 }
 
 /// Read a contract version from NEP-330 metadata.
@@ -59,12 +54,7 @@ pub struct GetStateVersionResult {
 
 /// Identify the kind of deployed protocol contract.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "contract.getKind", output = GetKindResult)]
+#[method(read = "contract.getKind", output = ContractKind)]
 pub struct GetKind {
     pub contract_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetKindResult {
-    pub kind: ContractKind,
 }

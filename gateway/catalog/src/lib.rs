@@ -225,4 +225,69 @@ mod tests {
             "legacy proxyOracleOwner methods remain in the catalog"
         );
     }
+
+    /// See "Read Results" in `gateway/README.md`. `op.get` is exempt: it is not
+    /// in the shared read lists, and its `{ operation }` mirrors write results.
+    #[test]
+    fn read_outputs_are_not_single_field_wrappers() {
+        use schemars::schema::{Schema, SchemaObject};
+        use templar_gateway_types::MethodSpec;
+
+        // `Option<Wrapper>` puts the wrapper behind `anyOf: [{$ref}, {type: null}]`.
+        fn is_single_field_object<T: schemars::JsonSchema>() -> bool {
+            let root = schemars::schema_for!(T);
+            let resolve = |schema: &SchemaObject| match &schema.reference {
+                Some(reference) => reference
+                    .strip_prefix("#/definitions/")
+                    .and_then(|name| root.definitions.get(name))
+                    .and_then(|schema| match schema {
+                        Schema::Object(object) => Some(object.clone()),
+                        Schema::Bool(_) => None,
+                    }),
+                None => Some(schema.clone()),
+            };
+            let any_of = root
+                .schema
+                .subschemas
+                .as_ref()
+                .and_then(|subschemas| subschemas.any_of.as_ref())
+                .into_iter()
+                .flatten()
+                .filter_map(|schema| match schema {
+                    Schema::Object(object) => Some(object),
+                    Schema::Bool(_) => None,
+                });
+            std::iter::once(&root.schema)
+                .chain(any_of)
+                .filter_map(resolve)
+                .any(|schema| {
+                    schema
+                        .object
+                        .is_some_and(|object| object.properties.len() == 1)
+                })
+        }
+
+        type Wrapper = <templar_gateway_methods_spec::op::Get as MethodSpec>::Output;
+        assert!(
+            is_single_field_object::<Wrapper>() && is_single_field_object::<Option<Wrapper>>(),
+            "the detector must flag a known single-field wrapper, bare or optional",
+        );
+
+        let mut wrapped = Vec::new();
+        macro_rules! check {
+            ($spec:ty) => {
+                if is_single_field_object::<<$spec as MethodSpec>::Output>() {
+                    wrapped.push(<$spec as MethodSpec>::RPC_METHOD);
+                }
+            };
+        }
+        templar_gateway_methods_spec::for_each_read_method!(check);
+        templar_gateway_artifacts_spec::for_each_artifact_read_method!(check);
+
+        assert!(
+            wrapped.is_empty(),
+            "read outputs must be the value itself, not a single-field wrapper \
+             (see \"Read Results\" in gateway/README.md): {wrapped:?}",
+        );
+    }
 }

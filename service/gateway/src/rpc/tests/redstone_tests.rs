@@ -19,7 +19,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
             oracle_id: oracle_id.clone(),
         })
         .await?;
-    assert!(config.config.signer_count_threshold > 0);
+    assert!(config.signer_count_threshold > 0);
 
     let prices = stack
         .controller
@@ -28,7 +28,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
             feed_ids: vec!["BTC".into()],
         })
         .await?;
-    assert_eq!(prices.entries.len(), 1);
+    assert_eq!(prices.len(), 1);
 
     let set_role = stack
         .controller
@@ -55,10 +55,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
             role: redstone::RoleValue::TrustedUpdater,
         })
         .await?;
-    assert_eq!(
-        roles.account_ids,
-        vec![stack.harness.beneficiary_account_id.clone()]
-    );
+    assert_eq!(roles, vec![stack.harness.beneficiary_account_id.clone()]);
 
     let write = stack
         .controller
@@ -84,8 +81,8 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
             feed_ids: vec!["ETH".into()],
         })
         .await?;
-    assert_eq!(written.entries.len(), 1);
-    assert_ne!(written.entries[0].data.price, U256::zero().into());
+    assert_eq!(written.len(), 1);
+    assert_ne!(written[0].data.price, U256::zero().into());
 
     stack.shutdown().await;
     Ok(())
@@ -152,7 +149,7 @@ async fn redstone_create_deploys_a_configured_adapter() -> Result<()> {
             oracle_id: oracle_id.clone(),
         })
         .await?;
-    assert_eq!(config.config, expected);
+    assert_eq!(config, expected);
 
     // The `admin_id` the init args named, not the deploying registry.
     let admins = stack
@@ -163,9 +160,7 @@ async fn redstone_create_deploys_a_configured_adapter() -> Result<()> {
         })
         .await?;
     assert!(
-        admins
-            .account_ids
-            .contains(&stack.harness.beneficiary_account_id),
+        admins.contains(&stack.harness.beneficiary_account_id),
         "{admins:?}"
     );
 

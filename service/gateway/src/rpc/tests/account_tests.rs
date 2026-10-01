@@ -83,8 +83,7 @@ async fn account_add_key_and_delete_key_endpoints_manage_both_permissions() -> R
             .request::<account::ListAccessKeys>(&account::ListAccessKeys {
                 account_id: account_id.0.clone(),
             })
-            .await?
-            .keys;
+            .await?;
         let chain = near_api::Account(account_id.0.clone())
             .list_keys()
             .at(TEST_FINALITY_POLICY.query_reference())

@@ -97,7 +97,6 @@ async fn vault_deposit_currently_refunds_eng425() -> Result<()> {
             market: market_account.clone(),
         })
         .await?
-        .market_id
         .context("market should be registered in the vault")?;
     exec(
         &stack,

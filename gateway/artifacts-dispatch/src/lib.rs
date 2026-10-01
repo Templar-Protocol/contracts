@@ -43,9 +43,8 @@ mod tests {
 
         // Listing is metadata-only, so it covers unreleased artifacts too —
         // they simply carry no version.
-        assert_eq!(result.artifacts.len(), ArtifactId::ALL.len());
+        assert_eq!(result.len(), ArtifactId::ALL.len());
         let market = result
-            .artifacts
             .iter()
             .find(|metadata| metadata.artifact == ArtifactId::Market)
             .unwrap();
@@ -54,14 +53,13 @@ mod tests {
         assert_eq!(market.version.as_deref(), market_catalog.version());
 
         let mock = result
-            .artifacts
             .iter()
             .find(|metadata| metadata.artifact == ArtifactId::MockFt)
             .unwrap();
         assert_eq!(mock.version, None, "mocks are never released");
 
         let json = serde_json::to_value(&result).unwrap();
-        let first_artifact = json["artifacts"].as_array().unwrap().first().unwrap();
+        let first_artifact = json.as_array().unwrap().first().unwrap();
         assert!(first_artifact.get("code").is_none());
     }
 

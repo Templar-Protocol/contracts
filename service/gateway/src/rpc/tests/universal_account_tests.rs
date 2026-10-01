@@ -16,7 +16,7 @@ async fn universal_account_get_key_endpoint_works_against_sandbox() -> Result<()
         })
         .await?;
 
-    assert!(result.parameters.is_some());
+    assert!(result.is_some());
 
     stack.shutdown().await;
     Ok(())
@@ -34,7 +34,6 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
             key: signer.id(),
         })
         .await?
-        .parameters
         .expect("deployed universal account should expose its key parameters");
 
     let payload = WithRawString::from_parsed(Payload::new(
@@ -83,7 +82,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         })
         .await?;
 
-    assert_eq!(counter.value, serde_json::json!(1));
+    assert_eq!(counter, serde_json::json!(1));
 
     let registry_id = stack.harness.deploy_registry().await?;
     let _ = stack
@@ -140,7 +139,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         })
         .await?;
 
-    assert!(created_key.parameters.is_some());
+    assert!(created_key.is_some());
 
     stack.shutdown().await;
     Ok(())

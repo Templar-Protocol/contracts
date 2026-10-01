@@ -13,5 +13,8 @@ templar-gateway-methods-spec.workspace = true
 templar-gateway-oracle-updates-spec.workspace = true
 templar-gateway-types.workspace = true
 
+[dev-dependencies]
+schemars.workspace = true
+
 [lints]
 workspace = true

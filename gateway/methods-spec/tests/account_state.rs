@@ -21,25 +21,19 @@ fn account_state_reads_have_stable_wire_shapes() {
 
 #[test]
 fn account_state_results_use_base64_wire_values() {
-    use templar_gateway_methods_spec::account::{GetCodeResult, StateEntry, ViewStateResult};
+    use templar_gateway_methods_spec::account::StateEntry;
 
     assert_eq!(
-        serde_json::to_value(GetCodeResult {
-            code: Base64Bytes(b"wasm".to_vec()),
-        })
-        .unwrap(),
-        serde_json::from_str::<serde_json::Value>(r#"{"code":"d2FzbQ=="}"#).unwrap()
+        serde_json::to_value(Base64Bytes(b"wasm".to_vec())).unwrap(),
+        serde_json::from_str::<serde_json::Value>(r#""d2FzbQ==""#).unwrap()
     );
     assert_eq!(
-        serde_json::to_value(ViewStateResult {
-            values: vec![StateEntry {
-                key: Base64Bytes(b"k".to_vec()),
-                value: Base64Bytes(b"v".to_vec()),
-            }],
-        })
+        serde_json::to_value(vec![StateEntry {
+            key: Base64Bytes(b"k".to_vec()),
+            value: Base64Bytes(b"v".to_vec()),
+        }])
         .unwrap(),
-        serde_json::from_str::<serde_json::Value>(r#"{"values":[{"key":"aw==","value":"dg=="}]}"#,)
-            .unwrap()
+        serde_json::from_str::<serde_json::Value>(r#"[{"key":"aw==","value":"dg=="}]"#).unwrap()
     );
 }
 

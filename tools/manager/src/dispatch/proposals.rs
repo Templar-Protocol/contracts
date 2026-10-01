@@ -149,16 +149,14 @@ async fn next_breaker_id(
         .read(gov::GetProxyOracleId {
             governance_id: governance_id.clone(),
         })
-        .await?
-        .proxy_oracle_id;
+        .await?;
     let set = ctx
         .client
         .read(proxy_oracle::GetProxyCircuitBreakerSet {
             oracle_id,
             id: price_id,
         })
-        .await?
-        .circuit_breaker_set;
+        .await?;
     Ok(set.map_or(0, |set| set.next_id()))
 }
 
@@ -189,7 +187,6 @@ async fn wait_for_maturity(
             id,
         })
         .await?
-        .proposal
         .context("created proposal not found when waiting for maturity")?;
 
     let maturity_ns = proposal

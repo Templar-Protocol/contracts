@@ -52,8 +52,8 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
         .await?;
     // The sandbox harness deploys a uniform zero-TTL policy: no per-method overrides, so
     // `admin_set_proxy` runs under the target default.
-    assert!(policy.policy.method_policies.is_empty());
-    assert_eq!(policy.policy.default_target.ttl, Nanoseconds::zero());
+    assert!(policy.method_policies.is_empty());
+    assert_eq!(policy.default_target.ttl, Nanoseconds::zero());
 
     // Create a SetProxy proposal (id 1).
     let price_id = PriceIdentifier([0xaa; 32]);
@@ -90,7 +90,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             id: 1,
         })
         .await?;
-    assert!(proposal.proposal.is_some());
+    assert!(proposal.is_some());
     let ids = stack
         .controller
         .request::<proxy_oracle_governance::ListProposals>(
@@ -101,7 +101,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             },
         )
         .await?;
-    assert_eq!(ids.ids, vec![1]);
+    assert_eq!(ids, vec![1]);
 
     // Execute it: governance drives `admin_set_proxy` on the oracle it owns.
     let _ = stack
@@ -123,7 +123,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             id: price_id,
         })
         .await?;
-    assert_eq!(got_proxy.proxy, Some(proxy));
+    assert_eq!(got_proxy, Some(proxy));
 
     let exists = stack
         .controller
@@ -132,7 +132,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             price_identifier: price_id,
         })
         .await?;
-    assert!(exists.exists);
+    assert!(exists);
 
     // Create then cancel another proposal (id 2).
     let _ = stack
@@ -173,7 +173,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             id: 2,
         })
         .await?;
-    assert!(cancelled.proposal.is_none());
+    assert!(cancelled.is_none());
 
     stack.shutdown().await;
     Ok(())
@@ -218,7 +218,7 @@ async fn proxy_oracle_admin_set_proxy_writes_and_clears_a_definition() -> Result
             id: price_id,
         })
         .await?;
-    assert_eq!(got.proxy, Some(proxy));
+    assert_eq!(got, Some(proxy));
 
     // A null `proxy` removes the definition.
     let _ = stack
@@ -242,7 +242,7 @@ async fn proxy_oracle_admin_set_proxy_writes_and_clears_a_definition() -> Result
             count: None,
         })
         .await?;
-    assert_eq!(list.proxies, vec![]);
+    assert_eq!(list, vec![]);
     let cleared = stack
         .controller
         .request::<proxy_oracle::GetProxy>(&proxy_oracle::GetProxy {
@@ -250,7 +250,7 @@ async fn proxy_oracle_admin_set_proxy_writes_and_clears_a_definition() -> Result
             id: price_id,
         })
         .await?;
-    assert_eq!(cleared.proxy, None);
+    assert_eq!(cleared, None);
 
     stack.shutdown().await;
     Ok(())
@@ -306,7 +306,7 @@ async fn proxy_oracle_admin_set_proxy_rejects_a_non_owner_signer() -> Result<()>
             id: price_id,
         })
         .await?;
-    assert_eq!(got.proxy, None, "a rejected write must not seat a proxy");
+    assert_eq!(got, None, "a rejected write must not seat a proxy");
 
     stack.shutdown().await;
     Ok(())
@@ -344,7 +344,7 @@ async fn proxy_oracle_get_proxy_normalizes_legacy_v0() -> Result<()> {
             id: price_id,
         })
         .await?;
-    assert_eq!(got.proxy, Some(expected));
+    assert_eq!(got, Some(expected));
 
     let exists = stack
         .controller
@@ -353,7 +353,7 @@ async fn proxy_oracle_get_proxy_normalizes_legacy_v0() -> Result<()> {
             price_identifier: price_id,
         })
         .await?;
-    assert!(exists.exists);
+    assert!(exists);
 
     let list = stack
         .controller
@@ -363,7 +363,7 @@ async fn proxy_oracle_get_proxy_normalizes_legacy_v0() -> Result<()> {
             count: None,
         })
         .await?;
-    assert_eq!(list.proxies, vec![price_id]);
+    assert_eq!(list, vec![price_id]);
 
     stack.shutdown().await;
     Ok(())
@@ -421,7 +421,7 @@ async fn borsh_encoding_carries_a_proposal_json_cannot() -> Result<()> {
             id: 1,
         })
         .await?;
-    assert_eq!(proposal.proposal.map(|p| p.operation), Some(oversized));
+    assert_eq!(proposal.map(|p| p.operation), Some(oversized));
 
     stack.shutdown().await;
     Ok(())
@@ -517,7 +517,7 @@ async fn governance_create_deploys_an_initialized_contract() -> Result<()> {
             },
         )
         .await?;
-    assert_eq!(administered.proxy_oracle_id, oracle_id);
+    assert_eq!(administered, oracle_id);
 
     let has_role = stack
         .controller
@@ -527,7 +527,7 @@ async fn governance_create_deploys_an_initialized_contract() -> Result<()> {
             role: Role::Admin,
         })
         .await?;
-    assert!(has_role.has_role);
+    assert!(has_role);
 
     let policy = stack
         .controller
@@ -535,7 +535,7 @@ async fn governance_create_deploys_an_initialized_contract() -> Result<()> {
             &proxy_oracle_governance::GetGovernancePolicy { governance_id },
         )
         .await?;
-    assert_eq!(policy.policy, expected_policy);
+    assert_eq!(policy, expected_policy);
 
     stack.shutdown().await;
     Ok(())

@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use near_account_id::AccountId;
 use templar_common::{
-    vault::{self as common_vault, DepositMsg, VaultConfiguration},
+    vault::{
+        self as common_vault, CapGroupId, CapGroupRecord, DepositMsg, MarketId, Restrictions,
+        VaultConfiguration,
+    },
     SU64,
 };
 use templar_gateway_core::{
@@ -161,12 +164,11 @@ impl<C: HasNearClient> DispatchRead<vault::GetCapGroups, C> for Dispatch {
     async fn dispatch(
         request: vault::GetCapGroups,
         ctx: C,
-    ) -> GatewayResult<vault::GetCapGroupsResult> {
+    ) -> GatewayResult<Vec<(CapGroupId, CapGroupRecord)>> {
         ctx.near_client()
             .vault(request.vault_id)
             .get_cap_groups(())
             .await
-            .map(|cap_groups| vault::GetCapGroupsResult { cap_groups })
     }
 }
 
@@ -175,26 +177,21 @@ impl<C: HasNearClient> DispatchRead<vault::GetRestrictions, C> for Dispatch {
     async fn dispatch(
         request: vault::GetRestrictions,
         ctx: C,
-    ) -> GatewayResult<vault::GetRestrictionsResult> {
+    ) -> GatewayResult<Option<Restrictions>> {
         ctx.near_client()
             .vault(request.vault_id)
             .get_restrictions(())
             .await
-            .map(|restrictions| vault::GetRestrictionsResult { restrictions })
     }
 }
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<vault::GetWithdrawingOpId, C> for Dispatch {
-    async fn dispatch(
-        request: vault::GetWithdrawingOpId,
-        ctx: C,
-    ) -> GatewayResult<vault::GetWithdrawingOpIdResult> {
+    async fn dispatch(request: vault::GetWithdrawingOpId, ctx: C) -> GatewayResult<Option<SU64>> {
         ctx.near_client()
             .vault(request.vault_id)
             .get_withdrawing_op_id(())
             .await
-            .map(|op_id| vault::GetWithdrawingOpIdResult { op_id })
     }
 }
 
@@ -203,12 +200,11 @@ impl<C: HasNearClient> DispatchRead<vault::GetCurrentWithdrawRequestId, C> for D
     async fn dispatch(
         request: vault::GetCurrentWithdrawRequestId,
         ctx: C,
-    ) -> GatewayResult<vault::GetCurrentWithdrawRequestIdResult> {
+    ) -> GatewayResult<Option<SU64>> {
         ctx.near_client()
             .vault(request.vault_id)
             .get_current_withdraw_request_id(())
             .await
-            .map(|request_id| vault::GetCurrentWithdrawRequestIdResult { request_id })
     }
 }
 
@@ -217,14 +213,12 @@ impl<C: HasNearClient> DispatchRead<vault::PeekNextPendingWithdrawalId, C> for D
     async fn dispatch(
         request: vault::PeekNextPendingWithdrawalId,
         ctx: C,
-    ) -> GatewayResult<vault::PeekNextPendingWithdrawalIdResult> {
+    ) -> GatewayResult<Option<SU64>> {
         ctx.near_client()
             .vault(request.vault_id)
             .peek_next_pending_withdrawal_id(())
             .await
-            .map(|request_id| vault::PeekNextPendingWithdrawalIdResult {
-                request_id: request_id.map(SU64::from),
-            })
+            .map(|request_id| request_id.map(SU64::from))
     }
 }
 
@@ -244,14 +238,13 @@ impl<C: HasNearClient> DispatchRead<vault::GetMarketIdOfAccount, C> for Dispatch
     async fn dispatch(
         request: vault::GetMarketIdOfAccount,
         ctx: C,
-    ) -> GatewayResult<vault::GetMarketIdOfAccountResult> {
+    ) -> GatewayResult<Option<MarketId>> {
         ctx.near_client()
             .vault(request.vault_id)
             .get_market_id_of_account(MarketAccountArg {
                 market: request.market,
             })
             .await
-            .map(|market_id| vault::GetMarketIdOfAccountResult { market_id })
     }
 }
 
@@ -260,14 +253,13 @@ impl<C: HasNearClient> DispatchRead<vault::GetMarketAccountById, C> for Dispatch
     async fn dispatch(
         request: vault::GetMarketAccountById,
         ctx: C,
-    ) -> GatewayResult<vault::GetMarketAccountByIdResult> {
+    ) -> GatewayResult<Option<AccountId>> {
         ctx.near_client()
             .vault(request.vault_id)
             .get_market_account_by_id(MarketIdArg {
                 market_id: request.market_id,
             })
             .await
-            .map(|account_id| vault::GetMarketAccountByIdResult { account_id })
     }
 }
 
@@ -276,12 +268,11 @@ impl<C: HasNearClient> DispatchRead<vault::ListMarketsWithIds, C> for Dispatch {
     async fn dispatch(
         request: vault::ListMarketsWithIds,
         ctx: C,
-    ) -> GatewayResult<vault::ListMarketsWithIdsResult> {
+    ) -> GatewayResult<Vec<(SU64, AccountId)>> {
         ctx.near_client()
             .vault(request.vault_id)
             .list_markets_with_ids(())
             .await
-            .map(|markets| vault::ListMarketsWithIdsResult { markets })
     }
 }
 

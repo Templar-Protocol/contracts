@@ -12,21 +12,16 @@ pub struct MtApproval {
 
 /// Get a multi-token balance.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "mt.getBalanceOf", output = GetBalanceOfResult)]
+#[method(read = "mt.getBalanceOf", output = SU128)]
 pub struct GetBalanceOf {
     pub contract_id: AccountId,
     pub account_id: AccountId,
     pub token_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfResult {
-    pub balance: SU128,
-}
-
 /// Get multiple multi-token balances.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "mt.getBatchBalanceOf", output = GetBatchBalanceOfResult)]
+#[method(read = "mt.getBatchBalanceOf", output = Vec<BalanceEntry>)]
 pub struct GetBatchBalanceOf {
     pub contract_id: AccountId,
     pub account_id: AccountId,
@@ -39,27 +34,17 @@ pub struct BalanceEntry {
     pub balance: SU128,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBatchBalanceOfResult {
-    pub balances: Vec<BalanceEntry>,
-}
-
 /// Get total supply for a multi-token ID.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "mt.getSupply", output = GetSupplyResult)]
+#[method(read = "mt.getSupply", output = Option<SU128>)]
 pub struct GetSupply {
     pub contract_id: AccountId,
     pub token_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetSupplyResult {
-    pub supply: Option<SU128>,
-}
-
 /// Get total supply for multiple multi-token IDs.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "mt.getBatchSupply", output = GetBatchSupplyResult)]
+#[method(read = "mt.getBatchSupply", output = Vec<SupplyEntry>)]
 pub struct GetBatchSupply {
     pub contract_id: AccountId,
     pub token_ids: Vec<String>,
@@ -69,11 +54,6 @@ pub struct GetBatchSupply {
 pub struct SupplyEntry {
     pub token_id: String,
     pub supply: Option<SU128>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBatchSupplyResult {
-    pub supplies: Vec<SupplyEntry>,
 }
 
 /// Transfer multi-tokens.

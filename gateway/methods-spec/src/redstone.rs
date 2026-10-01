@@ -21,19 +21,14 @@ pub struct Create {
 
 /// Get RedStone oracle config.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "redstone.getConfig", output = GetConfigResult)]
+#[method(read = "redstone.getConfig", output = Config)]
 pub struct GetConfig {
     pub oracle_id: AccountId,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct GetConfigResult {
-    pub config: Config,
-}
-
 /// Read RedStone price data.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "redstone.readPriceData", output = ReadPriceDataResult)]
+#[method(read = "redstone.readPriceData", output = Vec<PriceDataEntry>)]
 pub struct ReadPriceData {
     pub oracle_id: AccountId,
     pub feed_ids: Vec<FeedId>,
@@ -43,11 +38,6 @@ pub struct ReadPriceData {
 pub struct PriceDataEntry {
     pub feed_id: FeedId,
     pub data: FeedData,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ReadPriceDataResult {
-    pub entries: Vec<PriceDataEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -68,15 +58,10 @@ impl From<RoleValue> for Role {
 
 /// List accounts for a RedStone role.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "redstone.listRole", output = ListRoleResult)]
+#[method(read = "redstone.listRole", output = Vec<AccountId>)]
 pub struct ListRole {
     pub oracle_id: AccountId,
     pub role: RoleValue,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListRoleResult {
-    pub account_ids: Vec<AccountId>,
 }
 
 /// Update a RedStone role membership.

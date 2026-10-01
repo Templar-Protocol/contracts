@@ -61,7 +61,7 @@ impl MarketScanner {
             ))
             .await
             .map_err(RpcError::from)?;
-        Ok(result.status)
+        Ok(result)
     }
 
     /// Fetches a single borrow position from the market.
@@ -78,7 +78,7 @@ impl MarketScanner {
             ))
             .await
             .map_err(RpcError::from)?;
-        Ok(result.position)
+        Ok(result)
     }
 
     /// Fetches all borrow positions from the market with pagination.
@@ -98,8 +98,7 @@ impl MarketScanner {
                     }),
                 )
                 .await
-                .map_err(|e| LiquidatorError::ListBorrowPositionsError(e.into()))?
-                .positions;
+                .map_err(|e| LiquidatorError::ListBorrowPositionsError(e.into()))?;
 
             let fetched = u32::try_from(page.len()).unwrap_or(u32::MAX);
             if fetched == 0 {

@@ -135,8 +135,7 @@ async fn ensure_admin_holds_the_role(
             role: templar_proxy_oracle_near_governance_common::Role::Admin,
         })
         .await
-        .with_context(|| format!("check the Admin role on {governance_id}"))?
-        .has_role;
+        .with_context(|| format!("check the Admin role on {governance_id}"))?;
 
     if holds {
         return Ok(());
@@ -151,8 +150,7 @@ async fn ensure_admin_holds_the_role(
             count: None,
         })
         .await
-        .with_context(|| format!("list the Admin role on {governance_id}"))?
-        .members;
+        .with_context(|| format!("list the Admin role on {governance_id}"))?;
 
     anyhow::bail!(
         "`{admin}` does not hold Admin on `{governance_id}`; it is held by {}. \
@@ -191,7 +189,6 @@ async fn governing_contract(
         })
         .await
         .with_context(|| format!("read the owner of `{oracle_id}`"))?
-        .owner
     else {
         return Ok(None);
     };
@@ -209,35 +206,30 @@ async fn governing_contract(
             governance_id: owner.clone(),
         })
         .await
-        .with_context(|| format!("ask `{owner}` which oracle it governs"))?
-        .proxy_oracle_id;
+        .with_context(|| format!("ask `{owner}` which oracle it governs"))?;
 
     Ok((governed == *oracle_id).then_some(owner))
 }
 
 async fn kind_of(ctx: &CliContext, contract_id: &AccountId) -> anyhow::Result<ContractKind> {
-    Ok(ctx
-        .client
+    ctx.client
         .read(contract::GetKind {
             contract_id: contract_id.clone(),
         })
         .await
-        .with_context(|| format!("classify `{contract_id}`"))?
-        .kind)
+        .with_context(|| format!("classify `{contract_id}`"))
 }
 
 async fn governance_policy(
     ctx: &CliContext,
     governance_id: &AccountId,
 ) -> anyhow::Result<GovernancePolicyWire> {
-    Ok(ctx
-        .client
+    ctx.client
         .read(governance::GetGovernancePolicy {
             governance_id: governance_id.clone(),
         })
         .await
-        .with_context(|| format!("read the governance policy from {governance_id}"))?
-        .policy)
+        .with_context(|| format!("read the governance policy from {governance_id}"))
 }
 
 /// Refuse to record a policy the spec would not redeploy.
@@ -290,7 +282,6 @@ pub(super) async fn proxy(
         })
         .await
         .with_context(|| format!("read proxy {} from {oracle_id}", hex::encode(id.0)))?
-        .proxy
         .with_context(|| {
             format!(
                 "`{oracle_id}` serves no proxy for {}; this market is not a \
@@ -325,8 +316,7 @@ async fn versions(
             args: templar_gateway_types::common::Pagination::default(),
         })
         .await
-        .with_context(|| format!("list versions in {registry_id}"))?
-        .values;
+        .with_context(|| format!("list versions in {registry_id}"))?;
 
     for (label, key) in [
         ("market", Some(&versions.market)),
@@ -360,7 +350,6 @@ async fn version_key(
         })
         .await
         .with_context(|| format!("read deployment record for {account_id}"))?
-        .deployment
         .with_context(|| format!("`{registry_id}` has no deployment record for {account_id}"))?
         .version_key)
 }

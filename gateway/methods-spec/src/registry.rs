@@ -8,7 +8,7 @@ use templar_gateway_types::{
 
 /// List deployments in a registry.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "registry.listDeployments", output = ListDeploymentsResult)]
+#[method(read = "registry.listDeployments", output = Vec<AccountId>)]
 pub struct ListDeployments {
     pub registry_id: AccountId,
     #[serde(flatten)]
@@ -16,14 +16,9 @@ pub struct ListDeployments {
     pub args: Pagination,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListDeploymentsResult {
-    pub account_ids: Vec<AccountId>,
-}
-
 /// List deployments in a registry filtered by contract kind.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "registry.listDeploymentsByKind", output = ListDeploymentsResult)]
+#[method(read = "registry.listDeploymentsByKind", output = Vec<AccountId>)]
 pub struct ListDeploymentsByKind {
     pub registry_id: AccountId,
     #[serde(flatten)]
@@ -34,7 +29,7 @@ pub struct ListDeploymentsByKind {
 
 /// List versions in a registry.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "registry.listVersions", output = ListVersionsResult)]
+#[method(read = "registry.listVersions", output = Vec<String>)]
 pub struct ListVersions {
     pub registry_id: AccountId,
     #[serde(flatten)]
@@ -42,22 +37,12 @@ pub struct ListVersions {
     pub args: Pagination,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListVersionsResult {
-    pub values: Vec<String>,
-}
-
 /// Get a deployment record from a registry.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "registry.getDeployment", output = GetDeploymentResult)]
+#[method(read = "registry.getDeployment", output = Option<templar_common::registry::Deployment>)]
 pub struct GetDeployment {
     pub registry_id: AccountId,
     pub account_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetDeploymentResult {
-    pub deployment: Option<templar_common::registry::Deployment>,
 }
 
 /// Get a name's registry entry, including one merely reserved by an in-flight deploy.
@@ -65,30 +50,20 @@ pub struct GetDeploymentResult {
 /// Unlike `registry.getDeployment`, which reports a reserved name as absent even though `deploy`
 /// would refuse it.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "registry.getRegistryEntry", output = GetRegistryEntryResult)]
+#[method(read = "registry.getRegistryEntry", output = Option<templar_common::registry::RegistryEntryView>)]
 pub struct GetRegistryEntry {
     pub registry_id: AccountId,
     pub account_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetRegistryEntryResult {
-    pub entry: Option<templar_common::registry::RegistryEntryView>,
 }
 
 /// Get a registered version's code hash and whether it can still be deployed.
 ///
 /// Unlike `registry.listVersions`, which keeps listing a version whose code was removed.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "registry.getVersion", output = GetVersionResult)]
+#[method(read = "registry.getVersion", output = Option<templar_common::registry::VersionInfo>)]
 pub struct GetVersion {
     pub registry_id: AccountId,
     pub version_key: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetVersionResult {
-    pub version: Option<templar_common::registry::VersionInfo>,
 }
 
 /// Add a deployable version to a registry.

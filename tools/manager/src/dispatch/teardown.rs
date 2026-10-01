@@ -30,7 +30,6 @@ pub(super) async fn recover_nep141(ctx: CliContext, args: RecoverNep141) -> anyh
         .client
         .read(token::GetBalanceOf { token, account_id })
         .await?
-        .balance
         .0;
     if remaining != 0 {
         anyhow::bail!(
@@ -86,8 +85,7 @@ async fn remove_all_versions(
             registry_id: registry_id.clone(),
             args: all_pages(),
         })
-        .await?
-        .values;
+        .await?;
 
     for version_key in &versions {
         let result = client
@@ -148,8 +146,7 @@ pub(super) async fn clear_deployments(
             args: all_pages(),
             kind: ContractKind::Market,
         })
-        .await?
-        .account_ids;
+        .await?;
 
     let mut removed = Vec::new();
     for account in accounts {
@@ -256,7 +253,6 @@ async fn sweep_token(
             account_id: from.0.clone(),
         })
         .await?
-        .balance
         .0;
     if balance > 0 {
         let result = client
@@ -296,9 +292,7 @@ async fn reclaim_storage(
         })
         .await
     {
-        Ok(result) => result
-            .balance
-            .is_some_and(|balance| balance.total.as_yoctonear() > 0),
+        Ok(result) => result.is_some_and(|balance| balance.total.as_yoctonear() > 0),
         Err(error) => {
             // Expected for tokens without NEP-145 storage management, not a fault.
             tracing::info!(%contract_id, %error, "storage_balance_of unavailable; assuming the token does not manage NEP-145 storage");

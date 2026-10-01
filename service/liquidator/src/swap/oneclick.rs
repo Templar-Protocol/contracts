@@ -619,7 +619,7 @@ impl OneClickSwap {
                 AppError::Rpc(e.into())
             })?;
 
-        let min_deposit: NearToken = bounds.bounds.min;
+        let min_deposit: NearToken = bounds.min;
 
         // Validate minimum deposit is reasonable (less than 0.1 NEAR)
         if min_deposit.as_yoctonear() > MAX_REASONABLE_DEPOSIT {

@@ -14,7 +14,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
         })
         .await?;
 
-    assert!(balance_before.balance.is_some());
+    assert!(balance_before.is_some());
 
     let beneficiary_deposit = stack
         .controller
@@ -38,7 +38,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
         })
         .await?;
 
-    assert!(beneficiary_balance.balance.is_some());
+    assert!(beneficiary_balance.is_some());
 
     let deposit_transaction = stack
         .controller

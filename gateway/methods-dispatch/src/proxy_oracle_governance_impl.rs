@@ -13,7 +13,9 @@ use templar_gateway_core::{
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
 use templar_gateway_types::{ProposalEncoding, ProxyGovernance};
-use templar_proxy_oracle_near_governance_common::GovernancePolicy;
+use templar_proxy_oracle_near_governance_common::{
+    GovernancePolicy, GovernancePolicyWire, Operation, Proposal, Role,
+};
 
 use crate::{registry_impl::plan_create_from_registry, Dispatch};
 
@@ -83,13 +85,11 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetGovernancePolicy
     async fn dispatch(
         request: proxy_oracle_governance::GetGovernancePolicy,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle_governance::GetGovernancePolicyResult> {
-        let policy = ctx
-            .near_client()
+    ) -> GatewayResult<GovernancePolicyWire> {
+        ctx.near_client()
             .proxy_governance(request.governance_id)
             .get_governance_policy(())
-            .await?;
-        Ok(proxy_oracle_governance::GetGovernancePolicyResult { policy })
+            .await
     }
 }
 
@@ -98,7 +98,7 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::ListProposals, C> f
     async fn dispatch(
         request: proxy_oracle_governance::ListProposals,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle_governance::ListProposalsResult> {
+    ) -> GatewayResult<Vec<u32>> {
         ctx.near_client()
             .proxy_governance(request.governance_id)
             .list_proposals(GovListArgs {
@@ -106,7 +106,6 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::ListProposals, C> f
                 count: request.count,
             })
             .await
-            .map(|ids| proxy_oracle_governance::ListProposalsResult { ids })
     }
 }
 
@@ -115,13 +114,12 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetProposal, C> for
     async fn dispatch(
         request: proxy_oracle_governance::GetProposal,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle_governance::GetProposalResult> {
+    ) -> GatewayResult<Option<Proposal<Operation>>> {
         let params = request;
         ctx.near_client()
             .proxy_governance(params.governance_id)
             .get_proposal(GovGetArgs { id: params.id })
             .await
-            .map(|proposal| proxy_oracle_governance::GetProposalResult { proposal })
     }
 }
 
@@ -130,25 +128,17 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetProxyOracleId, C
     async fn dispatch(
         request: proxy_oracle_governance::GetProxyOracleId,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle_governance::GetProxyOracleIdResult> {
+    ) -> GatewayResult<AccountId> {
         ctx.near_client()
             .proxy_governance(request.governance_id)
             .get_proxy_oracle_id(())
             .await
-            .map(
-                |proxy_oracle_id| proxy_oracle_governance::GetProxyOracleIdResult {
-                    proxy_oracle_id,
-                },
-            )
     }
 }
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::HasRole, C> for Dispatch {
-    async fn dispatch(
-        request: proxy_oracle_governance::HasRole,
-        ctx: C,
-    ) -> GatewayResult<proxy_oracle_governance::HasRoleResult> {
+    async fn dispatch(request: proxy_oracle_governance::HasRole, ctx: C) -> GatewayResult<bool> {
         ctx.near_client()
             .proxy_governance(request.governance_id)
             .has_role(GovHasRoleArgs {
@@ -156,7 +146,6 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::HasRole, C> for Dis
                 role: request.role,
             })
             .await
-            .map(|has_role| proxy_oracle_governance::HasRoleResult { has_role })
     }
 }
 
@@ -165,7 +154,7 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::ListRole, C> for Di
     async fn dispatch(
         request: proxy_oracle_governance::ListRole,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle_governance::ListRoleResult> {
+    ) -> GatewayResult<Vec<AccountId>> {
         ctx.near_client()
             .proxy_governance(request.governance_id)
             .list_role(GovListRoleArgs {
@@ -174,7 +163,6 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::ListRole, C> for Di
                 count: request.count,
             })
             .await
-            .map(|members| proxy_oracle_governance::ListRoleResult { members })
     }
 }
 
@@ -183,14 +171,13 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetRoles, C> for Di
     async fn dispatch(
         request: proxy_oracle_governance::GetRoles,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle_governance::GetRolesResult> {
+    ) -> GatewayResult<Vec<Role>> {
         ctx.near_client()
             .proxy_governance(request.governance_id)
             .get_roles(GovGetRolesArgs {
                 account_id: request.account_id,
             })
             .await
-            .map(|roles| proxy_oracle_governance::GetRolesResult { roles })
     }
 }
 

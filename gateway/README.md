@@ -19,6 +19,14 @@ Examples:
 - `registry.getDeployment`
 - `registry.listVersions`
 
+## Read Results
+
+A read's `output` is the value itself — `Option<Proxy<Source>>`, `Vec<PriceIdentifier>`, `bool` — never a struct whose only field relabels it (`GetProxyResult { proxy }`). The method name already says what the value is, and a bare value can be piped from one command straight into another that takes it.
+
+Define a result struct only when it has two or more fields. `op.get` is the one exception: its `{ operation }` matches `WriteOperationResult`, so a write's response and a later lookup of the same operation share a shape.
+
+`read_outputs_are_not_single_field_wrappers` in `templar-gateway-catalog` enforces this.
+
 ## Write Methods
 
 Write methods should use imperative verbs.

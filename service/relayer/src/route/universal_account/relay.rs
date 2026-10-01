@@ -293,7 +293,7 @@ pub async fn load_ua_key(
         })
         .await?;
 
-    result.parameters.map(parameters_from_view).transpose()
+    result.map(parameters_from_view).transpose()
 }
 
 /// Rebuild the contract's [`PayloadExecutionParameters`] from the gateway op's

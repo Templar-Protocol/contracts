@@ -35,7 +35,7 @@ impl<C: HasNearClient> DispatchRead<pyth::ListEmaPricesNoOlderThan, C> for Dispa
     async fn dispatch(
         request: pyth::ListEmaPricesNoOlderThan,
         ctx: C,
-    ) -> GatewayResult<pyth::ListEmaPricesNoOlderThanResult> {
+    ) -> GatewayResult<Vec<pyth::PriceEntry>> {
         let params = request;
         let price_ids = params.price_ids;
         let response = ctx
@@ -46,9 +46,7 @@ impl<C: HasNearClient> DispatchRead<pyth::ListEmaPricesNoOlderThan, C> for Dispa
                 age: params.age,
             })
             .await?;
-        Ok(pyth::ListEmaPricesNoOlderThanResult {
-            prices: prices_in_request_order(price_ids, &response),
-        })
+        Ok(prices_in_request_order(price_ids, &response))
     }
 }
 
@@ -57,7 +55,7 @@ impl<C: HasNearClient> DispatchRead<pyth::ListEmaPricesUnsafe, C> for Dispatch {
     async fn dispatch(
         request: pyth::ListEmaPricesUnsafe,
         ctx: C,
-    ) -> GatewayResult<pyth::ListEmaPricesUnsafeResult> {
+    ) -> GatewayResult<Vec<pyth::PriceEntry>> {
         let params = request;
         let price_ids = params.price_ids;
         let response = ctx
@@ -67,9 +65,7 @@ impl<C: HasNearClient> DispatchRead<pyth::ListEmaPricesUnsafe, C> for Dispatch {
                 price_ids: price_ids.clone(),
             })
             .await?;
-        Ok(pyth::ListEmaPricesUnsafeResult {
-            prices: prices_in_request_order(price_ids, &response),
-        })
+        Ok(prices_in_request_order(price_ids, &response))
     }
 }
 

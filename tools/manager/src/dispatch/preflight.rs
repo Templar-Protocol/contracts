@@ -389,7 +389,6 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
         .with_context(|| format!("read ft_metadata from {account_id}"))?;
 
     Ok(result
-        .value
         .get("decimals")
         .and_then(serde_json::Value::as_u64)
         .and_then(|decimals| u8::try_from(decimals).ok()))
@@ -419,7 +418,6 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
                     version_key: key.clone(),
                 })
                 .await
-                .map(|result| result.version)
                 .map_err(|error| error.to_string());
             Check::new(
                 format!("registry.version.{label}"),
@@ -436,7 +434,6 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
             args: Pagination::default(),
         })
         .await
-        .map(|registered| registered.values)
         .map_err(|error| error.to_string());
 
     labeled
@@ -553,7 +550,7 @@ async fn serves_pair(
         })
         .await
     {
-        Ok(result) => result.prices,
+        Ok(result) => result,
         Err(error) => {
             return (
                 Status::failed(format!(

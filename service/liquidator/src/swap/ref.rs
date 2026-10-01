@@ -111,8 +111,9 @@ impl RefSwap {
                         limit: Some(limit),
                     })
                     .await
-                    .map_err(|e| AppError::ValidationError(format!("Failed to query pools: {e}")))?
-                    .pools;
+                    .map_err(|e| {
+                        AppError::ValidationError(format!("Failed to query pools: {e}"))
+                    })?;
 
                 if pools.is_empty() {
                     break;
@@ -182,8 +183,9 @@ impl RefSwap {
                         limit: Some(limit),
                     })
                     .await
-                    .map_err(|e| AppError::ValidationError(format!("Failed to query pools: {e}")))?
-                    .pools;
+                    .map_err(|e| {
+                        AppError::ValidationError(format!("Failed to query pools: {e}"))
+                    })?;
 
                 if pools.is_empty() {
                     break;
@@ -483,7 +485,7 @@ impl SwapProvider for RefSwap {
                 AppError::Rpc(e.into())
             })?;
 
-        let min_deposit: NearToken = bounds.bounds.min;
+        let min_deposit: NearToken = bounds.min;
 
         // Validate minimum deposit is reasonable (less than 0.1 NEAR)
         if min_deposit.as_yoctonear() > MAX_REASONABLE_DEPOSIT {

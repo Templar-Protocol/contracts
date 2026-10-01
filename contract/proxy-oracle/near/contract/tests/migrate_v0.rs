@@ -311,7 +311,6 @@ async fn stored_proxy(
             id,
         })
         .await?
-        .proxy
         .unwrap())
 }
 
@@ -348,8 +347,7 @@ async fn migrate_v0_fixture_exactly() -> Result<()> {
             offset: None,
             count: None,
         })
-        .await?
-        .proxies;
+        .await?;
     proxies.sort();
     assert_eq!(proxies, vec![BTC_PRICE_ID, ETH_PRICE_ID, STNEAR_PRICE_ID]);
 

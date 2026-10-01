@@ -162,8 +162,7 @@ async fn mainnet_upgrade_needs_no_migration() -> Result<()> {
             offset: None,
             count: None,
         })
-        .await?
-        .proxies;
+        .await?;
     proxies.sort();
     assert_eq!(proxies, vec![USDC_PRICE_ID, USTRY_PRICE_ID]);
 
@@ -175,7 +174,6 @@ async fn mainnet_upgrade_needs_no_migration() -> Result<()> {
                     id: price_id,
                 })
                 .await?
-                .proxy
                 .is_some(),
             "{price_id} lost its proxy definition across the upgrade"
         );
@@ -201,7 +199,6 @@ async fn mainnet_upgrade_preserves_loadable_breaker_sets() -> Result<()> {
                 id: price_id,
             })
             .await?
-            .circuit_breaker_set
             .unwrap_or_else(|| panic!("{price_id} has no stored breaker set"));
 
         set.validate().unwrap_or_else(|error| {
@@ -253,7 +250,6 @@ async fn mainnet_upgrade_disarms_a_breaker_set_the_new_rules_reject() -> Result<
                 id: USTRY_PRICE_ID,
             })
             .await?
-            .circuit_breaker_set
             .is_none(),
         "an inert set must not read back as usable protection"
     );
@@ -265,7 +261,6 @@ async fn mainnet_upgrade_disarms_a_breaker_set_the_new_rules_reject() -> Result<
             id: USDC_PRICE_ID,
         })
         .await?
-        .circuit_breaker_set
         .is_some());
 
     Ok(())

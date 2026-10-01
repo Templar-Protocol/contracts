@@ -122,7 +122,7 @@ impl Accumulator {
                         }),
                     )
                     .await?;
-                anyhow::Ok(result.positions.into_iter().collect::<Vec<_>>())
+                anyhow::Ok(result.into_iter().collect::<Vec<_>>())
             }
         })
         .await?;
@@ -335,7 +335,7 @@ async fn list_deployments(
                     },
                 })
                 .await?;
-            anyhow::Ok(result.account_ids)
+            anyhow::Ok(result)
         }
     })
     .await

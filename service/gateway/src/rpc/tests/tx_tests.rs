@@ -31,7 +31,7 @@ async fn tx_function_call_and_view_function_endpoints_work_against_sandbox() -> 
         .await?;
 
     assert_eq!(
-        counter.value,
+        counter,
         serde_json::json!(NearToken::from_near(2).as_yoctonear().to_string())
     );
 
@@ -153,7 +153,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         })
         .await?;
 
-    assert_eq!(balance.balance, templar_common::SU128::from(0));
+    assert_eq!(balance, templar_common::SU128::from(0));
 
     let _ = stack
         .controller
@@ -175,7 +175,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         })
         .await?;
 
-    assert!(storage_balance.balance.is_none());
+    assert!(storage_balance.is_none());
 
     let _ = stack
         .controller
@@ -371,7 +371,7 @@ async fn tx_batch_applies_every_action_in_one_transaction() -> Result<()> {
         })
         .await?;
     assert_eq!(
-        rate.value,
+        rate,
         serde_json::json!(NearToken::from_near(3).as_yoctonear().to_string()),
         "the function call did not land"
     );

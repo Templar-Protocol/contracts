@@ -30,7 +30,7 @@ async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
             price_identifier: transformed_price_id,
         })
         .await?;
-    assert_eq!(absent.transformer, None);
+    assert_eq!(absent, None);
 
     // `create_transformer` is owner-gated and the oracle owns itself, so only the
     // oracle account can sign it — and `deploy_lst_oracle` mints that account
@@ -54,7 +54,7 @@ async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
             oracle_id: lst_oracle_id.clone(),
         })
         .await?;
-    assert_eq!(get_oracle_id.pyth_oracle_id, pyth_oracle_id);
+    assert_eq!(get_oracle_id, pyth_oracle_id);
 
     let list = stack
         .controller
@@ -63,7 +63,7 @@ async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
             pagination: templar_gateway_types::common::Pagination::default(),
         })
         .await?;
-    assert_eq!(list.price_ids, vec![transformed_price_id]);
+    assert_eq!(list, vec![transformed_price_id]);
 
     let get = stack
         .controller
@@ -72,7 +72,7 @@ async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
             price_identifier: transformed_price_id,
         })
         .await?;
-    assert_eq!(get.transformer, Some(transformer));
+    assert_eq!(get, Some(transformer));
 
     stack.shutdown().await;
     Ok(())

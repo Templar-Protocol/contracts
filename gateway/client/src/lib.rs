@@ -487,7 +487,6 @@ mod tests {
             .expect("artifact.list dispatch succeeds");
 
         assert!(result
-            .artifacts
             .iter()
             .any(|metadata| metadata.artifact == ArtifactId::Market));
     }

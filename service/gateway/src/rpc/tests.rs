@@ -54,7 +54,7 @@ use templar_gateway_oracle_updates_spec::oracle as oracle_updates;
 use templar_gateway_store::MemoryStore;
 use templar_gateway_testing::{SandboxHarness, TestController, TEST_FINALITY_POLICY};
 use templar_gateway_types::{
-    common::{ContractArgs, WriteRequest},
+    common::{ContractArgs, StorageBalanceBounds, WriteRequest},
     ActionInput, Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
 };
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
@@ -144,16 +144,14 @@ impl TestStack {
     }
 }
 
-async fn register_gateway_signer_for_ft(
-    stack: &TestStack,
-) -> Result<storage::GetBalanceBoundsResult> {
+async fn register_gateway_signer_for_ft(stack: &TestStack) -> Result<StorageBalanceBounds> {
     register_ft_account(stack, stack.harness.gateway_signer_account_id.0.clone()).await
 }
 
 async fn register_ft_account(
     stack: &TestStack,
     account_id: near_account_id::AccountId,
-) -> Result<storage::GetBalanceBoundsResult> {
+) -> Result<StorageBalanceBounds> {
     let bounds = stack
         .controller
         .request::<storage::GetBalanceBounds>(&storage::GetBalanceBounds {
@@ -275,13 +273,12 @@ async fn view_contract_json(
     method_name: &str,
     args: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    Ok(stack
+    stack
         .controller
         .request::<contract::ViewFunction>(&contract::ViewFunction {
             contract_id,
             method_name: ContractMethodName(method_name.to_owned()),
             args: ContractArgs::Json(args),
         })
-        .await?
-        .value)
+        .await
 }

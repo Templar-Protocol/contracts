@@ -57,7 +57,6 @@ impl TestContext {
             })
             .await
             .unwrap()
-            .balance
     }
 
     /// Build a `NearHandler` for the treasury pointed at the sandbox RPC.

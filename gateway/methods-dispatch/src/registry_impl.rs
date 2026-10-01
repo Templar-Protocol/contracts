@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use near_account_id::AccountId;
 use templar_gateway_core::{
     client::registry::{
         AddVersionArgs, DeployArgs, GetDeploymentArgs, GetRegistryEntryArgs, GetVersionArgs,
@@ -19,15 +20,11 @@ impl<C> DispatchRead<registry::ListDeployments, C> for Dispatch
 where
     C: HasNearClient,
 {
-    async fn dispatch(
-        request: registry::ListDeployments,
-        ctx: C,
-    ) -> GatewayResult<registry::ListDeploymentsResult> {
+    async fn dispatch(request: registry::ListDeployments, ctx: C) -> GatewayResult<Vec<AccountId>> {
         ctx.near_client()
             .registry(request.registry_id)
             .list_deployments(request.args)
             .await
-            .map(|account_ids| registry::ListDeploymentsResult { account_ids })
     }
 }
 
@@ -36,14 +33,13 @@ impl<C: HasNearClient> DispatchRead<registry::GetDeployment, C> for Dispatch {
     async fn dispatch(
         request: registry::GetDeployment,
         ctx: C,
-    ) -> GatewayResult<registry::GetDeploymentResult> {
+    ) -> GatewayResult<Option<templar_common::registry::Deployment>> {
         ctx.near_client()
             .registry(request.registry_id)
             .get_deployment(GetDeploymentArgs {
                 account_id: request.account_id,
             })
             .await
-            .map(|deployment| registry::GetDeploymentResult { deployment })
     }
 }
 
@@ -79,7 +75,7 @@ impl<C: HasNearClient> DispatchRead<registry::GetRegistryEntry, C> for Dispatch 
     async fn dispatch(
         request: registry::GetRegistryEntry,
         ctx: C,
-    ) -> GatewayResult<registry::GetRegistryEntryResult> {
+    ) -> GatewayResult<Option<templar_common::registry::RegistryEntryView>> {
         require_entry_and_version_views(&ctx, request.registry_id.clone()).await?;
         ctx.near_client()
             .registry(request.registry_id)
@@ -87,7 +83,6 @@ impl<C: HasNearClient> DispatchRead<registry::GetRegistryEntry, C> for Dispatch 
                 account_id: request.account_id,
             })
             .await
-            .map(|entry| registry::GetRegistryEntryResult { entry })
     }
 }
 
@@ -96,7 +91,7 @@ impl<C: HasNearClient> DispatchRead<registry::GetVersion, C> for Dispatch {
     async fn dispatch(
         request: registry::GetVersion,
         ctx: C,
-    ) -> GatewayResult<registry::GetVersionResult> {
+    ) -> GatewayResult<Option<templar_common::registry::VersionInfo>> {
         require_entry_and_version_views(&ctx, request.registry_id.clone()).await?;
         ctx.near_client()
             .registry(request.registry_id)
@@ -104,21 +99,16 @@ impl<C: HasNearClient> DispatchRead<registry::GetVersion, C> for Dispatch {
                 version_key: request.version_key,
             })
             .await
-            .map(|version| registry::GetVersionResult { version })
     }
 }
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<registry::ListVersions, C> for Dispatch {
-    async fn dispatch(
-        request: registry::ListVersions,
-        ctx: C,
-    ) -> GatewayResult<registry::ListVersionsResult> {
+    async fn dispatch(request: registry::ListVersions, ctx: C) -> GatewayResult<Vec<String>> {
         ctx.near_client()
             .registry(request.registry_id)
             .list_versions(request.args)
             .await
-            .map(|values| registry::ListVersionsResult { values })
     }
 }
 
@@ -130,7 +120,7 @@ where
     async fn dispatch(
         request: registry::ListDeploymentsByKind,
         ctx: C,
-    ) -> GatewayResult<registry::ListDeploymentsResult> {
+    ) -> GatewayResult<Vec<AccountId>> {
         let account_ids = ctx
             .near_client()
             .registry(request.registry_id)
@@ -152,7 +142,7 @@ where
             filtered.into_iter().skip(offset).collect()
         };
 
-        Ok(registry::ListDeploymentsResult { account_ids })
+        Ok(account_ids)
     }
 }
 

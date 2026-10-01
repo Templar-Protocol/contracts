@@ -13,29 +13,19 @@ pub struct PriceEntry {
 
 /// List EMA prices within an age limit.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "pyth.listEmaPricesNoOlderThan", output = ListEmaPricesNoOlderThanResult)]
+#[method(read = "pyth.listEmaPricesNoOlderThan", output = Vec<PriceEntry>)]
 pub struct ListEmaPricesNoOlderThan {
     pub oracle_id: AccountId,
     pub price_ids: Vec<PriceIdentifier>,
     pub age: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListEmaPricesNoOlderThanResult {
-    pub prices: Vec<PriceEntry>,
-}
-
 /// List EMA prices without an age limit.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "pyth.listEmaPricesUnsafe", output = ListEmaPricesUnsafeResult)]
+#[method(read = "pyth.listEmaPricesUnsafe", output = Vec<PriceEntry>)]
 pub struct ListEmaPricesUnsafe {
     pub oracle_id: AccountId,
     pub price_ids: Vec<PriceIdentifier>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListEmaPricesUnsafeResult {
-    pub prices: Vec<PriceEntry>,
 }
 
 /// Submit raw Pyth update data.

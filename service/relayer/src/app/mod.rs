@@ -314,8 +314,7 @@ impl App {
                             .gateway
                             .read(storage::GetBalanceBounds::new(contract_id.clone()))
                             .await
-                            .ok()
-                            .map(|result| result.bounds);
+                            .ok();
 
                         tracing::info!(
                             "Loaded storage balance bounds for contract {contract_id}: {}",
@@ -464,7 +463,7 @@ impl App {
                 })
                 .await
                 .map_err(PriceUpdateError::Resolve)?;
-            if matches!(kind.kind, ContractKind::ProxyOracle) {
+            if matches!(kind, ContractKind::ProxyOracle) {
                 if let Err(error) = proxy_prices_all_accepted(
                     &price_ids,
                     result
@@ -803,8 +802,7 @@ impl App {
                 contract_id: contract_id.clone(),
                 account_id: account_id.clone(),
             })
-            .await?
-            .balance;
+            .await?;
 
         let available = storage_balance.map_or(NearToken::from_near(0), |s| s.available);
 
@@ -1023,7 +1021,7 @@ async fn load_registry_deployments(
                     },
                 })
                 .await?;
-            Ok(result.account_ids)
+            Ok(result)
         }
     })
     .await

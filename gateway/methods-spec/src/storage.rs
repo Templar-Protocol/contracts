@@ -6,27 +6,17 @@ use templar_gateway_types::common::{StorageBalance, StorageBalanceBounds};
 
 /// Get storage balance bounds for a contract.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "storage.getBalanceBounds", output = GetBalanceBoundsResult)]
+#[method(read = "storage.getBalanceBounds", output = StorageBalanceBounds)]
 pub struct GetBalanceBounds {
     pub contract_id: AccountId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceBoundsResult {
-    pub bounds: StorageBalanceBounds,
-}
-
 /// Get storage balance for an account.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "storage.getBalanceOf", output = GetBalanceOfResult)]
+#[method(read = "storage.getBalanceOf", output = Option<StorageBalance>)]
 pub struct GetBalanceOf {
     pub contract_id: AccountId,
     pub account_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfResult {
-    pub balance: Option<StorageBalance>,
 }
 
 /// Deposit storage for an account.

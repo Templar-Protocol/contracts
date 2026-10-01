@@ -109,14 +109,9 @@ pub struct PreviewRedeem {
 
 /// Get configured cap groups.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "vault.getCapGroups", output = GetCapGroupsResult)]
+#[method(read = "vault.getCapGroups", output = Vec<(CapGroupId, CapGroupRecord)>)]
 pub struct GetCapGroups {
     pub vault_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetCapGroupsResult {
-    pub cap_groups: Vec<(CapGroupId, CapGroupRecord)>,
 }
 
 /// Get fee anchor timestamp.
@@ -135,39 +130,23 @@ pub struct GetFees {
 
 /// Get current restrictions.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "vault.getRestrictions", output = GetRestrictionsResult)]
+#[method(read = "vault.getRestrictions", output = Option<Restrictions>)]
 pub struct GetRestrictions {
     pub vault_id: AccountId,
 }
 
-// `Restrictions` does not implement `Debug`, so this result cannot derive it.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetRestrictionsResult {
-    pub restrictions: Option<Restrictions>,
-}
-
 /// Get current withdrawing operation id.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "vault.getWithdrawingOpId", output = GetWithdrawingOpIdResult)]
+#[method(read = "vault.getWithdrawingOpId", output = Option<SU64>)]
 pub struct GetWithdrawingOpId {
     pub vault_id: AccountId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetWithdrawingOpIdResult {
-    pub op_id: Option<SU64>,
-}
-
 /// Get current withdrawal request id.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "vault.getCurrentWithdrawRequestId", output = GetCurrentWithdrawRequestIdResult)]
+#[method(read = "vault.getCurrentWithdrawRequestId", output = Option<SU64>)]
 pub struct GetCurrentWithdrawRequestId {
     pub vault_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetCurrentWithdrawRequestIdResult {
-    pub request_id: Option<SU64>,
 }
 
 /// Check whether a market withdrawal is pending.
@@ -186,14 +165,9 @@ pub struct QueueTail {
 
 /// Peek withdrawal queue head id.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "vault.peekNextPendingWithdrawalId", output = PeekNextPendingWithdrawalIdResult)]
+#[method(read = "vault.peekNextPendingWithdrawalId", output = Option<SU64>)]
 pub struct PeekNextPendingWithdrawalId {
     pub vault_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct PeekNextPendingWithdrawalIdResult {
-    pub request_id: Option<SU64>,
 }
 
 /// Build a real-assets report from stored state.
@@ -205,40 +179,25 @@ pub struct BuildRealAssetsReport {
 
 /// Get a market id from a market account.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "vault.getMarketIdOfAccount", output = GetMarketIdOfAccountResult)]
+#[method(read = "vault.getMarketIdOfAccount", output = Option<MarketId>)]
 pub struct GetMarketIdOfAccount {
     pub vault_id: AccountId,
     pub market: AccountId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetMarketIdOfAccountResult {
-    pub market_id: Option<MarketId>,
-}
-
 /// Get a market account from a market id.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "vault.getMarketAccountById", output = GetMarketAccountByIdResult)]
+#[method(read = "vault.getMarketAccountById", output = Option<AccountId>)]
 pub struct GetMarketAccountById {
     pub vault_id: AccountId,
     pub market_id: SU64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetMarketAccountByIdResult {
-    pub account_id: Option<AccountId>,
-}
-
 /// List configured market ids and accounts.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "vault.listMarketsWithIds", output = ListMarketsWithIdsResult)]
+#[method(read = "vault.listMarketsWithIds", output = Vec<(SU64, AccountId)>)]
 pub struct ListMarketsWithIds {
     pub vault_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListMarketsWithIdsResult {
-    pub markets: Vec<(SU64, AccountId)>,
 }
 
 /// Deposit underlying into a vault.

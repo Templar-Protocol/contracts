@@ -138,8 +138,7 @@ async fn lst_oracle() -> Result<()> {
         .read(lst_oracle::GetOracleId {
             oracle_id: lst_oracle_id.clone(),
         })
-        .await?
-        .pyth_oracle_id;
+        .await?;
     assert_eq!(underlying_oracle_actual, underlying);
 
     // The transformer is listed and round-trips.
@@ -148,8 +147,7 @@ async fn lst_oracle() -> Result<()> {
             oracle_id: lst_oracle_id.clone(),
             pagination: templar_gateway_types::common::Pagination::default(),
         })
-        .await?
-        .price_ids;
+        .await?;
     assert_eq!(transformers, vec![COLLATERAL_LST_ID]);
 
     let transformer = client
@@ -157,8 +155,7 @@ async fn lst_oracle() -> Result<()> {
             oracle_id: lst_oracle_id.clone(),
             price_identifier: COLLATERAL_LST_ID,
         })
-        .await?
-        .transformer;
+        .await?;
     assert_eq!(
         transformer.unwrap(),
         expected_transformer(&collateral_asset)

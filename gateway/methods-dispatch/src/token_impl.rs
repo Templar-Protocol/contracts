@@ -1,15 +1,13 @@
 use async_trait::async_trait;
 use templar_gateway_core::{DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite};
 use templar_gateway_methods_spec::token;
+use templar_primitives::SU128;
 
 use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<token::GetBalanceOf, C> for Dispatch {
-    async fn dispatch(
-        request: token::GetBalanceOf,
-        ctx: C,
-    ) -> GatewayResult<token::GetBalanceOfResult> {
+    async fn dispatch(request: token::GetBalanceOf, ctx: C) -> GatewayResult<SU128> {
         let params = request;
         let balance = match params.token {
             token::TokenReference::Ft { contract_id } => {
@@ -33,7 +31,7 @@ impl<C: HasNearClient> DispatchRead<token::GetBalanceOf, C> for Dispatch {
                     .await?
             }
         };
-        Ok(token::GetBalanceOfResult { balance })
+        Ok(balance)
     }
 }
 

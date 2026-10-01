@@ -32,7 +32,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
             token_id: "mt_borrow".to_owned(),
         })
         .await?;
-    assert_eq!(balance.balance, templar_common::SU128::from(11));
+    assert_eq!(balance, templar_common::SU128::from(11));
 
     let balances = stack
         .controller
@@ -42,11 +42,8 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
             token_ids: vec!["mt_borrow".to_owned(), "mt_collateral".to_owned()],
         })
         .await?;
-    assert_eq!(
-        balances.balances[0].balance,
-        templar_common::SU128::from(11)
-    );
-    assert_eq!(balances.balances[1].balance, templar_common::SU128::from(0));
+    assert_eq!(balances[0].balance, templar_common::SU128::from(11));
+    assert_eq!(balances[1].balance, templar_common::SU128::from(0));
 
     let supply = stack
         .controller
@@ -55,7 +52,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
             token_id: "mt_borrow".to_owned(),
         })
         .await?;
-    assert_eq!(supply.supply, Some(templar_common::SU128::from(11)));
+    assert_eq!(supply, Some(templar_common::SU128::from(11)));
 
     let supplies = stack
         .controller
@@ -64,11 +61,8 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
             token_ids: vec!["mt_borrow".to_owned(), "missing".to_owned()],
         })
         .await?;
-    assert_eq!(
-        supplies.supplies[0].supply,
-        Some(templar_common::SU128::from(11))
-    );
-    assert_eq!(supplies.supplies[1].supply, None);
+    assert_eq!(supplies[0].supply, Some(templar_common::SU128::from(11)));
+    assert_eq!(supplies[1].supply, None);
 
     let transfer = stack
         .controller

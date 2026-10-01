@@ -32,7 +32,7 @@ async fn owner_endpoints_work_against_registry_sandbox() -> Result<()> {
         })
         .await?;
     assert_eq!(
-        current.owner,
+        current,
         Some(stack.harness.registry_signer_account_id.0.clone())
     );
 
@@ -92,7 +92,7 @@ async fn owner_endpoints_work_against_registry_sandbox() -> Result<()> {
         })
         .await?;
     assert_eq!(
-        proposed.proposed_owner,
+        proposed,
         Some(stack.harness.cleanup_signer_account_id.0.clone())
     );
 
@@ -132,7 +132,7 @@ async fn owner_endpoints_work_against_registry_sandbox() -> Result<()> {
         })
         .await?;
     assert_eq!(
-        current.owner,
+        current,
         Some(stack.harness.cleanup_signer_account_id.0.clone())
     );
 
@@ -151,7 +151,7 @@ async fn owner_endpoints_work_against_registry_sandbox() -> Result<()> {
         .controller
         .request::<owner::GetOwner>(&owner::GetOwner { contract_id })
         .await?;
-    assert_eq!(current.owner, None);
+    assert_eq!(current, None);
 
     stack.shutdown().await;
     Ok(())

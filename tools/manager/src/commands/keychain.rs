@@ -23,8 +23,7 @@ pub(crate) async fn find_secret_key(
             account_id: account_id.clone(),
         })
         .await
-        .with_context(|| format!("list {account_id}'s access keys"))?
-        .keys;
+        .with_context(|| format!("list {account_id}'s access keys"))?;
     let full_access_keys = keys
         .into_iter()
         .filter(|key| key.permission == AccessKeyPermission::FullAccess)

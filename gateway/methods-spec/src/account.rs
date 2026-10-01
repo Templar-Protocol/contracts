@@ -26,27 +26,17 @@ pub struct GetResult {
 
 /// Fetch the deployed WASM bytes of a locally deployed contract.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "account.getCode", output = GetCodeResult)]
+#[method(read = "account.getCode", output = Base64Bytes)]
 pub struct GetCode {
     pub account_id: AccountId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetCodeResult {
-    pub code: Base64Bytes,
-}
-
 /// List contract storage entries whose raw keys begin with `prefix`.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "account.viewState", output = ViewStateResult)]
+#[method(read = "account.viewState", output = Vec<StateEntry>)]
 pub struct ViewState {
     pub account_id: AccountId,
     pub prefix: Base64Bytes,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ViewStateResult {
-    pub values: Vec<StateEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -76,14 +66,9 @@ pub struct GetAccessKeyResult {
 ///
 /// Mirrors NEAR's `view_access_key_list`, in the order the chain returns them.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "account.listAccessKeys", output = ListAccessKeysResult)]
+#[method(read = "account.listAccessKeys", output = Vec<AccessKeyEntry>)]
 pub struct ListAccessKeys {
     pub account_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListAccessKeysResult {
-    pub keys: Vec<AccessKeyEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

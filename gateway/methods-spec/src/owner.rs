@@ -4,26 +4,16 @@ use templar_gateway_macros::MethodSpec;
 
 /// Get the current contract owner.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "owner.getOwner", output = GetOwnerResult)]
+#[method(read = "owner.getOwner", output = Option<near_account_id::AccountId>)]
 pub struct GetOwner {
     pub contract_id: near_account_id::AccountId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetOwnerResult {
-    pub owner: Option<near_account_id::AccountId>,
-}
-
 /// Get the proposed contract owner.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "owner.getProposedOwner", output = GetProposedOwnerResult)]
+#[method(read = "owner.getProposedOwner", output = Option<near_account_id::AccountId>)]
 pub struct GetProposedOwner {
     pub contract_id: near_account_id::AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetProposedOwnerResult {
-    pub proposed_owner: Option<near_account_id::AccountId>,
 }
 
 /// Propose a new contract owner.

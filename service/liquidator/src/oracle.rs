@@ -169,13 +169,13 @@ impl OracleFetcher {
             .read(lst_oracle::GetOracleId::new(oracle.clone()))
             .await
         {
-            Ok(response) => {
+            Ok(pyth_oracle_id) => {
                 tracing::debug!(
                     oracle = %oracle,
-                    underlying = %response.pyth_oracle_id,
+                    underlying = %pyth_oracle_id,
                     "Detected LST oracle"
                 );
-                Some(response.pyth_oracle_id)
+                Some(pyth_oracle_id)
             }
             Err(error) if gateway_is_method_not_found(&error) => {
                 tracing::debug!(oracle = %oracle, "Standard Pyth oracle (no oracle_id method)");
@@ -313,7 +313,7 @@ impl OracleFetcher {
                     .read(lst_oracle::GetTransformer::new(oracle.clone(), pid))
                     .await
                     .map_err(|error| LiquidatorError::PriceFetchError(error.into()))?;
-                match result.transformer {
+                match result {
                     Some(transformer) => underlying_ids.push(transformer.price_id),
                     None => underlying_ids.push(pid),
                 }
@@ -340,7 +340,7 @@ impl OracleFetcher {
                     .read(proxy_oracle::GetProxy::new(oracle.clone(), pid))
                     .await
                     .map_err(|error| LiquidatorError::PriceFetchError(error.into()))?;
-                if let Some(proxy) = result.proxy {
+                if let Some(proxy) = result {
                     for source in proxy.sources() {
                         Self::collect_pyth_targets_from_source(source, &mut targets);
                     }
@@ -595,7 +595,7 @@ impl OracleFetcher {
                 .await
             {
                 Ok(result) => {
-                    if let Some(transformer) = result.transformer {
+                    if let Some(transformer) = result {
                         tracing::debug!(
                             price_id = ?price_id,
                             underlying_id = ?transformer.price_id,
@@ -721,7 +721,6 @@ impl OracleFetcher {
             .map_err(|e| LiquidatorError::PriceFetchError(e.into()))?;
 
         Ok(result
-            .prices
             .into_iter()
             .map(|entry| (entry.price_id, entry.price))
             .collect())
@@ -744,7 +743,7 @@ impl OracleFetcher {
             .map_err(RpcError::from)?;
 
         let value: Decimal =
-            near_sdk::serde_json::from_value(result.value).map_err(RpcError::DeserializeError)?;
+            near_sdk::serde_json::from_value(result).map_err(RpcError::DeserializeError)?;
         Ok(value)
     }
 }

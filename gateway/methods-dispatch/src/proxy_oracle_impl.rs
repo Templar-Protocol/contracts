@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use near_api::types::transaction::actions::{Action, DeployContractAction, FunctionCallAction};
 use serde::Serialize;
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_core::{
     client::proxy_oracle::{
         AdminSetProxyArgs, GetProxyArgs, GetProxyCircuitBreakerSetArgs, ListProxiesArgs,
@@ -11,6 +12,8 @@ use templar_gateway_core::{
 };
 use templar_gateway_methods_spec::proxy_oracle;
 use templar_gateway_types::{NearGas, NearToken, ProxyOracle, ProxyOracleVersion};
+use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
+use templar_proxy_oracle_near_common::input::Source;
 
 use crate::{registry_impl::plan_create_from_registry, Dispatch};
 
@@ -150,7 +153,7 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::ListProxies, C> for Dispatch {
     async fn dispatch(
         request: proxy_oracle::ListProxies,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle::ListProxiesResult> {
+    ) -> GatewayResult<Vec<PriceIdentifier>> {
         ctx.near_client()
             .proxy_oracle(request.oracle_id)
             .list_proxies(ListProxiesArgs {
@@ -158,7 +161,6 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::ListProxies, C> for Dispatch {
                 count: request.count,
             })
             .await
-            .map(|proxies| proxy_oracle::ListProxiesResult { proxies })
     }
 }
 
@@ -167,7 +169,7 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::GetProxy, C> for Dispatch {
     async fn dispatch(
         request: proxy_oracle::GetProxy,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle::GetProxyResult> {
+    ) -> GatewayResult<Option<Proxy<Source>>> {
         let params = request;
         // Uncached on purpose. No write path invalidates the definition cache, so
         // a `cached_get_proxy` here answers a point read about current
@@ -179,7 +181,6 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::GetProxy, C> for Dispatch {
             .proxy_oracle(params.oracle_id)
             .get_proxy(GetProxyArgs { id: params.id })
             .await
-            .map(|proxy| proxy_oracle::GetProxyResult { proxy })
     }
 }
 
@@ -188,25 +189,17 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::GetProxyCircuitBreakerSet, C> 
     async fn dispatch(
         request: proxy_oracle::GetProxyCircuitBreakerSet,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle::GetProxyCircuitBreakerSetResult> {
+    ) -> GatewayResult<Option<CircuitBreakerSet>> {
         ctx.near_client()
             .proxy_oracle(request.oracle_id)
             .get_proxy_circuit_breaker_set(GetProxyCircuitBreakerSetArgs { id: request.id })
             .await
-            .map(
-                |circuit_breaker_set| proxy_oracle::GetProxyCircuitBreakerSetResult {
-                    circuit_breaker_set,
-                },
-            )
     }
 }
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle::PriceFeedExists, C> for Dispatch {
-    async fn dispatch(
-        request: proxy_oracle::PriceFeedExists,
-        ctx: C,
-    ) -> GatewayResult<proxy_oracle::PriceFeedExistsResult> {
+    async fn dispatch(request: proxy_oracle::PriceFeedExists, ctx: C) -> GatewayResult<bool> {
         let params = request;
         ctx.near_client()
             .proxy_oracle(params.oracle_id)
@@ -214,7 +207,6 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::PriceFeedExists, C> for Dispat
                 price_identifier: params.price_identifier,
             })
             .await
-            .map(|exists| proxy_oracle::PriceFeedExistsResult { exists })
     }
 }
 

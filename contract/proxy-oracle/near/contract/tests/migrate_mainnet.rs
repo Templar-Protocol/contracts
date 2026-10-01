@@ -130,8 +130,7 @@ async fn migrate_mainnet_patch_exactly() -> Result<()> {
             offset: None,
             count: None,
         })
-        .await?
-        .proxies;
+        .await?;
     proxies.sort();
     assert_eq!(proxies, vec![USDC_PRICE_ID, USTRY_PRICE_ID]);
 
@@ -144,8 +143,7 @@ async fn migrate_mainnet_patch_exactly() -> Result<()> {
                 oracle_id: proxy.clone(),
                 id: price_id,
             })
-            .await?
-            .proxy;
+            .await?;
         assert_eq!(stored.unwrap(), expected);
     }
 

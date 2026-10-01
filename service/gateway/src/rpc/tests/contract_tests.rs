@@ -98,9 +98,8 @@ async fn contract_get_state_version_endpoint_reports_a_current_deployment() -> R
 }
 
 async fn kind_of(stack: &TestStack, contract_id: AccountId) -> Result<ContractKind> {
-    Ok(stack
+    stack
         .controller
         .request::<contract::GetKind>(&contract::GetKind { contract_id })
-        .await?
-        .kind)
+        .await
 }

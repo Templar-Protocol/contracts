@@ -118,8 +118,7 @@ async fn resolve_oracle_from_market(
             contract_id: oracle_id.clone(),
         })
         .await
-        .with_context(|| format!("read contract.getKind for oracle {oracle_id}"))?
-        .kind;
+        .with_context(|| format!("read contract.getKind for oracle {oracle_id}"))?;
     ensure_proxy_oracle(kind, &oracle_id)?;
 
     Ok(oracle_id)
@@ -151,8 +150,7 @@ pub(crate) async fn governance_from_oracle(
             contract_id: oracle_id.clone(),
         })
         .await
-        .with_context(|| format!("read owner.getOwner for oracle {oracle_id}"))?
-        .owner;
+        .with_context(|| format!("read owner.getOwner for oracle {oracle_id}"))?;
     let Some(governance_id) = owner else {
         return Ok(None);
     };
@@ -165,8 +163,7 @@ pub(crate) async fn governance_from_oracle(
         .await
         .with_context(|| {
             format!("read proxyOracleGovernance.getProxyOracleId for {governance_id}")
-        })?
-        .proxy_oracle_id;
+        })?;
     if governed != *oracle_id {
         return Ok(None);
     }

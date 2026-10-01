@@ -163,7 +163,6 @@ async fn liquidator_executes_liquidation_on_sandbox() -> Result<()> {
             })
             .await?;
         if position
-            .position
             .as_ref()
             .is_some_and(|p| p.get_deposit().incoming.is_empty())
         {
@@ -217,7 +216,6 @@ async fn liquidator_executes_liquidation_on_sandbox() -> Result<()> {
             account_id: borrower_id.0.clone(),
         })
         .await?
-        .position
         .expect("borrower should have a position before liquidation");
 
     let oracle_response: OracleResponse = HashMap::from([
