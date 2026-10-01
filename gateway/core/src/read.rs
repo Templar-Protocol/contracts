@@ -42,6 +42,11 @@ pub trait ReadNear: Send + Sync {
         public_key: PublicKey,
     ) -> GatewayResult<AccessKey>;
 
+    async fn view_access_key_list(
+        &self,
+        account_id: near_account_id::AccountId,
+    ) -> GatewayResult<Vec<(PublicKey, AccessKey)>>;
+
     async fn view_contract_code(
         &self,
         account_id: near_account_id::AccountId,
@@ -138,6 +143,19 @@ impl ReadNear for NearClient {
             .await
             .map_err(|error| account_query_error(account_id, &error))?;
         Ok(key.data)
+    }
+
+    async fn view_access_key_list(
+        &self,
+        account_id: near_account_id::AccountId,
+    ) -> GatewayResult<Vec<(PublicKey, AccessKey)>> {
+        let keys = NearAccountView(account_id.clone())
+            .list_keys()
+            .at(self.finality_policy().query_reference())
+            .fetch_from(self.network())
+            .await
+            .map_err(|error| account_query_error(account_id, &error))?;
+        Ok(keys.data)
     }
 
     async fn view_contract_code(

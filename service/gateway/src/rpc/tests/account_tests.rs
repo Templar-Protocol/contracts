@@ -76,6 +76,28 @@ async fn account_add_key_and_delete_key_endpoints_manage_both_permissions() -> R
         restricted
     );
 
+    let listed = || async {
+        stack
+            .controller
+            .request::<account::ListAccessKeys>(&account::ListAccessKeys {
+                account_id: account_id.0.clone(),
+            })
+            .await
+            .map(|result| {
+                result
+                    .keys
+                    .into_iter()
+                    .map(|key| (key.public_key, key.permission))
+                    .collect::<Vec<_>>()
+            })
+    };
+    let before_delete = listed().await?;
+    assert!(before_delete.contains(&(
+        full_access.clone(),
+        account::AccessKeyPermission::FullAccess
+    )));
+    assert!(before_delete.contains(&(function_call.clone(), restricted.clone())));
+
     let _ = stack
         .controller
         .request::<account::DeleteKey>(&WriteRequest {
@@ -87,7 +109,11 @@ async fn account_add_key_and_delete_key_endpoints_manage_both_permissions() -> R
         })
         .await?;
 
-    assert!(installed(function_call).await.is_err());
+    assert!(installed(function_call.clone()).await.is_err());
+    assert!(!listed()
+        .await?
+        .iter()
+        .any(|(public_key, _)| *public_key == function_call));
     assert_eq!(
         installed(full_access).await?.permission,
         account::AccessKeyPermission::FullAccess
