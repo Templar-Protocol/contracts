@@ -304,9 +304,9 @@ opt-in test suite is exercised with `just -f contract/vault/soroban/justfile tes
 New runtime artifacts expose `version() -> (String, u64)`. The string is the package version
 compiled by Cargo, and the bitmask reports the capabilities compiled into that exact WASM. Stable
 assignments are recovery `0x01`, external sync `0x02`, fee refresh `0x04`, allocation lifecycle
-`0x08`, refresh lifecycle `0x10`, pause `0x20`, and companion-contract upgrade routing `0x40`.
-The default production mask is `0x3f`: the governance pause path is public in every runtime build,
-while companion upgrades remain disabled.
+`0x08`, refresh lifecycle `0x10`, pause `0x20`, companion-contract upgrade routing `0x40`, and
+queued-withdrawal intake `0x80`. The default production mask is `0x3f`. A build with the
+default features plus `async-withdrawals` reports `0xbf`, while companion upgrades remain disabled.
 
 The curator proxy exposes the same information through `vault_version()`. Use its existing
 `initialize(vault, governance)` entrypoint for runtimes that expose `version`. For an approved,

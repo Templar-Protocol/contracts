@@ -5,7 +5,7 @@ use soroban_sdk::{
 use templar_curator_proxy_soroban::{ContractError, SorobanCuratorProxyContract};
 use templar_soroban_governance::SorobanVaultGovernanceContract;
 use templar_soroban_runtime::{SorobanVaultContract, VaultDataKey};
-use templar_soroban_shared_types::RuntimeVersionResponse;
+use templar_soroban_shared_types::{RuntimeVersionResponse, RUNTIME_FEATURE_ASYNC_WITHDRAWALS};
 
 struct Harness {
     env: Env,
@@ -204,6 +204,10 @@ fn proxy_forwards_real_runtime_version() {
     assert_eq!(
         feature_flags,
         templar_soroban_runtime::RUNTIME_FEATURE_FLAGS
+    );
+    assert_eq!(
+        feature_flags & RUNTIME_FEATURE_ASYNC_WITHDRAWALS != 0,
+        cfg!(feature = "async-withdrawals")
     );
 }
 

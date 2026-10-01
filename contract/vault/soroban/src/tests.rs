@@ -368,7 +368,8 @@ mod contract_tests {
         GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE,
         RUNTIME_FEATURE_ACTION_PAUSE, RUNTIME_FEATURE_ACTION_RECOVERY,
         RUNTIME_FEATURE_ACTION_REFRESH_FEES, RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
-        RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL, RUNTIME_FEATURE_COMPANION_UPGRADE,
+        RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL, RUNTIME_FEATURE_ASYNC_WITHDRAWALS,
+        RUNTIME_FEATURE_COMPANION_UPGRADE,
     };
     #[cfg(feature = "async-withdrawals")]
     use templar_soroban_shared_types::{
@@ -613,6 +614,10 @@ mod contract_tests {
         }
         assert_ne!(feature_flags & RUNTIME_FEATURE_ACTION_PAUSE, 0);
         assert_eq!(feature_flags & RUNTIME_FEATURE_COMPANION_UPGRADE, 0);
+        assert_eq!(
+            feature_flags & RUNTIME_FEATURE_ASYNC_WITHDRAWALS != 0,
+            cfg!(feature = "async-withdrawals")
+        );
 
         if templar_vault_kernel::ACTION_RECOVERY_ENABLED
             && templar_vault_kernel::ACTION_SYNC_EXTERNAL_ENABLED
@@ -620,10 +625,13 @@ mod contract_tests {
             && templar_vault_kernel::ACTION_ALLOCATION_LIFECYCLE_ENABLED
             && templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED
         {
-            assert_eq!(
-                feature_flags,
-                templar_soroban_shared_types::RUNTIME_DEFAULT_FEATURE_FLAGS
-            );
+            let expected_flags = templar_soroban_shared_types::RUNTIME_DEFAULT_FEATURE_FLAGS
+                | if cfg!(feature = "async-withdrawals") {
+                    RUNTIME_FEATURE_ASYNC_WITHDRAWALS
+                } else {
+                    0
+                };
+            assert_eq!(feature_flags, expected_flags);
         }
     }
 
