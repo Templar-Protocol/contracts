@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/Templar-Protocol/contracts/compare/templar-accumulator-v0.1.7...templar-accumulator-v0.1.8) - 2026-10-01
+
+### Added
+
+- *(manager)* fold harvest-static-yield into market static-yield (ENG-771) ([#647](https://github.com/Templar-Protocol/contracts/pull/647))
+
 ## [0.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-accumulator-v0.1.0...templar-accumulator-v0.1.1) - 2026-08-03
 
 ### Added
