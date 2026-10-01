@@ -176,8 +176,7 @@ impl Accumulator {
 
     /// Whether this market's deployed version performs static yield
     /// accumulation (>= 1.1.0). An undeterminable or unparseable version is
-    /// treated as "no" (skip), mirroring the conservative legacy behaviour and
-    /// `harvest-static-yield`.
+    /// treated as "no" (skip), mirroring the conservative legacy behaviour.
     #[instrument(skip(self), level = "debug")]
     async fn supports_static_yield(&self) -> bool {
         let version = match self

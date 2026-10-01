@@ -2,12 +2,14 @@ mod create;
 mod export;
 mod plan;
 mod remove;
+pub mod static_yield;
 mod verify;
 
 pub use create::Create;
 pub use export::Export;
 pub use plan::{Apply, Plan};
 pub use remove::Remove;
+pub use static_yield::StaticYieldNs;
 pub use verify::Verify;
 
 use clap::Subcommand;
@@ -28,4 +30,7 @@ pub enum MarketNs {
     /// Remove a market: recover its assets to a beneficiary, then delete the
     /// (signer) account.
     Remove(Remove),
+    /// Read, accumulate, withdraw, and harvest static yield.
+    #[command(subcommand)]
+    StaticYield(StaticYieldNs),
 }

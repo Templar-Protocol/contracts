@@ -17,6 +17,7 @@ pub(crate) mod plan;
 mod preflight;
 mod proposals;
 mod reference;
+mod static_yield;
 mod teardown;
 mod upgrade_preflight;
 mod verify;
@@ -26,7 +27,7 @@ use crate::commands::{
     account::AccountNs,
     contract::ContractNs,
     ft::FtNs,
-    market::MarketNs,
+    market::{static_yield::StaticYieldNs, MarketNs},
     mpc::MpcNs,
     oracle::OracleNs,
     owner::OwnerNs,
@@ -170,6 +171,16 @@ async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
             teardown::remove_market(&ctx, &client, market, a.beneficiary_id(), a.force()).await?;
             print_json(&Removed { removed: true })
         }
+        MarketNs::StaticYield(ns) => market_static_yield(ctx, ns).await,
+    }
+}
+
+async fn market_static_yield(ctx: CliContext, ns: StaticYieldNs) -> anyhow::Result<()> {
+    match ns {
+        StaticYieldNs::Get(a) => ctx.read(a.into_spec()).await,
+        StaticYieldNs::Accumulate(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        StaticYieldNs::Withdraw(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        StaticYieldNs::Harvest(a) => static_yield::harvest(ctx, a).await,
     }
 }
 
