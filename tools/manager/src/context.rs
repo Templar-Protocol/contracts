@@ -322,18 +322,7 @@ pub(crate) fn check_operation_status(result: &WriteOperationResult) -> anyhow::R
     match operation.status {
         OperationStatus::Succeeded => Ok(()),
         OperationStatus::Failed => {
-            let failed_contracts: Vec<&str> = operation
-                .final_outcome()
-                .map(|outcome| {
-                    outcome
-                        .receipts
-                        .iter()
-                        .filter(|receipt| receipt.status == ReceiptStatus::Failed)
-                        .map(|receipt| receipt.contract_id.as_str())
-                        .collect()
-                })
-                .unwrap_or_default();
-
+            let failed_contracts = failed_receipt_contracts(result);
             if failed_contracts.is_empty() {
                 anyhow::bail!("operation {} failed on chain", operation.id.0);
             }
@@ -349,6 +338,23 @@ pub(crate) fn check_operation_status(result: &WriteOperationResult) -> anyhow::R
             operation.id.0,
         ),
     }
+}
+
+/// Contracts whose receipts failed in the operation's final step. Non-empty
+/// even on a `Succeeded` operation when a callback absorbed a failed transfer.
+pub(crate) fn failed_receipt_contracts(result: &WriteOperationResult) -> Vec<&str> {
+    result
+        .operation
+        .final_outcome()
+        .map(|outcome| {
+            outcome
+                .receipts
+                .iter()
+                .filter(|receipt| receipt.status == ReceiptStatus::Failed)
+                .map(|receipt| receipt.contract_id.as_str())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn print_plan(format: PrintFormat, plan: OperationPlan) -> anyhow::Result<()> {

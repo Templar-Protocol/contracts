@@ -1,9 +1,10 @@
 use clap::Parser;
 use serde_json::json;
+use templar_gateway_methods_spec::market;
 
 use super::{authorized, CREDS};
 use crate::cli::{Cli, Command};
-use crate::commands::market::MarketNs;
+use crate::commands::market::{MarketNs, StaticYieldNs};
 
 #[test]
 fn parses_market_create_typed_args() {
@@ -174,4 +175,123 @@ fn market_remove_parses_beneficiary_and_force() {
     };
     assert_eq!(cmd.beneficiary_id().as_str(), "treasury.testnet");
     assert!(cmd.force());
+}
+
+fn parse_static_yield(args: &[&str]) -> Result<StaticYieldNs, clap::Error> {
+    let cli = Cli::try_parse_from(["tmplrmgr", "market", "static-yield"].iter().chain(args))?;
+    let Command::Market {
+        command: MarketNs::StaticYield(command),
+    } = cli.command
+    else {
+        panic!("expected Market::StaticYield");
+    };
+    Ok(command)
+}
+
+#[test]
+fn parses_static_yield_get() {
+    let Ok(StaticYieldNs::Get(cmd)) = parse_static_yield(&[
+        "get",
+        "--market-id",
+        "market.testnet",
+        "--account-id",
+        "revenue.testnet",
+    ]) else {
+        panic!("expected StaticYield::Get");
+    };
+    assert_eq!(
+        cmd.into_spec(),
+        market::GetStaticYield {
+            market_id: "market.testnet".parse().unwrap(),
+            account_id: "revenue.testnet".parse().unwrap(),
+        }
+    );
+}
+
+#[test]
+fn parses_static_yield_accumulate() {
+    let args = [
+        "accumulate",
+        "--market-id",
+        "market.testnet",
+        "--account-id",
+        "revenue.testnet",
+        "--snapshot-limit",
+        "50",
+    ]
+    .into_iter()
+    .chain(CREDS)
+    .collect::<Vec<_>>();
+    let Ok(StaticYieldNs::Accumulate(cmd)) = parse_static_yield(&args) else {
+        panic!("expected StaticYield::Accumulate");
+    };
+    assert_eq!(
+        cmd.into_spec(),
+        market::AccumulateStaticYield {
+            market_id: "market.testnet".parse().unwrap(),
+            account_id: Some("revenue.testnet".parse().unwrap()),
+            snapshot_limit: Some(50),
+        }
+    );
+}
+
+#[test]
+fn parses_static_yield_withdraw() {
+    let args = [
+        "withdraw",
+        "--market-id",
+        "market.testnet",
+        "--amount",
+        "1000",
+    ]
+    .into_iter()
+    .chain(CREDS)
+    .collect::<Vec<_>>();
+    let Ok(StaticYieldNs::Withdraw(cmd)) = parse_static_yield(&args) else {
+        panic!("expected StaticYield::Withdraw");
+    };
+    assert_eq!(
+        cmd.into_spec(),
+        market::WithdrawStaticYield {
+            market_id: "market.testnet".parse().unwrap(),
+            amount: Some(1000.into()),
+        }
+    );
+}
+
+#[test]
+fn parses_static_yield_harvest() {
+    let args = [
+        "harvest",
+        "--registry-id",
+        "r1.testnet,r2.testnet",
+        "--market-id",
+        "m1.testnet",
+        "--receiver-id",
+        "treasury.testnet",
+    ]
+    .into_iter()
+    .chain(CREDS)
+    .collect::<Vec<_>>();
+    let Ok(StaticYieldNs::Harvest(cmd)) = parse_static_yield(&args) else {
+        panic!("expected StaticYield::Harvest");
+    };
+    let ids = |ids: &[&str]| {
+        ids.iter()
+            .map(|id| id.parse::<near_account_id::AccountId>().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(cmd.registry_id, ids(&["r1.testnet", "r2.testnet"]));
+    assert_eq!(cmd.market_id, ids(&["m1.testnet"]));
+    assert_eq!(cmd.receiver_id, Some("treasury.testnet".parse().unwrap()));
+}
+
+#[test]
+fn static_yield_harvest_requires_a_market_source() {
+    let args = std::iter::once("harvest").chain(CREDS).collect::<Vec<_>>();
+    let error = parse_static_yield(&args).expect_err("harvest without markets should not parse");
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
 }
