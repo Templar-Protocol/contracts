@@ -683,6 +683,12 @@ where
         caller: Address,
         decision: SupplyAllocationDecision,
     ) -> Result<AllocationResult, RuntimeError> {
+        let pre_allocation_total_assets = self.state()?.total_assets;
+        self.validate_supply_admission(
+            decision.market,
+            decision.amount,
+            pre_allocation_total_assets,
+        )?;
         let op_id = self.begin_allocation_internal(
             caller,
             &[AllocationPlanEntry::new(decision.market, decision.amount)],
@@ -694,6 +700,7 @@ where
             decision.observed_total_assets,
             op_id,
             0,
+            pre_allocation_total_assets,
         )?;
         Ok(Self::allocation_result(op_id, new_external_assets))
     }
@@ -828,11 +835,76 @@ where
             .map_err(|_| invalid_state_error(message))
     }
 
+    /// Enforce supply admission before any asset transfer or adapter call.
+    ///
+    /// Supply requires an enabled market with current supply-queue membership, a
+    /// post-request principal within the market cap, and absolute and relative
+    /// cap-group headroom measured against the pre-allocation total-assets
+    /// snapshot.
+    pub(crate) fn validate_supply_admission(
+        &self,
+        market: TargetId,
+        amount: u128,
+        pre_allocation_total_assets: u128,
+    ) -> Result<(), RuntimeError> {
+        let policy = self.policy_state();
+        let config = policy
+            .market_config(market)
+            .ok_or_else(|| invalid_state_error("unknown market on supply"))?;
+        if !config.enabled {
+            return Err(invalid_state_error("market disabled on supply"));
+        }
+        if !policy
+            .supply_queue()
+            .entries()
+            .iter()
+            .any(|entry| entry.target_id == market)
+        {
+            return Err(invalid_state_error("market not in supply queue"));
+        }
+        let principal = policy
+            .principal_for(market)
+            .ok_or_else(|| invalid_state_error("unknown market principal on supply"))?;
+        let candidate_principal = principal
+            .checked_add(amount)
+            .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
+        Self::enforce_supply_caps(
+            policy,
+            config,
+            candidate_principal,
+            amount,
+            pre_allocation_total_assets,
+        )
+    }
+
+    fn enforce_supply_caps(
+        policy: &PolicyState,
+        config: &MarketConfig,
+        candidate_principal: u128,
+        delta: u128,
+        pre_allocation_total_assets: u128,
+    ) -> Result<(), RuntimeError> {
+        if candidate_principal > config.cap {
+            return Err(invalid_state_error("supply exceeds market cap"));
+        }
+        let Some(cap_group_id) = config.cap_group_id.as_ref() else {
+            return Ok(());
+        };
+        let record = policy
+            .cap_group(cap_group_id)
+            .ok_or_else(|| invalid_state_error("unknown cap group on supply"))?;
+        record
+            .cap
+            .enforce(record.principal, delta, pre_allocation_total_assets)
+            .map_err(|_| invalid_state_error("supply exceeds cap group limit"))
+    }
+
     fn validate_supply_observation(
         policy: &PolicyState,
         market: TargetId,
         observed_total_assets: u128,
         supply_amount: u128,
+        pre_allocation_total_assets: u128,
     ) -> Result<(), RuntimeError> {
         let previous_principal = policy
             .principal_for(market)
@@ -843,7 +915,16 @@ where
         if observed_total_assets < previous_principal || observed_total_assets > max_principal {
             return Err(invalid_state_error("supply observation out of bounds"));
         }
-        Ok(())
+        let config = policy
+            .market_config(market)
+            .ok_or_else(|| invalid_state_error("unknown market on supply"))?;
+        Self::enforce_supply_caps(
+            policy,
+            config,
+            observed_total_assets,
+            observed_total_assets - previous_principal,
+            pre_allocation_total_assets,
+        )
     }
 
     fn validate_refresh_observation(
@@ -870,6 +951,7 @@ where
         observed_total_assets: u128,
         op_id: u64,
         now_ns: u64,
+        pre_allocation_total_assets: u128,
     ) -> Result<u128, RuntimeError> {
         let allocation = self
             .state()?
@@ -888,6 +970,7 @@ where
             market,
             observed_total_assets,
             current_step.amount,
+            pre_allocation_total_assets,
         )?;
         let mut staged_policy = self.policy_state.clone();
         Self::set_policy_principal(
@@ -923,13 +1006,6 @@ where
         self.finish_allocation_internal(caller, op_id, now_ns)?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(new_external)
-    }
-
-    #[inline]
-    fn classify_refreshed_positions(
-        refreshed_positions: &[(TargetId, u128)],
-    ) -> Vec<(TargetId, u128)> {
-        refreshed_positions.to_vec()
     }
 
     fn validate_refreshed_positions_against_plan(
@@ -975,10 +1051,17 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
-        let refreshed_positions = Self::classify_refreshed_positions(refreshed_positions);
-        self.validate_refreshed_positions_against_plan(&refreshed_positions)?;
-        let staged_policy = self.stage_refreshed_positions(&refreshed_positions)?;
+        self.validate_refreshed_positions_against_plan(refreshed_positions)?;
+        let staged_policy = self.stage_refreshed_positions(refreshed_positions)?;
         let new_external_assets = staged_policy.external_assets()?;
+        // Refresh reports actual exposure. Absolute/relative cap groups are supply admission
+        // controls: they gate new supply, they do not refuse recognition of a gain or loss the
+        // adapters already observed. This aggregate is still a checked add, and keeping it here
+        // preserves the InvalidState public error for refresh callers.
+        self.state()?
+            .idle_assets
+            .checked_add(new_external_assets)
+            .ok_or_else(|| invalid_state_error("total assets overflow on refresh"))?;
         self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         let result = self.finish_refreshing(caller, op_id, now_ns)?;
         self.policy_state = staged_policy;

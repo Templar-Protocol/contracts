@@ -462,8 +462,29 @@ The accounting behavior differs by direction:
   vault token-balance delta matches the adapter's return value, and subtracts
   the realized amount. It does not refresh the adapter's remaining NAV.
 - `refresh-markets` reads `total_assets(asset)` for the selected routes and
-  replaces their stored principals. Run it after yield, loss, or a custodial NAV
-  report and before fee/share-rate decisions.
+  stages their new principals together. Each refreshed principal is checked
+  against its own market cap, and the sum of idle plus final staged external
+  assets is a checked add. A refresh that breaches either fails atomically with
+  `InvalidState` and changes nothing, including adapter transaction state. Run
+  it after yield, loss, or a custodial NAV report and before fee/share-rate
+  decisions.
+
+Cap groups do not gate refresh. Absolute and relative group caps are supply
+admission controls — they decide whether new supply may be deployed (against a
+frozen pre-allocation total), not whether a gain or loss the adapters already
+reported may be booked. A group principal can therefore sit above
+`min(absolute_cap, relative_cap × total_assets)` after a loss in a market
+outside the group, after a permissionless withdrawal shrinks the denominator, or
+after governance tightens a cap. That is honest accounting, not a bypass: while a
+group is over cap, `allocate-supply` into any of its markets is refused before
+any transfer, and `allocate-withdraw` keeps working until the principal falls
+back under the cap. Alert on a group that stays over cap and on repeated supply
+refusals rather than on a refresh that merely reports the exposure.
+
+Refresh records reported NAV without authenticating it, and markets left out of
+a refresh keep their stale stored NAV, so keep adapters vetted, monitor reported
+totals against the fixed market caps and against the group caps that still gate
+supply, and refresh all markets on a regular cadence.
 
 Two maintenance calls are permissionless even though they are grouped under
 `curator` in the CLI:

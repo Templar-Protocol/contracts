@@ -349,14 +349,18 @@ mod contract_tests {
     use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
     use crate::error::RuntimeError;
     use crate::storage::{SorobanStorage, Storage};
-    use crate::test_utils::{begin_allocating, finish_allocating, MemoryStorage};
+    use crate::test_utils::{
+        begin_allocating, finish_allocating, supply_queue_from_targets, MemoryStorage,
+    };
     use alloc::collections::BTreeMap;
     use alloc::string::{String as AllocString, ToString};
     use alloc::vec;
     use alloc::vec::Vec;
     use proptest::prelude::*;
+    use rstest::rstest;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env, String as SdkString, Symbol};
+    use templar_curator_primitives::policy::cap_group::CapGroupId;
     use templar_curator_primitives::policy::state::MarketConfig;
     use templar_curator_primitives::PolicyState;
     use templar_soroban_governance::SorobanVaultGovernanceContract;
@@ -964,6 +968,10 @@ mod contract_tests {
             .set_market_config(0, MarketConfig::new(true, u128::MAX, None))
             .unwrap();
         vault.policy_state_mut().set_principal(0, 0).unwrap();
+        vault
+            .policy_state_mut()
+            .replace_supply_queue(supply_queue_from_targets(&[0], 1))
+            .unwrap();
 
         let result = vault
             .allocate(
@@ -981,6 +989,272 @@ mod contract_tests {
         assert_eq!(state.external_assets, 500);
         assert_eq!(state.total_assets, 2_000);
         assert!(state.op_state.is_idle());
+    }
+
+    #[derive(Copy, Clone)]
+    enum SupplyExclusion {
+        Disabled,
+        Unqueued,
+        MarketCap,
+        GroupCap,
+    }
+
+    #[rstest]
+    #[case(1, 1, SupplyExclusion::Disabled)]
+    #[case(1_000, 1_000, SupplyExclusion::Unqueued)]
+    #[case(0, 1, SupplyExclusion::MarketCap)]
+    #[case(1_000, 1_001, SupplyExclusion::MarketCap)]
+    #[case(2_000, 1_001, SupplyExclusion::GroupCap)]
+    fn supply_exclusions_are_refused_before_allocation(
+        #[case] market_cap: u32,
+        #[case] amount: u32,
+        #[case] exclusion: SupplyExclusion,
+    ) {
+        let mut vault = create_exclusion_vault(&[(0, market_cap.max(1))], &[0]);
+        let amount = amount as u128;
+        match exclusion {
+            SupplyExclusion::Disabled => vault
+                .policy_state_mut()
+                .set_market_enabled(0, false)
+                .unwrap(),
+            SupplyExclusion::Unqueued => vault
+                .policy_state_mut()
+                .replace_supply_queue(supply_queue_from_targets(&[], 1))
+                .unwrap(),
+            SupplyExclusion::MarketCap => vault
+                .policy_state_mut()
+                .set_market_config(0, MarketConfig::new(true, market_cap as u128, None))
+                .unwrap(),
+            SupplyExclusion::GroupCap => {
+                let group_id = enroll_cap_group(&mut vault, "eng698-cap", &[0], &[2_000]);
+                vault
+                    .policy_state_mut()
+                    .set_cap_group_absolute_cap(group_id, Some(1_000));
+                vault
+                    .validate_supply_admission(0, amount, vault.state().unwrap().total_assets)
+                    .expect_err("cap-group headroom must refuse otherwise admissible supply");
+            }
+        }
+
+        let error = vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta { market: 0, amount }),
+            )
+            .expect_err("excluded supply must be refused");
+
+        assert_eq!(error, RuntimeError::InvalidState);
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.idle_assets, 2_000);
+        assert_eq!(state.external_assets, 0);
+        assert_eq!(state.total_assets, 2_000);
+        assert_eq!(vault.policy_state().principal_for(0), Some(0));
+    }
+
+    #[rstest]
+    #[case(3_000, 2_000, 1_001)]
+    #[case(3_000, 3_000, 1)]
+    fn cap_group_limits_are_enforced_against_cumulative_exposure(
+        #[case] absolute_cap: u32,
+        #[case] market_0_exposure: u32,
+        #[case] amount: u32,
+    ) {
+        let absolute_cap = absolute_cap as u128;
+        let market_0_exposure = market_0_exposure as u128;
+        let amount = amount as u128;
+        let mut vault = create_exclusion_vault(&[(0, 10_000), (1, 10_000)], &[0, 1]);
+        let cap_group_id = enroll_cap_group(&mut vault, "eng698-group", &[0, 1], &[10_000, 10_000]);
+        vault
+            .policy_state_mut()
+            .set_cap_group_absolute_cap(cap_group_id, Some(absolute_cap));
+        vault
+            .policy_state_mut()
+            .set_principal(0, market_0_exposure)
+            .unwrap();
+        set_test_assets(&mut vault, 4_000 - market_0_exposure, market_0_exposure);
+
+        let error = vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta { market: 1, amount }),
+            )
+            .expect_err("group exposure must be counted across every member market");
+
+        assert_eq!(error, RuntimeError::InvalidState);
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.idle_assets, 4_000 - market_0_exposure);
+        assert_eq!(state.external_assets, market_0_exposure);
+        assert_eq!(state.total_assets, 4_000);
+        assert_eq!(
+            vault.policy_state().principal_for(0),
+            Some(market_0_exposure)
+        );
+        assert_eq!(vault.policy_state().principal_for(1), Some(0));
+    }
+
+    #[test]
+    fn relative_cap_group_accepts_exact_boundary_and_rejects_excess() {
+        for (amount, accepted) in [(1_000, true), (1_001, false)] {
+            let mut vault = create_exclusion_vault(&[(0, 10_000), (1, 10_000)], &[0, 1]);
+            let cap_group_id =
+                enroll_cap_group(&mut vault, "eng698-relative", &[0, 1], &[10_000, 10_000]);
+            vault.policy_state_mut().set_cap_group_relative_cap(
+                cap_group_id,
+                Some(Wad::from(750_000_000_000_000_000u128)),
+            );
+            vault.policy_state_mut().set_principal(0, 2_000).unwrap();
+            set_test_assets(&mut vault, 2_000, 2_000);
+
+            let result = vault.allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta { market: 1, amount }),
+            );
+
+            assert_eq!(result.is_ok(), accepted, "amount {amount}");
+        }
+    }
+
+    #[test]
+    fn observed_final_principal_above_group_cap_is_rejected_without_commit() {
+        let mut vault = create_exclusion_vault(&[(0, 20_000), (1, 20_000)], &[0, 1]);
+        let cap_group_id =
+            enroll_cap_group(&mut vault, "eng698-observe", &[0, 1], &[20_000, 20_000]);
+        vault
+            .policy_state_mut()
+            .set_cap_group_absolute_cap(cap_group_id, Some(10_000));
+        vault.policy_state_mut().set_principal(0, 5_000).unwrap();
+        vault.policy_state_mut().set_principal(1, 5_000).unwrap();
+        set_test_assets(&mut vault, 1_000, 10_000);
+        let op_id = begin_allocating(&mut vault, caller(), vec![(0, 500)], 1_000).unwrap();
+
+        let error = vault
+            .complete_supply_allocation(
+                caller(),
+                0,
+                5_500,
+                op_id,
+                1_000,
+                vault.state().unwrap().total_assets,
+            )
+            .expect_err("observed group exposure must remain within its cap");
+
+        assert_eq!(error, RuntimeError::InvalidState);
+        assert!(vault.state().unwrap().op_state.is_allocating());
+        assert_eq!(vault.state().unwrap().external_assets, 10_000);
+        assert_eq!(vault.policy_state().principal_for(0), Some(5_000));
+        assert_eq!(vault.policy_state().principal_for(1), Some(5_000));
+    }
+
+    #[test]
+    fn supply_exclusion_preserves_withdrawal_allocation() {
+        let mut vault = create_exclusion_vault(&[(0, 10_000)], &[0]);
+        vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta {
+                    market: 0,
+                    amount: 500,
+                }),
+            )
+            .unwrap();
+        vault.policy_state_mut().set_market_cap(0, 0).unwrap();
+        vault
+            .policy_state_mut()
+            .set_market_enabled(0, false)
+            .unwrap();
+
+        let error = vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta {
+                    market: 0,
+                    amount: 100,
+                }),
+            )
+            .expect_err("excluded supply must be refused");
+        assert_eq!(error, RuntimeError::InvalidState);
+
+        vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Withdraw(Delta {
+                    market: 0,
+                    amount: 500,
+                }),
+            )
+            .expect("withdrawal must remain available for existing exposure");
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.idle_assets, 2_000);
+        assert_eq!(state.external_assets, 0);
+        assert_eq!(vault.policy_state().principal_for(0), Some(0));
+    }
+
+    fn caller() -> templar_vault_kernel::Address {
+        templar_vault_kernel::Address([3u8; 32])
+    }
+
+    fn set_test_assets(
+        vault: &mut CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter>,
+        idle_assets: u128,
+        external_assets: u128,
+    ) {
+        let state = vault.state_mut().unwrap();
+        state.idle_assets = idle_assets;
+        state.external_assets = external_assets;
+        state.total_assets = idle_assets + external_assets;
+    }
+
+    fn create_exclusion_vault(
+        market_caps: &[(u32, u32)],
+        queue: &[u32],
+    ) -> CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter> {
+        let mut vault = create_test_vault();
+        vault
+            .deposit(
+                templar_vault_kernel::Address([1u8; 32]),
+                templar_vault_kernel::Address([2u8; 32]),
+                if queue.len() > 1 { 4_000 } else { 2_000 },
+                0,
+                100,
+            )
+            .unwrap();
+        for (market, market_cap) in market_caps {
+            vault
+                .policy_state_mut()
+                .set_market_config(*market, MarketConfig::new(true, *market_cap as u128, None))
+                .unwrap();
+        }
+        vault
+            .policy_state_mut()
+            .replace_supply_queue(supply_queue_from_targets(queue, 1))
+            .unwrap();
+        vault
+    }
+
+    fn enroll_cap_group(
+        vault: &mut CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter>,
+        group_id: &str,
+        markets: &[u32],
+        caps: &[u128],
+    ) -> CapGroupId {
+        let cap_group_id = CapGroupId::try_from(group_id).unwrap();
+        let policy = vault.policy_state_mut();
+        policy.ensure_cap_group(cap_group_id.clone());
+        for (index, market) in markets.iter().enumerate() {
+            policy
+                .set_market_config(
+                    *market,
+                    MarketConfig::new(true, caps[index], Some(cap_group_id.clone())),
+                )
+                .unwrap();
+        }
+        policy
+            .replace_supply_queue(supply_queue_from_targets(markets, 1))
+            .unwrap();
+        cap_group_id
     }
 
     #[test]
@@ -1021,7 +1295,7 @@ mod contract_tests {
         let op_id = begin_allocating(&mut vault, caller, vec![(0, 500)], 1_000).unwrap();
 
         let error = vault
-            .complete_supply_allocation(caller, 0, 1_501, op_id, 1_000)
+            .complete_supply_allocation(caller, 0, 1_501, op_id, 1_000, 2_000)
             .expect_err("supply callback must not over-report the active step");
 
         assert_eq!(error, RuntimeError::InvalidState);
@@ -1142,6 +1416,414 @@ mod contract_tests {
         assert_eq!(vault.policy_state().principal_for(0), Some(999));
     }
 
+    #[rstest]
+    // Cap groups gate new supply. An observation the adapters actually report is booked even
+    // when it leaves the group above its absolute or relative cap. Distinct markets are staged
+    // independently, and a repeated market observation retains its last value.
+    #[case::absolute_boundary([1_000, 1_000, 0], vec![(0, 2_000)], false)]
+    #[case::absolute_over_cap([1_000, 1_000, 0], vec![(0, 2_001)], false)]
+    #[case::prospective_relative_boundary([500, 500, 0], vec![(0, 1_000)], true)]
+    #[case::prospective_relative_over_cap([500, 500, 0], vec![(0, 1_001)], true)]
+    #[case::outside_group_loss_boundary([1_000, 1_000, 1_000], vec![(2, 334)], true)]
+    #[case::outside_group_loss_over_cap([1_000, 1_000, 1_000], vec![(2, 333)], true)]
+    #[case::rebalance_increase_first(
+        [1_000, 2_000, 0],
+        vec![(0, 2_000), (1, 1_000)],
+        false
+    )]
+    #[case::rebalance_decrease_first(
+        [1_000, 2_000, 0],
+        vec![(1, 1_000), (0, 2_000)],
+        false
+    )]
+    #[case::rebalance_over_cap_increase_first(
+        [1_000, 2_000, 0],
+        vec![(0, 2_001), (1, 1_000)],
+        false
+    )]
+    #[case::rebalance_over_cap_decrease_first(
+        [1_000, 2_000, 0],
+        vec![(1, 1_000), (0, 2_001)],
+        false
+    )]
+    #[case::downward_to_boundary([2_500, 1_000, 0], vec![(0, 2_000)], false)]
+    #[case::downward_still_over_cap([2_500, 1_000, 0], vec![(0, 2_001)], false)]
+    #[case::duplicate_final_boundary(
+        [1_000, 1_000, 0],
+        vec![(0, 2_001), (0, 2_000)],
+        false
+    )]
+    #[case::duplicate_final_over_cap(
+        [1_000, 1_000, 0],
+        vec![(0, 2_000), (0, 2_001)],
+        false
+    )]
+    fn test_complete_refresh_records_final_cap_group_principals(
+        #[case] initial_principals: [u128; 3],
+        #[case] observations: Vec<(u32, u128)>,
+        #[case] relative_cap: bool,
+    ) {
+        let mut vault = create_test_vault();
+        let group_id = enroll_cap_group(&mut vault, "refresh-cap", &[0, 1], &[10_000; 2]);
+        vault
+            .policy_state_mut()
+            .set_market_config(2, MarketConfig::new(true, 10_000, None))
+            .unwrap();
+        if relative_cap {
+            vault.policy_state_mut().set_cap_group_relative_cap(
+                group_id.clone(),
+                Some(Wad::from(600_000_000_000_000_000u128)),
+            );
+        } else {
+            vault
+                .policy_state_mut()
+                .set_cap_group_absolute_cap(group_id.clone(), Some(3_000));
+        }
+        for (market, principal) in initial_principals.iter().enumerate() {
+            vault
+                .policy_state_mut()
+                .set_principal(market as u32, *principal)
+                .unwrap();
+        }
+        set_test_assets(&mut vault, 1_000, initial_principals.iter().sum());
+
+        // The plan contains each market once, even when observations repeat it.
+        let mut plan = Vec::new();
+        for (market, _) in &observations {
+            if !plan.contains(market) {
+                plan.push(*market);
+            }
+        }
+        let markets_refreshed = plan.len() as u32;
+        let op_id = vault.begin_refreshing(caller(), plan, 1_500).unwrap();
+
+        let result = vault
+            .complete_refresh_with_positions(caller(), &observations, op_id, 1_600)
+            .expect("refresh must book observed exposure even when a group cap is exceeded");
+
+        let mut final_principals = initial_principals;
+        for (market, principal) in observations {
+            final_principals[market as usize] = principal;
+        }
+        let external_assets: u128 = final_principals.iter().sum();
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(result.markets_refreshed, markets_refreshed);
+        assert_eq!(state.idle_assets, 1_000);
+        assert_eq!(state.external_assets, external_assets);
+        assert_eq!(state.total_assets, 1_000 + external_assets);
+        for (market, principal) in final_principals.iter().enumerate() {
+            assert_eq!(
+                vault.policy_state().principal_for(market as u32),
+                Some(*principal)
+            );
+        }
+        let group = vault.policy_state().cap_groups().get(&group_id).unwrap();
+        assert_eq!(group.principal, final_principals[0] + final_principals[1]);
+        let policy_tuple = |policy: &PolicyState| {
+            (
+                crate::storage::encode_markets(policy.markets()),
+                crate::storage::encode_principals(policy.principals()),
+                crate::storage::encode_cap_groups(policy.cap_groups()),
+                crate::storage::encode_policy_locks(policy.leases()),
+                crate::storage::encode_supply_queue(policy.supply_queue()),
+            )
+        };
+        let persisted = vault.storage.load_policy_state().unwrap().unwrap();
+        assert_eq!(
+            policy_tuple(&persisted),
+            policy_tuple(vault.policy_state()),
+            "the booked policy must be the persisted policy"
+        );
+    }
+
+    #[test]
+    fn test_complete_refresh_per_market_cap_breach_rolls_back_state_and_policy() {
+        // The refusal that survives is the per-market ceiling. It must leave the state blob,
+        // the in-memory policy and the persisted policy byte-identical.
+        let mut vault = create_test_vault();
+        let group_id = enroll_cap_group(&mut vault, "refresh-cap", &[0, 1], &[2_000, 10_000]);
+        vault
+            .policy_state_mut()
+            .set_cap_group_absolute_cap(group_id, Some(10_000));
+        vault.policy_state_mut().set_principal(0, 1_000).unwrap();
+        set_test_assets(&mut vault, 1_000, 1_000);
+        let initial_policy = vault.policy_state().clone();
+        vault.storage.save_policy_state(&initial_policy).unwrap();
+        let policy_tuple = |policy: &PolicyState| {
+            (
+                crate::storage::encode_markets(policy.markets()),
+                crate::storage::encode_principals(policy.principals()),
+                crate::storage::encode_cap_groups(policy.cap_groups()),
+                crate::storage::encode_policy_locks(policy.leases()),
+                crate::storage::encode_supply_queue(policy.supply_queue()),
+            )
+        };
+        let policy_before = policy_tuple(&initial_policy);
+
+        let op_id = vault.begin_refreshing(caller(), vec![0, 1], 1_500).unwrap();
+        let state_before = crate::storage::encode_state_blob(vault.state().unwrap());
+
+        let error = vault
+            .complete_refresh_with_positions(caller(), &[(0, 2_001)], op_id, 1_600)
+            .expect_err("an observation above its own market cap must be refused");
+
+        assert_eq!(error, RuntimeError::InvalidState);
+        assert!(vault.state().unwrap().op_state.is_refreshing());
+        assert_eq!(
+            crate::storage::encode_state_blob(vault.state().unwrap()),
+            state_before
+        );
+        assert_eq!(
+            crate::storage::encode_state_blob(&vault.storage.load_state().unwrap().unwrap()),
+            state_before
+        );
+        assert_eq!(policy_tuple(vault.policy_state()), policy_before);
+        let persisted = vault.storage.load_policy_state().unwrap().unwrap();
+        assert_eq!(policy_tuple(&persisted), policy_before);
+    }
+
+    #[test]
+    fn test_complete_refresh_books_outside_group_loss_and_redemption_prices_updated_nav() {
+        // A market outside the cap group loses 10_000. The untouched group is then above its
+        // relative cap, which used to refuse the refresh and strand the vault at a stale NAV.
+        let mut vault = create_test_vault();
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+        let group_id = enroll_cap_group(&mut vault, "loss-group", &[0, 1], &[10_000; 2]);
+        vault
+            .policy_state_mut()
+            .set_market_config(2, MarketConfig::new(true, 10_000, None))
+            .unwrap();
+        vault.policy_state_mut().set_cap_group_relative_cap(
+            group_id.clone(),
+            Some(Wad::from(600_000_000_000_000_000u128)),
+        );
+        vault
+            .deposit(owner, receiver, 40_000, 0, 100)
+            .expect("deposit should seed shares");
+        for market in 0..3 {
+            vault
+                .policy_state_mut()
+                .set_principal(market, 10_000)
+                .unwrap();
+        }
+        set_test_assets(&mut vault, 10_000, 30_000);
+        assert_eq!(vault.state().unwrap().total_shares, 40_000);
+
+        let op_id = vault
+            .begin_refreshing(caller(), vec![0, 1, 2], 200)
+            .unwrap();
+        let result = vault
+            .complete_refresh_with_positions(
+                caller(),
+                &[(0, 10_000), (1, 10_000), (2, 0)],
+                op_id,
+                300,
+            )
+            .expect("the honest outside-group loss must be booked");
+
+        let state = vault.state().unwrap();
+        assert_eq!(result.markets_refreshed, 3);
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.idle_assets, 10_000);
+        assert_eq!(state.external_assets, 20_000);
+        assert_eq!(state.total_assets, 30_000);
+        assert_eq!(vault.policy_state().principal_for(2), Some(0));
+        let group = vault.policy_state().cap_groups().get(&group_id).unwrap();
+        assert_eq!(group.principal, 20_000);
+        assert_eq!(group.cap.effective_cap(state.total_assets), 18_000);
+
+        let request_time: u64 = 400;
+        vault
+            .request_withdraw(owner, receiver, 10_000, 0, request_time)
+            .expect("withdrawal should queue at the refreshed NAV");
+        let expected_assets = {
+            let (_, head) = vault
+                .state()
+                .unwrap()
+                .withdraw_queue
+                .head()
+                .expect("withdrawal queued");
+            head.expected_assets
+        };
+        assert_eq!(
+            expected_assets, 7_500,
+            "10_000 shares must price at 0.75 assets, not at the stale 1.00 NAV"
+        );
+
+        let exec_time = request_time
+            .saturating_add(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
+            .saturating_add(1);
+        let crate::contract::ExecuteWithdrawResult::Payout { completed, .. } = vault
+            .execute_withdraw(caller(), exec_time)
+            .expect("idle liquidity should settle the withdrawal")
+        else {
+            panic!("execute_withdraw should complete a payout");
+        };
+        assert_eq!(completed.assets_out, 7_500);
+        let state = vault.state().unwrap();
+        assert_eq!(state.idle_assets, 2_500);
+        assert_eq!(state.total_assets, 22_500);
+        assert_eq!(state.total_shares, 30_000);
+    }
+
+    #[test]
+    fn test_complete_refresh_after_idle_withdrawal_over_relative_cap() {
+        // A permissionless idle payout shrinks total assets while group exposure stays put, so
+        // the concentration rises above the relative cap on its own. A later refresh that
+        // reports the very same principals must still succeed.
+        let mut vault = create_test_vault();
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+        let group_id = enroll_cap_group(&mut vault, "concentration", &[0, 1], &[10_000; 2]);
+        vault
+            .policy_state_mut()
+            .set_market_config(2, MarketConfig::new(true, 10_000, None))
+            .unwrap();
+        vault.policy_state_mut().set_cap_group_relative_cap(
+            group_id.clone(),
+            Some(Wad::from(600_000_000_000_000_000u128)),
+        );
+        vault
+            .deposit(owner, receiver, 40_000, 0, 100)
+            .expect("deposit should seed shares");
+        for market in 0..3 {
+            vault
+                .policy_state_mut()
+                .set_principal(market, 10_000)
+                .unwrap();
+        }
+        set_test_assets(&mut vault, 10_000, 30_000);
+        assert_eq!(vault.state().unwrap().total_shares, 40_000);
+
+        let request_time: u64 = 200;
+        vault
+            .request_withdraw(owner, receiver, 10_000, 0, request_time)
+            .unwrap();
+        let exec_time = request_time
+            .saturating_add(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
+            .saturating_add(1);
+        let crate::contract::ExecuteWithdrawResult::Payout { completed, .. } = vault
+            .execute_withdraw(caller(), exec_time)
+            .expect("idle payout should settle")
+        else {
+            panic!("execute_withdraw should complete a payout");
+        };
+        assert_eq!(completed.assets_out, 10_000);
+
+        let state = vault.state().unwrap();
+        assert_eq!(state.idle_assets, 0);
+        assert_eq!(state.external_assets, 30_000);
+        assert_eq!(state.total_assets, 30_000);
+        assert_eq!(state.total_shares, 30_000);
+        let group = vault.policy_state().cap_groups().get(&group_id).unwrap();
+        assert_eq!(group.principal, 20_000);
+        assert_eq!(group.cap.effective_cap(state.total_assets), 18_000);
+
+        let op_id = vault
+            .begin_refreshing(caller(), vec![0, 1, 2], 1_000)
+            .unwrap();
+        let result = vault
+            .complete_refresh_with_positions(
+                caller(),
+                &[(0, 10_000), (1, 10_000), (2, 10_000)],
+                op_id,
+                1_100,
+            )
+            .expect("an unchanged observation must refresh while the group is over cap");
+
+        assert_eq!(result.markets_refreshed, 3);
+        assert_eq!(result.new_external_assets, 30_000);
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.total_assets, 30_000);
+        assert_eq!(state.external_assets, 30_000);
+        for market in 0..3 {
+            assert_eq!(vault.policy_state().principal_for(market), Some(10_000));
+        }
+        assert_eq!(
+            vault
+                .policy_state()
+                .cap_groups()
+                .get(&group_id)
+                .unwrap()
+                .principal,
+            20_000
+        );
+    }
+
+    #[test]
+    fn test_complete_refresh_over_cap_still_gates_new_supply() {
+        // Booking exposure must not widen the gate: the group that just breached its absolute
+        // cap still refuses extra supply and still permits exposure-reducing withdrawals.
+        let mut vault = create_test_vault();
+        let group_id = enroll_cap_group(&mut vault, "supply-gate", &[0, 1], &[10_000; 2]);
+        vault
+            .policy_state_mut()
+            .set_cap_group_absolute_cap(group_id.clone(), Some(3_000));
+        vault.policy_state_mut().set_principal(0, 2_000).unwrap();
+        vault.policy_state_mut().set_principal(1, 1_000).unwrap();
+        set_test_assets(&mut vault, 1_000, 3_000);
+
+        let op_id = vault.begin_refreshing(caller(), vec![0], 1_500).unwrap();
+        vault
+            .complete_refresh_with_positions(caller(), &[(0, 2_001)], op_id, 1_600)
+            .expect("the observed growth must be booked");
+        assert_eq!(
+            vault
+                .policy_state()
+                .cap_groups()
+                .get(&group_id)
+                .unwrap()
+                .principal,
+            3_001
+        );
+
+        let error = vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta {
+                    market: 1,
+                    amount: 1,
+                }),
+            )
+            .expect_err("a breached group must refuse any further supply");
+        assert_eq!(error, RuntimeError::InvalidState);
+        assert_eq!(vault.state().unwrap().external_assets, 3_001);
+
+        vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Withdraw(Delta {
+                    market: 1,
+                    amount: 500,
+                }),
+            )
+            .expect("reducing exposure must stay permitted");
+        assert_eq!(vault.state().unwrap().external_assets, 2_501);
+        assert_eq!(
+            vault
+                .policy_state()
+                .cap_groups()
+                .get(&group_id)
+                .unwrap()
+                .principal,
+            2_501
+        );
+
+        vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta {
+                    market: 1,
+                    amount: 1,
+                }),
+            )
+            .expect("headroom restored by the withdrawal must admit supply again");
+        assert_eq!(vault.state().unwrap().external_assets, 2_502);
+    }
+
     #[test]
     fn test_complete_refresh_allows_adapter_reported_decrease_within_cap() {
         let mut vault = create_test_vault();
@@ -1191,6 +1873,10 @@ mod contract_tests {
             .set_market_config(0, MarketConfig::new(true, u128::MAX, None))
             .unwrap();
         vault.policy_state_mut().set_principal(0, 0).unwrap();
+        vault
+            .policy_state_mut()
+            .replace_supply_queue(supply_queue_from_targets(&[0], 1))
+            .unwrap();
         vault
             .allocate(
                 caller,
@@ -3614,14 +4300,14 @@ mod storage_tests {
         SorobanStorage, SorobanStorageKey, Storage, SOROBAN_MAX_PENDING_WITHDRAWALS,
         SOROBAN_MAX_RESTRICTION_ADDRESSES,
     };
-    use crate::test_utils::{fuzz_api, MemoryStorage};
+    use crate::test_utils::{fuzz_api, supply_queue_from_targets, MemoryStorage};
     use alloc::string::{String as AllocString, ToString};
     use rstest::{fixture, rstest};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env, Symbol, Vec as SdkVec};
     use templar_curator_primitives::policy::cap_group::{CapGroup, CapGroupId, CapGroupRecord};
     use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
-    use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
+
     use templar_curator_primitives::PolicyState;
     use templar_soroban_governance::SorobanVaultGovernanceContract;
     use templar_soroban_shared_types::{
@@ -3642,16 +4328,6 @@ mod storage_tests {
             .expect("valid address")
     }
 
-    fn supply_queue_from_ids(ids: &[u32]) -> SupplyQueue {
-        SupplyQueue::try_from_entries(
-            ids.iter()
-                .map(|target_id| SupplyQueueEntry::new(*target_id, 100).unwrap())
-                .collect(),
-            None,
-        )
-        .unwrap()
-    }
-
     fn policy_state_with_supply_queue(ids: &[u32]) -> PolicyState {
         let mut policy_state = PolicyState::default();
         for target_id in ids {
@@ -3660,7 +4336,7 @@ mod storage_tests {
                 .unwrap();
         }
         policy_state
-            .replace_supply_queue(supply_queue_from_ids(ids))
+            .replace_supply_queue(supply_queue_from_targets(ids, 100))
             .unwrap();
         policy_state
     }
@@ -5221,7 +5897,7 @@ mod storage_tests {
             assert_eq!(adapter_for_market(&env, 2).unwrap(), adapter_for_market_two);
 
             policy_state
-                .replace_supply_queue(supply_queue_from_ids(&[2, 1]))
+                .replace_supply_queue(supply_queue_from_targets(&[2, 1], 100))
                 .unwrap();
             Storage::save_policy_state(&mut storage, &policy_state).unwrap();
 
@@ -5275,7 +5951,7 @@ mod storage_tests {
 
             for permutation in permutations {
                 policy_state
-                    .replace_supply_queue(supply_queue_from_ids(&permutation))
+                    .replace_supply_queue(supply_queue_from_targets(&permutation, 100))
                     .unwrap();
                 Storage::save_policy_state(&mut storage, &policy_state).unwrap();
                 for (market, adapter) in expected.iter() {

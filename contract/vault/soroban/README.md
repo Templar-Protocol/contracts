@@ -219,6 +219,33 @@ separately calls `execute_withdraw`. Off-chain indexers and reconciliation jobs 
 `execute_withdraw` and the emitted withdrawal / payout events as the settlement trigger for the
 async queue.
 
+### Supply Admission And Observation Re-Validation
+
+Every supply path — the typed `Allocate` entrypoint, `VaultCommand::Allocate`, and the internal
+curator allocation flow — is checked before any asset transfer or adapter call, and checked again
+after the adapter reports. Supply is admitted only when all of the following hold:
+
+- the market is configured and enabled;
+- the market is currently a member of the governance-configured supply queue;
+- the principal after the request stays within the market cap;
+- the market's cap group, if any, still has headroom under both its absolute cap and its relative
+  cap, where the relative cap is applied to the pre-allocation `total_assets` snapshot and the
+  group check counts the cumulative principal of every market in that group.
+
+After the adapter call, the reported total assets must stay within the active allocation step and
+must satisfy the same market and cap-group limits before any principal or accounting state is
+persisted. A violation returns `ContractError::InvalidState`, so the whole Soroban transaction
+reverts and token balances, adapter state, policy principals, and kernel accounting are unchanged.
+Measuring the group limits against the pre-allocation snapshot keeps an adapter from enlarging the
+denominator of a relative cap during the same allocation it is supposed to be bounded by, and
+re-checking after the call means the limit holds even if the adapter or a policy change makes the
+pre-request decision stale.
+
+Disabling supply for a market — by disabling it, setting its cap to zero, or removing it from the
+supply queue — blocks further supply while leaving that market's existing adapter binding in
+place, so withdrawals already deployed against that market keep settling through the same
+adapter.
+
 If withdrawal execution enters `Withdrawing` and cannot progress because idle
 liquidity remains below the kernel minimum, an allocator-emergency actor can
 submit `VaultCommand::AbortWithdrawing { caller, op_id }` through `execute`.
@@ -232,6 +259,35 @@ In the default Soroban RBAC policy this is available to allocator-emergency
 operators (`allocator`, `sentinel`, and `curator`), not ordinary users. The
 transition restores any `Withdrawing.collected` amount to idle accounting before
 refunding escrowed shares, dequeuing the head request, and returning to `Idle`.
+
+### Refresh Observation Validation
+
+Refresh stages all selected adapter observations before synchronizing kernel accounting or
+persisting policy. Each observation must name a configured market and stay within that market's
+cap, and the aggregate of current `idle_assets` plus final staged `external_assets` must not
+overflow. A violation returns `ContractError::InvalidState` and rolls back the entire public
+refresh, including adapter transaction state.
+
+Refresh reports actual exposure; it does not gate it. Absolute and relative group caps are supply
+admission controls: they decide whether new supply may be deployed, not whether a gain or loss the
+adapters already observed may be recognised. Booked group principals can therefore sit above
+`min(absolute_cap, floor(relative_cap * total_assets))` after an out-of-group loss, after a
+permissionless withdrawal shrinks the denominator, or after governance tightens a cap. Observation
+alone is not authenticated by caps — refresh never proves that reported assets exist.
+
+Group principals are recorded from the final staged state, so a repeated market observation
+retains its last value.
+
+While a group sits over cap, new supply to any of its markets is refused with
+`ContractError::InvalidState` before any transfer, and withdrawals that reduce exposure keep
+working; the group becomes admissible again as soon as its principal falls back under the cap.
+
+Existing exposure in disabled or unqueued markets remains refreshable. Refresh does not
+authenticate adapter NAV, and partial refresh leaves unqueried NAV stale.
+
+Use vetted adapters and monitor NAV changes and report freshness across all markets. Market caps
+bound refresh reports, while absolute and relative group caps bound new supply and concentration
+in the accounted state rather than prove that reported assets exist.
 
 ## Prerequisites
 

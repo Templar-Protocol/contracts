@@ -4,16 +4,20 @@
 
 use rstest::{fixture, rstest};
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
-    Address as SdkAddress, Bytes, Env,
+    Address as SdkAddress, Bytes, Env, IntoVal, Symbol,
 };
 use std::string::String as AllocString;
+use templar_curator_primitives::policy::cap_group::CapGroupId;
 use templar_curator_primitives::policy::state::MarketConfig;
+use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_soroban_governance::{GovernanceError, SorobanVaultGovernanceContract};
 use templar_soroban_runtime::{
     contract::{
-        ContractConfig, CuratorVault, SorobanVaultContract, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+        ContractConfig, CuratorVault, SorobanVaultContract, VaultDataKey,
+        SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
     },
     rbac::{RbacAuth, RbacConfig, Role},
     storage::SorobanStorage,
@@ -23,10 +27,11 @@ use templar_soroban_runtime::{
     Storage, // Import the trait
 };
 use templar_soroban_shared_types::{
-    DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, GovernanceCommand, VaultCommand,
-    GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_CURATOR,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
-    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
+    DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, GovernanceCommand, I128Receipt,
+    VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
+    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::{
@@ -1396,17 +1401,25 @@ fn create_test_vault() -> TestVault {
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
+    for market_id in [0u32, 1, 2] {
+        vault
+            .policy_state_mut()
+            .set_market_config(market_id, MarketConfig::new(true, i128::MAX as u128, None))
+            .unwrap();
+    }
     vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
-        .unwrap();
-    vault
-        .policy_state_mut()
-        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
-        .unwrap();
-    vault
-        .policy_state_mut()
-        .set_market_config(2, MarketConfig::new(true, i128::MAX as u128, None))
+        .replace_supply_queue(
+            SupplyQueue::try_from_entries(
+                vec![
+                    SupplyQueueEntry::new(0, 100).unwrap(),
+                    SupplyQueueEntry::new(1, 100).unwrap(),
+                    SupplyQueueEntry::new(2, 100).unwrap(),
+                ],
+                None,
+            )
+            .unwrap(),
+        )
         .unwrap();
     vault
 }
@@ -1435,11 +1448,914 @@ fn create_rbac_vault() -> RbacVault {
         .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
         .unwrap();
     vault
+        .policy_state_mut()
+        .replace_supply_queue(
+            SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(0, 100).unwrap()], None)
+                .unwrap(),
+        )
+        .unwrap();
+    vault
 }
 
 #[fixture]
 fn rbac_vault() -> RbacVault {
     create_rbac_vault()
+}
+
+struct RealSupplyFixture {
+    env: Env,
+    contract: SdkAddress,
+    asset: SdkAddress,
+    allocator: SdkAddress,
+    /// Sole depositor; holds every share the fixture minted.
+    user: SdkAddress,
+    /// One adapter per market, index == market id. Markets never share an adapter.
+    adapters: Vec<SdkAddress>,
+    governance: SdkAddress,
+}
+
+fn invoke_vault(env: &Env, contract: &SdkAddress, command: &VaultCommand) -> Bytes {
+    let payload = Bytes::from_slice(env, &command.encode());
+    env.invoke_contract(
+        contract,
+        &Symbol::new(env, "execute"),
+        (&payload,).into_val(env),
+    )
+}
+
+fn try_invoke_vault(
+    env: &Env,
+    contract: &SdkAddress,
+    command: &VaultCommand,
+) -> Result<Bytes, templar_soroban_runtime::ContractError> {
+    let payload = Bytes::from_slice(env, &command.encode());
+    match env.try_invoke_contract::<Bytes, templar_soroban_runtime::ContractError>(
+        contract,
+        &Symbol::new(env, "execute"),
+        (&payload,).into_val(env),
+    ) {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Err(Ok(error)) => Err(error),
+        result => panic!("unexpected host invocation result: {result:?}"),
+    }
+}
+
+fn invoke_governance(
+    env: &Env,
+    contract: &SdkAddress,
+    caller: &SdkAddress,
+    command: &GovernanceCommand,
+) {
+    env.as_contract(contract, || {
+        VaultProxy::new(env)
+            .execute_governance_unit(caller, command)
+            .unwrap();
+    });
+}
+
+#[contract]
+struct LocalMarketAdapter;
+
+#[contractimpl]
+impl LocalMarketAdapter {
+    pub fn supply(env: Env, _vault: SdkAddress, _asset: SdkAddress, amount: i128) {
+        let key = Symbol::new(&env, "position");
+        let position: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        env.storage().instance().set(&key, &(position + amount));
+    }
+
+    pub fn total_assets(env: Env, _asset: SdkAddress) -> i128 {
+        env.storage().instance().set(
+            &Symbol::new(&env, "reads"),
+            &(Self::read_count(env.clone()) + 1),
+        );
+        let position: i128 = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "position"))
+            .unwrap_or(0);
+        let overage: i128 = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "overage"))
+            .unwrap_or(0);
+        position + overage
+    }
+
+    pub fn read_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&Symbol::new(&env, "reads"))
+            .unwrap_or(0)
+    }
+
+    pub fn progress_withdrawal(
+        env: Env,
+        vault: SdkAddress,
+        asset: SdkAddress,
+        amount: i128,
+    ) -> i128 {
+        soroban_sdk::token::Client::new(&env, &asset).transfer(
+            &env.current_contract_address(),
+            &vault,
+            &amount,
+        );
+        let key = Symbol::new(&env, "position");
+        let position: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        env.storage().instance().set(&key, &(position - amount));
+        amount
+    }
+}
+
+/// Builds a funded vault with `adapter_count` markets, each bound to its own adapter contract
+/// and each genuinely holding `supply_each` through the real supply path. Markets never share
+/// an adapter, so a reported position always belongs to exactly one market.
+fn adapter_fixture(adapter_count: usize, market_cap: i128, supply_each: i128) -> RealSupplyFixture {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract = env.register(SorobanVaultContract, ());
+    let curator = SdkAddress::generate(&env);
+    let asset = env
+        .register_stellar_asset_contract_v2(SdkAddress::generate(&env))
+        .address();
+    let share = env
+        .register_stellar_asset_contract_v2(contract.clone())
+        .address();
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract, &(0u64)),
+    );
+    let adapters: Vec<SdkAddress> = (0..adapter_count)
+        .map(|_| env.register(LocalMarketAdapter, ()))
+        .collect();
+    let allocator = SdkAddress::generate(&env);
+    let user = SdkAddress::generate(&env);
+    env.ledger().set(LedgerInfo {
+        timestamp: 1,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&contract, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator.clone(),
+            governance.clone(),
+            asset.clone(),
+            share,
+            0,
+            0,
+        )
+        .unwrap();
+    });
+    invoke_governance(
+        &env,
+        &contract,
+        &governance,
+        &GovernanceCommand::SetGovernanceConfig {
+            kind: GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+            primary: None,
+            many: Some(vec![sdk_wire(&allocator)]),
+            value_a: None,
+            value_b: None,
+        },
+    );
+    invoke_governance(
+        &env,
+        &contract,
+        &governance,
+        &GovernanceCommand::SetGovernanceConfig {
+            kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+            primary: None,
+            many: Some(adapters.iter().map(sdk_wire).collect::<Vec<AllocString>>()),
+            value_a: None,
+            value_b: None,
+        },
+    );
+    for market in 0..adapter_count as u32 {
+        invoke_governance(
+            &env,
+            &contract,
+            &governance,
+            &GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_CAP,
+                target_ids: None,
+                mode: None,
+                accounts: None,
+                market_id: Some(market),
+                cap_group_id: None,
+                value: Some(market_cap),
+                value_b: None,
+                value_c: None,
+            },
+        );
+    }
+    invoke_governance(
+        &env,
+        &contract,
+        &governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+            target_ids: Some((0..adapter_count as u32).collect::<Vec<u32>>()),
+            mode: None,
+            accounts: Some(adapters.iter().map(sdk_wire).collect::<Vec<AllocString>>()),
+            market_id: None,
+            cap_group_id: None,
+            value: None,
+            value_b: None,
+            value_c: None,
+        },
+    );
+    StellarAssetClient::new(&env, &asset).mint(&user, &10_000);
+    invoke_vault(
+        &env,
+        &contract,
+        &VaultCommand::DepositWithMin {
+            owner: sdk_wire(&user),
+            receiver: sdk_wire(&user),
+            assets: 10_000,
+            min_shares_out: 0,
+        },
+    );
+    for market in 0..adapter_count as u32 {
+        let supplied = invoke_vault(
+            &env,
+            &contract,
+            &VaultCommand::Allocate {
+                caller: sdk_wire(&allocator),
+                market,
+                amount: supply_each,
+                supply: true,
+            },
+        );
+        assert_eq!(
+            I128Receipt::decode(&supplied.to_alloc_vec()).unwrap().value,
+            i128::from(market + 1) * supply_each,
+            "external assets must accumulate one admitted step per market"
+        );
+    }
+    RealSupplyFixture {
+        env,
+        contract,
+        asset,
+        allocator,
+        user,
+        adapters,
+        governance,
+    }
+}
+
+fn real_supply_fixture(supply_amount: i128) -> RealSupplyFixture {
+    adapter_fixture(1, 2_000, supply_amount)
+}
+
+fn supply_at(
+    fixture: &RealSupplyFixture,
+    market: u32,
+    amount: i128,
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    try_invoke_vault(
+        &fixture.env,
+        &fixture.contract,
+        &VaultCommand::Allocate {
+            caller: sdk_wire(&fixture.allocator),
+            market,
+            amount,
+            supply: true,
+        },
+    )
+    .map(|bytes| I128Receipt::decode(&bytes.to_alloc_vec()).unwrap().value)
+}
+
+fn supply(
+    fixture: &RealSupplyFixture,
+    amount: i128,
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    supply_at(fixture, 0, amount)
+}
+
+fn settle_at(
+    fixture: &RealSupplyFixture,
+    market: u32,
+    amount: i128,
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    try_invoke_vault(
+        &fixture.env,
+        &fixture.contract,
+        &VaultCommand::Allocate {
+            caller: sdk_wire(&fixture.allocator),
+            market,
+            amount,
+            supply: false,
+        },
+    )
+    .map(|bytes| I128Receipt::decode(&bytes.to_alloc_vec()).unwrap().value)
+}
+
+fn settlement(
+    fixture: &RealSupplyFixture,
+    amount: i128,
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    settle_at(fixture, 0, amount)
+}
+
+fn exclude_supply(fixture: &RealSupplyFixture, exclusion: u32) {
+    fixture.env.as_contract(&fixture.contract, || {
+        let mut storage = SorobanStorage::new(&fixture.env);
+        let mut policy = storage.load_policy_state().unwrap().unwrap();
+        match exclusion {
+            0 => policy.set_market_enabled(0, false).unwrap(),
+            1 => policy
+                .replace_supply_queue(SupplyQueue::try_from_entries(vec![], None).unwrap())
+                .unwrap(),
+            _ => policy.set_market_cap(0, 0).unwrap(),
+        }
+        storage.save_policy_state(&policy).unwrap();
+    });
+}
+
+fn balances(fixture: &RealSupplyFixture) -> (i128, i128) {
+    let token = soroban_sdk::token::Client::new(&fixture.env, &fixture.asset);
+    (
+        token.balance(&fixture.contract),
+        token.balance(&fixture.adapters[0]),
+    )
+}
+
+fn vault_invariants(fixture: &RealSupplyFixture) -> (bool, u128, u128, u128, Option<SdkAddress>) {
+    fixture.env.as_contract(&fixture.contract, || {
+        let storage = SorobanStorage::new(&fixture.env);
+        let state = storage.load_state().unwrap().unwrap();
+        let policy = storage.load_policy_state().unwrap().unwrap();
+        let bindings = fixture
+            .env
+            .storage()
+            .instance()
+            .get::<_, soroban_sdk::Map<u32, SdkAddress>>(&VaultDataKey::AdapterBindings)
+            .unwrap();
+        (
+            state.op_state.is_idle(),
+            state.external_assets,
+            state.idle_assets,
+            policy.principal_for(0).unwrap(),
+            bindings.get(0),
+        )
+    })
+}
+
+#[test]
+fn overreported_supply_observation_is_refused_and_rolled_back() {
+    // The adapter reports exposure outside the admitted allocation step. The observation guard
+    // refuses before accounting; market and cap-group refusals are tested at admission.
+    let fixture = real_supply_fixture(1_000);
+    let balance_before = balances(&fixture);
+    let invariant_before = vault_invariants(&fixture);
+    assert_eq!(balance_before, (9_000, 1_000));
+    assert_eq!(
+        invariant_before,
+        (true, 1_000, 9_000, 1_000, Some(fixture.adapters[0].clone()))
+    );
+    report_overage_at(&fixture, 0, 501);
+    assert_eq!(
+        supply(&fixture, 1_000),
+        Err(templar_soroban_runtime::ContractError::InvalidState)
+    );
+    assert_eq!(balances(&fixture), balance_before);
+    assert_eq!(vault_invariants(&fixture), invariant_before);
+    report_overage_at(&fixture, 0, 0);
+    assert_eq!(supply(&fixture, 1_000), Ok(2_000));
+    assert_eq!(balances(&fixture), (8_000, 2_000));
+    assert_eq!(
+        vault_invariants(&fixture),
+        (true, 2_000, 8_000, 2_000, Some(fixture.adapters[0].clone()))
+    );
+}
+
+#[rstest]
+#[case(0)]
+#[case(1)]
+#[case(2)]
+fn supply_exclusion_preserves_binding_and_settlement(#[case] exclusion: u32) {
+    let fixture = real_supply_fixture(1_000);
+    let balance_before = balances(&fixture);
+    let invariant_before = vault_invariants(&fixture);
+    exclude_supply(&fixture, exclusion);
+    assert_eq!(
+        supply(&fixture, 1_000),
+        Err(templar_soroban_runtime::ContractError::InvalidState)
+    );
+    assert_eq!(balances(&fixture), balance_before);
+    assert_eq!(vault_invariants(&fixture), invariant_before);
+    assert_eq!(settlement(&fixture, 1_000), Ok(0));
+    assert_eq!(balances(&fixture), (10_000, 0));
+    assert_eq!(
+        vault_invariants(&fixture),
+        (true, 0, 10_000, 0, Some(fixture.adapters[0].clone()))
+    );
+}
+
+const REFRESH_CAP_GROUP: &str = "eng698-refresh";
+
+fn set_refresh_group_cap(fixture: &RealSupplyFixture, absolute_cap: i128) {
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_GROUP,
+            target_ids: None,
+            mode: Some(0),
+            accounts: None,
+            market_id: None,
+            cap_group_id: Some(REFRESH_CAP_GROUP.to_string()),
+            value: Some(absolute_cap),
+            value_b: None,
+            value_c: None,
+        },
+    );
+}
+
+fn set_refresh_group_membership(fixture: &RealSupplyFixture, market: u32) {
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_GROUP,
+            target_ids: None,
+            mode: Some(2),
+            accounts: None,
+            market_id: Some(market),
+            cap_group_id: Some(REFRESH_CAP_GROUP.to_string()),
+            value: None,
+            value_b: None,
+            value_c: None,
+        },
+    );
+}
+
+fn set_refresh_group_relative_cap(fixture: &RealSupplyFixture, relative_cap: i128) {
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_GROUP,
+            target_ids: None,
+            mode: Some(1),
+            accounts: None,
+            market_id: None,
+            cap_group_id: Some(REFRESH_CAP_GROUP.to_string()),
+            value: Some(relative_cap),
+            value_b: None,
+            value_c: None,
+        },
+    );
+}
+
+/// Reports `overage` from the adapter bound to `market`, so one market's NAV can move alone.
+fn report_overage_at(fixture: &RealSupplyFixture, market: u32, overage: i128) {
+    let adapter = &fixture.adapters[usize::try_from(market).unwrap()];
+    fixture.env.as_contract(adapter, || {
+        fixture
+            .env
+            .storage()
+            .instance()
+            .set(&Symbol::new(&fixture.env, "overage"), &overage);
+    });
+}
+
+/// Booked group principal and its current effective cap, read straight from vault storage.
+fn refresh_group_state(fixture: &RealSupplyFixture) -> (u128, u128) {
+    let group_id = CapGroupId::try_from(REFRESH_CAP_GROUP.to_string()).unwrap();
+    fixture.env.as_contract(&fixture.contract, || {
+        let storage = SorobanStorage::new(&fixture.env);
+        let state = storage.load_state().unwrap().unwrap();
+        let policy = storage.load_policy_state().unwrap().unwrap();
+        let record = policy.cap_groups().get(&group_id).unwrap();
+        (
+            record.principal,
+            record.cap.effective_cap(state.total_assets),
+        )
+    })
+}
+
+/// Permissionless atomic exit by the fixture depositor; returns the assets paid from idle.
+fn atomic_redeem(
+    fixture: &RealSupplyFixture,
+    receiver: &SdkAddress,
+    shares: i128,
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    try_invoke_vault(
+        &fixture.env,
+        &fixture.contract,
+        &VaultCommand::AtomicRedeem {
+            owner: sdk_wire(&fixture.user),
+            receiver: sdk_wire(receiver),
+            operator: sdk_wire(&fixture.user),
+            shares,
+            min_assets_out: 0,
+        },
+    )
+    .map(|bytes| I128Receipt::decode(&bytes.to_alloc_vec()).unwrap().value)
+}
+
+fn refresh(
+    fixture: &RealSupplyFixture,
+    markets: &[u32],
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    try_invoke_vault(
+        &fixture.env,
+        &fixture.contract,
+        &VaultCommand::RefreshMarkets {
+            caller: sdk_wire(&fixture.allocator),
+            markets: markets.to_vec(),
+        },
+    )
+    .map(|bytes| I128Receipt::decode(&bytes.to_alloc_vec()).unwrap().value)
+}
+
+/// Reads counted across every bound adapter, so one read per market is attributable.
+fn adapter_reads(fixture: &RealSupplyFixture) -> u32 {
+    fixture
+        .adapters
+        .iter()
+        .map(|adapter| {
+            fixture.env.invoke_contract::<u32>(
+                adapter,
+                &Symbol::new(&fixture.env, "read_count"),
+                soroban_sdk::Vec::new(&fixture.env),
+            )
+        })
+        .sum()
+}
+
+#[derive(Debug, PartialEq)]
+struct RefreshSnapshot {
+    idle: bool,
+    next_op_id: u64,
+    total_assets: u128,
+    idle_assets: u128,
+    external_assets: u128,
+    principals: Vec<u128>,
+    group_principal: u128,
+    policy_blobs: [Option<Vec<u8>>; 4],
+    adapter_reads: u32,
+}
+
+fn refresh_snapshot(fixture: &RealSupplyFixture) -> RefreshSnapshot {
+    let mut snapshot = fixture.env.as_contract(&fixture.contract, || {
+        let storage = SorobanStorage::new(&fixture.env);
+        let state = storage.load_state().unwrap().unwrap();
+        let policy = storage.load_policy_state().unwrap().unwrap();
+        let group_id = CapGroupId::try_from(REFRESH_CAP_GROUP.to_string()).unwrap();
+        let group_principal = policy
+            .cap_groups()
+            .get(&group_id)
+            .map_or(0, |record| record.principal);
+        RefreshSnapshot {
+            idle: state.op_state.is_idle(),
+            next_op_id: state.next_op_id,
+            total_assets: state.total_assets,
+            idle_assets: state.idle_assets,
+            external_assets: state.external_assets,
+            principals: vec![
+                policy.principal_for(0).unwrap_or_default(),
+                policy.principal_for(1).unwrap_or_default(),
+                policy.principal_for(2).unwrap_or_default(),
+            ],
+            group_principal,
+            policy_blobs: [
+                storage.load_policy_markets().unwrap(),
+                storage.load_policy_principals().unwrap(),
+                storage.load_policy_cap_groups().unwrap(),
+                storage.load_policy_supply_queue().unwrap(),
+            ],
+            adapter_reads: 0,
+        }
+    });
+    snapshot.adapter_reads = adapter_reads(fixture);
+    snapshot
+}
+
+fn set_market_cap(fixture: &RealSupplyFixture, market: u32, cap: i128) {
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_CAP,
+            target_ids: None,
+            mode: None,
+            accounts: None,
+            market_id: Some(market),
+            cap_group_id: None,
+            value: Some(cap),
+            value_b: None,
+            value_c: None,
+        },
+    );
+}
+
+#[test]
+fn refresh_per_market_cap_breach_rolls_back_and_boundary_persists() {
+    // Two markets, two adapters, each reporting only its own position. The per-market ceiling is
+    // the refusal left inside refresh, and it must roll back the adapter reads already done,
+    // proving cross-contract atomicity through the public execute entry.
+    let fixture = adapter_fixture(2, 2_000, 1_000);
+    set_refresh_group_cap(&fixture, 10_000);
+    set_refresh_group_membership(&fixture, 0);
+    set_refresh_group_membership(&fixture, 1);
+    set_market_cap(&fixture, 1, 500);
+
+    let before = refresh_snapshot(&fixture);
+    assert_eq!(
+        before.principals,
+        vec![1_000, 1_000, 0],
+        "each adapter must report its own market position"
+    );
+    assert_eq!(before.group_principal, 2_000);
+
+    assert_eq!(
+        refresh(&fixture, &[0, 1]),
+        Err(templar_soroban_runtime::ContractError::InvalidState)
+    );
+    assert_eq!(
+        refresh_snapshot(&fixture),
+        before,
+        "the failing refresh must roll back vault, policy, and every adapter read"
+    );
+
+    set_market_cap(&fixture, 1, 2_000);
+    assert_eq!(adapter_reads(&fixture), before.adapter_reads);
+
+    assert_eq!(refresh(&fixture, &[0, 1]), Ok(2_000));
+    let after = refresh_snapshot(&fixture);
+    assert!(after.idle);
+    assert_eq!(after.next_op_id, before.next_op_id + 1);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (10_000, 8_000, 2_000)
+    );
+    assert_eq!(after.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(after.group_principal, 2_000);
+    assert_eq!(
+        after.adapter_reads,
+        before.adapter_reads + 2,
+        "each of the two markets must be read from its own adapter exactly once"
+    );
+}
+
+#[test]
+fn refresh_books_exposure_over_group_cap_and_group_cap_still_gates_supply() {
+    // Both adapters already hold 1_000 each, so the absolute group cap (1_999) is below the
+    // exposure that exists. Refresh reports reality and must book it; the group cap keeps gating
+    // new supply and never blocks a withdrawal that reduces exposure.
+    let fixture = adapter_fixture(2, 2_000, 1_000);
+    set_refresh_group_cap(&fixture, 1_999);
+    set_refresh_group_membership(&fixture, 0);
+    set_refresh_group_membership(&fixture, 1);
+
+    let before = refresh_snapshot(&fixture);
+    assert_eq!(before.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(before.group_principal, 2_000);
+
+    assert_eq!(
+        refresh(&fixture, &[0, 1]),
+        Ok(2_000),
+        "observed exposure must be booked even above the group cap"
+    );
+    let after = refresh_snapshot(&fixture);
+    assert!(after.idle);
+    assert_eq!(after.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(after.group_principal, 2_000);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (10_000, 8_000, 2_000)
+    );
+    assert_eq!(after.adapter_reads, before.adapter_reads + 2);
+
+    let balances_before = balances(&fixture);
+    assert_eq!(balances_before, (8_000, 1_000));
+    assert_eq!(
+        supply_at(&fixture, 0, 1),
+        Err(templar_soroban_runtime::ContractError::InvalidState),
+        "a breached group must refuse any extra supply"
+    );
+    assert_eq!(
+        balances(&fixture),
+        balances_before,
+        "refusal must precede the transfer"
+    );
+    assert_eq!(
+        refresh_snapshot(&fixture),
+        after,
+        "a refused supply must leave vault, policy, and adapter reads untouched"
+    );
+
+    assert_eq!(
+        settle_at(&fixture, 0, 1_000),
+        Ok(1_000),
+        "an exposure-reducing withdrawal must stay permitted"
+    );
+    let reduced = refresh_snapshot(&fixture);
+    assert_eq!(reduced.principals, vec![0, 1_000, 0]);
+    assert_eq!(reduced.group_principal, 1_000);
+    assert_eq!(
+        (
+            reduced.total_assets,
+            reduced.idle_assets,
+            reduced.external_assets
+        ),
+        (10_000, 9_000, 1_000)
+    );
+    assert_eq!(balances(&fixture), (9_000, 0));
+
+    // The gate is live rather than stuck: headroom up to the cap is admitted, one unit more is not.
+    assert_eq!(supply_at(&fixture, 0, 999), Ok(1_999));
+    assert_eq!(balances(&fixture), (8_001, 999));
+    assert_eq!(
+        supply_at(&fixture, 0, 1),
+        Err(templar_soroban_runtime::ContractError::InvalidState)
+    );
+    assert_eq!(refresh_snapshot(&fixture).group_principal, 1_999);
+}
+
+#[test]
+fn refresh_books_outside_group_loss_then_atomic_redeem_pays_the_updated_nav() {
+    // Three markets, three independently reporting adapters. Market 2 sits outside the capped
+    // group and its own adapter reports a 1_000 NAV loss, which is what pushes the untouched group
+    // above its relative cap. The refresh must book that loss, supply must stay gated, and the
+    // permissionless atomic exit must price on the refreshed NAV instead of the stranded one.
+    let fixture = adapter_fixture(3, 2_000, 1_000);
+    set_refresh_group_relative_cap(&fixture, 200_000_000_000_000_000);
+    set_refresh_group_membership(&fixture, 0);
+    set_refresh_group_membership(&fixture, 1);
+    assert_eq!(
+        refresh_group_state(&fixture),
+        (2_000, 2_000),
+        "the group starts exactly at its 20% relative cap"
+    );
+
+    report_overage_at(&fixture, 2, -1_000);
+    let before = refresh_snapshot(&fixture);
+    assert_eq!(before.principals, vec![1_000, 1_000, 1_000]);
+    assert_eq!(before.group_principal, 2_000);
+    assert_eq!(
+        (
+            before.total_assets,
+            before.idle_assets,
+            before.external_assets
+        ),
+        (10_000, 7_000, 3_000)
+    );
+
+    assert_eq!(
+        refresh(&fixture, &[0, 1, 2]),
+        Ok(2_000),
+        "an out-of-group loss must be booked even when it pushes the group over cap"
+    );
+    let after = refresh_snapshot(&fixture);
+    assert!(after.idle);
+    assert_eq!(after.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (9_000, 7_000, 2_000)
+    );
+    assert_eq!(after.group_principal, 2_000);
+    assert_eq!(
+        after.adapter_reads,
+        before.adapter_reads + 3,
+        "one honest read per market, from three different adapters"
+    );
+    assert_eq!(
+        refresh_group_state(&fixture),
+        (2_000, 1_800),
+        "the loss alone is what leaves the group over its relative cap"
+    );
+
+    let balances_before = balances(&fixture);
+    assert_eq!(balances_before, (7_000, 1_000));
+    assert_eq!(
+        supply_at(&fixture, 0, 1),
+        Err(templar_soroban_runtime::ContractError::InvalidState),
+        "recording a loss must not widen the supply gate"
+    );
+    assert_eq!(balances(&fixture), balances_before);
+    assert_eq!(refresh_snapshot(&fixture), after);
+
+    let receiver = SdkAddress::generate(&fixture.env);
+    assert_eq!(
+        atomic_redeem(&fixture, &receiver, 1_000),
+        Ok(900),
+        "1_000 shares must price at 0.9 assets on the refreshed NAV, not the stranded 1.0"
+    );
+    assert_eq!(
+        StellarAssetClient::new(&fixture.env, &fixture.asset).balance(&receiver),
+        900
+    );
+    let exited = refresh_snapshot(&fixture);
+    assert_eq!(
+        (
+            exited.total_assets,
+            exited.idle_assets,
+            exited.external_assets
+        ),
+        (8_100, 6_100, 2_000)
+    );
+    assert_eq!(exited.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(exited.group_principal, 2_000);
+}
+
+#[test]
+fn refresh_after_permissionless_atomic_redemption_still_books_unchanged_exposure() {
+    // No adapter moves: an idle atomic redemption only shrinks the denominator, which is enough
+    // to put an unchanged group over its relative cap. A later refresh of the same principals
+    // must still succeed, and the gate must still refuse new supply.
+    let fixture = adapter_fixture(2, 2_000, 1_000);
+    set_refresh_group_relative_cap(&fixture, 250_000_000_000_000_000);
+    set_refresh_group_membership(&fixture, 0);
+    set_refresh_group_membership(&fixture, 1);
+    assert_eq!(refresh_group_state(&fixture), (2_000, 2_500));
+
+    let receiver = SdkAddress::generate(&fixture.env);
+    assert_eq!(atomic_redeem(&fixture, &receiver, 2_001), Ok(2_001));
+    assert_eq!(
+        StellarAssetClient::new(&fixture.env, &fixture.asset).balance(&receiver),
+        2_001
+    );
+    let redeemed = refresh_snapshot(&fixture);
+    assert_eq!(
+        (
+            redeemed.total_assets,
+            redeemed.idle_assets,
+            redeemed.external_assets
+        ),
+        (7_999, 5_999, 2_000)
+    );
+    assert_eq!(redeemed.group_principal, 2_000);
+    assert_eq!(
+        refresh_group_state(&fixture),
+        (2_000, 1_999),
+        "the redemption alone must be what pushes the group over cap"
+    );
+
+    assert_eq!(
+        refresh(&fixture, &[0, 1]),
+        Ok(2_000),
+        "an unchanged observation must refresh while a permissionless exit tightened the cap"
+    );
+    let after = refresh_snapshot(&fixture);
+    assert!(after.idle);
+    assert_eq!(after.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(after.group_principal, 2_000);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (7_999, 5_999, 2_000)
+    );
+    assert_eq!(after.adapter_reads, redeemed.adapter_reads + 2);
+
+    assert_eq!(
+        supply_at(&fixture, 0, 1),
+        Err(templar_soroban_runtime::ContractError::InvalidState),
+        "the tightened cap must still refuse new supply"
+    );
+    assert_eq!(refresh_snapshot(&fixture), after);
+}
+
+#[test]
+fn refresh_idle_plus_external_overflow_is_invalid_state_and_rolls_back() {
+    // Two independent adapters each report i128::MAX under matching market caps. Their sum still
+    // fits u128, so only the idle + external aggregate overflows. The refusal must stay
+    // InvalidState and leave vault, policy, and every adapter read untouched.
+    let fixture = adapter_fixture(2, i128::MAX, 1_000);
+    let huge_overage = i128::MAX - 1_000;
+    report_overage_at(&fixture, 0, huge_overage);
+    report_overage_at(&fixture, 1, huge_overage);
+
+    let before = refresh_snapshot(&fixture);
+    assert_eq!(before.idle_assets, 8_000);
+    assert_eq!(before.external_assets, 2_000);
+
+    assert_eq!(
+        refresh(&fixture, &[0, 1]),
+        Err(templar_soroban_runtime::ContractError::InvalidState),
+        "idle + reported external overflow must keep the InvalidState public error"
+    );
+    assert_eq!(
+        refresh_snapshot(&fixture),
+        before,
+        "the refused refresh must roll back vault, policy, and adapter reads"
+    );
+
+    report_overage_at(&fixture, 0, 0);
+    report_overage_at(&fixture, 1, 0);
+    assert_eq!(refresh(&fixture, &[0, 1]), Ok(2_000));
+    let after = refresh_snapshot(&fixture);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (10_000, 8_000, 2_000)
+    );
+    assert_eq!(after.principals, vec![1_000, 1_000, 0]);
 }
 
 // Deposit Flow Tests

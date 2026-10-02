@@ -778,14 +778,21 @@ fn allocate_impl(
     supply: bool,
 ) -> Result<i128, ContractError> {
     require_signed(&caller);
-    let caller_kernel = kernel_address_from_sdk(env, &caller);
-    let mut preauth = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        vault.authorize(ActionKind::BeginAllocating, caller_kernel)
-    };
-    with_contract_vault_contract_error(env, &mut preauth)?;
     if amount <= 0 {
         return Err(ContractError::InvalidInput);
     }
+    let caller_kernel = kernel_address_from_sdk(env, &caller);
+    let amount_u128 = to_u128(amount)?;
+    let mut pre_allocation_total_assets: u128 = 0;
+    let mut preflight = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        vault.authorize(ActionKind::BeginAllocating, caller_kernel)?;
+        if supply {
+            pre_allocation_total_assets = vault.state()?.total_assets;
+            vault.validate_supply_admission(market, amount_u128, pre_allocation_total_assets)?;
+        }
+        Ok(())
+    };
+    with_contract_vault_contract_error(env, &mut preflight)?;
     let now_ns = ledger_timestamp_ns(env)?;
     let asset_token = get_config_address(env, &VaultDataKey::AssetToken)?;
     let asset_client = soroban_sdk::token::Client::new(env, &asset_token);
@@ -793,7 +800,6 @@ fn allocate_impl(
     let mut new_external: u128 = 0;
     let emitted_amount = if supply {
         let adapter = supply_adapter_for_market(env, market)?;
-        let amount_u128 = to_u128(amount)?;
         asset_client.transfer(&vault_address, &adapter, &amount);
         invoke_supply(env, &adapter, &asset_token, amount);
         let observed_total_assets = to_u128(invoke_total_assets(env, &adapter, &asset_token))?;
@@ -807,6 +813,7 @@ fn allocate_impl(
                 observed_total_assets,
                 op_id,
                 now_ns,
+                pre_allocation_total_assets,
             )?;
             Ok(())
         };
