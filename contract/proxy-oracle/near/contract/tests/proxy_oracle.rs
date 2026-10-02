@@ -542,8 +542,7 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
             offset: None,
             count: None,
         })
-        .await?
-        .proxies;
+        .await?;
     assert_eq!(list_proxies, vec![]);
 
     let default_filter = FreshnessFilter::new(
@@ -611,8 +610,7 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
             offset: None,
             count: None,
         })
-        .await?
-        .proxies;
+        .await?;
     assert_eq!(
         list_proxies,
         vec![btc_proxy_id, just_pyth_btc_id, just_redstone_eth_id],
@@ -622,8 +620,7 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
             oracle_id: proxy_oracle.clone(),
             id: btc_proxy_id,
         })
-        .await?
-        .proxy;
+        .await?;
     assert_eq!(stored_btc.unwrap(), btc_proxy_def);
 
     // `CRYPTO_BTC_USD` is requested alongside the proxy ids throughout as a negative
@@ -829,8 +826,8 @@ async fn init_args_seat_the_owner_over_the_wire() -> Result<()> {
         }),
     )?;
 
-    assert_eq!(explicit_owner.owner.as_ref(), Some(&governance.0));
-    assert_eq!(default_owner.owner.as_ref(), Some(&registry.0));
+    assert_eq!(explicit_owner.as_ref(), Some(&governance.0));
+    assert_eq!(default_owner.as_ref(), Some(&registry.0));
 
     Ok(())
 }

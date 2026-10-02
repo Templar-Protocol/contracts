@@ -76,7 +76,6 @@ pub async fn get_market_prices(
     };
 
     let prices: HashMap<_, _> = result
-        .prices
         .into_iter()
         .map(|entry| (entry.price_id, entry.price))
         .collect();

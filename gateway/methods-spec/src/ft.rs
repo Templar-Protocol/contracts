@@ -6,15 +6,10 @@ use templar_primitives::SU128;
 
 /// Get a fungible token balance.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "ft.getBalanceOf", output = GetBalanceOfResult)]
+#[method(read = "ft.getBalanceOf", output = SU128)]
 pub struct GetBalanceOf {
     pub contract_id: AccountId,
     pub account_id: AccountId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfResult {
-    pub balance: SU128,
 }
 
 /// Transfer fungible tokens.

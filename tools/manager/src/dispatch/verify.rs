@@ -128,7 +128,7 @@ async fn governance_controls_the_oracle(
         })
         .await
     {
-        Ok(result) => match result.owner {
+        Ok(result) => match result {
             Some(owner) if owner == governance_id => {
                 Status::passed(format!("`{oracle_id}` is owned by `{governance_id}`"))
             }
@@ -154,13 +154,12 @@ async fn governance_controls_the_oracle(
         })
         .await
     {
-        Ok(result) if result.proxy_oracle_id == oracle_id => {
+        Ok(result) if result == oracle_id => {
             Status::passed(format!("`{governance_id}` governs `{oracle_id}`"))
         }
         Ok(result) => Status::failed(format!(
-            "`{governance_id}` governs `{}`, not `{oracle_id}`. Proposals made \
-             through it would configure a different oracle.",
-            result.proxy_oracle_id
+            "`{governance_id}` governs `{result}`, not `{oracle_id}`. Proposals made \
+             through it would configure a different oracle."
         )),
         Err(error) => Status::failed(format!(
             "could not read which oracle `{governance_id}` governs: {error}"
@@ -194,7 +193,7 @@ async fn admin_holds_the_role(
         })
         .await
     {
-        Ok(result) if result.has_role => Status::passed(format!("`{admin}` on {governance_id}")),
+        Ok(true) => Status::passed(format!("`{admin}` on {governance_id}")),
         Ok(_) => Status::failed(format!(
             "`{admin}` does not hold Admin on `{governance_id}`, so the exported \
              spec names an admin that cannot govern this oracle"

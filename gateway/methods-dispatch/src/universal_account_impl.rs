@@ -35,14 +35,12 @@ impl<C: HasNearClient> DispatchRead<universal_account::GetKey, C> for Dispatch {
     async fn dispatch(
         params: universal_account::GetKey,
         ctx: C,
-    ) -> GatewayResult<universal_account::GetKeyResult> {
+    ) -> GatewayResult<Option<universal_account::PayloadExecutionParametersView>> {
         ctx.near_client()
             .universal_account(params.account_id.clone())
             .get_key(UaGetKeyArgs { key: params.key })
             .await
-            .map(|parameters| universal_account::GetKeyResult {
-                parameters: parameters.map(into_parameters_view),
-            })
+            .map(|parameters| parameters.map(into_parameters_view))
     }
 }
 

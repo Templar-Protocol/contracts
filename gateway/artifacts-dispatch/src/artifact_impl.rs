@@ -3,7 +3,6 @@ use templar_common::registry::{DeployMode, VersionSource};
 use templar_contract_artifacts::{fetch, version_key_from_digest, ArtifactId};
 use templar_gateway_artifacts_spec::artifact::{
     AddArtifactVersion, ArtifactMetadata, GetArtifact, GetArtifactResult, ListArtifacts,
-    ListArtifactsResult,
 };
 use templar_gateway_core::{
     client::registry::AddVersionArgs, ContractWriteOptions, DispatchRead, GatewayError,
@@ -78,13 +77,11 @@ impl<C> DispatchRead<ListArtifacts, C> for Dispatch
 where
     C: Send + 'static,
 {
-    async fn dispatch(_request: ListArtifacts, _ctx: C) -> GatewayResult<ListArtifactsResult> {
-        Ok(ListArtifactsResult {
-            artifacts: ArtifactId::ALL
-                .iter()
-                .map(|id| ArtifactMetadata::from(id.metadata()))
-                .collect(),
-        })
+    async fn dispatch(_request: ListArtifacts, _ctx: C) -> GatewayResult<Vec<ArtifactMetadata>> {
+        Ok(ArtifactId::ALL
+            .iter()
+            .map(|id| ArtifactMetadata::from(id.metadata()))
+            .collect())
     }
 }
 

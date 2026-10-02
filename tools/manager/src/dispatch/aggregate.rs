@@ -115,9 +115,7 @@ async fn breakers(
         )
         .await
         .with_context(|| format!("read the circuit-breaker set for {id:?} on {oracle_id}"))?;
-    Ok(result
-        .circuit_breaker_set
-        .unwrap_or_else(CircuitBreakerSet::empty))
+    Ok(result.unwrap_or_else(CircuitBreakerSet::empty))
 }
 
 /// Every source's current price, in spec order.
@@ -348,7 +346,6 @@ async fn fetch(ctx: &CliContext, source: &SourceSpec) -> anyhow::Result<Option<P
                 })
                 .await
                 .with_context(|| format!("read lazer feed {feed_id} from {oracle}"))?
-                .feeds
                 .remove(feed_id)
                 .flatten()
                 // EMA, matching the adapter's own consumer path — spot would be
@@ -365,7 +362,6 @@ async fn fetch(ctx: &CliContext, source: &SourceSpec) -> anyhow::Result<Option<P
             })
             .await
             .with_context(|| format!("read pyth `{}` from {oracle}", hex::encode(price_id.0)))?
-            .prices
             .into_iter()
             .next()
             .and_then(|entry| entry.price),
@@ -379,7 +375,6 @@ async fn fetch(ctx: &CliContext, source: &SourceSpec) -> anyhow::Result<Option<P
             })
             .await
             .with_context(|| format!("read redstone `{price_id}` from {oracle}"))?
-            .entries
             .first()
             .map(|entry| entry.data.clone())
             .as_ref()
@@ -415,7 +410,6 @@ async fn lst(
         })
         .await
         .with_context(|| format!("read pyth `{}` from {oracle}", hex::encode(price_id.0)))?
-        .prices
         .into_iter()
         .next()
         .and_then(|entry| entry.price);
@@ -433,11 +427,10 @@ async fn lst(
         })
         .await
         .with_context(|| format!("read `{contract_id}.{method}`"))?;
-    let rate: templar_common::Decimal =
-        serde_json::from_value::<near_sdk::json_types::U128>(rate.value)
-            .context("decode the LST exchange rate")?
-            .0
-            .into();
+    let rate: templar_common::Decimal = serde_json::from_value::<near_sdk::json_types::U128>(rate)
+        .context("decode the LST exchange rate")?
+        .0
+        .into();
 
     let Some(underlying) = underlying else {
         return Ok(None);

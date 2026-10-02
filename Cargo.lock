@@ -13160,6 +13160,7 @@ dependencies = [
 name = "templar-gateway-catalog"
 version = "0.1.0"
 dependencies = [
+ "schemars 0.8.22",
  "templar-gateway-artifacts-spec",
  "templar-gateway-methods-spec",
  "templar-gateway-oracle-updates-spec",

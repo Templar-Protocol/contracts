@@ -6,7 +6,7 @@ use templar_universal_account::{transaction::Transaction, KeyId};
 
 /// Get key parameters from a universal account.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "ua.getKey", output = GetKeyResult)]
+#[method(read = "ua.getKey", output = Option<PayloadExecutionParametersView>)]
 pub struct GetKey {
     pub account_id: AccountId,
     pub key: KeyId,
@@ -22,11 +22,6 @@ pub struct PayloadExecutionParametersView {
     pub chain_id: Option<u128>,
     pub verifying_contract: AccountId,
     pub salt: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetKeyResult {
-    pub parameters: Option<PayloadExecutionParametersView>,
 }
 
 /// Execute a universal account payload.

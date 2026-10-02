@@ -24,13 +24,8 @@ pub struct GetArtifactResult {
 
 /// List known contract artifacts and metadata, excluding code bytes.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "artifact.list", output = ListArtifactsResult)]
+#[method(read = "artifact.list", output = Vec<ArtifactMetadata>)]
 pub struct ListArtifacts {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListArtifactsResult {
-    pub artifacts: Vec<ArtifactMetadata>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactMetadata {
@@ -97,12 +92,10 @@ mod tests {
     #[test]
     fn test_list_artifacts_result_has_metadata_without_code() {
         // Given: a metadata-only list result
-        let result = ListArtifactsResult {
-            artifacts: vec![ArtifactMetadata::from(ArtifactId::Market.metadata())],
-        };
+        let result = vec![ArtifactMetadata::from(ArtifactId::Market.metadata())];
         // When: serialized to JSON
         let json = serde_json::to_value(&result).unwrap();
-        let artifact = json["artifacts"].as_array().unwrap().first().unwrap();
+        let artifact = json.as_array().unwrap().first().unwrap();
         // Then: metadata is present and WASM bytes are absent
         assert_eq!(artifact["artifact"], "market");
         assert!(artifact.get("code").is_none());

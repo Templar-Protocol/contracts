@@ -256,16 +256,14 @@ async fn price_ids(
     ctx: &CliContext,
     oracle_id: &AccountId,
 ) -> anyhow::Result<Vec<PriceIdentifier>> {
-    Ok(ctx
-        .client
+    ctx.client
         .read(proxy_oracle::ListProxies {
             oracle_id: oracle_id.clone(),
             offset: None,
             count: None,
         })
         .await
-        .with_context(|| format!("list proxies on {oracle_id}"))?
-        .proxies)
+        .with_context(|| format!("list proxies on {oracle_id}"))
 }
 
 /// Read the breaker set as raw JSON rather than through the typed view: a set the current types
@@ -287,7 +285,7 @@ async fn breakers(ctx: &CliContext, oracle_id: &AccountId, ids: &[PriceIdentifie
             })
             .await;
         match read {
-            Ok(result) => verdicts.push((*id, classify_breaker_set(&result.value))),
+            Ok(result) => verdicts.push((*id, classify_breaker_set(&result))),
             Err(error) => {
                 return Status::failed(format!("read breaker set for {id} on {oracle_id}: {error}"))
             }
@@ -312,7 +310,7 @@ async fn source_weights(
             .await
         {
             // A listed id whose proxy reads back absent raced a `remove_proxy`; nothing to weigh.
-            Ok(result) => proxies.extend(result.proxy.map(|proxy| (*id, proxy))),
+            Ok(result) => proxies.extend(result.map(|proxy| (*id, proxy))),
             Err(error) => {
                 return Status::failed(format!("read proxy {id} on {oracle_id}: {error}"))
             }
@@ -356,7 +354,7 @@ async fn pending_rearm(ctx: &CliContext, governance_id: &AccountId, ids: &[u32])
             })
             .await;
         match read {
-            Ok(result) => bodies.push((id, result.value)),
+            Ok(result) => bodies.push((id, result)),
             Err(error) => {
                 return Status::failed(format!("read proposal {id} on {governance_id}: {error}"))
             }
@@ -366,16 +364,14 @@ async fn pending_rearm(ctx: &CliContext, governance_id: &AccountId, ids: &[u32])
 }
 
 async fn proposal_ids(ctx: &CliContext, governance_id: &AccountId) -> anyhow::Result<Vec<u32>> {
-    Ok(ctx
-        .client
+    ctx.client
         .read(gov::ListProposals {
             governance_id: governance_id.clone(),
             offset: None,
             count: None,
         })
         .await
-        .with_context(|| format!("list proposals on {governance_id}"))?
-        .ids)
+        .with_context(|| format!("list proposals on {governance_id}"))
 }
 
 /// What a report covers: one oracle, and the governance contract that owns it when there is one.
@@ -457,8 +453,7 @@ pub(super) async fn gate_governed_oracle(
             governance_id: governance_id.clone(),
         })
         .await
-        .with_context(|| format!("read the oracle governed by {governance_id}"))?
-        .proxy_oracle_id;
+        .with_context(|| format!("read the oracle governed by {governance_id}"))?;
     gate(ctx, &oracle_id, &args.skip_check).await
 }
 
@@ -494,8 +489,7 @@ async fn upgrades_the_oracle(
             args: ContractArgs::Json(args),
         })
         .await
-        .with_context(|| format!("read proposal {proposal_id} on {governance_id}"))?
-        .value;
+        .with_context(|| format!("read proposal {proposal_id} on {governance_id}"))?;
 
     Ok(body
         .get("operation")
@@ -549,7 +543,6 @@ async fn resolve_targets(ctx: &CliContext, args: &Preflight) -> anyhow::Result<V
             kind: ContractKind::ProxyOracle,
         })
         .await
-        .map(|result| result.account_ids)
         // Registries deployed before the kind-filtered listing view cannot enumerate anything, and
         // the mainnet one is among them — so say what to do instead rather than surfacing a bare
         // `MethodNotFound` from a view the operator never named.

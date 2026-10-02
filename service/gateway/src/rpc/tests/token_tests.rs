@@ -52,7 +52,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
             account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
-    assert_eq!(ft_balance.balance, templar_common::SU128::from(5));
+    assert_eq!(ft_balance, templar_common::SU128::from(5));
 
     let mt_balance = stack
         .controller
@@ -64,7 +64,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
             account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
-    assert_eq!(mt_balance.balance, templar_common::SU128::from(6));
+    assert_eq!(mt_balance, templar_common::SU128::from(6));
 
     let transfer = stack
         .controller

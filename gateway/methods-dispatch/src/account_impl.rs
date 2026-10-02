@@ -7,7 +7,7 @@ use templar_gateway_core::{
     GatewayError, {DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite},
 };
 use templar_gateway_methods_spec::account;
-use templar_gateway_types::ContractMethodName;
+use templar_gateway_types::{Base64Bytes, ContractMethodName};
 
 use crate::Dispatch;
 
@@ -93,13 +93,8 @@ impl<C: HasNearClient> DispatchRead<account::Get, C> for Dispatch {
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<account::GetCode, C> for Dispatch {
-    async fn dispatch(request: account::GetCode, ctx: C) -> GatewayResult<account::GetCodeResult> {
-        let code = ctx
-            .near_client()
-            .contract(request.account_id)
-            .code()
-            .await?;
-        Ok(account::GetCodeResult { code })
+    async fn dispatch(request: account::GetCode, ctx: C) -> GatewayResult<Base64Bytes> {
+        ctx.near_client().contract(request.account_id).code().await
     }
 }
 
@@ -108,7 +103,7 @@ impl<C: HasNearClient> DispatchRead<account::ViewState, C> for Dispatch {
     async fn dispatch(
         request: account::ViewState,
         ctx: C,
-    ) -> GatewayResult<account::ViewStateResult> {
+    ) -> GatewayResult<Vec<account::StateEntry>> {
         let state = ctx
             .near_client()
             .contract(request.account_id)
@@ -118,7 +113,7 @@ impl<C: HasNearClient> DispatchRead<account::ViewState, C> for Dispatch {
             .into_iter()
             .map(|(key, value)| account::StateEntry { key, value })
             .collect();
-        Ok(account::ViewStateResult { values })
+        Ok(values)
     }
 }
 
@@ -146,7 +141,7 @@ impl<C: HasNearClient> DispatchRead<account::ListAccessKeys, C> for Dispatch {
     async fn dispatch(
         request: account::ListAccessKeys,
         ctx: C,
-    ) -> GatewayResult<account::ListAccessKeysResult> {
+    ) -> GatewayResult<Vec<account::AccessKeyEntry>> {
         let keys = ctx
             .near_client()
             .account()
@@ -161,7 +156,7 @@ impl<C: HasNearClient> DispatchRead<account::ListAccessKeys, C> for Dispatch {
                 })
             })
             .collect::<GatewayResult<_>>()?;
-        Ok(account::ListAccessKeysResult { keys })
+        Ok(keys)
     }
 }
 

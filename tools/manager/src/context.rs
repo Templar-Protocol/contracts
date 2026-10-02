@@ -127,7 +127,7 @@ impl CliContext {
             })
             .await
             .with_context(|| format!("call {contract_id}.{method_name}"))?;
-        serde_json::from_value(result.value)
+        serde_json::from_value(result)
             .with_context(|| format!("decode {contract_id}.{method_name}'s return value"))
     }
 

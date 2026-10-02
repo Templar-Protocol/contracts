@@ -14,16 +14,16 @@
 | `account.deleteKey` | write | `DeleteKey` → `WriteOperationResult` | Delete an access key from the signing account. |
 | `account.get` | read | `Get` → `GetResult` | Get chain state for a NEAR account. |
 | `account.getAccessKey` | read | `GetAccessKey` → `GetAccessKeyResult` | Get an access key's nonce and permission scope for an account. |
-| `account.getCode` | read | `GetCode` → `GetCodeResult` | Fetch the deployed WASM bytes of a locally deployed contract. |
-| `account.listAccessKeys` | read | `ListAccessKeys` → `ListAccessKeysResult` | List every access key on an account with its nonce and permission scope. |
-| `account.viewState` | read | `ViewState` → `ViewStateResult` | List contract storage entries whose raw keys begin with `prefix`. |
+| `account.getCode` | read | `GetCode` → `Base64Bytes` | Fetch the deployed WASM bytes of a locally deployed contract. |
+| `account.listAccessKeys` | read | `ListAccessKeys` → `Vec<AccessKeyEntry>` | List every access key on an account with its nonce and permission scope. |
+| `account.viewState` | read | `ViewState` → `Vec<StateEntry>` | List contract storage entries whose raw keys begin with `prefix`. |
 
 ## `artifact`
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
 | `artifact.get` | read | `GetArtifact` → `GetArtifactResult` | Get contract artifact bytes and metadata. |
-| `artifact.list` | read | `ListArtifacts` → `ListArtifactsResult` | List known contract artifacts and metadata, excluding code bytes. |
+| `artifact.list` | read | `ListArtifacts` → `Vec<ArtifactMetadata>` | List known contract artifacts and metadata, excluding code bytes. |
 
 ## `chain`
 
@@ -36,16 +36,16 @@
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
-| `contract.getKind` | read | `GetKind` → `GetKindResult` | Identify the kind of deployed protocol contract. |
+| `contract.getKind` | read | `GetKind` → `ContractKind` | Identify the kind of deployed protocol contract. |
 | `contract.getStateVersion` | read | `GetStateVersion` → `GetStateVersionResult` | Read a contract's state-versioning status. |
 | `contract.getVersion` | read | `GetVersion` → `VersionResult` | Read a contract version from NEP-330 metadata. |
-| `contract.viewFunction` | read | `ViewFunction` → `ViewFunctionResult` | Call a contract view method with arbitrary arguments. |
+| `contract.viewFunction` | read | `ViewFunction` → `Value` | Call a contract view method with arbitrary arguments. |
 
 ## `ft`
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
-| `ft.getBalanceOf` | read | `GetBalanceOf` → `GetBalanceOfResult` | Get a fungible token balance. |
+| `ft.getBalanceOf` | read | `GetBalanceOf` → `StrNum<u128>` | Get a fungible token balance. |
 | `ft.transfer` | write | `Transfer` → `WriteOperationResult` | Transfer fungible tokens. |
 | `ft.transferCall` | write | `TransferCall` → `WriteOperationResult` | Transfer fungible tokens and call the receiver. |
 
@@ -59,16 +59,16 @@
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
-| `lazer.getFeedsData` | read | `GetFeedsData` → `GetFeedsDataResult` | Read stored feed data from a Pyth Lazer adapter. |
+| `lazer.getFeedsData` | read | `GetFeedsData` → `HashMap<u32, Option<FeedData>>` | Read stored feed data from a Pyth Lazer adapter. |
 
 ## `lstOracle`
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
 | `lstOracle.createTransformer` | write | `CreateTransformer` → `WriteOperationResult` | Create a transformer for a price ID. Owner-gated, and charged a 1-yoctoNEAR confirmation deposit by the contract. |
-| `lstOracle.getOracleId` | read | `GetOracleId` → `GetOracleIdResult` | Get the backing Pyth oracle for an LST oracle. |
-| `lstOracle.getTransformer` | read | `GetTransformer` → `GetTransformerResult` | Get a transformer definition for a price ID. |
-| `lstOracle.listTransformers` | read | `ListTransformers` → `ListTransformersResult` | List transformer price IDs on an LST oracle. |
+| `lstOracle.getOracleId` | read | `GetOracleId` → `AccountId` | Get the backing Pyth oracle for an LST oracle. |
+| `lstOracle.getTransformer` | read | `GetTransformer` → `Option<PriceTransformer>` | Get a transformer definition for a price ID. |
+| `lstOracle.listTransformers` | read | `ListTransformers` → `Vec<PriceIdentifier>` | List transformer price IDs on an LST oracle. |
 
 ## `market`
 
@@ -83,23 +83,23 @@
 | `market.createSupplyWithdrawalRequest` | write | `CreateSupplyWithdrawalRequest` → `WriteOperationResult` | Create a supply withdrawal request. |
 | `market.executeNextSupplyWithdrawalRequest` | write | `ExecuteNextSupplyWithdrawalRequest` → `WriteOperationResult` | Execute the next supply withdrawal request. |
 | `market.getBorrowAssetMetrics` | read | `GetBorrowAssetMetrics` → `BorrowAssetMetrics` | Get borrow asset metrics. |
-| `market.getBorrowPosition` | read | `GetBorrowPosition` → `GetBorrowPositionResult` | Get a borrow position. |
-| `market.getBorrowPositionPendingInterest` | read | `GetBorrowPositionPendingInterest` → `GetBorrowPositionPendingInterestResult` | Get pending borrow interest. |
-| `market.getBorrowStatus` | read | `GetBorrowStatus` → `GetBorrowStatusResult` | Get borrow status for an account. |
+| `market.getBorrowPosition` | read | `GetBorrowPosition` → `Option<BorrowPosition>` | Get a borrow position. |
+| `market.getBorrowPositionPendingInterest` | read | `GetBorrowPositionPendingInterest` → `Option<FungibleAssetAmount<BorrowAsset>>` | Get pending borrow interest. |
+| `market.getBorrowStatus` | read | `GetBorrowStatus` → `Option<BorrowStatus>` | Get borrow status for an account. |
 | `market.getConfiguration` | read | `GetConfiguration` → `MarketConfiguration` | Get market configuration. |
 | `market.getCurrentSnapshot` | read | `GetCurrentSnapshot` → `Snapshot` | Get the current market snapshot. |
 | `market.getFinalizedSnapshotsLen` | read | `GetFinalizedSnapshotsLen` → `u32` | Get finalized snapshot count. |
 | `market.getLastYieldRate` | read | `GetLastYieldRate` → `Decimal` | Get the last yield rate. |
-| `market.getStaticYield` | read | `GetStaticYield` → `GetStaticYieldResult` | Get accumulated static yield. |
-| `market.getSupplyPosition` | read | `GetSupplyPosition` → `GetSupplyPositionResult` | Get a supply position. |
-| `market.getSupplyPositionPendingYield` | read | `GetSupplyPositionPendingYield` → `GetSupplyPositionPendingYieldResult` | Get pending supply yield. |
+| `market.getStaticYield` | read | `GetStaticYield` → `Option<StaticYield>` | Get an account's accumulated static yield; `None` if it has no record. |
+| `market.getSupplyPosition` | read | `GetSupplyPosition` → `Option<SupplyPosition>` | Get a supply position. |
+| `market.getSupplyPositionPendingYield` | read | `GetSupplyPositionPendingYield` → `Option<FungibleAssetAmount<BorrowAsset>>` | Get pending supply yield. |
 | `market.getSupplyWithdrawalQueueStatus` | read | `GetSupplyWithdrawalQueueStatus` → `WithdrawalQueueStatus` | Get supply withdrawal queue status. |
-| `market.getSupplyWithdrawalRequestStatus` | read | `GetSupplyWithdrawalRequestStatus` → `GetSupplyWithdrawalRequestStatusResult` | Get supply withdrawal request status. |
+| `market.getSupplyWithdrawalRequestStatus` | read | `GetSupplyWithdrawalRequestStatus` → `Option<WithdrawalRequestStatus>` | Get supply withdrawal request status. |
 | `market.harvestYield` | write | `HarvestYield` → `WriteOperationResult` | Harvest market yield. |
 | `market.liquidate` | write | `Liquidate` → `WriteOperationResult` | Liquidate an unhealthy account. |
-| `market.listBorrowPositions` | read | `ListBorrowPositions` → `ListBorrowPositionsResult` | List borrow positions. |
-| `market.listFinalizedSnapshots` | read | `ListFinalizedSnapshots` → `ListFinalizedSnapshotsResult` | List finalized snapshots. |
-| `market.listSupplyPositions` | read | `ListSupplyPositions` → `ListSupplyPositionsResult` | List supply positions. |
+| `market.listBorrowPositions` | read | `ListBorrowPositions` → `HashMap<AccountId, BorrowPosition>` | List borrow positions. |
+| `market.listFinalizedSnapshots` | read | `ListFinalizedSnapshots` → `Vec<Snapshot>` | List finalized snapshots. |
+| `market.listSupplyPositions` | read | `ListSupplyPositions` → `HashMap<AccountId, SupplyPosition>` | List supply positions. |
 | `market.repay` | write | `Repay` → `WriteOperationResult` | Repay borrowed assets. |
 | `market.supply` | write | `Supply` → `WriteOperationResult` | Supply assets to a market. |
 | `market.withdrawCollateral` | write | `WithdrawCollateral` → `WriteOperationResult` | Withdraw collateral from a market. |
@@ -110,10 +110,10 @@
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
-| `mt.getBalanceOf` | read | `GetBalanceOf` → `GetBalanceOfResult` | Get a multi-token balance. |
-| `mt.getBatchBalanceOf` | read | `GetBatchBalanceOf` → `GetBatchBalanceOfResult` | Get multiple multi-token balances. |
-| `mt.getBatchSupply` | read | `GetBatchSupply` → `GetBatchSupplyResult` | Get total supply for multiple multi-token IDs. |
-| `mt.getSupply` | read | `GetSupply` → `GetSupplyResult` | Get total supply for a multi-token ID. |
+| `mt.getBalanceOf` | read | `GetBalanceOf` → `StrNum<u128>` | Get a multi-token balance. |
+| `mt.getBatchBalanceOf` | read | `GetBatchBalanceOf` → `Vec<BalanceEntry>` | Get multiple multi-token balances. |
+| `mt.getBatchSupply` | read | `GetBatchSupply` → `Vec<SupplyEntry>` | Get total supply for multiple multi-token IDs. |
+| `mt.getSupply` | read | `GetSupply` → `Option<StrNum<u128>>` | Get total supply for a multi-token ID. |
 | `mt.transfer` | write | `Transfer` → `WriteOperationResult` | Transfer multi-tokens. |
 | `mt.transferCall` | write | `TransferCall` → `WriteOperationResult` | Transfer multi-tokens and call the receiver. |
 
@@ -127,11 +127,11 @@
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
-| `oracle.getPrice` | read | `GetPrice` → `GetPriceResult` | Read a single on-chain oracle price. |
+| `oracle.getPrice` | read | `GetPrice` → `Option<Price>` | Read a single on-chain oracle price. |
 | `oracle.getPriceResolutionDependencies` | read | `GetPriceResolutionDependencies` → `GetPriceResolutionDependenciesResult` | Get update dependencies for a price. |
-| `oracle.getPrices` | read | `GetPrices` → `ResolvePricesResult` | Read multiple on-chain oracle prices. |
-| `oracle.resolvePrice` | read | `ResolvePrice` → `ResolvePriceResult` | Resolve a single price from supplied inputs. |
-| `oracle.resolvePrices` | read | `ResolvePrices` → `ResolvePricesResult` | Resolve multiple prices from supplied inputs. |
+| `oracle.getPrices` | read | `GetPrices` → `Vec<ResolvedPrice>` | Read multiple on-chain oracle prices. |
+| `oracle.resolvePrice` | read | `ResolvePrice` → `Option<Price>` | Resolve a single price from supplied inputs. |
+| `oracle.resolvePrices` | read | `ResolvePrices` → `Vec<ResolvedPrice>` | Resolve multiple prices from supplied inputs. |
 | `oracle.updateLazer` | write | `UpdateLazer` → `WriteOperationResult` | Submit a Pyth Lazer oracle update for one or more feeds. |
 | `oracle.updatePrices` | write | `UpdatePrices` → `WriteOperationResult` | Submit all updates needed for prices. |
 | `oracle.updatePyth` | write | `UpdatePyth` → `WriteOperationResult` | Submit a Pyth oracle update for one or more feeds. |
@@ -142,8 +142,8 @@
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
 | `owner.acceptOwner` | write | `AcceptOwner` → `WriteOperationResult` | Accept contract ownership. |
-| `owner.getOwner` | read | `GetOwner` → `GetOwnerResult` | Get the current contract owner. |
-| `owner.getProposedOwner` | read | `GetProposedOwner` → `GetProposedOwnerResult` | Get the proposed contract owner. |
+| `owner.getOwner` | read | `GetOwner` → `Option<AccountId>` | Get the current contract owner. |
+| `owner.getProposedOwner` | read | `GetProposedOwner` → `Option<AccountId>` | Get the proposed contract owner. |
 | `owner.proposeOwner` | write | `ProposeOwner` → `WriteOperationResult` | Propose a new contract owner. |
 | `owner.renounceOwner` | write | `RenounceOwner` → `WriteOperationResult` | Renounce contract ownership. |
 
@@ -153,10 +153,10 @@
 |---|---|---|---|
 | `proxyOracle.adminSetProxy` | write | `AdminSetProxy` → `WriteOperationResult` | Set (or clear, with a null `proxy`) a proxy price feed definition. |
 | `proxyOracle.create` | write | `Create` → `WriteOperationResult` | Create a proxy oracle from the registry. |
-| `proxyOracle.getProxy` | read | `GetProxy` → `GetProxyResult` | Get a proxy price feed definition. |
-| `proxyOracle.getProxyCircuitBreakerSet` | read | `GetProxyCircuitBreakerSet` → `GetProxyCircuitBreakerSetResult` | Get the circuit breaker set configured for a proxy price feed. |
-| `proxyOracle.listProxies` | read | `ListProxies` → `ListProxiesResult` | List proxy price feeds. |
-| `proxyOracle.priceFeedExists` | read | `PriceFeedExists` → `PriceFeedExistsResult` | Check whether a proxy price feed exists. |
+| `proxyOracle.getProxy` | read | `GetProxy` → `Option<Proxy<Source>>` | Get a proxy price feed definition. |
+| `proxyOracle.getProxyCircuitBreakerSet` | read | `GetProxyCircuitBreakerSet` → `Option<CircuitBreakerSet>` | Get the circuit breaker set configured for a proxy price feed. |
+| `proxyOracle.listProxies` | read | `ListProxies` → `Vec<PriceIdentifier>` | List proxy price feeds. |
+| `proxyOracle.priceFeedExists` | read | `PriceFeedExists` → `bool` | Check whether a proxy price feed exists. |
 | `proxyOracle.updatePrices` | write | `UpdatePrices` → `WriteOperationResult` | Refresh the proxy oracle's cached prices for the given feeds. |
 | `proxyOracle.upgrade` | write | `Upgrade` → `WriteOperationResult` | Upgrade a proxy oracle with supplied WASM and an explicit state migration. |
 
@@ -168,13 +168,13 @@
 | `proxyOracleGovernance.create` | write | `Create` → `WriteOperationResult` | Create a proxy oracle governance contract from the registry. |
 | `proxyOracleGovernance.createProposal` | write | `CreateProposal` → `WriteOperationResult` | Create a governance proposal. |
 | `proxyOracleGovernance.executeProposal` | write | `ExecuteProposal` → `WriteOperationResult` | Execute a governance proposal. |
-| `proxyOracleGovernance.getGovernancePolicy` | read | `GetGovernancePolicy` → `GetGovernancePolicyResult` | Get the governance policy table (reflexive timelocks, the conservative target default, and per-method overrides). |
-| `proxyOracleGovernance.getProposal` | read | `GetProposal` → `GetProposalResult` | Get a governance proposal. |
-| `proxyOracleGovernance.getProxyOracleId` | read | `GetProxyOracleId` → `GetProxyOracleIdResult` | Get the account id of the proxy oracle this governance contract governs. |
-| `proxyOracleGovernance.getRoles` | read | `GetRoles` → `GetRolesResult` | Get every governance role an account holds. |
-| `proxyOracleGovernance.hasRole` | read | `HasRole` → `HasRoleResult` | Check whether an account holds a governance role. |
-| `proxyOracleGovernance.listProposals` | read | `ListProposals` → `ListProposalsResult` | List active governance proposal IDs. |
-| `proxyOracleGovernance.listRole` | read | `ListRole` → `ListRoleResult` | List the accounts holding a governance role. |
+| `proxyOracleGovernance.getGovernancePolicy` | read | `GetGovernancePolicy` → `GovernancePolicyWire` | Get the governance policy table (reflexive timelocks, the conservative target default, and per-method overrides). |
+| `proxyOracleGovernance.getProposal` | read | `GetProposal` → `Option<Proposal<Operation, AccountId>>` | Get a governance proposal. |
+| `proxyOracleGovernance.getProxyOracleId` | read | `GetProxyOracleId` → `AccountId` | Get the account id of the proxy oracle this governance contract governs. |
+| `proxyOracleGovernance.getRoles` | read | `GetRoles` → `Vec<Role>` | Get every governance role an account holds. |
+| `proxyOracleGovernance.hasRole` | read | `HasRole` → `bool` | Check whether an account holds a governance role. |
+| `proxyOracleGovernance.listProposals` | read | `ListProposals` → `Vec<u32>` | List active governance proposal IDs. |
+| `proxyOracleGovernance.listRole` | read | `ListRole` → `Vec<AccountId>` | List the accounts holding a governance role. |
 | `proxyOracleGovernance.nextProposalId` | read | `NextProposalId` → `u32` | Get the next governance proposal ID. |
 | `proxyOracleGovernance.proposalCount` | read | `ProposalCount` → `u32` | Get the count of active governance proposals. |
 
@@ -182,8 +182,8 @@
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
-| `pyth.listEmaPricesNoOlderThan` | read | `ListEmaPricesNoOlderThan` → `ListEmaPricesNoOlderThanResult` | List EMA prices within an age limit. |
-| `pyth.listEmaPricesUnsafe` | read | `ListEmaPricesUnsafe` → `ListEmaPricesUnsafeResult` | List EMA prices without an age limit. |
+| `pyth.listEmaPricesNoOlderThan` | read | `ListEmaPricesNoOlderThan` → `Vec<PriceEntry>` | List EMA prices within an age limit. |
+| `pyth.listEmaPricesUnsafe` | read | `ListEmaPricesUnsafe` → `Vec<PriceEntry>` | List EMA prices without an age limit. |
 | `pyth.updatePriceFeeds` | write | `UpdatePriceFeeds` → `WriteOperationResult` | Submit raw Pyth update data. |
 
 ## `redstone`
@@ -191,9 +191,9 @@
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
 | `redstone.create` | write | `Create` → `WriteOperationResult` | Create a RedStone price adapter from the registry. |
-| `redstone.getConfig` | read | `GetConfig` → `GetConfigResult` | Get RedStone oracle config. |
-| `redstone.listRole` | read | `ListRole` → `ListRoleResult` | List accounts for a RedStone role. |
-| `redstone.readPriceData` | read | `ReadPriceData` → `ReadPriceDataResult` | Read RedStone price data. |
+| `redstone.getConfig` | read | `GetConfig` → `Config` | Get RedStone oracle config. |
+| `redstone.listRole` | read | `ListRole` → `Vec<AccountId>` | List accounts for a RedStone role. |
+| `redstone.readPriceData` | read | `ReadPriceData` → `Vec<PriceDataEntry>` | Read RedStone price data. |
 | `redstone.setRole` | write | `SetRole` → `WriteOperationResult` | Update a RedStone role membership. |
 | `redstone.writePrices` | write | `WritePrices` → `WriteOperationResult` | Submit RedStone price payloads. |
 
@@ -201,7 +201,7 @@
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
-| `refFinance.getPools` | read | `GetPools` → `GetPoolsResult` | List pools from a Ref Finance exchange. |
+| `refFinance.getPools` | read | `GetPools` → `Vec<PoolInfo>` | List pools from a Ref Finance exchange. |
 
 ## `registry`
 
@@ -210,12 +210,12 @@
 | `registry.addArtifactVersion` | write | `AddArtifactVersion` → `WriteOperationResult` | Add a contract artifact version to a registry. |
 | `registry.addVersion` | write | `AddVersion` → `WriteOperationResult` | Add a deployable version to a registry. |
 | `registry.deploy` | write | `Deploy` → `WriteOperationResult` | Deploy a contract from a registry version with JSON init args validated against the target constructor ABI unless `skip_abi_check` is set. |
-| `registry.getDeployment` | read | `GetDeployment` → `GetDeploymentResult` | Get a deployment record from a registry. |
-| `registry.getRegistryEntry` | read | `GetRegistryEntry` → `GetRegistryEntryResult` | Get a name's registry entry, including one merely reserved by an in-flight deploy. |
-| `registry.getVersion` | read | `GetVersion` → `GetVersionResult` | Get a registered version's code hash and whether it can still be deployed. |
-| `registry.listDeployments` | read | `ListDeployments` → `ListDeploymentsResult` | List deployments in a registry. |
-| `registry.listDeploymentsByKind` | read | `ListDeploymentsByKind` → `ListDeploymentsResult` | List deployments in a registry filtered by contract kind. |
-| `registry.listVersions` | read | `ListVersions` → `ListVersionsResult` | List versions in a registry. |
+| `registry.getDeployment` | read | `GetDeployment` → `Option<Deployment>` | Get a deployment record from a registry. |
+| `registry.getRegistryEntry` | read | `GetRegistryEntry` → `Option<RegistryEntryView>` | Get a name's registry entry, including one merely reserved by an in-flight deploy. |
+| `registry.getVersion` | read | `GetVersion` → `Option<VersionInfo>` | Get a registered version's code hash and whether it can still be deployed. |
+| `registry.listDeployments` | read | `ListDeployments` → `Vec<AccountId>` | List deployments in a registry. |
+| `registry.listDeploymentsByKind` | read | `ListDeploymentsByKind` → `Vec<AccountId>` | List deployments in a registry filtered by contract kind. |
+| `registry.listVersions` | read | `ListVersions` → `Vec<String>` | List versions in a registry. |
 | `registry.removeVersion` | write | `RemoveVersion` → `WriteOperationResult` | Remove a version from a registry. |
 
 ## `storage`
@@ -224,15 +224,15 @@
 |---|---|---|---|
 | `storage.deposit` | write | `Deposit` → `WriteOperationResult` | Deposit storage for an account. |
 | `storage.ensureDeposit` | write | `EnsureDeposit` → `WriteOperationResult` | Ensure an account has enough storage deposit. |
-| `storage.getBalanceBounds` | read | `GetBalanceBounds` → `GetBalanceBoundsResult` | Get storage balance bounds for a contract. |
-| `storage.getBalanceOf` | read | `GetBalanceOf` → `GetBalanceOfResult` | Get storage balance for an account. |
+| `storage.getBalanceBounds` | read | `GetBalanceBounds` → `StorageBalanceBounds` | Get storage balance bounds for a contract. |
+| `storage.getBalanceOf` | read | `GetBalanceOf` → `Option<StorageBalance>` | Get storage balance for an account. |
 | `storage.unregister` | write | `Unregister` → `WriteOperationResult` | Unregister storage for an account. |
 
 ## `token`
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
-| `token.getBalanceOf` | read | `GetBalanceOf` → `GetBalanceOfResult` | Get a token balance across supported standards. |
+| `token.getBalanceOf` | read | `GetBalanceOf` → `StrNum<u128>` | Get a token balance across supported standards. |
 | `token.transfer` | write | `Transfer` → `WriteOperationResult` | Transfer a token across supported standards. |
 | `token.transferCall` | write | `TransferCall` → `WriteOperationResult` | Transfer a token and call the receiver. |
 
@@ -254,7 +254,7 @@
 |---|---|---|---|
 | `ua.create` | write | `Create` → `WriteOperationResult` | Create a universal account from the registry. |
 | `ua.execute` | write | `Execute` → `WriteOperationResult` | Execute a universal account payload. |
-| `ua.getKey` | read | `GetKey` → `GetKeyResult` | Get key parameters from a universal account. |
+| `ua.getKey` | read | `GetKey` → `Option<PayloadExecutionParametersView>` | Get key parameters from a universal account. |
 
 ## `vault`
 
@@ -275,24 +275,24 @@
 | `vault.executeMarketWithdrawal` | write | `ExecuteMarketWithdrawal` → `WriteOperationResult` | Execute a market withdrawal step. |
 | `vault.executeRebalanceWithdrawal` | write | `ExecuteRebalanceWithdrawal` → `WriteOperationResult` | Execute an allocator rebalance withdrawal. |
 | `vault.executeWithdrawal` | write | `ExecuteWithdrawal` → `WriteOperationResult` | Execute the next withdrawal request. |
-| `vault.getCapGroups` | read | `GetCapGroups` → `GetCapGroupsResult` | Get configured cap groups. |
+| `vault.getCapGroups` | read | `GetCapGroups` → `Vec<(CapGroupId, CapGroupRecord)>` | Get configured cap groups. |
 | `vault.getConfiguration` | read | `GetConfiguration` → `VaultConfiguration` | Get vault configuration. |
-| `vault.getCurrentWithdrawRequestId` | read | `GetCurrentWithdrawRequestId` → `GetCurrentWithdrawRequestIdResult` | Get current withdrawal request id. |
+| `vault.getCurrentWithdrawRequestId` | read | `GetCurrentWithdrawRequestId` → `Option<StrNum<u64>>` | Get current withdrawal request id. |
 | `vault.getFeeAnchorTimestamp` | read | `GetFeeAnchorTimestamp` → `StrNum<u64>` | Get fee anchor timestamp. |
 | `vault.getFees` | read | `GetFees` → `Fees<StrNum<u128>>` | Get vault fees. |
 | `vault.getIdleBalance` | read | `GetIdleBalance` → `StrNum<u128>` | Get the vault's idle underlying balance. |
 | `vault.getLastTotalAssets` | read | `GetLastTotalAssets` → `StrNum<u128>` | Get the vault's last fee-anchor total assets. |
-| `vault.getMarketAccountById` | read | `GetMarketAccountById` → `GetMarketAccountByIdResult` | Get a market account from a market id. |
-| `vault.getMarketIdOfAccount` | read | `GetMarketIdOfAccount` → `GetMarketIdOfAccountResult` | Get a market id from a market account. |
+| `vault.getMarketAccountById` | read | `GetMarketAccountById` → `Option<AccountId>` | Get a market account from a market id. |
+| `vault.getMarketIdOfAccount` | read | `GetMarketIdOfAccount` → `Option<MarketId>` | Get a market id from a market account. |
 | `vault.getMaxDeposit` | read | `GetMaxDeposit` → `StrNum<u128>` | Get max deposit estimate. |
 | `vault.getMaxSingleMarketDeposit` | read | `GetMaxSingleMarketDeposit` → `StrNum<u128>` | Get max single-market deposit estimate. |
-| `vault.getRestrictions` | read | `GetRestrictions` → `GetRestrictionsResult` | Get current restrictions. |
+| `vault.getRestrictions` | read | `GetRestrictions` → `Option<Restrictions>` | Get current restrictions. |
 | `vault.getTotalAssets` | read | `GetTotalAssets` → `StrNum<u128>` | Get the vault's current total assets. |
 | `vault.getTotalSupply` | read | `GetTotalSupply` → `StrNum<u128>` | Get total share supply. |
-| `vault.getWithdrawingOpId` | read | `GetWithdrawingOpId` → `GetWithdrawingOpIdResult` | Get current withdrawing operation id. |
+| `vault.getWithdrawingOpId` | read | `GetWithdrawingOpId` → `Option<StrNum<u64>>` | Get current withdrawing operation id. |
 | `vault.hasPendingMarketWithdrawal` | read | `HasPendingMarketWithdrawal` → `bool` | Check whether a market withdrawal is pending. |
-| `vault.listMarketsWithIds` | read | `ListMarketsWithIds` → `ListMarketsWithIdsResult` | List configured market ids and accounts. |
-| `vault.peekNextPendingWithdrawalId` | read | `PeekNextPendingWithdrawalId` → `PeekNextPendingWithdrawalIdResult` | Peek withdrawal queue head id. |
+| `vault.listMarketsWithIds` | read | `ListMarketsWithIds` → `Vec<(StrNum<u64>, AccountId)>` | List configured market ids and accounts. |
+| `vault.peekNextPendingWithdrawalId` | read | `PeekNextPendingWithdrawalId` → `Option<StrNum<u64>>` | Peek withdrawal queue head id. |
 | `vault.previewDeposit` | read | `PreviewDeposit` → `StrNum<u128>` | Preview deposit shares. |
 | `vault.previewMint` | read | `PreviewMint` → `StrNum<u128>` | Preview mint assets. |
 | `vault.previewRedeem` | read | `PreviewRedeem` → `StrNum<u128>` | Preview redeem assets. |

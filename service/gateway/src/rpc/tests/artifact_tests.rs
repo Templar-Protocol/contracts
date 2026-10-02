@@ -13,15 +13,15 @@ async fn artifact_list_endpoint_returns_catalog_metadata_against_sandbox() -> Re
         .await?;
 
     assert_eq!(
-        result.artifacts.len(),
+        result.len(),
         templar_contract_artifacts::ArtifactId::ALL.len()
     );
-    assert!(result.artifacts.iter().any(|metadata| metadata.artifact
+    assert!(result.iter().any(|metadata| metadata.artifact
         == templar_contract_artifacts::ArtifactId::Market
         && metadata.package_name == "templar-market-contract"));
 
     let json = serde_json::to_value(&result)?;
-    let first_artifact = json["artifacts"].as_array().unwrap().first().unwrap();
+    let first_artifact = json.as_array().unwrap().first().unwrap();
     assert!(first_artifact.get("code").is_none());
 
     stack.shutdown().await;
@@ -118,7 +118,6 @@ async fn artifact_add_endpoint_works_against_sandbox() -> Result<()> {
         })
         .await?;
     assert!(versions
-        .values
         .iter()
         .any(|version_key| version_key.starts_with(&expected_version_prefix)));
 

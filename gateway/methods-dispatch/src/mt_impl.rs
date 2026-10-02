@@ -10,6 +10,7 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::mt;
+use templar_primitives::SU128;
 
 use crate::Dispatch;
 
@@ -22,17 +23,15 @@ fn approval(approval: Option<mt::MtApproval>) -> Option<Approval> {
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<mt::GetBalanceOf, C> for Dispatch {
-    async fn dispatch(request: mt::GetBalanceOf, ctx: C) -> GatewayResult<mt::GetBalanceOfResult> {
+    async fn dispatch(request: mt::GetBalanceOf, ctx: C) -> GatewayResult<SU128> {
         let params = request;
-        let balance = ctx
-            .near_client()
+        ctx.near_client()
             .mt(params.contract_id)
             .mt_balance_of(GetBalanceOfArgs {
                 account_id: params.account_id,
                 token_id: params.token_id,
             })
-            .await?;
-        Ok(mt::GetBalanceOfResult { balance })
+            .await
     }
 }
 
@@ -41,7 +40,7 @@ impl<C: HasNearClient> DispatchRead<mt::GetBatchBalanceOf, C> for Dispatch {
     async fn dispatch(
         request: mt::GetBatchBalanceOf,
         ctx: C,
-    ) -> GatewayResult<mt::GetBatchBalanceOfResult> {
+    ) -> GatewayResult<Vec<mt::BalanceEntry>> {
         let params = request;
         let token_ids = params.token_ids;
         let values = ctx
@@ -52,37 +51,30 @@ impl<C: HasNearClient> DispatchRead<mt::GetBatchBalanceOf, C> for Dispatch {
                 token_ids: token_ids.clone(),
             })
             .await?;
-        Ok(mt::GetBatchBalanceOfResult {
-            balances: token_ids
-                .into_iter()
-                .zip(values)
-                .map(|(token_id, balance)| mt::BalanceEntry { token_id, balance })
-                .collect(),
-        })
+        Ok(token_ids
+            .into_iter()
+            .zip(values)
+            .map(|(token_id, balance)| mt::BalanceEntry { token_id, balance })
+            .collect())
     }
 }
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<mt::GetSupply, C> for Dispatch {
-    async fn dispatch(request: mt::GetSupply, ctx: C) -> GatewayResult<mt::GetSupplyResult> {
+    async fn dispatch(request: mt::GetSupply, ctx: C) -> GatewayResult<Option<SU128>> {
         let params = request;
-        let supply = ctx
-            .near_client()
+        ctx.near_client()
             .mt(params.contract_id)
             .mt_supply(GetSupplyArgs {
                 token_id: params.token_id,
             })
-            .await?;
-        Ok(mt::GetSupplyResult { supply })
+            .await
     }
 }
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<mt::GetBatchSupply, C> for Dispatch {
-    async fn dispatch(
-        request: mt::GetBatchSupply,
-        ctx: C,
-    ) -> GatewayResult<mt::GetBatchSupplyResult> {
+    async fn dispatch(request: mt::GetBatchSupply, ctx: C) -> GatewayResult<Vec<mt::SupplyEntry>> {
         let params = request;
         let token_ids = params.token_ids;
         let values = ctx
@@ -92,13 +84,11 @@ impl<C: HasNearClient> DispatchRead<mt::GetBatchSupply, C> for Dispatch {
                 token_ids: token_ids.clone(),
             })
             .await?;
-        Ok(mt::GetBatchSupplyResult {
-            supplies: token_ids
-                .into_iter()
-                .zip(values)
-                .map(|(token_id, supply)| mt::SupplyEntry { token_id, supply })
-                .collect(),
-        })
+        Ok(token_ids
+            .into_iter()
+            .zip(values)
+            .map(|(token_id, supply)| mt::SupplyEntry { token_id, supply })
+            .collect())
     }
 }
 

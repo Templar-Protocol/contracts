@@ -26,9 +26,9 @@ async fn ref_finance_get_pools_endpoint_works_against_sandbox() -> Result<()> {
         })
         .await?;
 
-    assert_eq!(pools.pools.len(), 1);
+    assert_eq!(pools.len(), 1);
     assert_eq!(
-        pools.pools[0].shares_total_supply,
+        pools[0].shares_total_supply,
         templar_common::SU128::from(99)
     );
 

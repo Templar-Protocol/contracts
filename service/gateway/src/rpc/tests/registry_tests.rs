@@ -35,7 +35,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         })
         .await?;
 
-    assert_eq!(versions.values, vec![version_key.clone()]);
+    assert_eq!(versions, vec![version_key.clone()]);
 
     let deploy = stack
         .controller
@@ -117,13 +117,13 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
 
     assert_eq!(
-        deployments.account_ids,
+        deployments,
         vec![format!("deployed-ft.{registry_id}").parse::<AccountId>()?]
     );
-    assert!(deployment.deployment.is_some());
+    assert!(deployment.is_some());
     assert!(!version.version_string.is_empty());
-    assert!(markets_only.account_ids.is_empty());
-    assert_eq!(unknown_only.account_ids, deployments.account_ids);
+    assert!(markets_only.is_empty());
+    assert_eq!(unknown_only, deployments);
     assert_eq!(deploy.operation.status, OperationStatus::Succeeded);
 
     stack.shutdown().await;
@@ -371,7 +371,7 @@ async fn stored_and_global_versions_validate_constructor_args() -> Result<()> {
                 account_id,
             })
             .await?;
-        assert!(deployment.deployment.is_some());
+        assert!(deployment.is_some());
     }
 
     let deployments = stack
@@ -385,7 +385,7 @@ async fn stored_and_global_versions_validate_constructor_args() -> Result<()> {
         format!("valid-stored.{registry_id}").parse::<AccountId>()?,
         format!("valid-global.{registry_id}").parse::<AccountId>()?,
     ];
-    assert_eq!(deployments.account_ids, expected);
+    assert_eq!(deployments, expected);
 
     stack.shutdown().await;
     Ok(())

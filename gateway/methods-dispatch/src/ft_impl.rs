@@ -4,6 +4,7 @@ use templar_gateway_core::{
     ContractWriteOptions, DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::ft;
+use templar_primitives::SU128;
 
 use crate::Dispatch;
 
@@ -12,16 +13,13 @@ impl<C> DispatchRead<ft::GetBalanceOf, C> for Dispatch
 where
     C: HasNearClient,
 {
-    async fn dispatch(request: ft::GetBalanceOf, ctx: C) -> GatewayResult<ft::GetBalanceOfResult> {
-        let balance = ctx
-            .near_client()
+    async fn dispatch(request: ft::GetBalanceOf, ctx: C) -> GatewayResult<SU128> {
+        ctx.near_client()
             .ft(request.contract_id)
             .ft_balance_of(GetBalanceOfArgs {
                 account_id: request.account_id,
             })
-            .await?;
-
-        Ok(ft::GetBalanceOfResult { balance })
+            .await
     }
 }
 

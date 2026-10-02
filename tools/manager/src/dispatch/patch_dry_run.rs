@@ -417,7 +417,6 @@ async fn evaluate_views(
                 args: ContractArgs::Json(check.args.clone()),
             })
             .await
-            .map(|result| result.value)
             .map_err(|error| error.to_string());
         outcomes.push(result);
     }

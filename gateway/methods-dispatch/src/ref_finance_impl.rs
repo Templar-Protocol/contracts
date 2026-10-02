@@ -11,7 +11,7 @@ impl<C: HasNearClient> DispatchRead<ref_finance::GetPools, C> for Dispatch {
     async fn dispatch(
         request: ref_finance::GetPools,
         ctx: C,
-    ) -> GatewayResult<ref_finance::GetPoolsResult> {
+    ) -> GatewayResult<Vec<ref_finance::PoolInfo>> {
         let pools = ctx
             .near_client()
             .ref_finance(request.exchange_id)
@@ -26,6 +26,6 @@ impl<C: HasNearClient> DispatchRead<ref_finance::GetPools, C> for Dispatch {
                 shares_total_supply: pool.shares_total_supply,
             })
             .collect();
-        Ok(ref_finance::GetPoolsResult { pools })
+        Ok(pools)
     }
 }

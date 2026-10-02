@@ -18,7 +18,7 @@ async fn pyth_endpoints_work_against_sandbox() -> Result<()> {
             price_ids: vec![price_id],
         })
         .await?;
-    assert_same_pyth_price_value(unsafe_prices.prices[0].price.clone(), &price);
+    assert_same_pyth_price_value(unsafe_prices[0].price.clone(), &price);
 
     let bounded_prices = stack
         .controller
@@ -28,7 +28,7 @@ async fn pyth_endpoints_work_against_sandbox() -> Result<()> {
             age: 60,
         })
         .await?;
-    assert_same_pyth_price_value(bounded_prices.prices[0].price.clone(), &price);
+    assert_same_pyth_price_value(bounded_prices[0].price.clone(), &price);
 
     let update = stack
         .controller

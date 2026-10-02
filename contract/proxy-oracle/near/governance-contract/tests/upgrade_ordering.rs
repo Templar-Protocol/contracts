@@ -158,8 +158,7 @@ async fn upgrade_oracle(
             .read(GetOwner {
                 contract_id: oracle.clone()
             })
-            .await?
-            .owner,
+            .await?,
         Some(owner.clone()),
         "upgraded oracle should retain its owner"
     );
@@ -195,7 +194,6 @@ async fn upgrade_gov(harness: &SandboxHarness, governance_id: &AccountId) -> Res
             id: 0,
         })
         .await?
-        .proposal
         .expect("seeded proposal survived migration")
         .operation;
     assert_eq!(

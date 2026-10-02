@@ -364,12 +364,12 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
         })
         .await?;
 
-    assert_eq!(prices.prices.len(), 2);
-    assert_eq!(prices.prices[0].price_id, proxy_direct_id);
-    assert_same_pyth_price_value(prices.prices[0].price.clone(), &pyth_price(100.0));
-    assert_eq!(prices.prices[1].price_id, proxy_redstone_id);
+    assert_eq!(prices.len(), 2);
+    assert_eq!(prices[0].price_id, proxy_direct_id);
+    assert_same_pyth_price_value(prices[0].price.clone(), &pyth_price(100.0));
+    assert_eq!(prices[1].price_id, proxy_redstone_id);
     assert_same_pyth_price_value(
-        prices.prices[1].price.clone(),
+        prices[1].price.clone(),
         &redstone_price(42.0)
             .to_pyth_price()
             .expect("redstone price should convert to pyth price"),
@@ -391,7 +391,7 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
             lazer: vec![],
         })
         .await?;
-    assert!(one_price.price.is_some());
+    assert!(one_price.is_some());
 
     stack
         .harness
@@ -419,9 +419,9 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
         })
         .await?;
 
-    assert_eq!(on_chain.prices.len(), 2);
-    assert_eq!(on_chain.prices[0].price_id, direct_price_id);
-    let direct = on_chain.prices[0]
+    assert_eq!(on_chain.len(), 2);
+    assert_eq!(on_chain[0].price_id, direct_price_id);
+    let direct = on_chain[0]
         .price
         .clone()
         .expect("direct price should resolve");
@@ -429,7 +429,7 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
     assert_eq!(direct.price, expected.price);
     assert_eq!(direct.conf, expected.conf);
     assert_eq!(direct.expo, expected.expo);
-    assert!(on_chain.prices[1].price.is_some());
+    assert!(on_chain[1].price.is_some());
 
     let one_on_chain = stack
         .controller
@@ -439,7 +439,7 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
             age: 60,
         })
         .await?;
-    assert!(one_on_chain.price.is_some());
+    assert!(one_on_chain.is_some());
 
     stack.shutdown().await;
     Ok(())

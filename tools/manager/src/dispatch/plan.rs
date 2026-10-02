@@ -1002,7 +1002,6 @@ async fn target_claim(
             })
             .await
             .with_context(|| format!("read `{registry_id}`'s entry for `{account_id}`"))?
-            .entry
     } else {
         // The older view reports a reserved name as absent, so the fallback is exactly this
         // mapping with one state it can never produce.
@@ -1015,7 +1014,6 @@ async fn target_claim(
             .with_context(|| {
                 format!("read `{registry_id}`'s deployment record for `{account_id}`")
             })?
-            .deployment
             .map(RegistryEntryView::Deployed)
     };
 

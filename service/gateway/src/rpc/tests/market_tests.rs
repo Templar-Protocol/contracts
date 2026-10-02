@@ -221,7 +221,6 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
             })
             .await?;
         if position
-            .position
             .as_ref()
             .is_some_and(|position| position.get_deposit().incoming.is_empty())
         {
@@ -292,7 +291,6 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
             account_id: stack.harness.cleanup_signer_account_id.0.clone(),
         })
         .await?
-        .position
         .expect("borrower should have a borrow position before liquidation");
     let liability_before_liquidation =
         borrow_position_before_liquidation.get_total_borrow_asset_liability();
@@ -379,7 +377,7 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
             },
         )
         .await?;
-    assert!(supply_request.status.is_none());
+    assert!(supply_request.is_none());
 
     let borrow_position = stack
         .controller
@@ -389,7 +387,6 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
         })
         .await?;
     let borrow_position = borrow_position
-        .position
         .expect("borrower should still have a borrow position after partial liquidation");
     let liability_after_liquidation = borrow_position.get_total_borrow_asset_liability();
     assert!(
@@ -422,7 +419,7 @@ async fn market_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
 
     assert_eq!(returned_configuration, configuration);
-    assert!(borrow_positions.positions.is_empty());
+    assert!(borrow_positions.is_empty());
 
     stack.shutdown().await;
     Ok(())
@@ -510,7 +507,7 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
                 account_id: market_account_id.clone(),
             })
             .await?;
-        assert!(storage_balance.balance.is_some());
+        assert!(storage_balance.is_some());
     }
 
     let deployment = stack
@@ -520,7 +517,7 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
             account_id: market_account_id,
         })
         .await?;
-    assert!(deployment.deployment.is_some());
+    assert!(deployment.is_some());
 
     stack.shutdown().await;
     Ok(())
@@ -658,24 +655,20 @@ async fn market_extended_endpoints_work_against_sandbox() -> Result<()> {
         })
         .await?;
 
-    assert_eq!(finalized_len as usize, finalized.snapshots.len());
-    assert!(empty_borrow_position.position.is_none());
-    assert!(empty_borrow_interest.amount.is_none());
-    assert!(empty_borrow_status.status.is_none());
-    assert!(supply_positions.positions.is_empty());
-    assert!(empty_supply_position.position.is_none());
-    assert!(empty_supply_yield.amount.is_none());
-    assert!(empty_withdrawal_request.status.is_none());
+    assert_eq!(finalized_len as usize, finalized.len());
+    assert!(empty_borrow_position.is_none());
+    assert!(empty_borrow_interest.is_none());
+    assert!(empty_borrow_status.is_none());
+    assert!(supply_positions.is_empty());
+    assert!(empty_supply_position.is_none());
+    assert!(empty_supply_yield.is_none());
+    assert!(empty_withdrawal_request.is_none());
     assert_eq!(
         queue.depth,
         templar_common::asset::BorrowAssetAmount::zero()
     );
     assert_eq!(last_yield, templar_common::Decimal::ZERO);
-    assert!(static_yield.record.is_none());
-    assert_eq!(
-        static_yield.borrow_asset_total(),
-        templar_common::asset::BorrowAssetAmount::zero()
-    );
+    assert!(static_yield.is_none());
     assert_eq!(
         metrics.borrowed,
         templar_common::asset::BorrowAssetAmount::zero()

@@ -58,7 +58,7 @@ pub struct LazerOraclePrices {
 
 /// Resolve a single price from supplied inputs.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "oracle.resolvePrice", output = ResolvePriceResult)]
+#[method(read = "oracle.resolvePrice", output = Option<pyth::Price>)]
 pub struct ResolvePrice {
     pub oracle_id: near_account_id::AccountId,
     pub price_id: PriceIdentifier,
@@ -69,14 +69,9 @@ pub struct ResolvePrice {
     pub lazer: Vec<LazerOraclePrices>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ResolvePriceResult {
-    pub price: Option<pyth::Price>,
-}
-
 /// Resolve multiple prices from supplied inputs.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "oracle.resolvePrices", output = ResolvePricesResult)]
+#[method(read = "oracle.resolvePrices", output = Vec<ResolvedPrice>)]
 pub struct ResolvePrices {
     pub oracle_id: near_account_id::AccountId,
     pub price_ids: Vec<PriceIdentifier>,
@@ -93,28 +88,18 @@ pub struct ResolvedPrice {
     pub price: Option<pyth::Price>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ResolvePricesResult {
-    pub prices: Vec<ResolvedPrice>,
-}
-
 /// Read a single on-chain oracle price.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "oracle.getPrice", output = GetPriceResult)]
+#[method(read = "oracle.getPrice", output = Option<pyth::Price>)]
 pub struct GetPrice {
     pub oracle_id: near_account_id::AccountId,
     pub price_id: PriceIdentifier,
     pub age: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetPriceResult {
-    pub price: Option<pyth::Price>,
-}
-
 /// Read multiple on-chain oracle prices.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "oracle.getPrices", output = ResolvePricesResult)]
+#[method(read = "oracle.getPrices", output = Vec<ResolvedPrice>)]
 pub struct GetPrices {
     pub oracle_id: near_account_id::AccountId,
     pub price_ids: Vec<PriceIdentifier>,

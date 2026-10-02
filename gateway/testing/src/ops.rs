@@ -215,14 +215,12 @@ impl SandboxHarness {
         &self,
         contract_id: &AccountId,
     ) -> Result<templar_gateway_types::common::StorageBalanceBounds> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(storage::GetBalanceBounds {
                 contract_id: contract_id.clone(),
             })
             .await
-            .map_err(|error| anyhow::anyhow!("storage_balance_bounds failed: {error}"))?
-            .bounds)
+            .map_err(|error| anyhow::anyhow!("storage_balance_bounds failed: {error}"))
     }
 
     /// Top up `user`'s storage deposit on `contract_id` by its minimum bound —
@@ -514,15 +512,13 @@ impl SandboxHarness {
         vault_id: &AccountId,
         market_account: &AccountId,
     ) -> Result<Option<MarketId>> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(vault::GetMarketIdOfAccount {
                 vault_id: vault_id.clone(),
                 market: market_account.clone(),
             })
             .await
-            .map_err(|error| anyhow::anyhow!("get_market_id_of_account failed: {error}"))?
-            .market_id)
+            .map_err(|error| anyhow::anyhow!("get_market_id_of_account failed: {error}"))
     }
 
     /// Deposit underlying into the vault (mints shares to `user`).
@@ -879,14 +875,12 @@ impl SandboxHarness {
         &self,
         vault: &DeployedVault,
     ) -> Result<Option<Restrictions>> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(vault::GetRestrictions {
                 vault_id: vault.vault_id.clone(),
             })
             .await
-            .map_err(|error| anyhow::anyhow!("get_restrictions failed: {error}"))?
-            .restrictions)
+            .map_err(|error| anyhow::anyhow!("get_restrictions failed: {error}"))
     }
 
     /// The id of the in-flight user withdrawal op, if any.
@@ -898,7 +892,6 @@ impl SandboxHarness {
             })
             .await
             .map_err(|error| anyhow::anyhow!("get_withdrawing_op_id failed: {error}"))?
-            .op_id
             .map(|id| id.0))
     }
 
@@ -1131,16 +1124,10 @@ impl SandboxHarness {
         market: &DeployedMarket,
         account_id: &AccountId,
     ) -> Result<u128> {
-        Ok(u128::from(
-            self.client()?
-                .read(market::GetStaticYield {
-                    market_id: market.market_id.clone(),
-                    account_id: account_id.clone(),
-                })
-                .await
-                .map_err(|error| anyhow::anyhow!("static_yield failed: {error}"))?
-                .borrow_asset_total(),
-        ))
+        Ok(self
+            .static_yield_record(market, account_id)
+            .await?
+            .unwrap_or_default())
     }
 
     /// The static-yield record total for `account_id`, or `None` if the account
@@ -1158,7 +1145,6 @@ impl SandboxHarness {
             })
             .await
             .map_err(|error| anyhow::anyhow!("static_yield failed: {error}"))?
-            .record
             .map(|record| u128::from(record.borrow_asset_total())))
     }
 
@@ -1185,15 +1171,13 @@ impl SandboxHarness {
         &self,
         market: &DeployedMarket,
     ) -> Result<std::collections::HashMap<AccountId, SupplyPosition>> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(market::ListSupplyPositions {
                 market_id: market.market_id.clone(),
                 args: Pagination::default(),
             })
             .await
-            .map_err(|error| anyhow::anyhow!("list_supply_positions failed: {error}"))?
-            .positions)
+            .map_err(|error| anyhow::anyhow!("list_supply_positions failed: {error}"))
     }
 
     /// List all borrow positions, keyed by account.
@@ -1201,28 +1185,24 @@ impl SandboxHarness {
         &self,
         market: &DeployedMarket,
     ) -> Result<std::collections::HashMap<AccountId, BorrowPosition>> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(market::ListBorrowPositions {
                 market_id: market.market_id.clone(),
                 args: Pagination::default(),
             })
             .await
-            .map_err(|error| anyhow::anyhow!("list_borrow_positions failed: {error}"))?
-            .positions)
+            .map_err(|error| anyhow::anyhow!("list_borrow_positions failed: {error}"))
     }
 
     /// List the finalized snapshots.
     pub async fn list_finalized_snapshots(&self, market: &DeployedMarket) -> Result<Vec<Snapshot>> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(market::ListFinalizedSnapshots {
                 market_id: market.market_id.clone(),
                 args: Pagination::default(),
             })
             .await
-            .map_err(|error| anyhow::anyhow!("list_finalized_snapshots failed: {error}"))?
-            .snapshots)
+            .map_err(|error| anyhow::anyhow!("list_finalized_snapshots failed: {error}"))
     }
 
     /// Add a contract version to a registry.
@@ -1606,7 +1586,6 @@ impl SandboxHarness {
             .map_err(|error| {
                 anyhow::anyhow!("get_borrow_position_pending_interest failed: {error}")
             })?
-            .amount
             .unwrap_or_default())
     }
 
@@ -1625,7 +1604,6 @@ impl SandboxHarness {
             })
             .await
             .map_err(|error| anyhow::anyhow!("get_supply_position_pending_yield failed: {error}"))?
-            .amount
             .unwrap_or_default())
     }
 
@@ -1645,15 +1623,13 @@ impl SandboxHarness {
         contract_id: &AccountId,
         account_id: &AccountId,
     ) -> Result<Option<templar_gateway_types::common::StorageBalance>> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(storage::GetBalanceOf {
                 contract_id: contract_id.clone(),
                 account_id: account_id.clone(),
             })
             .await
-            .map_err(|error| anyhow::anyhow!("storage_balance_of failed: {error}"))?
-            .balance)
+            .map_err(|error| anyhow::anyhow!("storage_balance_of failed: {error}"))
     }
 
     /// Withdraw collateral from a borrow position.
@@ -1764,7 +1740,6 @@ impl SandboxHarness {
             })
             .await
             .map_err(|error| anyhow::anyhow!("ft_balance_of failed: {error}"))?
-            .balance
             .0)
     }
 
@@ -1785,7 +1760,6 @@ impl SandboxHarness {
                 })
                 .await
                 .map_err(|error| anyhow::anyhow!("mt_balance_of failed: {error}"))?
-                .balance
                 .0)
         } else if let Some(contract_id) = asset.clone().into_nep141() {
             self.ft_balance_of(&contract_id, account_id).await
@@ -1938,7 +1912,6 @@ impl SandboxHarness {
             })
             .await
             .map_err(|error| anyhow::anyhow!("oracle_ema_prices failed: {error}"))?
-            .prices
             .into_iter()
             .map(|entry| (entry.price_id, entry.price))
             .collect())
@@ -2185,16 +2158,14 @@ impl SandboxHarness {
         account_id: &AccountId,
         oracle_response: OracleResponse,
     ) -> Result<Option<BorrowStatus>> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(market::GetBorrowStatus {
                 market_id: market.market_id.clone(),
                 account_id: account_id.clone(),
                 oracle_response,
             })
             .await
-            .map_err(|error| anyhow::anyhow!("get_borrow_status failed: {error}"))?
-            .status)
+            .map_err(|error| anyhow::anyhow!("get_borrow_status failed: {error}"))
     }
 
     /// Read a borrow position.
@@ -2203,15 +2174,13 @@ impl SandboxHarness {
         market: &DeployedMarket,
         account_id: &AccountId,
     ) -> Result<Option<BorrowPosition>> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(market::GetBorrowPosition {
                 market_id: market.market_id.clone(),
                 account_id: account_id.clone(),
             })
             .await
-            .map_err(|error| anyhow::anyhow!("get_borrow_position failed: {error}"))?
-            .position)
+            .map_err(|error| anyhow::anyhow!("get_borrow_position failed: {error}"))
     }
 
     /// Read a supply position.
@@ -2220,15 +2189,13 @@ impl SandboxHarness {
         market: &DeployedMarket,
         account_id: &AccountId,
     ) -> Result<Option<SupplyPosition>> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(market::GetSupplyPosition {
                 market_id: market.market_id.clone(),
                 account_id: account_id.clone(),
             })
             .await
-            .map_err(|error| anyhow::anyhow!("get_supply_position failed: {error}"))?
-            .position)
+            .map_err(|error| anyhow::anyhow!("get_supply_position failed: {error}"))
     }
 
     /// Read the supply withdrawal queue status.
@@ -2250,15 +2217,13 @@ impl SandboxHarness {
         market: &DeployedMarket,
         account_id: &AccountId,
     ) -> Result<Option<WithdrawalRequestStatus>> {
-        Ok(self
-            .client()?
+        self.client()?
             .read(market::GetSupplyWithdrawalRequestStatus {
                 market_id: market.market_id.clone(),
                 account_id: account_id.clone(),
             })
             .await
-            .map_err(|error| anyhow::anyhow!("supply_withdrawal_request_status failed: {error}"))?
-            .status)
+            .map_err(|error| anyhow::anyhow!("supply_withdrawal_request_status failed: {error}"))
     }
 
     /// Count finalized snapshots.

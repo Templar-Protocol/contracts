@@ -1067,7 +1067,7 @@ async fn list_deployments(
                     },
                 })
                 .await?;
-            Ok(result.account_ids)
+            Ok(result)
         }
     })
     .await

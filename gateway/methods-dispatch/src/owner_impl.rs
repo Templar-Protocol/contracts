@@ -27,12 +27,14 @@ fn ensure_owner_signer(
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<owner::GetOwner, C> for Dispatch {
-    async fn dispatch(request: owner::GetOwner, ctx: C) -> GatewayResult<owner::GetOwnerResult> {
+    async fn dispatch(
+        request: owner::GetOwner,
+        ctx: C,
+    ) -> GatewayResult<Option<near_account_id::AccountId>> {
         ctx.near_client()
             .owner(request.contract_id)
             .own_get_owner(())
             .await
-            .map(|owner| owner::GetOwnerResult { owner })
     }
 }
 
@@ -41,12 +43,11 @@ impl<C: HasNearClient> DispatchRead<owner::GetProposedOwner, C> for Dispatch {
     async fn dispatch(
         request: owner::GetProposedOwner,
         ctx: C,
-    ) -> GatewayResult<owner::GetProposedOwnerResult> {
+    ) -> GatewayResult<Option<near_account_id::AccountId>> {
         ctx.near_client()
             .owner(request.contract_id)
             .own_get_proposed_owner(())
             .await
-            .map(|proposed_owner| owner::GetProposedOwnerResult { proposed_owner })
     }
 }
 

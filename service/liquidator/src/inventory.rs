@@ -328,7 +328,7 @@ impl InventoryManager {
 
     /// Fetches current balance for an asset from blockchain
     async fn fetch_balance(&self, asset: &FungibleAsset<BorrowAsset>) -> InventoryResult<U128> {
-        let result = self
+        let balance = self
             .client
             .read(token::GetBalanceOf {
                 token: TokenReference::from(asset),
@@ -337,7 +337,7 @@ impl InventoryManager {
             .await
             .map_err(|e| InventoryError::FetchBalanceError(e.into()))?;
 
-        Ok(U128(result.balance.0))
+        Ok(U128(balance.0))
     }
 
     /// Gets available (unreserved) balance for an asset
@@ -513,7 +513,7 @@ impl InventoryManager {
         &self,
         asset: &FungibleAsset<CollateralAsset>,
     ) -> InventoryResult<U128> {
-        let result = self
+        let balance = self
             .client
             .read(token::GetBalanceOf {
                 token: TokenReference::from(asset),
@@ -522,7 +522,7 @@ impl InventoryManager {
             .await
             .map_err(|e| InventoryError::FetchBalanceError(e.into()))?;
 
-        Ok(U128(result.balance.0))
+        Ok(U128(balance.0))
     }
 
     /// Gets collateral inventory for iteration

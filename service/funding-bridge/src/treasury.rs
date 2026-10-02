@@ -131,7 +131,7 @@ impl NearHandler {
             "Querying ft_balance_of"
         );
 
-        let result = self
+        let balance = self
             .client
             .read(ft::GetBalanceOf {
                 contract_id: token_contract.clone(),
@@ -140,7 +140,7 @@ impl NearHandler {
             .await
             .map_err(|e| ChainError::BalanceQueryFailed(format!("ft_balance_of failed: {e}")))?;
 
-        Ok(*result.balance)
+        Ok(*balance)
     }
 
     /// Get token contract ID for asset

@@ -3,22 +3,17 @@ use templar_gateway_core::{
     query_contract_kind, DispatchRead, GatewayError, GatewayResult, HasNearClient,
 };
 use templar_gateway_methods_spec::contract;
+use templar_gateway_types::contract::ContractKind;
 
 use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<contract::ViewFunction, C> for Dispatch {
-    async fn dispatch(
-        request: contract::ViewFunction,
-        ctx: C,
-    ) -> GatewayResult<contract::ViewFunctionResult> {
-        let value = ctx
-            .near_client()
+    async fn dispatch(request: contract::ViewFunction, ctx: C) -> GatewayResult<serde_json::Value> {
+        ctx.near_client()
             .contract(request.contract_id.clone())
             .view_function(&request.method_name.0, request.args.try_into_bytes()?)
-            .await?;
-
-        Ok(contract::ViewFunctionResult { value })
+            .await
     }
 }
 
@@ -65,11 +60,7 @@ impl<C: HasNearClient> DispatchRead<contract::GetStateVersion, C> for Dispatch {
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<contract::GetKind, C> for Dispatch {
-    async fn dispatch(
-        request: contract::GetKind,
-        ctx: C,
-    ) -> GatewayResult<contract::GetKindResult> {
-        let kind = query_contract_kind(&ctx, request.contract_id).await?;
-        Ok(contract::GetKindResult { kind })
+    async fn dispatch(request: contract::GetKind, ctx: C) -> GatewayResult<ContractKind> {
+        query_contract_kind(&ctx, request.contract_id).await
     }
 }

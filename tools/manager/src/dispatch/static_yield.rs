@@ -68,7 +68,7 @@ async fn resolve_markets(
             })
             .await
             .with_context(|| format!("list markets deployed from {registry_id}"))?;
-        markets.extend(deployed.account_ids);
+        markets.extend(deployed);
     }
     Ok(markets)
 }
@@ -123,7 +123,9 @@ async fn harvest_market(
         })
         .await
         .context("read static yield")?
-        .borrow_asset_total();
+        .map_or_else(BorrowAssetAmount::zero, |record| {
+            record.borrow_asset_total()
+        });
     if amount.is_zero() {
         let is_recipient = has_static_weight || configuration.protocol_account_id == signer.0;
         return Ok(if is_recipient {
@@ -192,12 +194,11 @@ async fn ensure_storage_registered(
         })
         .await
         .with_context(|| format!("read storage balance on {asset_contract}"))?
-        .balance
         .map_or(NearToken::from_yoctonear(0), |balance| balance.total);
     anyhow::ensure!(
-        total >= bounds.bounds.min,
+        total >= bounds.min,
         "insufficient storage deposit on {asset_contract}: {total} < minimum {}",
-        bounds.bounds.min
+        bounds.min
     );
     Ok(())
 }

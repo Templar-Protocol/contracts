@@ -45,17 +45,12 @@ impl<C: HasNearClient> PlanWrite<redstone::Create, C> for Dispatch {
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<redstone::GetConfig, C> for Dispatch {
-    async fn dispatch(
-        request: redstone::GetConfig,
-        ctx: C,
-    ) -> GatewayResult<redstone::GetConfigResult> {
+    async fn dispatch(request: redstone::GetConfig, ctx: C) -> GatewayResult<Config> {
         let params = request;
-        let config = ctx
-            .near_client()
+        ctx.near_client()
             .redstone_oracle(params.oracle_id)
             .get_config(())
-            .await?;
-        Ok(redstone::GetConfigResult { config })
+            .await
     }
 }
 
@@ -64,7 +59,7 @@ impl<C: HasNearClient> DispatchRead<redstone::ReadPriceData, C> for Dispatch {
     async fn dispatch(
         request: redstone::ReadPriceData,
         ctx: C,
-    ) -> GatewayResult<redstone::ReadPriceDataResult> {
+    ) -> GatewayResult<Vec<redstone::PriceDataEntry>> {
         let params = request;
         let feed_ids = params.feed_ids;
         let response = ctx
@@ -74,35 +69,28 @@ impl<C: HasNearClient> DispatchRead<redstone::ReadPriceData, C> for Dispatch {
                 feed_ids: feed_ids.clone(),
             })
             .await?;
-        Ok(redstone::ReadPriceDataResult {
-            entries: feed_ids
-                .into_iter()
-                .filter_map(|feed_id| {
-                    response
-                        .get(&feed_id)
-                        .cloned()
-                        .map(|data| redstone::PriceDataEntry { feed_id, data })
-                })
-                .collect(),
-        })
+        Ok(feed_ids
+            .into_iter()
+            .filter_map(|feed_id| {
+                response
+                    .get(&feed_id)
+                    .cloned()
+                    .map(|data| redstone::PriceDataEntry { feed_id, data })
+            })
+            .collect())
     }
 }
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<redstone::ListRole, C> for Dispatch {
-    async fn dispatch(
-        request: redstone::ListRole,
-        ctx: C,
-    ) -> GatewayResult<redstone::ListRoleResult> {
+    async fn dispatch(request: redstone::ListRole, ctx: C) -> GatewayResult<Vec<AccountId>> {
         let params = request;
-        let account_ids = ctx
-            .near_client()
+        ctx.near_client()
             .redstone_oracle(params.oracle_id)
             .list_role(ListRoleArgs {
                 role: params.role.into(),
             })
-            .await?;
-        Ok(redstone::ListRoleResult { account_ids })
+            .await
     }
 }
 

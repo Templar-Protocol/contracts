@@ -225,4 +225,38 @@ mod tests {
             "legacy proxyOracleOwner methods remain in the catalog"
         );
     }
+
+    /// Tripwire for the "Read Results" convention in `gateway/README.md`.
+    /// `op.get` is exempt: it is registered outside the shared read lists.
+    #[test]
+    fn read_outputs_are_not_single_field_wrappers() {
+        use templar_gateway_types::MethodSpec;
+
+        fn is_wrapper<T: schemars::JsonSchema>() -> bool {
+            schemars::schema_for!(T)
+                .schema
+                .object
+                .is_some_and(|object| object.properties.len() == 1)
+        }
+
+        assert!(is_wrapper::<
+            <templar_gateway_methods_spec::op::Get as MethodSpec>::Output,
+        >());
+
+        let mut wrapped = Vec::new();
+        macro_rules! check {
+            ($spec:ty) => {
+                if is_wrapper::<<$spec as MethodSpec>::Output>() {
+                    wrapped.push(<$spec as MethodSpec>::RPC_METHOD);
+                }
+            };
+        }
+        templar_gateway_methods_spec::for_each_read_method!(check);
+        templar_gateway_artifacts_spec::for_each_artifact_read_method!(check);
+
+        assert!(
+            wrapped.is_empty(),
+            "return the value itself (see \"Read Results\" in gateway/README.md): {wrapped:?}",
+        );
+    }
 }
