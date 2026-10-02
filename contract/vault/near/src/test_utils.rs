@@ -75,6 +75,10 @@ pub fn new_test_contract(vault_id: &AccountId) -> Contract {
     c.storage_deposit(Some(fee_recipient), None);
     c.storage_deposit(Some(skim_recipient), None);
     c.storage_deposit(Some(underlying_token_id), None);
+    // Withdrawal escrow is held by the vault's own account, so that account has
+    // to be registered like any other holder: an unregistered escrow holder
+    // cannot hold the shares that back a queued exit.
+    c.storage_deposit(Some(vault_id.clone()), None);
 
     setup_env(vault_id, vault_id, vec![]);
     c

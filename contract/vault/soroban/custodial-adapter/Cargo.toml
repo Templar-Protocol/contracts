@@ -20,6 +20,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [dependencies]
 soroban-sdk = { version = "25.3.0", features = ["experimental_spec_shaking_v2", "hazmat-address"] }
+templar-soroban-shared-types = { path = "../shared-types", default-features = false }
 stellar-contract-utils.workspace = true
 
 [dev-dependencies]

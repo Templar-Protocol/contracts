@@ -171,8 +171,39 @@ build-curator-proxy:
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-curator-proxy-soroban "{{curator_proxy_wasm}}"
 	@echo "✓ Built: {{curator_proxy_wasm}}"
 
-# Verify the runtime mask in isolated, selective, and deliberately unified builds.
-verify-runtime-feature-matrix:
+# Unit-test the runtime capability gate offline: it must allow a runtime that
+# advertises a feature and refuse one that does not. Fixtures only; no network.
+verify-runtime-feature-gate:
+	@echo "Testing runtime feature gate against offline fixtures..."
+	@printf '%s\n' '["1.1.0", 191]' | python3 "{{runtime_feature_script}}" \
+		--feature-bit 0x80 \
+		--feature-name action-epoch-settlement \
+		--contract "fixture vault with epoch settlement"
+	@if printf '%s\n' '["1.0.0", 63]' | python3 "{{runtime_feature_script}}" \
+		--feature-bit 0x80 \
+		--feature-name action-epoch-settlement \
+		--contract "fixture vault without epoch settlement"; then \
+		echo "Error: feature gate accepted a runtime that does not advertise epoch settlement."; \
+		exit 1; \
+	fi
+	@echo "✓ Runtime feature gate allows advertised capabilities and refuses unadvertised ones"
+# Verify the runtime mask in isolated, selective, and permitted unified builds,
+# and prove both shipped WASM profiles compile: the default immediate product
+# (origin/dev ABI) and the opt-in epoch library with immediate entrypoints off.
+# Capability tests run exactly once per buildable profile; WASM checks are
+# build-level and never rely on cfg(test) to mask a shipped-profile failure.
+# Profile law: the epoch-only library emits zero wasm exports (proven by the
+# stellar build reporting no exported functions) and its runtime capability
+# mask is enforced at compile time (epoch-only 0xA0, unified 0xBF, immediate
+# 0x3F); pure epoch-profile capability evidence is produced by the thin epoch
+# package host suite against its exported contract. The former
+# `-p templar-common` unification probe is superseded by the kernel codec
+# profile law, which fails any build linking NEAR or borsh codecs into a
+# Soroban artifact, so mask-stability unification is verified against
+# `-p templar-soroban-shared-types` instead.
+verify-runtime-feature-matrix: verify-runtime-feature-gate
+	@echo "Checking the opt-in epoch library profile with immediate entrypoints off..."
+	@cargo check --manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime --no-default-features --features epoch
 	@test_name="tests::contract_tests::test_version_is_available_before_initialization_and_matches_compiled_features"; \
 	run_capability_test() { \
 		output=$(cargo test --manifest-path "{{root}}/Cargo.toml" "$@" --lib "$test_name" -- --exact 2>&1); \
@@ -185,10 +216,18 @@ verify-runtime-feature-matrix:
 		fi; \
 	}; \
 	run_capability_test -p templar-soroban-runtime || exit $?; \
-	run_capability_test -p templar-soroban-runtime --no-default-features || exit $?; \
-	run_capability_test -p templar-soroban-runtime --no-default-features --features action-pause || exit $?; \
-	run_capability_test -p templar-soroban-runtime -p templar-common || exit $?
+	run_capability_test -p templar-soroban-runtime --features epoch,immediate-entrypoints || exit $?; \
+	run_capability_test -p templar-soroban-runtime --no-default-features --features immediate-entrypoints,action-pause || exit $?; exit 0
 	@echo "✓ Runtime feature matrix verified"
+
+# Build the deployable immediate WASM with spec shaking via the pinned
+# stellar-cli, enforce the deploy size budget, and verify the release ABI
+# matches the immediate product surface exactly.
+verify-immediate-wasm: verify-runtime-feature-matrix
+	@just build
+	@just size-budget-check 131072
+	@stellar contract info interface --wasm "{{deploy_wasm}}" --output json | python3 "{{release_abi_script}}" --contract runtime
+	@echo "✓ Immediate product WASM built, size-budgeted, and ABI-verified"
 
 # Build release artifacts and verify exact version ABIs plus artifact behavior.
 verify-release-wasm-abi: verify-runtime-feature-matrix build build-curator-proxy verify-custodial-adapter-release-abi
@@ -749,6 +788,21 @@ deploy-custodial-adapter custodian:
 	fi; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	if ! version_response=$(stellar contract invoke \
+		--id "$vault_id" \
+		--network "$network" \
+		--source-account "$source" \
+		--send no \
+		-- version); then \
+		echo "Error: cannot deploy custodial adapter because vault $vault_id version() capability detection failed." >&2; \
+		exit 1; \
+	fi; \
+	if ! printf '%s\n' "$version_response" | python3 "{{runtime_feature_script}}" \
+		--feature-bit 0x80 \
+		--feature-name action-epoch-settlement \
+		--contract "vault $vault_id"; then \
+		exit 1; \
+	fi; \
 	echo "Deploying custodial adapter..."; \
 	echo "  Admin:     $admin"; \
 	echo "  Vault:     $vault_id"; \

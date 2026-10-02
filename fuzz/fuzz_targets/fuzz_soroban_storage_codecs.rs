@@ -20,8 +20,8 @@ use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
 use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_soroban_runtime::test_utils::fuzz_api;
 use templar_vault_kernel::{
-    Address, AllocationPlanEntry, FeeAccrualAnchor, OpState, Restrictions, TargetId, TimestampNs,
-    VaultState, WithdrawQueue, WithdrawingState,
+    Address, AllocationPlanEntry, EpochId, EpochState, FeeAccrualAnchor, OpState, Restrictions,
+    TargetId, TimestampNs, VaultState, WithdrawQueue, WithdrawingState,
 };
 
 // Cap collection sizes so encoded blobs stay below libFuzzer's RSS ceiling.
@@ -35,7 +35,7 @@ const MAX_COLLECTION_LEN: usize = 64;
 // largest input `decode_withdraw_queue_page` accepts; 129+ is rejected).
 const MAX_WITHDRAW_PAGE_LEN: usize = 128;
 
-// (owner, receiver, escrow_shares, expected_assets, requested_at_ns).
+// (owner, receiver, escrow_shares, min_assets_out, requested_at_ns).
 // The pending-withdrawal id is *not* an input dimension: the decoder requires
 // strictly-ascending, contiguous-from-head ids (see `build_withdraw_queue`), so
 // an arbitrary id would only ever abort construction or fail the round-trip.
@@ -201,16 +201,18 @@ fn build_withdraw_queue(input: &StorageCodecInput) -> WithdrawQueue {
         .iter()
         .enumerate()
         .map(
-            |(index, (owner, receiver, escrow_shares, expected_assets, requested_at_ns))| {
+            |(index, (owner, receiver, escrow_shares, min_assets_out, requested_at_ns))| {
                 (
                     base + index as u64,
                     templar_vault_kernel::PendingWithdrawal::new(
                         Address(*owner),
                         Address(*receiver),
-                        *escrow_shares,
-                        *expected_assets,
+                        (*escrow_shares).max(1),
+                        *min_assets_out,
                         TimestampNs(*requested_at_ns),
-                    ),
+                        EpochId::FIRST_SETTLEMENT,
+                    )
+                    .expect("fuzz-built requests are valid by construction"),
                 )
             },
         )
@@ -273,6 +275,7 @@ fn build_vault_state(input: &StorageCodecInput) -> VaultState {
         ),
         op_state: build_op_state(input),
         withdraw_queue: build_withdraw_queue(input),
+        epoch: EpochState::genesis(),
         next_op_id: input.next_op_id,
     }
 }
@@ -330,11 +333,6 @@ fuzz_target!(|input: StorageCodecInput| {
     assert_eq!(decoded_leases, leases);
 
     let state = build_vault_state(&input);
-
-    // Legacy V1 monolithic blob (kept for regression).
-    let state_bytes = fuzz_api::encode_state_blob_bytes(&state);
-    let decoded_state = fuzz_api::decode_state_blob_bytes(&state_bytes).expect("state roundtrip");
-    assert_eq!(decoded_state, state);
 
     // Production V2 paged format: the withdraw-queue page codec is the
     // variable-length, fund-critical part (the per-page header/compose

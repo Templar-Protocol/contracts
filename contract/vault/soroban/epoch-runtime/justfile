@@ -1,0 +1,89 @@
+set dotenv-load := false
+
+# =============================================================================
+# Templar Soroban Custodial Epoch Settlement Vault — Build & Release Justfile
+# =============================================================================
+#
+# Dedicated epoch deploy target for custodial settlement vaults. Builds the
+# thin `templar-soroban-epoch-runtime` front-end, which links the runtime
+# epoch law as an rlib with `default-features = false` and only the opt-in
+# `epoch` feature. The resulting artifact exposes epoch settlement law and
+# the generic lifecycle entrypoints only; it has no immediate deposit, atomic
+# exit, pricing, or proxy-view surface.
+#
+# ENVIRONMENT:
+#   - stellar-cli pinned to v26.0.0 (install: {{root}}/script/soroban/install-stellar-cli.sh)
+#   - Rust toolchain {{soroban_rust_toolchain}} with wasm32-unknown-unknown
+
+root := justfile_directory() + "/../../../.."
+package := "templar-soroban-epoch-runtime"
+wasm_dir := root + "/target/wasm32-unknown-unknown/release-soroban"
+epoch_wasm := wasm_dir + "/templar_soroban_epoch_runtime.wasm"
+size_budget_script := root + "/script/soroban/check_wasm_budget.py"
+abi_script := justfile_directory() + "/scripts/check_epoch_release_abi.py"
+pinned_stellar_cli_version := "26.0.0"
+soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
+remap_rustflags := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
+
+# Hard deploy size budget for the epoch artifact, in bytes.
+DEPLOY_SIZE_BUDGET_BYTES := "131072"
+
+# Refuse to build unless the pinned stellar-cli is installed.
+_require-pinned-stellar-cli:
+	@if ! command -v stellar >/dev/null 2>&1; then \
+		echo "Error: stellar CLI not found. Install the pinned release with:"; \
+		echo "  {{root}}/script/soroban/install-stellar-cli.sh"; \
+		exit 1; \
+	fi
+	@cli_version="$(stellar --version 2>/dev/null | head -n 1)"; \
+	case "$cli_version" in \
+		"stellar {{pinned_stellar_cli_version}}"*) : ;; \
+		*) \
+			echo "Error: stellar CLI $cli_version found; Templar epoch builds are pinned to stellar {{pinned_stellar_cli_version}}."; \
+			echo "Install the pinned release with: {{root}}/script/soroban/install-stellar-cli.sh"; \
+			exit 1 ;; \
+	esac
+
+# Compile the epoch target native and for wasm32 with the epoch-only feature
+# profile (immediate entrypoints off), proving the deployment profile builds
+# in isolation.
+verify-epoch-compile:
+	@echo "Checking the epoch deploy target in its isolated epoch-only profile..."
+	@cargo check --manifest-path "{{root}}/Cargo.toml" -p {{package}}
+	@RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo check --manifest-path "{{root}}/Cargo.toml" --target wasm32-unknown-unknown -p {{package}}
+	@echo "✓ Epoch deploy target compiles native and wasm32 (epoch-only profile)"
+
+# Run the dedicated epoch target conformance suite (identity, InvalidTag
+# rejection of immediate payloads, epoch tag surface, and live settlement law
+# probes against fresh deployments).
+test-epoch:
+	@cargo test --manifest-path "{{root}}/Cargo.toml" -p {{package}}
+
+# Build and optimize the dedicated epoch deploy WASM with the pinned
+# stellar-cli (spec shaking v2).
+build-epoch: _require-pinned-stellar-cli
+	@echo "Building epoch deploy WASM with stellar {{pinned_stellar_cli_version}}..."
+	@RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
+		--manifest-path "{{root}}/Cargo.toml" \
+		--package "{{package}}" \
+		--optimize \
+		--out-dir "{{wasm_dir}}"
+	@echo "✓ Built epoch deploy artifact: {{epoch_wasm}}"
+
+# Enforce the hard deploy size budget on the epoch artifact.
+size-budget-check-epoch: build-epoch
+	@python3 "{{size_budget_script}}" \
+		--wasm "{{epoch_wasm}}" \
+		--max-bytes "{{DEPLOY_SIZE_BUDGET_BYTES}}"
+	@echo "✓ Epoch deploy artifact within the {{DEPLOY_SIZE_BUDGET_BYTES}}-byte budget"
+
+# Verify the epoch deploy artifact exposes the exact release ABI surface:
+# lifecycle entrypoints and the epoch command transport, with the dedicated
+# version interface, and no immediate atomic or pricing entrypoints.
+verify-epoch-release-abi: size-budget-check-epoch
+	@stellar contract info interface --wasm "{{epoch_wasm}}" --output json | python3 "{{abi_script}}"
+	@echo "✓ Epoch release ABI verified"
+
+# Print the epoch deploy WASM path.
+epoch-wasm-path:
+	@echo "{{epoch_wasm}}"

@@ -24,6 +24,22 @@ pub enum KernelEffectError {
     MintFailed,
     BurnFailed,
     UnsupportedEffect(&'static str),
+    EpochRequiresIdle,
+    EpochCutoffRequiresIdle,
+    EpochCutoffUnauthorized,
+    EpochCutoffRejected,
+    EpochSettlementRejected,
+    EpochIntakeNotOpen,
+    EpochDrainRequired,
+    EpochSettledNavImmutable,
+    WithdrawalEpochUnsettled,
+    WithdrawalBelowMinAssetsOut,
+    CancelCallerNotOwner,
+    CancelRequestNotFound,
+    CancelInFlightRequest,
+    CancelQueueRepairFailed,
+    PayoutBurnMustMatchFullEscrow,
+    PayoutClaimMismatch,
 }
 
 impl fmt::Display for KernelEffectError {
@@ -35,6 +51,42 @@ impl fmt::Display for KernelEffectError {
             Self::MintFailed => f.write_str("failed to mint shares"),
             Self::BurnFailed => f.write_str("failed to burn shares"),
             Self::UnsupportedEffect(kind) => write!(f, "unsupported kernel effect: {kind}"),
+            Self::EpochRequiresIdle => f.write_str("epoch settlement requires Idle"),
+            Self::EpochCutoffRequiresIdle => f.write_str("epoch cutoff requires Idle"),
+            Self::EpochCutoffUnauthorized => f.write_str("epoch cutoff not authorized"),
+            Self::EpochCutoffRejected => f.write_str("epoch cutoff rejected by settlement law"),
+            Self::EpochSettlementRejected => {
+                f.write_str("epoch settlement rejected by settlement law")
+            }
+            Self::EpochIntakeNotOpen => f.write_str("epoch intake is not open"),
+            Self::EpochDrainRequired => {
+                f.write_str("older withdrawal intake must drain before epoch advancement")
+            }
+            Self::EpochSettledNavImmutable => f.write_str("settled epoch snapshot is immutable"),
+            Self::WithdrawalEpochUnsettled => {
+                f.write_str("withdrawal claim awaits epoch settlement")
+            }
+            Self::WithdrawalBelowMinAssetsOut => {
+                f.write_str("settled claim below withdrawal min_assets_out")
+            }
+            Self::CancelCallerNotOwner => {
+                f.write_str("withdrawal cancellation caller is not the owner")
+            }
+            Self::CancelRequestNotFound => {
+                f.write_str("cancellation target withdrawal is not pending")
+            }
+            Self::CancelInFlightRequest => {
+                f.write_str("withdrawal is in flight and cannot be cancelled")
+            }
+            Self::CancelQueueRepairFailed => {
+                f.write_str("withdrawal queue repair failed after cancellation")
+            }
+            Self::PayoutBurnMustMatchFullEscrow => {
+                f.write_str("payout success must burn all escrow shares")
+            }
+            Self::PayoutClaimMismatch => {
+                f.write_str("payout amount does not match the settled claim")
+            }
         }
     }
 }
@@ -84,7 +136,6 @@ pub enum KernelEventLog {
         owner: AccountId,
         receiver: AccountId,
         escrow_shares: U128,
-        expected_assets: U128,
         reason: String,
     },
     #[event_version("1.0.0")]
@@ -113,13 +164,15 @@ pub enum KernelEventLog {
         shares_burned: U128,
         assets_out: U128,
     },
-    #[event_version("1.0.0")]
+    #[event_version("1.1.0")]
     WithdrawalRequested {
         id: U64,
         owner: AccountId,
         receiver: AccountId,
         shares: U128,
-        expected_assets: U128,
+        /// Epoch the request was queued in. Never a payout figure: the request
+        /// is unpriced until an accepted epoch settlement covers it.
+        epoch_id: U64,
     },
     #[event_version("1.0.0")]
     ExternalAssetsSynced {
@@ -133,6 +186,51 @@ pub enum KernelEventLog {
     PauseUpdated { paused: bool },
     #[event_version("1.0.0")]
     EmergencyResetCompleted { op_id: U64, from_state: u32 },
+    #[event_version("1.0.0")]
+    EpochCutoffStarted { epoch_id: U64, cutoff_ns: U64 },
+    #[event_version("1.0.0")]
+    EpochSettled {
+        epoch_id: U64,
+        report_seq: U64,
+        settlement_nav: U128,
+        eligible_supply: U128,
+        cutoff_ns: U64,
+        as_of_ns: U64,
+    },
+    #[event_version("1.0.0")]
+    WithdrawalCancelled {
+        id: U64,
+        owner: AccountId,
+        escrow_shares: U128,
+        epoch_id: U64,
+    },
+    #[event_version("1.0.0")]
+    PendingDepositRecorded {
+        owner: AccountId,
+        assets: U128,
+        requested_at_ns: U64,
+        epoch_id: U64,
+    },
+    #[event_version("1.0.0")]
+    PendingDepositRefunded {
+        owner: AccountId,
+        assets: U128,
+        request_id: U64,
+    },
+    #[event_version("1.0.0")]
+    DepositAdmitted {
+        receiver: AccountId,
+        assets_in: U128,
+        shares_out: U128,
+        request_epoch_id: U64,
+        settlement_epoch_id: U64,
+    },
+    #[event_version("1.0.0")]
+    EpochSupplySeeded {
+        receiver: AccountId,
+        assets_in: U128,
+        shares_out: U128,
+    },
 }
 
 /// Address resolution context for kernel effects.
@@ -233,7 +331,6 @@ fn emit_kernel_event(
             owner,
             receiver,
             escrow_shares,
-            expected_assets,
             reason,
         } => {
             let owner = ctx.resolve(owner)?.clone();
@@ -243,9 +340,7 @@ fn emit_kernel_event(
                 owner,
                 receiver,
                 escrow_shares: U128(*escrow_shares),
-                expected_assets: U128(*expected_assets),
                 reason: match reason {
-                    WithdrawalSkipReason::ZeroExpectedAssets => "zero_expected_assets",
                     WithdrawalSkipReason::Restricted => "restricted",
                 }
                 .to_string(),
@@ -306,12 +401,70 @@ fn emit_kernel_event(
             }
             .emit();
         }
+        KernelEvent::EpochCutoffStarted { epoch_id, cutoff_ns } => {
+            KernelEventLog::EpochCutoffStarted {
+                epoch_id: U64(*epoch_id),
+                cutoff_ns: U64(*cutoff_ns),
+            }
+            .emit();
+        }
+        KernelEvent::EpochSettled {
+            epoch_id,
+            report_seq,
+            settlement_nav,
+            eligible_supply,
+            cutoff_ns,
+            as_of_ns,
+            report_hash: _,
+        } => {
+            KernelEventLog::EpochSettled {
+                epoch_id: U64(*epoch_id),
+                report_seq: U64(*report_seq),
+                settlement_nav: U128(*settlement_nav),
+                eligible_supply: U128(*eligible_supply),
+                cutoff_ns: U64(*cutoff_ns),
+                as_of_ns: U64(*as_of_ns),
+            }
+            .emit();
+        }
+        KernelEvent::WithdrawalCancelled {
+            id,
+            owner,
+            escrow_shares,
+            epoch_id,
+        } => {
+            let owner = ctx.resolve(owner)?.clone();
+            KernelEventLog::WithdrawalCancelled {
+                id: U64(*id),
+                owner,
+                escrow_shares: U128(*escrow_shares),
+                epoch_id: U64(*epoch_id),
+            }
+            .emit();
+        }
+        KernelEvent::DepositAdmitted {
+            receiver,
+            assets_in,
+            shares_out,
+            request_epoch_id,
+            settlement_epoch_id,
+        } => {
+            let receiver = ctx.resolve(receiver)?.clone();
+            KernelEventLog::DepositAdmitted {
+                receiver,
+                assets_in: U128(*assets_in),
+                shares_out: U128(*shares_out),
+                request_epoch_id: U64(*request_epoch_id),
+                settlement_epoch_id: U64(*settlement_epoch_id),
+            }
+            .emit();
+        }
         KernelEvent::WithdrawalRequested {
             id,
             owner,
             receiver,
             shares,
-            expected_assets,
+            epoch_id,
         } => {
             let owner = ctx.resolve(owner)?.clone();
             let receiver = ctx.resolve(receiver)?.clone();
@@ -320,10 +473,11 @@ fn emit_kernel_event(
                 owner,
                 receiver,
                 shares: U128(*shares),
-                expected_assets: U128(*expected_assets),
+                epoch_id: U64(*epoch_id),
             }
             .emit();
         }
+
         KernelEvent::ExternalAssetsSynced {
             op_id,
             new_external_assets,
@@ -352,9 +506,60 @@ fn emit_kernel_event(
             }
             .emit();
         }
+        KernelEvent::EpochSupplySeeded {
+            receiver,
+            assets_in,
+            shares_out,
+        } => {
+            let receiver = ctx.resolve(receiver)?.clone();
+            KernelEventLog::EpochSupplySeeded {
+                receiver,
+                assets_in: U128(*assets_in),
+                shares_out: U128(*shares_out),
+            }
+            .emit();
+        }
     }
 
     Ok(())
+}
+
+/// Map a kernel error to a typed NEAR effect error.
+///
+/// Epoch lifecycle, cancellation, and payout-integrity rejections surface as
+/// dedicated typed errors instead of collapsing into a generic failure.
+#[must_use]
+pub(crate) fn kernel_effect_error_for_kernel_error(
+    error: &templar_vault_kernel::error::KernelError,
+) -> Option<KernelEffectError> {
+    use templar_vault_kernel::error::{InvalidStateCode as Code, KernelError};
+
+    let code = match error {
+        KernelError::InvalidState(code) => *code,
+        _ => return None,
+    };
+
+    let mapped = match code {
+        Code::EpochRequiresIdle => KernelEffectError::EpochRequiresIdle,
+        Code::EpochCutoffRequiresIdle => KernelEffectError::EpochCutoffRequiresIdle,
+        Code::EpochCutoffUnauthorized => KernelEffectError::EpochCutoffUnauthorized,
+        Code::EpochCutoffRejected => KernelEffectError::EpochCutoffRejected,
+        Code::EpochSettlementRejected => KernelEffectError::EpochSettlementRejected,
+        Code::EpochIntakeNotOpen => KernelEffectError::EpochIntakeNotOpen,
+        Code::EpochDrainRequired => KernelEffectError::EpochDrainRequired,
+        Code::EpochSettledNavImmutable => KernelEffectError::EpochSettledNavImmutable,
+        Code::WithdrawalEpochUnsettled => KernelEffectError::WithdrawalEpochUnsettled,
+        Code::WithdrawalBelowMinAssetsOut => KernelEffectError::WithdrawalBelowMinAssetsOut,
+        Code::CancelCallerNotOwner => KernelEffectError::CancelCallerNotOwner,
+        Code::CancelRequestNotFound => KernelEffectError::CancelRequestNotFound,
+        Code::CancelInFlightRequest => KernelEffectError::CancelInFlightRequest,
+        Code::CancelQueueRepairFailed => KernelEffectError::CancelQueueRepairFailed,
+        Code::PayoutBurnMustMatchFullEscrow => KernelEffectError::PayoutBurnMustMatchFullEscrow,
+        Code::PayoutClaimMismatch => KernelEffectError::PayoutClaimMismatch,
+        _ => return None,
+    };
+
+    Some(mapped)
 }
 
 /// Apply kernel effects to NEAR storage.
@@ -430,6 +635,40 @@ pub(crate) fn apply_kernel_effects(
     }
 
     Ok(())
+}
+
+/// Log that assets were taken into custody for a deposit that cannot be priced.
+///
+/// The notification is separate from the ledger write: the liability is
+/// recorded whether or not the log lands, so a depositor's claim cannot be lost
+/// or weakened by an emission failure.
+pub(crate) fn emit_pending_deposit_recorded(
+    owner: &AccountId,
+    assets: u128,
+    requested_at_ns: u64,
+    epoch_id: u64,
+) {
+    KernelEventLog::PendingDepositRecorded {
+        owner: owner.clone(),
+        assets: U128(assets),
+        requested_at_ns: U64(requested_at_ns),
+        epoch_id: U64(epoch_id),
+    }
+    .emit();
+}
+
+/// Log that a pending-deposit liability was released after its transfer to the
+/// depositor succeeded.
+///
+/// This is called only after the ledger has released the holding, so the
+/// notification never gates the release it describes.
+pub(crate) fn emit_pending_deposit_refunded(owner: &AccountId, assets: u128, request_id: u64) {
+    KernelEventLog::PendingDepositRefunded {
+        owner: owner.clone(),
+        assets: U128(assets),
+        request_id: U64(request_id),
+    }
+    .emit();
 }
 
 #[cfg(test)]

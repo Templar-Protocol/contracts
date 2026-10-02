@@ -17,6 +17,11 @@ mod types;
 
 pub use curator_vault::CuratorVault;
 pub use entrypoints::SorobanVaultContract;
+pub(crate) use entrypoints::{
+    execute_governance_payload_law, execute_payload_law, initialize_default_law,
+    initialize_with_config_law, initialize_with_full_config_law, migrate_law, upgrade_law,
+    version_law,
+};
 pub use types::*;
 
 use crate::auth::{ActionKind, AuthAdapter};
@@ -49,8 +54,9 @@ use templar_vault_kernel::error::InvalidStateCode;
 use templar_vault_kernel::{
     apply_action, convert_to_assets, convert_to_assets_bounded, convert_to_assets_ceil_bounded,
     convert_to_shares, convert_to_shares_bounded, convert_to_shares_ceil_bounded, plan_idle_payout,
-    withdrawal_settled, Address, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, KernelResult,
-    OpState, PayoutOutcome, Restrictions, TargetId, TimestampNs, VaultConfig, VaultState, Wad,
+    withdrawal_settled, withdrawal_step_callback, Address, FeeAccrualAnchor, FeeSlot, FeesSpec,
+    KernelAction, OpState, PayoutOutcome, Restrictions, TargetId, VaultConfig,
+    VaultState, Wad,
     DEFAULT_COOLDOWN_NS, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD, MIN_WITHDRAWAL_ASSETS,
 };
 

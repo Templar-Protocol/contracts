@@ -17,9 +17,9 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2"] }
-templar-curator-primitives = { path = "../../curator-primitives" }
-templar-vault-kernel = { path = "../../kernel" }
-templar-soroban-shared-types = { path = "../shared-types" }
+templar-curator-primitives = { path = "../../curator-primitives", default-features = false }
+templar-soroban-shared-types = { path = "../shared-types", features = ["immediate-commands"] }
+templar-vault-kernel = { path = "../../kernel", default-features = false }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

@@ -14013,6 +14013,18 @@ dependencies = [
  "proptest",
  "soroban-sdk",
  "stellar-contract-utils",
+ "templar-soroban-shared-types",
+]
+
+[[package]]
+name = "templar-soroban-epoch-runtime"
+version = "0.1.0"
+dependencies = [
+ "rstest",
+ "soroban-sdk",
+ "templar-soroban-custodial-adapter",
+ "templar-soroban-runtime",
+ "templar-soroban-shared-types",
 ]
 
 [[package]]
@@ -14213,7 +14225,6 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
- "templar-vault-kernel",
  "templar-vault-macros",
 ]
 

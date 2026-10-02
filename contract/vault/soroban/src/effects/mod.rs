@@ -18,6 +18,25 @@ fn event_address(env: &Env, value: &templar_vault_kernel::Address) -> BytesN<32>
     BytesN::from_array(env, value.as_bytes())
 }
 
+/// Fail-closed error for a kernel event whose action family was excluded
+/// from this artifact. Mirrors the kernel's `KernelError::NotImplemented`
+/// runtime mapping: an uncompiled action family is a missing capability,
+/// never a silently ignored event.
+#[cfg(not(all(
+    feature = "action-allocation-lifecycle",
+    feature = "action-refresh-lifecycle",
+    feature = "action-sync-external",
+    feature = "action-refresh-fees",
+    feature = "action-recovery",
+    any(
+        feature = "immediate-entrypoints",
+        feature = "action-immediate-deposit"
+    ),
+    any(feature = "immediate-entrypoints", feature = "action-atomic-exit"),
+)))]
+const EVENT_FAMILY_DISABLED: RuntimeError = RuntimeError::MissingConfig;
+
+#[cfg(feature = "action-allocation-lifecycle")]
 #[contractevent]
 #[derive(Clone)]
 pub struct AllocationStartedEvent {
@@ -26,6 +45,7 @@ pub struct AllocationStartedEvent {
     pub plan_len: u32,
 }
 
+#[cfg(feature = "action-allocation-lifecycle")]
 #[contractevent]
 #[derive(Clone)]
 pub struct AllocationStepFailedEvent {
@@ -35,6 +55,7 @@ pub struct AllocationStepFailedEvent {
     pub total_allocated: u128,
 }
 
+#[cfg(feature = "action-allocation-lifecycle")]
 #[contractevent]
 #[derive(Clone)]
 pub struct AllocationCompletedEvent {
@@ -74,10 +95,10 @@ pub struct WithdrawalSkippedEvent {
     pub owner: BytesN<32>,
     pub receiver: BytesN<32>,
     pub escrow_shares: u128,
-    pub expected_assets: u128,
     pub reason: u32,
 }
 
+#[cfg(feature = "action-refresh-lifecycle")]
 #[contractevent]
 #[derive(Clone)]
 pub struct RefreshStartedEvent {
@@ -85,6 +106,7 @@ pub struct RefreshStartedEvent {
     pub plan_len: u32,
 }
 
+#[cfg(feature = "action-refresh-lifecycle")]
 #[contractevent]
 #[derive(Clone)]
 pub struct RefreshCompletedEvent {
@@ -101,6 +123,7 @@ pub struct PayoutCompletedEvent {
     pub amount: u128,
 }
 
+#[cfg(any(feature = "immediate-entrypoints", feature = "action-immediate-deposit"))]
 #[contractevent]
 #[derive(Clone)]
 pub struct DepositProcessedEvent {
@@ -110,6 +133,7 @@ pub struct DepositProcessedEvent {
     pub shares_out: u128,
 }
 
+#[cfg(any(feature = "immediate-entrypoints", feature = "action-atomic-exit"))]
 #[contractevent]
 #[derive(Clone)]
 pub struct AtomicWithdrawProcessedEvent {
@@ -126,9 +150,10 @@ pub struct WithdrawalRequestedEvent {
     pub owner: BytesN<32>,
     pub receiver: BytesN<32>,
     pub shares: u128,
-    pub expected_assets: u128,
+    pub epoch_id: u64,
 }
 
+#[cfg(feature = "action-sync-external")]
 #[contractevent]
 #[derive(Clone)]
 pub struct ExternalAssetsSyncedEvent {
@@ -137,6 +162,7 @@ pub struct ExternalAssetsSyncedEvent {
     pub total_assets: u128,
 }
 
+#[cfg(feature = "action-refresh-fees")]
 #[contractevent]
 #[derive(Clone)]
 pub struct FeesRefreshedEvent {
@@ -150,6 +176,7 @@ pub struct PauseUpdatedEvent {
     pub paused: bool,
 }
 
+#[cfg(feature = "action-recovery")]
 #[contractevent]
 #[derive(Clone)]
 pub struct EmergencyResetCompletedEvent {
@@ -157,10 +184,93 @@ pub struct EmergencyResetCompletedEvent {
     pub from_state: u32,
 }
 
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct DepositPendingEvent {
+    pub owner: BytesN<32>,
+    pub request_id: u64,
+    pub assets: u128,
+    pub epoch_id: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct DepositAdmittedEvent {
+    pub receiver: BytesN<32>,
+    pub assets_in: u128,
+    pub shares_out: u128,
+    pub request_epoch_id: u64,
+    pub settlement_epoch_id: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct EpochSupplySeededEvent {
+    pub receiver: BytesN<32>,
+    pub assets_in: u128,
+    pub shares_out: u128,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct DepositCancelledEvent {
+    pub owner: BytesN<32>,
+    pub request_id: u64,
+    pub assets_refunded: u128,
+    pub epoch_id: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct EpochCutoffStartedEvent {
+    pub epoch_id: u64,
+    pub cutoff_ns: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct EpochSettledEvent {
+    pub epoch_id: u64,
+    pub report_seq: u64,
+    pub report_hash: BytesN<32>,
+    pub settlement_nav: u128,
+    pub eligible_supply: u128,
+    pub cutoff_ns: u64,
+    pub as_of_ns: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct WithdrawalCancelledEvent {
+    pub id: u64,
+    pub owner: BytesN<32>,
+    pub escrow_shares: u128,
+    pub epoch_id: u64,
+}
+
+#[cfg(feature = "epoch")]
+#[contractevent]
+#[derive(Clone)]
+pub struct ReportMetadataConsumedEvent {
+    pub epoch_id: u64,
+    pub market_id: u32,
+    pub report_seq: u64,
+    pub report_hash: BytesN<32>,
+    pub as_of_ns: u64,
+}
+
 /// Publish a KernelEvent as typed Soroban contract events.
 #[inline(never)]
 pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), RuntimeError> {
     match event {
+        #[cfg(feature = "action-allocation-lifecycle")]
         KernelEvent::AllocationStarted {
             op_id,
             total,
@@ -171,6 +281,9 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             plan_len: *plan_len,
         }
         .publish(env),
+        #[cfg(not(feature = "action-allocation-lifecycle"))]
+        KernelEvent::AllocationStarted { .. } => return Err(EVENT_FAMILY_DISABLED),
+        #[cfg(feature = "action-allocation-lifecycle")]
         KernelEvent::AllocationStepFailed {
             op_id,
             index,
@@ -183,6 +296,9 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             total_allocated: *total_allocated,
         }
         .publish(env),
+        #[cfg(not(feature = "action-allocation-lifecycle"))]
+        KernelEvent::AllocationStepFailed { .. } => return Err(EVENT_FAMILY_DISABLED),
+        #[cfg(feature = "action-allocation-lifecycle")]
         KernelEvent::AllocationCompleted {
             op_id,
             has_withdrawal,
@@ -191,6 +307,8 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             has_withdrawal: *has_withdrawal,
         }
         .publish(env),
+        #[cfg(not(feature = "action-allocation-lifecycle"))]
+        KernelEvent::AllocationCompleted { .. } => return Err(EVENT_FAMILY_DISABLED),
         KernelEvent::WithdrawalStarted {
             op_id,
             amount,
@@ -228,28 +346,31 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             owner,
             receiver,
             escrow_shares,
-            expected_assets,
             reason,
         } => WithdrawalSkippedEvent {
             id: *id,
             owner: event_address(env, owner),
             receiver: event_address(env, receiver),
             escrow_shares: *escrow_shares,
-            expected_assets: *expected_assets,
             reason: match reason {
-                WithdrawalSkipReason::ZeroExpectedAssets => 0,
                 WithdrawalSkipReason::Restricted => 1,
             },
         }
         .publish(env),
+        #[cfg(feature = "action-refresh-lifecycle")]
         KernelEvent::RefreshStarted { op_id, plan_len } => RefreshStartedEvent {
             op_id: *op_id,
             plan_len: *plan_len,
         }
         .publish(env),
+        #[cfg(not(feature = "action-refresh-lifecycle"))]
+        KernelEvent::RefreshStarted { .. } => return Err(EVENT_FAMILY_DISABLED),
+        #[cfg(feature = "action-refresh-lifecycle")]
         KernelEvent::RefreshCompleted { op_id } => {
             RefreshCompletedEvent { op_id: *op_id }.publish(env)
         }
+        #[cfg(not(feature = "action-refresh-lifecycle"))]
+        KernelEvent::RefreshCompleted { .. } => return Err(EVENT_FAMILY_DISABLED),
         KernelEvent::PayoutCompleted {
             op_id,
             success,
@@ -264,6 +385,10 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             amount: *amount,
         }
         .publish(env),
+        #[cfg(any(
+            feature = "immediate-entrypoints",
+            feature = "action-immediate-deposit"
+        ))]
         KernelEvent::DepositProcessed {
             owner,
             receiver,
@@ -276,6 +401,15 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             shares_out: *shares_out,
         }
         .publish(env),
+        #[cfg(not(any(
+            feature = "immediate-entrypoints",
+            feature = "action-immediate-deposit"
+        )))]
+        KernelEvent::DepositProcessed { .. } => return Err(EVENT_FAMILY_DISABLED),
+        #[cfg(any(
+            feature = "immediate-entrypoints",
+            feature = "action-atomic-exit"
+        ))]
         KernelEvent::AtomicWithdrawProcessed {
             owner,
             receiver,
@@ -288,20 +422,26 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             assets_out: *assets_out,
         }
         .publish(env),
+        #[cfg(not(any(
+            feature = "immediate-entrypoints",
+            feature = "action-atomic-exit"
+        )))]
+        KernelEvent::AtomicWithdrawProcessed { .. } => return Err(EVENT_FAMILY_DISABLED),
         KernelEvent::WithdrawalRequested {
             id,
             owner,
             receiver,
             shares,
-            expected_assets,
+            epoch_id,
         } => WithdrawalRequestedEvent {
             id: *id,
             owner: event_address(env, owner),
             receiver: event_address(env, receiver),
             shares: *shares,
-            expected_assets: *expected_assets,
+            epoch_id: *epoch_id,
         }
         .publish(env),
+        #[cfg(feature = "action-sync-external")]
         KernelEvent::ExternalAssetsSynced {
             op_id,
             new_external_assets,
@@ -312,6 +452,9 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             total_assets: *total_assets,
         }
         .publish(env),
+        #[cfg(not(feature = "action-sync-external"))]
+        KernelEvent::ExternalAssetsSynced { .. } => return Err(EVENT_FAMILY_DISABLED),
+        #[cfg(feature = "action-refresh-fees")]
         KernelEvent::FeesRefreshed {
             now_ns,
             total_assets,
@@ -320,7 +463,74 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             total_assets: *total_assets,
         }
         .publish(env),
+        #[cfg(not(feature = "action-refresh-fees"))]
+        KernelEvent::FeesRefreshed { .. } => return Err(EVENT_FAMILY_DISABLED),
         KernelEvent::PauseUpdated { paused } => PauseUpdatedEvent { paused: *paused }.publish(env),
+        #[cfg(feature = "epoch")]
+        KernelEvent::EpochCutoffStarted { epoch_id, cutoff_ns } => EpochCutoffStartedEvent {
+            epoch_id: *epoch_id,
+            cutoff_ns: *cutoff_ns,
+        }
+        .publish(env),
+        #[cfg(feature = "epoch")]
+        KernelEvent::EpochSettled {
+            epoch_id,
+            report_seq,
+            report_hash,
+            settlement_nav,
+            eligible_supply,
+            cutoff_ns,
+            as_of_ns,
+        } => EpochSettledEvent {
+            epoch_id: *epoch_id,
+            report_seq: *report_seq,
+            report_hash: BytesN::from_array(env, report_hash),
+            settlement_nav: *settlement_nav,
+            eligible_supply: *eligible_supply,
+            cutoff_ns: *cutoff_ns,
+            as_of_ns: *as_of_ns,
+        }
+        .publish(env),
+        #[cfg(feature = "epoch")]
+        KernelEvent::WithdrawalCancelled {
+            id,
+            owner,
+            escrow_shares,
+            epoch_id,
+        } => WithdrawalCancelledEvent {
+            id: *id,
+            owner: event_address(env, owner),
+            escrow_shares: *escrow_shares,
+            epoch_id: *epoch_id,
+        }
+        .publish(env),
+        #[cfg(feature = "epoch")]
+        KernelEvent::DepositAdmitted {
+            receiver,
+            assets_in,
+            shares_out,
+            request_epoch_id,
+            settlement_epoch_id,
+        } => DepositAdmittedEvent {
+            receiver: event_address(env, receiver),
+            assets_in: *assets_in,
+            shares_out: *shares_out,
+            request_epoch_id: *request_epoch_id,
+            settlement_epoch_id: *settlement_epoch_id,
+        }
+        .publish(env),
+        #[cfg(feature = "epoch")]
+        KernelEvent::EpochSupplySeeded {
+            receiver,
+            assets_in,
+            shares_out,
+        } => EpochSupplySeededEvent {
+            receiver: event_address(env, receiver),
+            assets_in: *assets_in,
+            shares_out: *shares_out,
+        }
+        .publish(env),
+        #[cfg(feature = "action-recovery")]
         KernelEvent::EmergencyResetCompleted { op_id, from_state } => {
             EmergencyResetCompletedEvent {
                 op_id: *op_id,
@@ -328,7 +538,59 @@ pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), Runtim
             }
             .publish(env)
         }
+        #[cfg(not(feature = "action-recovery"))]
+        KernelEvent::EmergencyResetCompleted { .. } => return Err(EVENT_FAMILY_DISABLED),
     }
+    Ok(())
+}
+
+/// Publish a pending-deposit custody event for a recorded liability.
+///
+/// Pending custody is runtime-only: the kernel records the liability but
+/// emits no `KernelEvent` for it, so this is the sole lawful publisher for
+/// the custody-confirmation event. The owner bytes are exactly the kernel
+/// address bytes of the depositor, never a Soroban SDK address.
+#[cfg(feature = "epoch")]
+#[inline(never)]
+pub fn publish_deposit_pending(
+    env: &Env,
+    owner: &templar_vault_kernel::Address,
+    request_id: u64,
+    assets: u128,
+    epoch_id: u64,
+) -> Result<(), RuntimeError> {
+    DepositPendingEvent {
+        owner: event_address(env, owner),
+        request_id,
+        assets,
+        epoch_id,
+    }
+    .publish(env);
+    Ok(())
+}
+
+/// Publish a pending-deposit cancellation event for an owner-bound refund.
+///
+/// Refund completion is runtime-only: the kernel cancels the liability but
+/// emits no `KernelEvent` for it, so this is the sole lawful publisher for
+/// the refund event. The owner bytes are exactly the kernel address bytes
+/// of the depositor, never a Soroban SDK address.
+#[cfg(feature = "epoch")]
+#[inline(never)]
+pub fn publish_deposit_cancelled(
+    env: &Env,
+    owner: &templar_vault_kernel::Address,
+    request_id: u64,
+    assets_refunded: u128,
+    epoch_id: u64,
+) -> Result<(), RuntimeError> {
+    DepositCancelledEvent {
+        owner: event_address(env, owner),
+        request_id,
+        assets_refunded,
+        epoch_id,
+    }
+    .publish(env);
     Ok(())
 }
 
@@ -843,5 +1105,82 @@ where
                 "unsupported effect type for Soroban",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod event_family_tests {
+    use super::*;
+    use soroban_sdk::events::Event as _;
+    use soroban_sdk::testutils::Events;
+    use soroban_sdk::{contract, contractimpl};
+
+    #[contract]
+    struct EventProbeContract;
+
+    #[contractimpl]
+    impl EventProbeContract {
+        pub fn noop(_env: Env) {}
+    }
+
+    /// A kernel event whose action family was excluded from this artifact
+    /// fails closed with the named error and emits no contract event.
+    #[cfg(not(feature = "action-recovery"))]
+    #[test]
+    fn disabled_emergency_reset_event_fails_closed_without_emitting() {
+        let env = Env::default();
+        let result = publish_kernel_event(
+            &env,
+            &KernelEvent::EmergencyResetCompleted {
+                op_id: 7,
+                from_state: 3,
+            },
+        );
+        assert_eq!(result, Err(EVENT_FAMILY_DISABLED));
+        assert!(
+            env.events().all().events().is_empty(),
+            "disabled event family must not emit"
+        );
+    }
+
+    #[cfg(not(any(
+        feature = "immediate-entrypoints",
+        feature = "action-immediate-deposit"
+    )))]
+    #[test]
+    fn disabled_deposit_processed_event_fails_closed_without_emitting() {
+        let env = Env::default();
+        let result = publish_kernel_event(
+            &env,
+            &KernelEvent::DepositProcessed {
+                owner: templar_vault_kernel::Address([1u8; 32]),
+                receiver: templar_vault_kernel::Address([2u8; 32]),
+                assets_in: 10,
+                shares_out: 5,
+            },
+        );
+        assert_eq!(result, Err(EVENT_FAMILY_DISABLED));
+        assert!(
+            env.events().all().events().is_empty(),
+            "disabled event family must not emit"
+        );
+    }
+
+    /// A retained event keeps its exact typed payload (topic + field map).
+    #[test]
+    fn retained_pause_event_payload_is_exact() {
+        let env = Env::default();
+        let contract_id = env.register(EventProbeContract, ());
+        env.as_contract(&contract_id, || {
+            publish_kernel_event(&env, &KernelEvent::PauseUpdated { paused: true })
+                .expect("pause events are retained in every profile");
+        });
+        let events = env.events().all().filter_by_contract(&contract_id);
+        let emitted = events.events();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(
+            emitted[0],
+            PauseUpdatedEvent { paused: true }.to_xdr(&env, &contract_id)
+        );
     }
 }

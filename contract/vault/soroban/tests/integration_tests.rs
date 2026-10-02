@@ -1,6 +1,11 @@
 //! Integration tests for the Soroban curator vault.
 //!
 //! These tests verify full flows: deposit -> allocate -> refresh -> withdraw.
+//!
+//! Origin/dev immediate law suite: compiled for immediate builds only. The
+//! ENG-697 settlement-anchored suite lives in `epoch_integration_tests.rs`.
+
+#![cfg(not(feature = "epoch"))]
 
 use rstest::{fixture, rstest};
 use soroban_sdk::{

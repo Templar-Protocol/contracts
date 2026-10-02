@@ -83,11 +83,20 @@ fn preview_state_with_fee_accrual(
 }
 
 fn load_actual_idle_assets(env: &Env) -> Result<u128, ContractError> {
+    use crate::storage::deposit::PendingStorage;
     let asset_token: Option<SdkAddress> = env.storage().instance().get(&VaultDataKey::AssetToken);
     let Some(asset_token) = asset_token else {
         return Ok(0);
     };
-    to_u128(token::Client::new(env, &asset_token).balance(&env.current_contract_address()))
+    let measured =
+        to_u128(token::Client::new(env, &asset_token).balance(&env.current_contract_address()))?;
+    let held = SorobanStorage::new(env)
+        .pending_deposit_stats()
+        .map_err(|_| ContractError::InvalidState)?
+        .total_assets;
+    measured
+        .checked_sub(held)
+        .ok_or(ContractError::InvalidState)
 }
 
 pub(crate) fn share_balance(env: &Env, owner: &SdkAddress) -> i128 {

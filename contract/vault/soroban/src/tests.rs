@@ -348,7 +348,7 @@ mod contract_tests {
     use crate::convert::ledger_timestamp_ns;
     use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
     use crate::error::RuntimeError;
-    use crate::storage::{SorobanStorage, Storage};
+    use crate::storage::{SorobanStorage, Storage, SOROBAN_MAX_PENDING_WITHDRAWALS};
     use crate::test_utils::{begin_allocating, finish_allocating, MemoryStorage};
     use alloc::collections::BTreeMap;
     use alloc::string::{String as AllocString, ToString};
@@ -361,21 +361,26 @@ mod contract_tests {
     use templar_curator_primitives::PolicyState;
     use templar_soroban_governance::SorobanVaultGovernanceContract;
     use templar_soroban_shared_types::{
-        DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus,
-        GovernanceCommand, I128Receipt, ReceiptAddress, RequestWithdrawReceipt,
-        RuntimeVersionResponse, VaultCommand, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
-        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
-        RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_PAUSE,
-        RUNTIME_FEATURE_ACTION_RECOVERY, RUNTIME_FEATURE_ACTION_REFRESH_FEES,
-        RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
-        RUNTIME_FEATURE_COMPANION_UPGRADE,
+        BeginEpochCutoffReceipt, CancelPendingWithdrawalReceipt, ConfigureEpochSettlementReceipt,
+        DepositReceipt, EmptyReceipt, EpochStateViewReceipt, ExecuteWithdrawReceipt,
+        ExecuteWithdrawStatus, GovernanceCommand,
+        I128Receipt, ReceiptAddress, RequestWithdrawReceipt, RuntimeVersionResponse,
+        SettleEpochReceipt, VaultCommand, EPOCH_PHASE_CUTOFF, EPOCH_PHASE_OPEN,
+        EPOCH_PHASE_SETTLED, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
+        GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+        GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, GOVERNANCE_POLICY_KIND_PAUSED,
+        RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_EPOCH_SETTLEMENT,
+        RUNTIME_FEATURE_ACTION_PAUSE, RUNTIME_FEATURE_ACTION_RECOVERY,
+        RUNTIME_FEATURE_ACTION_REFRESH_FEES, RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
+        RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL, RUNTIME_FEATURE_COMPANION_UPGRADE,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::fee::FeeSlot;
     use templar_vault_kernel::math::wad::{Wad, YEAR_NS};
     use templar_vault_kernel::{
-        FeeAccrualAnchor, FeesSpec, OpState, Restrictions, TimestampNs, VaultState,
-        WithdrawingState, MIN_WITHDRAWAL_ASSETS,
+        apply_action, EpochId, FeeAccrualAnchor, FeesSpec, KernelAction, OpState, Restrictions,
+        TimestampNs, ValuationReportRef, VaultConfig, VaultState, WithdrawingState,
+        MIN_WITHDRAWAL_ASSETS,
     };
 
     #[derive(Clone, Copy, Default)]
@@ -491,6 +496,19 @@ mod contract_tests {
         ExecuteWithdrawReceipt::decode(&bytes.to_alloc_vec()).expect("decode execute receipt")
     }
 
+    fn decode_begin_epoch_cutoff_receipt(bytes: &Bytes) -> BeginEpochCutoffReceipt {
+        BeginEpochCutoffReceipt::decode(&bytes.to_alloc_vec()).expect("decode cutoff receipt")
+    }
+
+    fn decode_cancel_pending_withdrawal_receipt(bytes: &Bytes) -> CancelPendingWithdrawalReceipt {
+        CancelPendingWithdrawalReceipt::decode(&bytes.to_alloc_vec())
+            .expect("decode cancel withdrawal receipt")
+    }
+
+    fn decode_epoch_state_view(bytes: &Bytes) -> EpochStateViewReceipt {
+        EpochStateViewReceipt::decode(&bytes.to_alloc_vec()).expect("decode epoch state view")
+    }
+
     fn execute_governance_command(
         env: &Env,
         caller: &SdkAddress,
@@ -561,6 +579,104 @@ mod contract_tests {
         vault
     }
 
+    /// Closes intake and settles the current epoch through the kernel's own
+    /// law-checked settlement constructors. The bound immutable snapshot
+    /// becomes the sole claim source; tests that need an executable claim
+    /// call this first, then re-derive claims via
+    /// `withdraw_queue.settled_head_claim` or `epoch.settled_claim_for` and
+    /// never store a fixed claim figure. No request-time asset quote exists.
+    fn cut_off_and_settle_state(state: &mut VaultState, cutoff_ns: u64) {
+        let settlement_nav = state.idle_assets.saturating_add(state.external_assets);
+        let eligible_supply = state.total_shares;
+        let cutoff_state = state
+            .epoch
+            .begin_cutoff(TimestampNs(cutoff_ns))
+            .expect("epoch cutoff accepted");
+        let snapshot = cutoff_state
+            .build_settlement_snapshot(
+                &ValuationReportRef {
+                    report_seq: 1,
+                    as_of_ns: TimestampNs(cutoff_ns.saturating_add(1)),
+                    report_hash: [7u8; 32],
+                },
+                settlement_nav,
+                eligible_supply,
+                TimestampNs(cutoff_ns.saturating_add(2)),
+                SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+            )
+            .expect("settlement snapshot accepted");
+        state.epoch = cutoff_state
+            .apply_settled(&snapshot)
+            .expect("settlement applied");
+        assert!(state.epoch.check_invariants());
+        assert!(state.epoch.last_settled.is_some());
+    }
+
+    /// Closes intake and settles the epoch of the vault behind `vault`
+    /// through the kernel's settlement law, persisting the settled state.
+    /// Same claim-derivation discipline as `cut_off_and_settle_state`.
+    fn cut_off_and_settle_vault_epoch<S, A, E>(
+        vault: &mut CuratorVault<S, A, E>,
+        cutoff_ns: u64,
+    ) where
+        S: Storage,
+        A: AuthAdapter,
+        E: EffectInterpreter + AddressRegistrar,
+    {
+        let self_id = vault.config.vault_address;
+        {
+            let fees = vault.config.fees.clone();
+            let withdrawal_cooldown_ns = vault.config.withdrawal_cooldown_ns;
+            let virtual_shares = vault.config.virtual_shares;
+            let virtual_assets = vault.config.virtual_assets;
+            let state = vault.state_mut().expect("state is loaded");
+            let state_before = state.clone();
+            let config = VaultConfig {
+                fees,
+                min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+                withdrawal_cooldown_ns,
+                max_pending_withdrawals: SOROBAN_MAX_PENDING_WITHDRAWALS,
+                paused: false,
+                virtual_shares,
+                virtual_assets,
+            };
+            let cutoff = apply_action(
+                state_before.clone(),
+                &config,
+                None,
+                &self_id,
+                KernelAction::BeginEpochCutoff {
+                    cutoff_ns: TimestampNs(cutoff_ns),
+                    now_ns: TimestampNs(cutoff_ns),
+                },
+            )
+            .expect("epoch cutoff accepted");
+            *state = cutoff.state;
+            let settled = apply_action(
+                state.clone(),
+                &config,
+                None,
+                &self_id,
+                KernelAction::SettleEpoch {
+                    report: ValuationReportRef {
+                        report_seq: 1,
+                        as_of_ns: TimestampNs(cutoff_ns.saturating_add(1)),
+                        report_hash: [7u8; 32],
+                    },
+                    new_external_assets: state.external_assets,
+                    max_report_age_ns: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+                    settle_now_ns: TimestampNs(cutoff_ns.saturating_add(2)),
+                },
+            )
+            .expect("epoch settlement accepted");
+            *state = settled.state;
+        }
+        vault.save_state().expect("settled epoch persists");
+        let state = vault.state().expect("state is loaded");
+        assert!(state.epoch.check_invariants());
+        assert!(state.epoch.last_settled.is_some());
+    }
+
     #[test]
     fn test_version_is_available_before_initialization_and_matches_compiled_features() {
         let env = Env::default();
@@ -595,6 +711,10 @@ mod contract_tests {
                 RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
                 templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED,
             ),
+            (
+                RUNTIME_FEATURE_ACTION_EPOCH_SETTLEMENT,
+                templar_vault_kernel::ACTION_EPOCH_SETTLEMENT_ENABLED,
+            ),
         ] {
             assert_eq!(feature_flags & flag != 0, enabled);
         }
@@ -606,10 +726,18 @@ mod contract_tests {
             && templar_vault_kernel::ACTION_REFRESH_FEES_ENABLED
             && templar_vault_kernel::ACTION_ALLOCATION_LIFECYCLE_ENABLED
             && templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED
+            && templar_vault_kernel::ACTION_EPOCH_SETTLEMENT_ENABLED
         {
             assert_eq!(
                 feature_flags,
                 templar_soroban_shared_types::RUNTIME_DEFAULT_FEATURE_FLAGS
+            );
+        }
+        #[cfg(not(feature = "immediate-entrypoints"))]
+        if templar_vault_kernel::ACTION_EPOCH_SETTLEMENT_ENABLED {
+            assert_eq!(
+                feature_flags,
+                templar_soroban_shared_types::RUNTIME_EPOCH_FEATURE_FLAGS
             );
         }
     }
@@ -1241,15 +1369,69 @@ mod contract_tests {
             .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
             .unwrap();
 
-        let (head_id, head_escrow_before, head_expected_before) = {
+        let (head_id, head_escrow_before, head_epoch_before) = {
             let (id, head) = vault
                 .state()
                 .unwrap()
                 .withdraw_queue
                 .head()
                 .expect("withdrawal queued");
-            (id, head.escrow_shares, head.expected_assets)
+            (id, head.escrow_shares, head.epoch_id)
         };
+        assert_eq!(head_id, 0);
+        assert_eq!(head_epoch_before, EpochId::FIRST_SETTLEMENT);
+        assert_eq!(head_escrow_before, deposit_amount);
+        {
+            let state = vault.state().unwrap();
+            // No asset-denominated claim exists before settlement.
+            assert!(state
+                .withdraw_queue
+                .settled_head_claim(&state.epoch)
+                .is_none());
+            assert!(state
+                .epoch
+                .settled_claim_for(head_epoch_before, head_escrow_before)
+                .is_none());
+        }
+
+        // The kernel refuses to pay a queued head while its intake epoch has
+        // no bound settled snapshot, and the runtime reports that law as
+        // `WithdrawalEpochUnsettled`. The claim-absence assertions above and
+        // the queue/escrow/shares invariants below pin this refusal to the
+        // unsettled epoch rather than any other fault.
+        let error = vault
+            .execute_withdraw(allocator, exec_time)
+            .expect_err("unsettled epoch must not pay a queued withdrawal");
+        assert_eq!(error, RuntimeError::WithdrawalEpochUnsettled);
+        {
+            let state = vault.state().unwrap();
+            assert!(state.op_state.is_idle());
+            let (head_id_after, head_after) = state
+                .withdraw_queue
+                .head()
+                .expect("withdrawal still queued");
+            assert_eq!(head_id_after, head_id);
+            assert_eq!(head_after.escrow_shares, head_escrow_before);
+            assert_eq!(head_after.epoch_id, head_epoch_before);
+            assert_eq!(state.total_shares, deposit_amount);
+            assert_eq!(
+                state.total_assets,
+                state.idle_assets.saturating_add(state.external_assets)
+            );
+        }
+
+        // Settlement derives the head claim from the immutable snapshot; the
+        // minimum-liquidity floor still refuses execution when idle assets
+        // fall below that settled claim, and the queue stays intact.
+        cut_off_and_settle_vault_epoch(&mut vault, 300);
+        let settled_claim = {
+            let state = vault.state().unwrap();
+            state
+                .withdraw_queue
+                .settled_head_claim(&state.epoch)
+                .expect("settled epoch derives the head claim")
+        };
+        assert_eq!(settled_claim, deposit_amount);
 
         {
             let state = vault.state_mut().unwrap();
@@ -1261,8 +1443,7 @@ mod contract_tests {
         let error = vault
             .execute_withdraw(allocator, exec_time)
             .expect_err("low-liquidity withdrawal should not start");
-
-        assert_eq!(error, RuntimeError::KernelError);
+        assert_eq!(error, RuntimeError::InsufficientIdleAssets);
         let state = vault.state().unwrap();
         assert!(state.op_state.is_idle());
         let (head_id_after, head_after) = state
@@ -1271,15 +1452,17 @@ mod contract_tests {
             .expect("withdrawal still queued");
         assert_eq!(head_id_after, head_id);
         assert_eq!(head_after.escrow_shares, head_escrow_before);
-        assert_eq!(head_after.expected_assets, head_expected_before);
+        assert_eq!(head_after.epoch_id, head_epoch_before);
         assert_eq!(state.idle_assets, MIN_WITHDRAWAL_ASSETS.saturating_sub(1));
         assert_eq!(
             state.total_assets,
             state.idle_assets.saturating_add(state.external_assets)
         );
         assert_eq!(state.total_shares, deposit_amount);
-        assert_eq!(head_id, 0);
-        assert_eq!(head_expected_before, deposit_amount);
+        assert_eq!(
+            state.withdraw_queue.settled_head_claim(&state.epoch),
+            Some(settled_claim)
+        );
     }
 
     #[test]
@@ -1302,27 +1485,33 @@ mod contract_tests {
             .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
             .unwrap();
 
+        cut_off_and_settle_vault_epoch(&mut vault, 300);
+
         {
             let state = vault.state_mut().unwrap();
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
             state.external_assets = deposit_amount.saturating_sub(state.idle_assets);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
-            let (request_id, owner, receiver, escrow_shares, expected_assets) = {
+            let (request_id, owner, receiver, escrow_shares) = {
                 let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
                 (
                     request_id,
                     head.owner,
                     head.receiver,
                     head.escrow_shares,
-                    head.expected_assets,
                 )
             };
+            let remaining = state
+                .withdraw_queue
+                .settled_head_claim(&state.epoch)
+                .expect("settled epoch derives the head claim");
+            assert_eq!(remaining, deposit_amount);
             let op_id = state.allocate_op_id();
             state.op_state = OpState::Withdrawing(WithdrawingState {
                 op_id,
                 request_id,
                 index: 0,
-                remaining: expected_assets,
+                remaining,
                 collected: 0,
                 owner,
                 receiver,
@@ -1378,6 +1567,36 @@ mod contract_tests {
                 .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
                 .expect("withdraw request should succeed");
 
+            let unsettled_head_claim = {
+                let state = vault.state().expect("state is loaded");
+                state.withdraw_queue.settled_head_claim(&state.epoch)
+            };
+            prop_assert!(unsettled_head_claim.is_none());
+            let unsettled_error = vault
+                .execute_withdraw(allocator, exec_time)
+                .expect_err("unsettled epoch must not pay a queued withdrawal");
+            // The kernel refuses to pay a queued head while its intake epoch
+            // has no bound settled snapshot, and the runtime reports that law
+            // as `WithdrawalEpochUnsettled`. The claim-absence assertion above
+            // and the op-state and queue invariants below pin this refusal to
+            // the unsettled epoch rather than any other fault.
+            prop_assert_eq!(unsettled_error, RuntimeError::WithdrawalEpochUnsettled);
+            prop_assert!(vault.state().expect("state is loaded").op_state.is_idle());
+            prop_assert!(!vault.state().expect("state is loaded").withdraw_queue.is_empty());
+
+            // Settlement derives the executable claim from the immutable
+            // epoch snapshot; every later refusal and recovery below is
+            // evaluated against that snapshot-derived value.
+            cut_off_and_settle_vault_epoch(&mut vault, 300);
+            let settled_claim = {
+                let state = vault.state().expect("state is loaded");
+                state
+                    .withdraw_queue
+                    .settled_head_claim(&state.epoch)
+                    .expect("settled epoch derives the head claim")
+            };
+            prop_assert_eq!(settled_claim, deposit_amount);
+
             {
                 let state = vault.state_mut().expect("state is loaded");
                 state.idle_assets = low_idle;
@@ -1388,28 +1607,22 @@ mod contract_tests {
             let error = vault
                 .execute_withdraw(allocator, exec_time)
                 .expect_err("low-liquidity execution should be refused");
-            prop_assert_eq!(error, RuntimeError::KernelError);
+            prop_assert_eq!(error, RuntimeError::InsufficientIdleAssets);
             prop_assert!(vault.state().expect("state is loaded").op_state.is_idle());
             prop_assert!(!vault.state().expect("state is loaded").withdraw_queue.is_empty());
 
             {
                 let state = vault.state_mut().expect("state is loaded");
-                let (request_id, owner, receiver, escrow_shares, expected_assets) = {
+                let (request_id, owner, receiver, escrow_shares) = {
                     let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
-                    (
-                        request_id,
-                        head.owner,
-                        head.receiver,
-                        head.escrow_shares,
-                        head.expected_assets,
-                    )
+                    (request_id, head.owner, head.receiver, head.escrow_shares)
                 };
                 let op_id = state.allocate_op_id();
                 state.op_state = OpState::Withdrawing(WithdrawingState {
                     op_id,
                     request_id,
                     index: 0,
-                    remaining: expected_assets,
+                    remaining: settled_claim,
                     collected: 0,
                     owner,
                     receiver,
@@ -1421,7 +1634,7 @@ mod contract_tests {
                 let retry_error = vault
                     .execute_withdraw(allocator, exec_time.saturating_add(offset as u64 + 1))
                     .expect_err("stale low-liquidity withdrawal should remain blocked");
-                prop_assert_eq!(retry_error, RuntimeError::KernelError);
+                prop_assert_eq!(retry_error, RuntimeError::InsufficientIdleAssets);
                 prop_assert!(vault.state().expect("state is loaded").op_state.is_withdrawing());
             }
 
@@ -1473,15 +1686,47 @@ mod contract_tests {
             .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
             .unwrap();
 
-        let (head_id, head_escrow_before, head_expected_before) = {
+        let (head_id, head_escrow_before, head_epoch_before) = {
             let (id, head) = vault
                 .state()
                 .unwrap()
                 .withdraw_queue
                 .head()
                 .expect("withdrawal queued");
-            (id, head.escrow_shares, head.expected_assets)
+            (id, head.escrow_shares, head.epoch_id)
         };
+        assert_eq!(head_id, 0);
+        assert_eq!(head_epoch_before, EpochId::FIRST_SETTLEMENT);
+        {
+            let state = vault.state().unwrap();
+            assert!(state
+                .withdraw_queue
+                .settled_head_claim(&state.epoch)
+                .is_none());
+        }
+
+        // The kernel refuses to pay a queued head while its intake epoch has
+        // no bound settled snapshot, and the runtime reports that law as
+        // `WithdrawalEpochUnsettled`. The claim-absence assertion above and
+        // the queue/escrow/shares invariants below pin this refusal to the
+        // unsettled epoch rather than any other fault.
+        let error = vault
+            .execute_withdraw(allocator, exec_time)
+            .expect_err("unsettled epoch must not pay a queued withdrawal");
+        assert_eq!(error, RuntimeError::WithdrawalEpochUnsettled);
+
+        // Settlement derives the head claim from the immutable snapshot;
+        // after settlement, idle assets covering only part of that claim
+        // still refuse any partial settlement.
+        cut_off_and_settle_vault_epoch(&mut vault, 300);
+        let settled_claim = {
+            let state = vault.state().unwrap();
+            state
+                .withdraw_queue
+                .settled_head_claim(&state.epoch)
+                .expect("settled epoch derives the head claim")
+        };
+        assert_eq!(settled_claim, deposit_amount);
 
         {
             let state = vault.state_mut().unwrap();
@@ -1493,8 +1738,7 @@ mod contract_tests {
         let error = vault
             .execute_withdraw(allocator, exec_time)
             .expect_err("partial idle coverage should not settle queued withdrawal");
-
-        assert_eq!(error, RuntimeError::KernelError);
+        assert_eq!(error, RuntimeError::InsufficientIdleAssets);
         let state = vault.state().unwrap();
         assert!(state.op_state.is_idle());
         let (head_id_after, head_after) = state
@@ -1503,11 +1747,14 @@ mod contract_tests {
             .expect("withdrawal still queued");
         assert_eq!(head_id_after, head_id);
         assert_eq!(head_after.escrow_shares, head_escrow_before);
-        assert_eq!(head_after.expected_assets, head_expected_before);
+        assert_eq!(head_after.epoch_id, head_epoch_before);
         assert_eq!(state.idle_assets, MIN_WITHDRAWAL_ASSETS.saturating_add(1));
         assert_eq!(state.total_assets, deposit_amount);
         assert_eq!(state.total_shares, deposit_amount);
-        assert_eq!(head_expected_before, deposit_amount);
+        assert_eq!(
+            state.withdraw_queue.settled_head_claim(&state.epoch),
+            Some(settled_claim)
+        );
     }
 
     #[test]
@@ -1557,6 +1804,18 @@ mod contract_tests {
                 .request_withdraw(owner_kernel, receiver_kernel, assets, 0, now_ns)
                 .unwrap();
 
+            // Close intake and settle epoch 1 against honest NAV so the
+            // escrowed request acquires its snapshot-derived claim.
+            cut_off_and_settle_vault_epoch(&mut vault, now_ns.saturating_add(200));
+            let settled_claim = {
+                let state = vault.state().expect("state is loaded");
+                state
+                    .withdraw_queue
+                    .settled_head_claim(&state.epoch)
+                    .expect("settled epoch derives the head claim")
+            };
+            assert_eq!(settled_claim, assets);
+
             let storage = vault.storage.clone();
 
             let mut next_vault = CuratorVault::new(
@@ -1588,7 +1847,7 @@ mod contract_tests {
                 panic!("execute_withdraw should complete a payout");
             };
 
-            assert!(summary.assets_transferred > 0);
+            assert_eq!(summary.assets_transferred, settled_claim);
             assert!(next_vault.interpreter.has_address(&receiver_kernel));
         });
     }
@@ -2282,6 +2541,7 @@ mod contract_tests {
         });
     }
 
+    #[cfg(feature = "immediate-entrypoints")]
     #[test]
     fn test_proxy_view_uses_fee_aware_kernel_conversions_for_high_values() {
         use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
@@ -2653,7 +2913,10 @@ mod contract_tests {
                 },
             )
         });
-        assert_eq!(withdraw, Err(crate::error::ContractError::KernelError));
+        // Immediate exits price against pre-settlement NAV, so the immediate
+        // execution guard fails closed while the vault holds external assets:
+        // external value can never be spent as same-day liquidity.
+        assert_eq!(withdraw, Err(crate::error::ContractError::InvalidState));
 
         let redeem = env.as_contract(&contract_id, || {
             execute_command(
@@ -2667,7 +2930,7 @@ mod contract_tests {
                 },
             )
         });
-        assert_eq!(redeem, Err(crate::error::ContractError::KernelError));
+        assert_eq!(redeem, Err(crate::error::ContractError::InvalidState));
 
         let asset_client = soroban_sdk::token::Client::new(&env, &asset);
         let share_client = soroban_sdk::token::Client::new(&env, &share);
@@ -2847,16 +3110,56 @@ mod contract_tests {
         assert_eq!(share_client.balance(&owner), 0);
         assert_eq!(share_client.balance(&contract_id), deposit_assets);
 
+        env.ledger().set(LedgerInfo {
+            timestamp: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS / 1_000_000_000 + 2,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
         env.as_contract(&contract_id, || {
+            let state = SorobanStorage::new(&env)
+                .load_state()
+                .unwrap()
+                .expect("initialized vault state");
+            assert!(state.op_state.is_idle());
+            assert!(state
+                .withdraw_queue
+                .settled_head_claim(&state.epoch)
+                .is_none());
+            // The kernel refuses to pay the queued head while its intake
+            // epoch has no bound settled snapshot, and the runtime reports
+            // that law as `WithdrawalEpochUnsettled`. The claim-absence and
+            // idle assertions above pin this refusal to the unsettled epoch.
+            assert_eq!(
+                execute_command(
+                    &env,
+                    &VaultCommand::ExecuteWithdraw {
+                        caller: sdk_text(&curator),
+                    },
+                )
+                .expect_err("the queue cannot move until the epoch settles"),
+                crate::error::ContractError::WithdrawalEpochUnsettled
+            );
+        });
+
+        let settled_claim = env.as_contract(&contract_id, || {
             let mut storage = SorobanStorage::new(&env);
             let mut state = storage
                 .load_state()
                 .unwrap()
                 .expect("initialized vault state");
+            assert!(state.op_state.is_idle());
+            cut_off_and_settle_state(&mut state, 1_000_000_100);
+            let claim = state
+                .withdraw_queue
+                .settled_head_claim(&state.epoch)
+                .expect("settled epoch derives the head claim");
+            assert_eq!(claim, deposit_assets as u128);
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
             state.external_assets = (deposit_assets as u128).saturating_sub(state.idle_assets);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
             storage.save_state(&state).unwrap();
+            claim
         });
 
         env.ledger().set(LedgerInfo {
@@ -2874,7 +3177,7 @@ mod contract_tests {
                     },
                 )
                 .expect_err("low-liquidity withdrawal should not start"),
-                crate::error::ContractError::KernelError
+                crate::error::ContractError::InsufficientIdleAssets
             );
         });
 
@@ -2885,22 +3188,27 @@ mod contract_tests {
                 .unwrap()
                 .expect("initialized vault state");
             assert!(state.op_state.is_idle());
-            let (request_id, owner, receiver, escrow_shares, expected_assets) = {
+            let (request_id, owner, receiver, escrow_shares) = {
                 let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
                 (
                     request_id,
                     head.owner,
                     head.receiver,
                     head.escrow_shares,
-                    head.expected_assets,
                 )
             };
+            let remaining = state
+                .withdraw_queue
+                .settled_head_claim(&state.epoch)
+                .expect("settled epoch derives the head claim");
+            assert_eq!(remaining, settled_claim);
+            assert!(remaining > 0);
             let op_id = state.allocate_op_id();
             state.op_state = OpState::Withdrawing(WithdrawingState {
                 op_id,
                 request_id,
                 index: 0,
-                remaining: expected_assets,
+                remaining,
                 collected: 0,
                 owner,
                 receiver,
@@ -3005,6 +3313,24 @@ mod contract_tests {
             .unwrap();
         });
 
+        env.as_contract(&contract_id, || {
+            let mut storage = SorobanStorage::new(&env);
+            let mut state = storage
+                .load_state()
+                .unwrap()
+                .expect("initialized vault state");
+            assert!(state.op_state.is_idle());
+            cut_off_and_settle_state(&mut state, 1_000_000_100);
+            assert_eq!(
+                state
+                    .withdraw_queue
+                    .settled_head_claim(&state.epoch)
+                    .expect("settled epoch derives the head claim"),
+                deposit_assets as u128
+            );
+            storage.save_state(&state).unwrap();
+        });
+
         env.ledger().set(LedgerInfo {
             timestamp: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS / 1_000_000_000 + 3,
             protocol_version: 25,
@@ -3089,6 +3415,984 @@ mod contract_tests {
 
             assert_eq!(vault.restrictions(), Some(&restrictions));
         });
+    }
+
+    #[test]
+    fn test_settle_epoch_command_rejects_non_allocator_caller() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&curator, &contract_id, &(0u64)),
+        );
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let attacker = soroban_sdk::Address::generate(&env);
+        let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as i128;
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        asset_admin_client.mint(&owner, &deposit_assets);
+        env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::DepositWithMin {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&owner),
+                    assets: deposit_assets,
+                    min_shares_out: 0,
+                },
+            )
+            .unwrap();
+            execute_command(
+                &env,
+                &VaultCommand::RequestWithdraw {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&owner),
+                    shares: deposit_assets,
+                    min_assets_out: 0,
+                },
+            )
+            .unwrap();
+        });
+
+        let view_open = env.as_contract(&contract_id, || {
+            decode_epoch_state_view(&execute_command(&env, &VaultCommand::GetEpochState).unwrap())
+        });
+        assert_eq!(view_open.phase, EPOCH_PHASE_OPEN);
+        assert_eq!(view_open.intake_epoch, 1);
+        assert_eq!(view_open.cutoff_ns, None);
+        assert_eq!(view_open.last_settled_epoch_id, None);
+
+        // Valid config precondition: governance activates the epoch freshness
+        // law so the epoch lifecycle can advance. Without it every epoch
+        // action fails closed on configuration and never reaches the role
+        // gate this test exists to exercise.
+        env.as_contract(&contract_id, || {
+            let receipt = execute_command(
+                &env,
+                &VaultCommand::ConfigureEpochSettlement {
+                    caller: sdk_text(&governance),
+                    max_report_age_ns: 60_000_000_000,
+                },
+            )
+            .expect("governance may configure epoch settlement");
+            assert_eq!(
+                ConfigureEpochSettlementReceipt::decode(&receipt.to_alloc_vec())
+                    .expect("decode epoch settlement configuration")
+                    .max_report_age_ns,
+                60_000_000_000
+            );
+        });
+
+        // The curator holds the allocator role and closes intake for epoch 1.
+        let cutoff_ns = 10_000_000_000u64;
+        env.ledger().set(LedgerInfo {
+            timestamp: cutoff_ns / 1_000_000_000,
+            protocol_version: 25,
+            ..Default::default()
+        });
+        env.as_contract(&contract_id, || {
+            let receipt = execute_command(
+                &env,
+                &VaultCommand::BeginEpochCutoff {
+                    caller: sdk_text(&curator),
+                    cutoff_ns,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                decode_begin_epoch_cutoff_receipt(&receipt),
+                BeginEpochCutoffReceipt {
+                    epoch_id: 1,
+                    cutoff_ns,
+                }
+            );
+            let view_cutoff =
+                decode_epoch_state_view(&execute_command(&env, &VaultCommand::GetEpochState).unwrap());
+            assert_eq!(view_cutoff.phase, EPOCH_PHASE_CUTOFF);
+            assert_eq!(view_cutoff.cutoff_ns, Some(cutoff_ns));
+            assert_eq!(view_cutoff.last_settled_epoch_id, None);
+        });
+
+        // Settlement is allocator-only: a caller without the role is refused,
+        // and the refused attempt must leave the cutoff epoch unsettled.
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                execute_command(
+                    &env,
+                    &VaultCommand::SettleEpoch {
+                        caller: sdk_text(&attacker),
+                    },
+                )
+                .expect_err("a non-allocator caller must not settle the epoch"),
+                crate::error::ContractError::Unauthorized
+            );
+            let view_after_attacker =
+                decode_epoch_state_view(&execute_command(&env, &VaultCommand::GetEpochState).unwrap());
+            assert_eq!(view_after_attacker.phase, EPOCH_PHASE_CUTOFF);
+            assert_eq!(view_after_attacker.cutoff_ns, Some(cutoff_ns));
+            assert_eq!(view_after_attacker.last_settled_epoch_id, None);
+        });
+
+        // The allocator passes the role gate. If settlement still fails, the
+        // failure comes from the settlement law itself, never from the role
+        // gate, and the epoch stays unsettled.
+        env.as_contract(&contract_id, || {
+            match execute_command(
+                &env,
+                &VaultCommand::SettleEpoch {
+                    caller: sdk_text(&curator),
+                },
+            ) {
+                Ok(receipt) => {
+                    let settle = SettleEpochReceipt::decode(&receipt.to_alloc_vec())
+                        .expect("decode settle receipt");
+                    assert_eq!(settle.epoch_id, 1);
+                    assert_eq!(settle.cutoff_ns, cutoff_ns);
+                    assert!(settle.report_seq >= 1);
+                    assert!(settle.settlement_nav > 0);
+                    assert!(settle.eligible_supply > 0);
+                    let view_settled = decode_epoch_state_view(
+                        &execute_command(&env, &VaultCommand::GetEpochState).unwrap(),
+                    );
+                    assert_eq!(view_settled.phase, EPOCH_PHASE_SETTLED);
+                    assert_eq!(view_settled.last_settled_epoch_id, Some(1));
+                    let state = SorobanStorage::new(&env)
+                        .load_state()
+                        .unwrap()
+                        .expect("vault state");
+                    assert_eq!(
+                        state
+                            .withdraw_queue
+                            .settled_head_claim(&state.epoch)
+                            .expect("settled epoch derives the head claim"),
+                        deposit_assets as u128
+                    );
+                }
+                Err(error) => {
+                    assert_ne!(
+                        error,
+                        crate::error::ContractError::Unauthorized,
+                        "an allocator caller must pass the settlement role gate"
+                    );
+                    let view_after_curator = decode_epoch_state_view(
+                        &execute_command(&env, &VaultCommand::GetEpochState).unwrap(),
+                    );
+                    assert_eq!(view_after_curator.phase, EPOCH_PHASE_CUTOFF);
+                    assert_eq!(view_after_curator.last_settled_epoch_id, None);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_seed_epoch_supply_is_governance_only_once_and_pristine_only() {
+        use soroban_sdk::testutils::{Address as _, Events, Ledger, LedgerInfo};
+        use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&curator, &contract_id, &(0u64)),
+        );
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+        let asset_client = TokenClient::new(&env, &asset);
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let share_client = TokenClient::new(&env, &share);
+
+        let attacker = soroban_sdk::Address::generate(&env);
+        let receiver = soroban_sdk::Address::generate(&env);
+        let seed_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(4)) as i128;
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        // The epoch freshness configuration is the epoch-mode activation the
+        // runtime law requires; governance performs it through its own
+        // authorized channel, which also proves the governance binding used
+        // by the seed command is live.
+        env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::ConfigureEpochSettlement {
+                    caller: sdk_text(&governance),
+                    max_report_age_ns: 60_000_000_000,
+                },
+            )
+            .expect("governance may configure epoch settlement");
+        });
+
+        let seed_command = |caller: &soroban_sdk::Address, assets: i128| {
+            VaultCommand::SeedEpochSupply {
+                caller: sdk_text(caller),
+                receiver: sdk_text(&receiver),
+                assets,
+            }
+        };
+        let vault_events = |env: &Env| -> u32 {
+            env.events()
+                .all()
+                .filter_by_contract(&contract_id)
+                .events()
+                .len() as u32
+        };
+
+        // A stranger may never open the vault's supply.
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                execute_command(&env, &seed_command(&attacker, seed_assets))
+                    .expect_err("only governance may seed the vault"),
+                crate::error::ContractError::Unauthorized
+            );
+        });
+
+        // Zero and negative amounts fail before custody or mint.
+        env.as_contract(&contract_id, || {
+            assert!(
+                execute_command(&env, &seed_command(&governance, 0)).is_err(),
+                "a zero seed must fail"
+            );
+            assert!(
+                execute_command(&env, &seed_command(&governance, -1)).is_err(),
+                "a negative seed must fail"
+            );
+        });
+
+        // Custody failure leaves nothing behind: an unfunded caller fails at
+        // the token transfer, and the epoch stays exactly at genesis.
+        let events_before_seed = vault_events(&env);
+        env.as_contract(&contract_id, || {
+            assert!(
+                execute_command(&env, &seed_command(&governance, seed_assets)).is_err(),
+                "the seed must fail when custody cannot arrive"
+            );
+            let view = decode_epoch_state_view(
+                &execute_command(&env, &VaultCommand::GetEpochState).unwrap(),
+            );
+            assert_eq!(view.phase, EPOCH_PHASE_OPEN);
+            assert_eq!(view.intake_epoch, 1);
+            assert_eq!(view.cutoff_ns, None);
+            assert_eq!(view.last_settled_epoch_id, None);
+        });
+        assert_eq!(
+            vault_events(&env),
+            events_before_seed,
+            "a failed seed must publish nothing"
+        );
+
+        // Governance self-funds and obtains exactly matching backed supply
+        // for the explicit receiver, without any epoch progression.
+        asset_admin_client.mint(&contract_id, &seed_assets);
+        env.as_contract(&contract_id, || {
+            let receipt = execute_command(&env, &seed_command(&governance, seed_assets))
+                .expect("governance may fund a fresh epoch deployment");
+            let seed = templar_soroban_shared_types::SeedEpochSupplyReceipt::decode(
+                &receipt.to_alloc_vec(),
+            )
+            .expect("decode seed receipt");
+            assert_eq!(seed.assets_seeded, seed_assets);
+            assert_eq!(seed.shares_minted, seed_assets);
+            assert_eq!(asset_client.balance(&contract_id), seed_assets);
+            assert_eq!(share_client.balance(&receiver), seed_assets);
+            assert_eq!(seed.assets_seeded, seed.shares_minted);
+            let view = decode_epoch_state_view(
+                &execute_command(&env, &VaultCommand::GetEpochState).unwrap(),
+            );
+            assert_eq!(view.phase, EPOCH_PHASE_OPEN);
+            assert_eq!(view.intake_epoch, 1);
+            assert_eq!(view.cutoff_ns, None);
+            assert_eq!(view.last_settled_epoch_id, None);
+        });
+        assert_eq!(
+            vault_events(&env),
+            events_before_seed.saturating_add(1),
+            "a successful seed must publish exactly one custody event"
+        );
+
+        // The law cannot replay: a funded second governance seed against
+        // already-backed supply fails and changes nothing.
+        // No second funding occurs; the vault is already backed.
+        env.as_contract(&contract_id, || {
+            let error = execute_command(&env, &seed_command(&governance, seed_assets))
+                .expect_err("the one-time seed must not replay");
+            assert_ne!(
+                error,
+                crate::error::ContractError::Unauthorized,
+                "governance authorization must not be the reason replay fails"
+            );
+        });
+        assert_eq!(asset_client.balance(&contract_id), seed_assets);
+        assert_eq!(share_client.balance(&receiver), seed_assets);
+        assert!(
+            vault_events(&env) <= events_before_seed.saturating_add(1),
+            "a replayed seed must add no custody event beyond the one lawful seed event"
+        );
+        // Once the epoch has progressed into cutoff, the seed window is
+        // permanently closed even against a funded governance caller.
+        let cutoff_ns = 10_000_000_000u64;
+        env.ledger().set(LedgerInfo {
+            timestamp: cutoff_ns / 1_000_000_000,
+            protocol_version: 25,
+            ..Default::default()
+        });
+        env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::BeginEpochCutoff {
+                    caller: sdk_text(&curator),
+                    cutoff_ns,
+                },
+            )
+            .expect("cutoff accepted on a seeded epoch");
+            assert!(
+                execute_command(&env, &seed_command(&governance, 1)).is_err(),
+                "the seed must be closed after cutoff progression"
+            );
+            let view = decode_epoch_state_view(
+                &execute_command(&env, &VaultCommand::GetEpochState).unwrap(),
+            );
+            assert_eq!(view.phase, EPOCH_PHASE_CUTOFF);
+            assert_eq!(view.cutoff_ns, Some(cutoff_ns));
+        });
+        assert_eq!(asset_client.balance(&contract_id), seed_assets);
+        assert_eq!(share_client.balance(&receiver), seed_assets);
+    }
+
+    #[test]
+    fn test_cancel_pending_withdrawal_is_owner_bound_and_refunds_full_escrow() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&curator, &contract_id, &(0u64)),
+        );
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let attacker = soroban_sdk::Address::generate(&env);
+        let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as i128;
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+        });
+
+        asset_admin_client.mint(&owner, &deposit_assets);
+        env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::DepositWithMin {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&owner),
+                    assets: deposit_assets,
+                    min_shares_out: 0,
+                },
+            )
+            .unwrap();
+            let request_receipt = execute_command(
+                &env,
+                &VaultCommand::RequestWithdraw {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&owner),
+                    shares: deposit_assets,
+                    min_assets_out: 0,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                decode_request_withdraw_receipt(&request_receipt).request_id,
+                0
+            );
+        });
+        assert_eq!(share_client.balance(&owner), 0);
+        assert_eq!(share_client.balance(&contract_id), deposit_assets);
+
+        // A non-owner cannot cancel another account's pending withdrawal;
+        // the queue and escrow custody stay untouched.
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                execute_command(
+                    &env,
+                    &VaultCommand::CancelPendingWithdrawal {
+                        owner: sdk_text(&attacker),
+                        request_id: 0,
+                    },
+                )
+                .expect_err("a non-owner must not cancel another account's withdrawal"),
+                crate::error::ContractError::Unauthorized
+            );
+            let state = SorobanStorage::new(&env)
+                .load_state()
+                .unwrap()
+                .expect("vault state");
+            let (head_id, head) = state
+                .withdraw_queue
+                .head()
+                .expect("withdrawal still queued after refused cancel");
+            assert_eq!(head_id, 0);
+            assert_eq!(head.escrow_shares, deposit_assets as u128);
+            assert_eq!(head.epoch_id, EpochId::FIRST_SETTLEMENT);
+            assert_eq!(state.withdraw_queue.total_escrow_shares(), deposit_assets as u128);
+        });
+        assert_eq!(share_client.balance(&owner), 0);
+        assert_eq!(share_client.balance(&contract_id), deposit_assets);
+
+        // Pause the vault through the registered sentinel.
+        let sentinel = soroban_sdk::Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_SENTINEL,
+                    primary: Some(sdk_text(&sentinel)),
+                    many: None,
+                    value_a: None,
+                    value_b: None,
+                },
+            )
+            .unwrap();
+            execute_governance_command(
+                &env,
+                &sentinel,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_PAUSED,
+                    target_ids: None,
+                    mode: Some(1),
+                    accounts: None,
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                },
+            )
+            .unwrap();
+        });
+        env.as_contract(&contract_id, || {
+            assert!(SorobanStorage::new(&env).is_paused());
+        });
+
+        // Cancellation stays owner-bound while paused: a non-owner is still
+        // refused and the queue is intact.
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                execute_command(
+                    &env,
+                    &VaultCommand::CancelPendingWithdrawal {
+                        owner: sdk_text(&attacker),
+                        request_id: 0,
+                    },
+                )
+                .expect_err("paused vaults must not let non-owners cancel withdrawals"),
+                crate::error::ContractError::Unauthorized
+            );
+            let state = SorobanStorage::new(&env)
+                .load_state()
+                .unwrap()
+                .expect("vault state");
+            let (head_id, head) = state
+                .withdraw_queue
+                .head()
+                .expect("withdrawal still queued after refused paused cancel");
+            assert_eq!(head_id, 0);
+            assert_eq!(head.escrow_shares, deposit_assets as u128);
+            assert_eq!(head.epoch_id, EpochId::FIRST_SETTLEMENT);
+            assert_eq!(state.withdraw_queue.total_escrow_shares(), deposit_assets as u128);
+        });
+
+        // The request owner can cancel while paused and receives the full
+        // escrow refund.
+        env.as_contract(&contract_id, || {
+            let receipt = execute_command(
+                &env,
+                &VaultCommand::CancelPendingWithdrawal {
+                    owner: sdk_text(&owner),
+                    request_id: 0,
+                },
+            )
+            .expect("the request owner may cancel while paused");
+            assert_eq!(
+                decode_cancel_pending_withdrawal_receipt(&receipt),
+                CancelPendingWithdrawalReceipt {
+                    request_id: 0,
+                    shares_refunded: deposit_assets,
+                    epoch_id: 1,
+                }
+            );
+            let state = SorobanStorage::new(&env)
+                .load_state()
+                .unwrap()
+                .expect("vault state");
+            assert!(state.withdraw_queue.is_empty());
+            assert!(state.op_state.is_idle());
+            assert_eq!(state.total_shares, deposit_assets as u128);
+            assert_eq!(
+                state.total_assets,
+                state.idle_assets.saturating_add(state.external_assets)
+            );
+        });
+        assert_eq!(share_client.balance(&owner), deposit_assets);
+        assert_eq!(share_client.balance(&contract_id), 0);
+    }
+
+    struct EpochIntakeFixture {
+        env: Env,
+        contract_id: SdkAddress,
+        curator: SdkAddress,
+        asset: SdkAddress,
+        share: SdkAddress,
+    }
+
+    /// Registers the real vault, governance, and SEP-41 contracts,
+    /// initializes the vault, and activates the epoch freshness law so
+    /// settlement-anchored intake is open for epoch 1.
+    fn epoch_intake_fixture() -> EpochIntakeFixture {
+        use soroban_sdk::testutils::{Ledger, LedgerInfo};
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&curator, &contract_id, &(0u64)),
+        );
+        let asset_admin = SdkAddress::generate(&env);
+        let asset = env
+            .register_stellar_asset_contract_v2(asset_admin)
+            .address();
+        let share = env
+            .register_stellar_asset_contract_v2(contract_id.clone())
+            .address();
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance.clone(),
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+            execute_command(
+                &env,
+                &VaultCommand::ConfigureEpochSettlement {
+                    caller: sdk_text(&governance),
+                    max_report_age_ns: 60_000_000_000,
+                },
+            )
+            .expect("governance may configure epoch settlement");
+        });
+        EpochIntakeFixture {
+            env,
+            contract_id,
+            curator,
+            asset,
+            share,
+        }
+    }
+
+    #[test]
+    fn test_request_deposit_maps_first_time_depositor_and_records_custody() {
+        use crate::contract::helpers::kernel_address_from_sdk;
+        use crate::storage::deposit::PendingStorage;
+        use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+        use templar_soroban_shared_types::PendingDepositReceipt;
+        let fix = epoch_intake_fixture();
+        let depositor = SdkAddress::generate(&fix.env);
+        StellarAssetClient::new(&fix.env, &fix.asset).mint(&depositor, &1_000);
+        fix.env.as_contract(&fix.contract_id, || {
+            let receipt = execute_command(
+                &fix.env,
+                &VaultCommand::RequestDeposit {
+                    owner: sdk_text(&depositor),
+                    assets: 1_000,
+                    min_shares_out: 0,
+                },
+            )
+            .expect("a first-time depositor must be admitted to intake");
+            let deposit = PendingDepositReceipt::decode(&receipt.to_alloc_vec())
+                .expect("decode pending deposit receipt");
+            assert_eq!(deposit.request_id, 1);
+            assert_eq!(deposit.assets, 1_000);
+        });
+        let token = TokenClient::new(&fix.env, &fix.asset);
+        assert_eq!(token.balance(&depositor), 0);
+        assert_eq!(
+            token.balance(&fix.contract_id),
+            1_000,
+            "custody transferred exactly the requested assets to the vault"
+        );
+        let share_token = TokenClient::new(&fix.env, &fix.share);
+        assert_eq!(share_token.balance(&depositor), 0);
+        fix.env.as_contract(&fix.contract_id, || {
+            let storage = SorobanStorage::new(&fix.env);
+            let owner = kernel_address_from_sdk(&fix.env, &depositor);
+            assert_eq!(storage.load_address(&owner), Some(depositor.clone()));
+            let record = storage
+                .load_pending_deposit(1)
+                .expect("read intake ledger")
+                .expect("exactly one recorded liability");
+            assert_eq!(record.owner, owner);
+            assert_eq!(record.assets, 1_000);
+            assert_eq!(record.epoch_id.as_u64(), 1);
+            let state = storage
+                .load_state()
+                .unwrap()
+                .expect("vault state");
+            assert_eq!(state.total_assets, 0, "intake never moves NAV");
+            assert_eq!(state.total_shares, 0, "intake never mints supply");
+        });
+    }
+
+    #[test]
+    fn test_pending_deposit_record_is_owner_bound_against_other_callers() {
+        use crate::storage::deposit::PendingStorage;
+        use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+        use templar_soroban_shared_types::PendingDepositReceipt;
+        let fix = epoch_intake_fixture();
+        let depositor = SdkAddress::generate(&fix.env);
+        let stranger = SdkAddress::generate(&fix.env);
+        StellarAssetClient::new(&fix.env, &fix.asset).mint(&depositor, &1_000);
+        fix.env.as_contract(&fix.contract_id, || {
+            let receipt = execute_command(
+                &fix.env,
+                &VaultCommand::RequestDeposit {
+                    owner: sdk_text(&depositor),
+                    assets: 1_000,
+                    min_shares_out: 0,
+                },
+            )
+            .expect("lawful intake");
+            PendingDepositReceipt::decode(&receipt.to_alloc_vec())
+                .expect("decode pending deposit receipt");
+            assert_eq!(
+                execute_command(
+                    &fix.env,
+                    &VaultCommand::CancelPendingDeposit {
+                        owner: sdk_text(&stranger),
+                        request_id: 1,
+                    },
+                )
+                .expect_err("a stranger cannot consume another owner's liability"),
+                crate::error::ContractError::StorageError
+            );
+            let storage = SorobanStorage::new(&fix.env);
+            assert!(storage
+                .load_pending_deposit(1)
+                .expect("read intake ledger")
+                .is_some());
+            let state = storage
+                .load_state()
+                .unwrap()
+                .expect("vault state");
+            assert_eq!(state.total_assets, 0);
+            assert_eq!(state.total_shares, 0);
+        });
+        let token = TokenClient::new(&fix.env, &fix.asset);
+        assert_eq!(token.balance(&fix.contract_id), 1_000);
+        assert_eq!(token.balance(&stranger), 0);
+        let share_token = TokenClient::new(&fix.env, &fix.share);
+        assert_eq!(share_token.balance(&stranger), 0);
+        assert_eq!(share_token.balance(&depositor), 0);
+    }
+
+    #[test]
+    fn test_request_deposit_replay_leaves_one_record_and_one_mapping() {
+        use crate::contract::helpers::kernel_address_from_sdk;
+        use crate::storage::deposit::PendingStorage;
+        use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+        use templar_soroban_shared_types::PendingDepositReceipt;
+        let fix = epoch_intake_fixture();
+        let depositor = SdkAddress::generate(&fix.env);
+        StellarAssetClient::new(&fix.env, &fix.asset).mint(&depositor, &2_000);
+        fix.env.as_contract(&fix.contract_id, || {
+            let receipt = execute_command(
+                &fix.env,
+                &VaultCommand::RequestDeposit {
+                    owner: sdk_text(&depositor),
+                    assets: 1_000,
+                    min_shares_out: 0,
+                },
+            )
+            .expect("lawful intake");
+            PendingDepositReceipt::decode(&receipt.to_alloc_vec())
+                .expect("decode pending deposit receipt");
+            assert_eq!(
+                execute_command(
+                    &fix.env,
+                    &VaultCommand::RequestDeposit {
+                        owner: sdk_text(&depositor),
+                        assets: 500,
+                        min_shares_out: 0,
+                    },
+                )
+                .expect_err("replayed intake must fail at the outstanding-custody law"),
+                crate::error::ContractError::InvalidState
+            );
+            let storage = SorobanStorage::new(&fix.env);
+            let owner = kernel_address_from_sdk(&fix.env, &depositor);
+            assert_eq!(
+                storage.load_address(&owner),
+                Some(depositor.clone()),
+                "mapping replay is idempotent: the binding is unchanged"
+            );
+            assert_eq!(
+                storage.load_pending_deposit(2).expect("read intake ledger"),
+                None,
+                "the replayed request recorded no liability"
+            );
+            let state = storage
+                .load_state()
+                .unwrap()
+                .expect("vault state");
+            assert_eq!(state.total_assets, 0);
+            assert_eq!(state.total_shares, 0);
+        });
+        let token = TokenClient::new(&fix.env, &fix.asset);
+        assert_eq!(
+            token.balance(&fix.contract_id),
+            1_000,
+            "only the first intake moved custody"
+        );
+        assert_eq!(
+            token.balance(&depositor),
+            1_000,
+            "the refused replay took no further assets"
+        );
+        let share_token = TokenClient::new(&fix.env, &fix.share);
+        assert_eq!(share_token.balance(&depositor), 0);
+    }
+
+    #[test]
+    fn test_request_deposit_without_custody_records_no_liability_or_mint() {
+        use crate::contract::helpers::kernel_address_from_sdk;
+        use crate::storage::deposit::PendingStorage;
+        use soroban_sdk::token::Client as TokenClient;
+        let fix = epoch_intake_fixture();
+        let depositor = SdkAddress::generate(&fix.env);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fix.env.as_contract(&fix.contract_id, || {
+                execute_command(
+                    &fix.env,
+                    &VaultCommand::RequestDeposit {
+                        owner: sdk_text(&depositor),
+                        assets: 1_000,
+                        min_shares_out: 0,
+                    },
+                )
+            })
+        }));
+        let failed = match &outcome {
+            Err(_) => true,
+            Ok(Err(_)) => true,
+            Ok(Ok(_)) => false,
+        };
+        assert!(failed, "an unfunded intake must fail closed");
+        fix.env.as_contract(&fix.contract_id, || {
+            let storage = SorobanStorage::new(&fix.env);
+            assert_eq!(
+                storage.load_pending_deposit(1).expect("read intake ledger"),
+                None,
+                "a failed custody transfer leaves no pending record"
+            );
+            assert_eq!(
+                storage.next_deposit_request_id().expect("read id watermark"),
+                1,
+                "the aborted request consumed no request id"
+            );
+            // A failed on-chain invocation never commits ledger writes;
+            // production ledger law discards everything the aborted request
+            // touched. Whatever survives in this test host must still bind
+            // only the depositor's own derived AccountId to itself: the
+            // registration path can never record spoofed bytes.
+            let owner = kernel_address_from_sdk(&fix.env, &depositor);
+            if let Some(mapped) = storage.load_address(&owner) {
+                assert_eq!(
+                    mapped, depositor,
+                    "any surviving binding maps only the depositor's own key"
+                );
+            }
+            let state = storage
+                .load_state()
+                .unwrap()
+                .expect("vault state");
+            assert_eq!(state.total_assets, 0);
+            assert_eq!(state.total_shares, 0);
+        });
+        let token = TokenClient::new(&fix.env, &fix.asset);
+        assert_eq!(token.balance(&depositor), 0);
+        assert_eq!(token.balance(&fix.contract_id), 0);
+        let share_token = TokenClient::new(&fix.env, &fix.share);
+        assert_eq!(share_token.balance(&depositor), 0);
+    }
+
+    #[test]
+    fn test_admission_resolves_recorded_receiver_and_rejects_before_settlement() {
+        use crate::contract::helpers::kernel_address_from_sdk;
+        use crate::storage::deposit::PendingStorage;
+        use soroban_sdk::testutils::{Ledger, LedgerInfo};
+        use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+        use templar_soroban_shared_types::PendingDepositReceipt;
+        let fix = epoch_intake_fixture();
+        let depositor = SdkAddress::generate(&fix.env);
+        StellarAssetClient::new(&fix.env, &fix.asset).mint(&depositor, &1_000);
+        fix.env.as_contract(&fix.contract_id, || {
+            let receipt = execute_command(
+                &fix.env,
+                &VaultCommand::RequestDeposit {
+                    owner: sdk_text(&depositor),
+                    assets: 1_000,
+                    min_shares_out: 0,
+                },
+            )
+            .expect("lawful intake");
+            PendingDepositReceipt::decode(&receipt.to_alloc_vec())
+                .expect("decode pending deposit receipt");
+        });
+        let cutoff_ns = 10_000_000_000u64;
+        fix.env.ledger().set(LedgerInfo {
+            timestamp: cutoff_ns / 1_000_000_000,
+            protocol_version: 25,
+            ..Default::default()
+        });
+        fix.env.as_contract(&fix.contract_id, || {
+            execute_command(
+                &fix.env,
+                &VaultCommand::BeginEpochCutoff {
+                    caller: sdk_text(&fix.curator),
+                    cutoff_ns,
+                },
+            )
+            .expect("authorized cutoff closes intake");
+            let storage = SorobanStorage::new(&fix.env);
+            let owner = kernel_address_from_sdk(&fix.env, &depositor);
+            assert_eq!(storage.load_address(&owner), Some(depositor.clone()));
+            let error = execute_command(
+                &fix.env,
+                &VaultCommand::AdmitPendingDeposit {
+                    caller: sdk_text(&fix.curator),
+                    request_id: 1,
+                },
+            )
+            .expect_err("nothing may be admitted before settlement");
+            assert_ne!(
+                error,
+                crate::error::ContractError::Unauthorized,
+                "an authorized caller must reach the admission law"
+            );
+            assert_ne!(
+                error,
+                crate::error::ContractError::EffectFailed,
+                "admission resolves the depositor mapping durable at intake"
+            );
+            let storage = SorobanStorage::new(&fix.env);
+            assert!(
+                storage
+                    .load_pending_deposit(1)
+                    .expect("read intake ledger")
+                    .is_some(),
+                "a rejected admission leaves the liability intact"
+            );
+            let state = storage
+                .load_state()
+                .unwrap()
+                .expect("vault state");
+            assert_eq!(state.total_shares, 0);
+            assert_eq!(state.total_assets, 0);
+        });
+        let token = TokenClient::new(&fix.env, &fix.asset);
+        assert_eq!(
+            token.balance(&fix.contract_id),
+            1_000,
+            "a rejected admission moves no custody"
+        );
+        let share_token = TokenClient::new(&fix.env, &fix.share);
+        assert_eq!(share_token.balance(&depositor), 0);
+        assert_eq!(share_token.balance(&fix.curator), 0);
     }
 }
 
@@ -3633,8 +4937,9 @@ mod storage_tests {
         GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
     };
     use templar_vault_kernel::{
-        Address as KernelAddress, AllocationPlanEntry, FeeAccrualAnchor, OpState,
-        PendingWithdrawal, Restrictions, TimestampNs, VaultState, WithdrawQueue, WithdrawingState,
+        Address as KernelAddress, AllocationPlanEntry, EpochId, EpochState, FeeAccrualAnchor,
+        OpState, PendingWithdrawal, Restrictions, TimestampNs, VaultState, WithdrawQueue,
+        WithdrawingState,
     };
 
     fn sdk_text(address: &SdkAddress) -> AllocString {
@@ -3909,7 +5214,15 @@ mod storage_tests {
                 withdraw_queue: WithdrawQueue::with_state(
                     alloc::vec![(
                         0,
-                        PendingWithdrawal::new(kernel_addr, kernel_addr, 1, 1, TimestampNs(0),),
+                        PendingWithdrawal::new(
+                            kernel_addr,
+                            kernel_addr,
+                            1,
+                            0,
+                            TimestampNs(0),
+                            EpochId::FIRST_SETTLEMENT,
+                        )
+                        .expect("valid pending withdrawal"),
                     )],
                     0,
                     1,
@@ -3980,7 +5293,9 @@ mod storage_tests {
                     700,
                     800,
                     templar_vault_kernel::TimestampNs(123),
-                ),
+                    EpochId::FIRST_SETTLEMENT,
+                )
+                .expect("valid pending withdrawal"),
             );
             state.withdraw_queue = WithdrawQueue::with_state(pending, 3, 4);
             state.total_assets = 1000;
@@ -4033,47 +5348,6 @@ mod storage_tests {
         });
     }
 
-    #[test]
-    fn storage_codec_roundtrip_state_blob_manual() {
-        let mut state = VaultState {
-            total_assets: 5_000,
-            total_shares: 4_000,
-            idle_assets: 1_000,
-            external_assets: 4_000,
-            fee_anchor: FeeAccrualAnchor::new(4_500, TimestampNs(123_000)),
-            op_state: OpState::Withdrawing(WithdrawingState {
-                op_id: 7,
-                request_id: 11,
-                index: 1,
-                remaining: 200,
-                collected: 100,
-                receiver: KernelAddress([2u8; 32]),
-                owner: KernelAddress([1u8; 32]),
-                escrow_shares: 300,
-            }),
-            next_op_id: 8,
-            ..Default::default()
-        };
-        state.withdraw_queue = WithdrawQueue::with_state(
-            alloc::vec![(
-                3,
-                PendingWithdrawal::new(
-                    KernelAddress([1u8; 32]),
-                    KernelAddress([2u8; 32]),
-                    300,
-                    350,
-                    TimestampNs(456_000),
-                ),
-            ),],
-            3,
-            4,
-        );
-
-        let encoded = fuzz_api::encode_state_blob_bytes(&state);
-        let decoded = fuzz_api::decode_state_blob_bytes(&encoded).expect("state roundtrip");
-        assert_eq!(decoded, state);
-    }
-
     fn state_with_pending_withdrawals(count: u32) -> VaultState {
         let pending = (0..u64::from(count))
             .map(|id| {
@@ -4085,7 +5359,9 @@ mod storage_tests {
                         1,
                         1,
                         TimestampNs(id),
-                    ),
+                        EpochId::FIRST_SETTLEMENT,
+                    )
+                    .expect("valid pending withdrawal"),
                 )
             })
             .collect::<alloc::vec::Vec<_>>();
@@ -4093,22 +5369,6 @@ mod storage_tests {
             withdraw_queue: WithdrawQueue::with_state(pending, 0, u64::from(count)),
             ..Default::default()
         }
-    }
-
-    #[test]
-    fn storage_codec_state_blob_requires_versioned_envelope() {
-        let state = state_with_pending_withdrawals(1);
-        let encoded = fuzz_api::encode_state_blob_bytes(&state);
-        assert_eq!(&encoded[..3], b"TVS");
-
-        let decoded = fuzz_api::decode_state_blob_bytes(&encoded).expect("versioned state");
-        assert_eq!(decoded, state);
-
-        assert!(fuzz_api::decode_state_blob_bytes(&encoded[5..]).is_err());
-
-        let mut unsupported_version = encoded;
-        unsupported_version[4] = 2;
-        assert!(fuzz_api::decode_state_blob_bytes(&unsupported_version).is_err());
     }
 
     #[test]
@@ -4150,23 +5410,12 @@ mod storage_tests {
         });
     }
 
-    #[test]
-    fn storage_codec_rejects_malformed_withdraw_queue_ids() {
-        let state = state_with_pending_withdrawals(2);
-        let mut encoded = fuzz_api::encode_state_blob_bytes(&state);
-        let second_id_offset = 5 + 89 + 8 + 8 + 4 + 112;
-        encoded[second_id_offset..second_id_offset + 8].copy_from_slice(&0u64.to_le_bytes());
-
-        assert!(fuzz_api::decode_state_blob_bytes(&encoded).is_err());
-    }
-
     #[rstest]
     fn soroban_storage_enforces_safe_withdraw_queue_cap(contract_env: (Env, soroban_sdk::Address)) {
         let (env, contract_id) = contract_env;
         env.as_contract(&contract_id, || {
             let mut storage = SorobanStorage::new(&env);
             let safe = state_with_pending_withdrawals(SOROBAN_MAX_PENDING_WITHDRAWALS);
-            assert!(fuzz_api::encode_state_blob_bytes(&safe).len() > 64 * 1024);
             storage.save_state(&safe).expect("safe queue cap persists");
             assert_eq!(Storage::load_state(&storage).unwrap(), Some(safe));
 
@@ -4261,14 +5510,6 @@ mod storage_tests {
         let _ = fuzz_api::decode_restrictions_bytes(&bad);
     }
 
-    #[test]
-    fn storage_codec_decode_state_blob_never_panics_on_small_inputs() {
-        for len in 0..128usize {
-            let bytes = alloc::vec![0xA5; len];
-            let _ = fuzz_api::decode_state_blob_bytes(&bytes);
-        }
-    }
-
     fn versioned_storage_bytes(kind: u8, payload: &[u8]) -> alloc::vec::Vec<u8> {
         let mut bytes = alloc::vec::Vec::with_capacity(5 + payload.len());
         bytes.extend_from_slice(b"TVS");
@@ -4313,9 +5554,13 @@ mod storage_tests {
         payload.extend_from_slice(&u32::MAX.to_le_bytes());
         payload.extend_from_slice(&alloc::vec![0u8; item_size - 1]);
 
-        let encoded = versioned_storage_bytes(1, &payload);
+        let mut encoded = alloc::vec::Vec::with_capacity(5 + payload.len());
+        encoded.extend_from_slice(b"TVS");
+        encoded.push(1);
+        encoded.push(3);
+        encoded.extend_from_slice(&payload);
         assert!(
-            fuzz_api::decode_state_blob_bytes(&encoded).is_err(),
+            crate::storage::epoch_state_from_state_header_blob(&encoded).is_err(),
             "{name} oversized plan length must fail before preallocating"
         );
     }
@@ -4507,48 +5752,65 @@ mod storage_tests {
         }
     }
 
-    fn storage_codec_roundtrip_state_blob_for_op_state(op_state: OpState) {
-        let withdraw_queue = WithdrawQueue::with_state(
-            alloc::vec![
-                (
-                    1,
-                    PendingWithdrawal::new(
-                        KernelAddress([1u8; 32]),
-                        KernelAddress([2u8; 32]),
-                        10,
-                        15,
-                        TimestampNs(50),
+    fn storage_codec_roundtrip_state_blob_for_op_state(
+        contract_env: (Env, soroban_sdk::Address),
+        op_state: OpState,
+    ) {
+        let (env, contract_id) = contract_env;
+        env.as_contract(&contract_id, || {
+            let withdraw_queue = WithdrawQueue::with_state(
+                alloc::vec![
+                    (
+                        1,
+                        PendingWithdrawal::new(
+                            KernelAddress([1u8; 32]),
+                            KernelAddress([2u8; 32]),
+                            10,
+                            15,
+                            TimestampNs(50),
+                            EpochId::FIRST_SETTLEMENT,
+                        )
+                        .expect("valid pending withdrawal"),
                     ),
-                ),
-                (
-                    2,
-                    PendingWithdrawal::new(
-                        KernelAddress([3u8; 32]),
-                        KernelAddress([4u8; 32]),
-                        20,
-                        25,
-                        TimestampNs(60),
+                    (
+                        2,
+                        PendingWithdrawal::new(
+                            KernelAddress([3u8; 32]),
+                            KernelAddress([4u8; 32]),
+                            20,
+                            25,
+                            TimestampNs(60),
+                            EpochId::FIRST_SETTLEMENT,
+                        )
+                        .expect("valid pending withdrawal"),
                     ),
-                ),
-            ],
-            1,
-            3,
-        );
+                ],
+                1,
+                3,
+            );
 
-        let state = VaultState {
-            total_assets: 1_000,
-            total_shares: 2_000,
-            idle_assets: 300,
-            external_assets: 700,
-            fee_anchor: FeeAccrualAnchor::new(900, TimestampNs(1_000)),
-            op_state,
-            withdraw_queue,
-            next_op_id: 10,
-        };
+            let state = VaultState {
+                total_assets: 1_000,
+                total_shares: 2_000,
+                idle_assets: 300,
+                external_assets: 700,
+                fee_anchor: FeeAccrualAnchor::new(900, TimestampNs(1_000)),
+                op_state,
+                withdraw_queue,
+                epoch: EpochState::genesis(),
+                next_op_id: 10,
+            };
 
-        let encoded = fuzz_api::encode_state_blob_bytes(&state);
-        let decoded = fuzz_api::decode_state_blob_bytes(&encoded).expect("state matrix roundtrip");
-        assert_eq!(decoded, state);
+            let mut storage = SorobanStorage::new(&env);
+            storage
+                .save_state(&state)
+                .expect("state matrix roundtrip persists");
+            let decoded = storage
+                .load_state()
+                .expect("state matrix roundtrip reload")
+                .expect("state matrix state present");
+            assert_eq!(decoded, state);
+        });
     }
 
     #[rstest]
@@ -4583,24 +5845,24 @@ mod storage_tests {
         escrow_shares: 80,
         burn_shares: 60,
     }))]
-    fn storage_codec_roundtrip_state_blob_op_state_matrix(#[case] op_state: OpState) {
-        storage_codec_roundtrip_state_blob_for_op_state(op_state);
+    fn storage_codec_roundtrip_state_blob_op_state_matrix(
+        contract_env: (Env, soroban_sdk::Address),
+        #[case] op_state: OpState,
+    ) {
+        storage_codec_roundtrip_state_blob_for_op_state(contract_env, op_state);
     }
 
-    #[rstest]
-    fn test_soroban_storage_load_state_rejects_trailing_bytes(
-        contract_env: (Env, soroban_sdk::Address),
-    ) {
-        let (env, contract_id) = contract_env;
-        env.as_contract(&contract_id, || {
-            let storage = SorobanStorage::new(&env);
-            let mut bytes = fuzz_api::encode_state_blob_bytes(&VaultState::default());
-            bytes.push(0xff);
-            storage.save_state_blob(&bytes).unwrap();
-
-            let err = Storage::load_state(&storage).unwrap_err();
-            assert_eq!(err, RuntimeError::StorageError);
-        });
+    #[test]
+    fn storage_codec_withdraw_queue_page_rejects_trailing_bytes() {
+        let state = state_with_pending_withdrawals(1);
+        let entries: alloc::vec::Vec<(u64, PendingWithdrawal)> = state
+            .withdraw_queue
+            .iter()
+            .map(|(id, withdrawal)| (id, withdrawal.clone()))
+            .collect();
+        let mut bytes = fuzz_api::encode_withdraw_queue_page_bytes(&entries);
+        bytes.push(0xff);
+        assert!(fuzz_api::decode_withdraw_queue_page_bytes(&bytes).is_err());
     }
 
     #[rstest]

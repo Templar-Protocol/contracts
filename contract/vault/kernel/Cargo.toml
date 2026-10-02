@@ -26,10 +26,14 @@ schemars = ["dep:schemars"]
 soroban = []
 
 # ── Action handler gates ──────────────────────────────────────────
-# Enum variants are always present (borsh compat); only the handler
-# functions and their apply_action dispatch are gated.  Disabled arms
-# return KernelError::NotImplemented.
+# Existing action variants remain present for ABI compatibility. Disabled
+# handlers return KernelError::NotImplemented. Epoch-only variants and state
+# exist only with action-epoch-settlement.
 #
+# Deposit assets immediately and mint shares.
+action-immediate-deposit = []
+# AtomicWithdraw and AtomicRedeem.
+action-atomic-exit = []
 # AbortAllocating, AbortRefreshing, AbortWithdrawing, EmergencyReset
 action-recovery = []
 # SyncExternalAssets
@@ -39,14 +43,18 @@ action-refresh-fees = []
 action-pause = []
 action-allocation-lifecycle = []
 action-refresh-lifecycle = []
-# Convenience: enable every optional action handler.
+# BeginEpochCutoff, SettleEpoch, CancelPendingWithdrawal
+action-epoch-settlement = []
 all-actions = [
+    "action-immediate-deposit",
+    "action-atomic-exit",
     "action-recovery",
     "action-sync-external",
     "action-refresh-fees",
     "action-pause",
     "action-allocation-lifecycle",
     "action-refresh-lifecycle",
+    "action-epoch-settlement",
 ]
 [dependencies]
 derive_more.workspace = true
@@ -61,9 +69,6 @@ schemars = { version = "0.8", optional = true }
 [dev-dependencies]
 proptest = "1.4"
 serde_json.workspace = true
-# Enable all action handlers for integration tests.
-# The `test` cfg only applies to unit tests in src/, not integration tests in tests/.
-templar-vault-kernel = { path = ".", features = ["all-actions"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

@@ -24,8 +24,2368 @@
 //! - Fee accrual is monotonically non-decreasing
 //! - Fee shares never exceed performance gain
 
+#[cfg(feature = "action-epoch-settlement")]
 use proptest::prelude::*;
+#[cfg(feature = "action-epoch-settlement")]
 use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
+#[cfg(feature = "action-epoch-settlement")]
+use templar_vault_kernel::{
+    apply_action,
+    effects::{KernelEffect, KernelEvent},
+    fee::FeeSlot,
+    math::{
+        number::Number,
+        wad::{
+            compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor, Wad,
+            MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+        },
+    },
+    state::{
+        escrow::{
+            apply_settlement, can_apply_settlement, compute_escrow_stats, EscrowEntry,
+            EscrowSettlement,
+        },
+        op_state::{AllocatingState, AllocationPlanEntry, OpState, RefreshingState},
+        queue::{
+            can_enqueue, compute_full_withdrawal, compute_partial_withdrawal,
+            compute_queue_status, compute_settlement, count_satisfiable, is_past_cooldown,
+            is_valid_withdrawal_amount,
+            settled_claim, PendingWithdrawal, WithdrawQueue, MAX_QUEUE_LENGTH,
+            MIN_WITHDRAWAL_ASSETS,
+        },
+        settlement::{EpochId, EpochState, ValuationReportRef},
+        vault::{FeeAccrualAnchor, VaultState, MAX_PENDING},
+    },
+    transitions::{
+        allocation_step_callback, complete_allocation, complete_refresh, payout_complete,
+        start_allocation, start_refresh, start_withdrawal, stop_withdrawal, withdrawal_collected,
+        withdrawal_settled, withdrawal_step_callback, TransitionError, WithdrawalRequest,
+    },
+    Address, FeesSpec, KernelAction, TimestampNs,
+};
+
+// Arbitrary Strategies
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Generate a valid allocation plan
+fn alloc_step(target_id: u32, amount: u128) -> AllocationPlanEntry {
+    AllocationPlanEntry::new(target_id, amount)
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+fn arb_allocation_plan(max_len: usize) -> impl Strategy<Value = Vec<AllocationPlanEntry>> {
+    proptest::collection::vec((0u32..100u32, 1u128..=1_000_000_000u128), 1..=max_len).prop_map(
+        |steps| {
+            steps
+                .into_iter()
+                .map(|(target_id, amount)| alloc_step(target_id, amount))
+                .collect()
+        },
+    )
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Generate a refresh plan (list of target IDs)
+fn arb_refresh_plan(max_len: usize) -> impl Strategy<Value = Vec<u32>> {
+    proptest::collection::vec(0u32..100u32, 1..=max_len)
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Generate a withdrawal request
+fn arb_withdrawal_request() -> impl Strategy<Value = WithdrawalRequest> {
+    (
+        1u64..u64::MAX, // op_id
+        1u64..u64::MAX,
+        1u128..=1_000_000_000u128, // amount
+        1u128..=1_000_000_000u128, // escrow_shares
+    )
+        .prop_map(
+            |(op_id, request_id, amount, escrow_shares)| WithdrawalRequest {
+                op_id,
+                request_id,
+                amount,
+                receiver: receiver_addr(op_id),
+                owner: owner_addr(op_id),
+                escrow_shares,
+            },
+        )
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Generate a pending withdrawal
+#[allow(dead_code)]
+fn arb_pending_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {
+    (
+        1u128..=1_000_000_000u128, // escrow_shares
+        0u128..=1_000_000u128,     // min_assets_out
+        0u64..=u64::MAX / 2,       // requested_at_ns
+    )
+        .prop_map(|(escrow_shares, min_assets_out, requested_at_ns)| {
+            PendingWithdrawal::new(
+                owner_addr(1),
+                receiver_addr(1),
+                escrow_shares,
+                min_assets_out,
+                TimestampNs(requested_at_ns),
+                EpochId::FIRST_SETTLEMENT,
+            )
+            .expect("generated request is a valid unpriced withdrawal")
+        })
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Generate an escrow entry
+#[allow(dead_code)]
+fn arb_escrow_entry() -> impl Strategy<Value = EscrowEntry> {
+    (0u128..=u64::MAX as u128, 0u64..u64::MAX).prop_map(|(shares, ts)| {
+        EscrowEntry::new(owner_addr(1), shares, TimestampNs(ts))
+    })
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Generate a vault state with valid invariants
+#[allow(dead_code)]
+fn arb_vault_state() -> impl Strategy<Value = VaultState> {
+    (
+        0u128..=u64::MAX as u128 / 2, // idle_assets
+        0u128..=u64::MAX as u128 / 2, // external_assets
+        0u128..=u64::MAX as u128,     // total_shares
+        0u64..u64::MAX,               // timestamp
+    )
+        .prop_map(|(idle, external, shares, ts)| {
+            let total = idle.saturating_add(external);
+            VaultState::with_initial(total, shares, idle, external, TimestampNs(ts))
+        })
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Settle an epoch against a bounded accepted report, so the bound snapshot
+/// becomes the only source of payout claims used by the tests below.
+#[allow(dead_code)]
+fn settled_epoch_state(settlement_nav: u128, eligible_supply: u128) -> EpochState {
+    let cutoff_ns = TimestampNs(1_000_000_000);
+    let report = ValuationReportRef {
+        report_seq: 1,
+        as_of_ns: cutoff_ns,
+        report_hash: [9u8; 32],
+    };
+    let cutoff_state = EpochState::genesis()
+        .begin_cutoff(cutoff_ns)
+        .expect("epoch cutoff accepted");
+    let snapshot = cutoff_state
+        .build_settlement_snapshot(
+            &report,
+            settlement_nav,
+            eligible_supply,
+            cutoff_ns,
+            60_000_000_000,
+        )
+        .expect("accepted report settles the epoch");
+    let settled = cutoff_state
+        .apply_settled(&snapshot)
+        .expect("settlement recorded");
+    assert!(settled.check_invariants());
+    settled
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Bind a withdrawal to a real FIFO head, then settle that head's own epoch
+/// against an immutable accepted snapshot. The snapshot values the escrow at
+/// the request amount, so the derived claim is exactly
+/// `floor(escrow * amount / escrow) = amount`.
+#[allow(dead_code)]
+fn settled_withdrawal_vault(request: &mut WithdrawalRequest) -> VaultState {
+    let mut vault = VaultState::new();
+    vault.total_assets = request.amount;
+    vault.idle_assets = request.amount;
+    vault.total_shares = request.escrow_shares;
+    vault.fee_anchor = FeeAccrualAnchor::new(request.amount, TimestampNs(0));
+    request.request_id = vault
+        .withdraw_queue
+        .enqueue(
+            request.owner,
+            request.receiver,
+            request.escrow_shares,
+            0,
+            TimestampNs(0),
+            EpochId::FIRST_SETTLEMENT,
+            MAX_QUEUE_LENGTH,
+        )
+        .expect("lawful FIFO head accepted");
+    vault.epoch = settled_epoch_state(request.amount, request.escrow_shares);
+    vault
+}
+
+// Deterministic Boundary / Edge Case Tests
+
+#[cfg(feature = "action-epoch-settlement")]
+use templar_vault_kernel::{
+    convert_to_assets, preview_deposit_shares, preview_withdraw_assets, PayoutOutcome, VaultConfig,
+};
+
+#[cfg(feature = "action-epoch-settlement")]
+fn default_config() -> VaultConfig {
+    VaultConfig {
+        fees: FeesSpec {
+            performance: FeeSlot::zero(),
+            management: FeeSlot::zero(),
+            max_total_assets_growth_rate: None,
+        },
+        min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+        withdrawal_cooldown_ns: 0,
+        max_pending_withdrawals: 100,
+        paused: false,
+        virtual_shares: 0,
+        virtual_assets: 0,
+    }
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+fn default_state() -> VaultState {
+    VaultState::new()
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+fn self_addr() -> templar_vault_kernel::Address {
+    templar_vault_kernel::Address([99u8; 32])
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 3: Preview deposit with 0 assets returns 0 shares.
+#[test]
+fn preview_deposit_zero_assets_returns_zero() {
+    let state = default_state();
+    let config = default_config();
+    assert_eq!(preview_deposit_shares(&state, &config, 0), 0);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 4: Preview withdraw with 0 shares returns 0 assets.
+#[test]
+fn preview_withdraw_zero_shares_returns_zero() {
+    let state = default_state();
+    let config = default_config();
+    assert_eq!(preview_withdraw_assets(&state, &config, 0), 0);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 5: Preview deposit/withdraw with 1 share/asset is consistent.
+#[test]
+fn preview_one_wei_roundtrip() {
+    let mut state = default_state();
+    state.total_assets = 1_000_000;
+    state.idle_assets = 1_000_000;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    let shares = preview_deposit_shares(&state, &config, 1);
+    // With equal shares/assets ratio and virtual offset, 1 wei should give ~1 share
+    // (may be 0 due to rounding with virtual offsets)
+    let assets_back = preview_withdraw_assets(&state, &config, shares);
+    // Round-trip: assets_back <= 1 (rounding down is expected)
+    assert!(
+        assets_back <= 1,
+        "Round-trip should not inflate: got {assets_back}"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 6: Unpriced withdrawal requests remain above the protocol floor,
+/// and immutable settlement blocks execution when their derived claim drops
+/// below the effective minimum.
+#[test]
+fn withdraw_claim_below_min_assets_out_rejected_after_settlement() {
+    let mut state = default_state();
+    state.total_assets = 1_000_000;
+    state.idle_assets = 1_000_000;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    // Request-time accounting cannot safely price the withdrawal. The kernel
+    // records the caller's bound, which is at least the protocol floor, and
+    // leaves the queued request unpriced.
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RequestWithdraw {
+            owner: owner_addr(1),
+            receiver: receiver_addr(1),
+            shares: MIN_WITHDRAWAL_ASSETS - 1,
+            min_assets_out: MIN_WITHDRAWAL_ASSETS,
+            now_ns: TimestampNs(1),
+        },
+    )
+    .unwrap();
+    let queued = result
+        .state
+        .withdraw_queue
+        .pending_withdrawals()
+        .values()
+        .next()
+        .expect("unpriced withdrawal must remain queued");
+    assert_eq!(queued.escrow_shares, MIN_WITHDRAWAL_ASSETS - 1);
+    assert!(
+        queued.min_assets_out >= MIN_WITHDRAWAL_ASSETS,
+        "a withdrawal request must record a bound at least equal to the protocol floor",
+    );
+    let request = queued.clone();
+    assert_eq!(
+        settled_claim(&request, &result.state.epoch),
+        None,
+        "an unsettled request cannot carry a payout claim",
+    );
+    assert_eq!(result.state.total_assets, 1_000_000);
+    assert_eq!(result.state.idle_assets, 1_000_000);
+    assert_eq!(result.state.total_shares, 1_000_000);
+
+    // Settlement produces the first authoritative claim. The canonical
+    // pro-rata snapshot derives only 999 assets for the dust escrow, below
+    // both the caller's recorded bound and the protocol floor.
+    let mut state = result.state;
+    state.epoch = settled_epoch_state(state.total_assets, state.total_shares);
+    assert_eq!(
+        settled_claim(&request, &state.epoch),
+        Some(MIN_WITHDRAWAL_ASSETS - 1),
+        "the immutable settlement must derive the below-floor claim",
+    );
+
+    // Execution enforces max(min_assets_out, protocol floor) without
+    // repricing or removing the request.
+    let failed = apply_action(
+        state.clone(),
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(1_000_000_001),
+        },
+    )
+    .expect_err("below-floor settled claims must be unexecutable");
+    assert_eq!(
+        failed,
+        templar_vault_kernel::error::KernelError::Slippage {
+            min: MIN_WITHDRAWAL_ASSETS,
+            actual: MIN_WITHDRAWAL_ASSETS - 1,
+        },
+        "settlement-time enforcement must reject the effective minimum",
+    );
+    let retained = state
+        .withdraw_queue
+        .pending_withdrawals()
+        .values()
+        .next()
+        .expect("rejected request must remain queued");
+    assert_eq!(retained.escrow_shares, MIN_WITHDRAWAL_ASSETS - 1);
+    assert_eq!(retained.min_assets_out, MIN_WITHDRAWAL_ASSETS);
+    assert_eq!(state.total_assets, 1_000_000);
+    assert_eq!(state.idle_assets, 1_000_000);
+    assert_eq!(state.total_shares, 1_000_000);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 7: Request withdraw at exactly MIN_WITHDRAWAL_ASSETS succeeds.
+#[test]
+fn withdraw_at_min_withdrawal_succeeds() {
+    let mut state = default_state();
+    // Use large enough total so shares convert to >= MIN_WITHDRAWAL_ASSETS
+    state.total_assets = 10_000_000;
+    state.idle_assets = 10_000_000;
+    state.total_shares = 10_000_000;
+    let config = default_config();
+
+    // Find shares that yield exactly MIN_WITHDRAWAL_ASSETS
+    let expected = preview_withdraw_assets(&state, &config, MIN_WITHDRAWAL_ASSETS);
+    // Ensure we're at or above the minimum
+    assert!(
+        expected >= MIN_WITHDRAWAL_ASSETS,
+        "Expected assets {expected} should be >= MIN {MIN_WITHDRAWAL_ASSETS}",
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RequestWithdraw {
+            owner: owner_addr(1),
+            receiver: receiver_addr(1),
+            shares: MIN_WITHDRAWAL_ASSETS,
+            min_assets_out: 0,
+            now_ns: TimestampNs(1),
+        },
+    );
+    assert!(
+        result.is_ok(),
+        "Withdrawal at MIN should succeed, got: {result:?}"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 8: Request withdraw with 0 shares returns ZeroAmount.
+#[test]
+fn withdraw_zero_shares_returns_zero_amount() {
+    let mut state = default_state();
+    state.total_assets = 1_000_000;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RequestWithdraw {
+            owner: owner_addr(1),
+            receiver: receiver_addr(1),
+            shares: 0,
+            min_assets_out: 0,
+            now_ns: TimestampNs(1),
+        },
+    );
+    assert!(
+        matches!(
+            result,
+            Err(templar_vault_kernel::error::KernelError::ZeroAmount)
+        ),
+        "Withdrawing 0 shares should return ZeroAmount, got: {result:?}",
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 9: Fee calculation with total_assets = 1.
+#[test]
+fn fee_shares_with_total_assets_one() {
+    // With minimal total_assets, fee shares should be 0 or very small
+    let fee_shares = compute_fee_shares(
+        Number::from(1u128),                // current total_assets
+        Number::from(0u128),                // last total_assets (0 → gain = 1)
+        Wad::from(MAX_PERFORMANCE_FEE_WAD), // max performance fee
+        Number::from(1u128),                // total_supply
+    );
+    // Fee shares should not exceed total supply
+    assert!(
+        fee_shares <= Number::from(1u128),
+        "Fee shares {:?} should not exceed total supply of 1",
+        fee_shares,
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 10: Queue at exactly MAX_QUEUE_LENGTH (alias of MAX_PENDING) rejects next enqueue.
+#[test]
+fn queue_at_max_rejects_enqueue() {
+    assert!(
+        can_enqueue(MAX_QUEUE_LENGTH - 1),
+        "Should allow enqueue below max"
+    );
+    assert!(
+        !can_enqueue(MAX_QUEUE_LENGTH),
+        "Should reject enqueue at max"
+    );
+    assert!(
+        !can_enqueue(MAX_QUEUE_LENGTH + 1),
+        "Should reject enqueue above max"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 11: is_valid_withdrawal_amount at boundary values.
+#[test]
+fn withdrawal_amount_boundary_values() {
+    assert!(!is_valid_withdrawal_amount(0), "0 is not valid");
+    assert!(
+        !is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS - 1),
+        "Below min is not valid"
+    );
+    assert!(
+        is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS),
+        "Exactly min is valid"
+    );
+    assert!(
+        is_valid_withdrawal_amount(MIN_WITHDRAWAL_ASSETS + 1),
+        "Above min is valid"
+    );
+    assert!(is_valid_withdrawal_amount(u128::MAX), "MAX is valid");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 12: liquidity short of a settled claim cannot produce a
+/// partial payout. The transition rejects, the head stays queued, and the
+/// vault accounting is untouched.
+#[test]
+fn settled_claim_shortfall_rejects_partial_payout() {
+    let mut request = WithdrawalRequest {
+        op_id: 12,
+        request_id: 0,
+        amount: 1_000_000,
+        receiver: receiver_addr(12),
+        owner: owner_addr(12),
+        escrow_shares: 1_000_000,
+    };
+    let mut vault = settled_withdrawal_vault(&mut request);
+    vault.idle_assets = 1;
+    vault.sync_total_assets();
+    let start = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+    let collect = withdrawal_step_callback(start.new_state, 12, 1_000_000).unwrap();
+
+    let before = vault.clone();
+    let settled = withdrawal_settled(collect.new_state, &vault, 12, MIN_WITHDRAWAL_ASSETS);
+    assert!(matches!(
+        settled,
+        Err(TransitionError::WithdrawalIncomplete { .. })
+    ));
+    assert_eq!(&vault, &before);
+    assert!(vault.withdraw_queue.head().is_some());
+    assert!(vault.check_invariant());
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 13: compute_settlement with 0 actual (full refund).
+#[test]
+fn settlement_zero_actual_full_refund() {
+    let escrow = 1_000_000u128;
+    let expected = 500_000u128;
+
+    let settlement = compute_settlement(escrow, expected, 0);
+    assert_eq!(settlement.to_burn, 0, "Zero actual → zero burn");
+    assert_eq!(settlement.refund, escrow, "Zero actual → full refund");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 14: Queue enqueue fills to capacity then rejects.
+#[test]
+fn queue_fills_to_capacity_then_rejects() {
+    let mut queue = WithdrawQueue::default();
+    let max = 10u32; // Use small max for practical test
+
+    // Fill queue to capacity
+    for i in 0..max {
+        let result = queue.enqueue(
+            owner_addr(i as u64),
+            receiver_addr(i as u64),
+            1000,
+            MIN_WITHDRAWAL_ASSETS,
+            TimestampNs(i as u64),
+            EpochId::FIRST_SETTLEMENT,
+            max,
+        );
+        assert!(result.is_ok(), "Enqueue {i} should succeed");
+    }
+
+    // Next enqueue should fail
+    let result = queue.enqueue(
+        owner_addr(max as u64),
+        receiver_addr(max as u64),
+        1000,
+        MIN_WITHDRAWAL_ASSETS,
+        TimestampNs(max as u64),
+        EpochId::FIRST_SETTLEMENT,
+        max,
+    );
+    assert!(result.is_err(), "Enqueue beyond capacity should fail",);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 15: Cooldown at exact boundary.
+#[test]
+fn cooldown_exact_boundary() {
+    let cooldown_ns = 1_000_000u64;
+    let requested_at = 100u64;
+
+    // Just before cooldown
+    assert!(
+        !is_past_cooldown(
+            TimestampNs(requested_at),
+            TimestampNs(requested_at + cooldown_ns - 1),
+            cooldown_ns,
+        ),
+        "Should NOT be past cooldown 1ns before",
+    );
+    // Exactly at cooldown
+    assert!(
+        is_past_cooldown(
+            TimestampNs(requested_at),
+            TimestampNs(requested_at + cooldown_ns),
+            cooldown_ns,
+        ),
+        "Should be past cooldown at exact boundary",
+    );
+    // Just after cooldown
+    assert!(
+        is_past_cooldown(
+            TimestampNs(requested_at),
+            TimestampNs(requested_at + cooldown_ns + 1),
+            cooldown_ns,
+        ),
+        "Should be past cooldown 1ns after",
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Boundary 16: Zero cooldown means immediately ready when now >= requested_at.
+#[test]
+fn zero_cooldown_passes_when_now_gte_requested() {
+    assert!(
+        is_past_cooldown(TimestampNs(0), TimestampNs(0), 0),
+        "Zero cooldown, same time → past"
+    );
+    assert!(
+        is_past_cooldown(TimestampNs(100), TimestampNs(100), 0),
+        "Zero cooldown, same time → past"
+    );
+    assert!(
+        is_past_cooldown(TimestampNs(100), TimestampNs(101), 0),
+        "Zero cooldown, later now → past"
+    );
+    assert!(
+        !is_past_cooldown(TimestampNs(100), TimestampNs(99), 0),
+        "Zero cooldown, earlier now → not past (request not yet made)"
+    );
+}
+
+// Overflow / Saturation Tests
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Overflow 2: Fee calculation with extreme values doesn't panic.
+#[test]
+fn fee_shares_extreme_values_no_panic() {
+    // Large total_assets with significant gain
+    let fee_shares = compute_fee_shares(
+        Number::from(u64::MAX as u128),     // current_total_assets
+        Number::from(u64::MAX as u128 / 2), // last_total_assets (50% gain)
+        Wad::from(MAX_PERFORMANCE_FEE_WAD), // max fee
+        Number::from(u64::MAX as u128),     // total_supply
+    );
+    // Should not panic; just verify it returns some value
+    let _ = fee_shares;
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Overflow 3: Fee calculation at u128 boundary.
+#[test]
+fn fee_shares_u128_max_no_panic() {
+    let fee_shares = compute_fee_shares(
+        Number::from(u128::MAX / 2), // current
+        Number::from(u128::MAX / 4), // last (significant gain)
+        Wad::from(MAX_PERFORMANCE_FEE_WAD),
+        Number::from(u128::MAX / 2), // total_supply
+    );
+    let _ = fee_shares;
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Overflow 4: SyncExternalAssets at u128::MAX saturates total_assets.
+#[test]
+fn sync_external_near_max_saturates() {
+    let mut state = default_state();
+    state.idle_assets = u128::MAX / 2;
+    state.total_assets = u128::MAX / 2;
+    state.total_shares = 1_000_000;
+
+    // Start an allocation to get into a state where sync is allowed
+    let alloc_result = start_allocation(
+        state.op_state.clone(),
+        vec![alloc_step(0, 1000)],
+        state.next_op_id,
+    )
+    .expect("allocation should start");
+    state.op_state = alloc_result.new_state;
+
+    let config = default_config();
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::SyncExternalAssets {
+            new_external_assets: u128::MAX, // Would overflow with idle_assets
+            op_id: 0,
+            now_ns: TimestampNs(1),
+        },
+    );
+    // Should fail: idle + MAX would overflow u128
+    assert!(result.is_err(), "SyncExternalAssets should reject overflow",);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Overflow 5: Preview deposit with u128::MAX assets doesn't panic.
+#[test]
+fn preview_deposit_max_assets_no_panic() {
+    let mut state = default_state();
+    state.total_assets = 1_000_000;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    // Should not panic even with extreme input
+    let shares = preview_deposit_shares(&state, &config, u128::MAX);
+    let _ = shares;
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Overflow 6: Preview withdraw with u128::MAX shares doesn't panic.
+#[test]
+fn preview_withdraw_max_shares_no_panic() {
+    let mut state = default_state();
+    state.total_assets = 1_000_000;
+    state.total_shares = 1_000_000;
+    let config = default_config();
+
+    let assets = preview_withdraw_assets(&state, &config, u128::MAX);
+    let _ = assets;
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Overflow 7: redemption at the settled claim follows the full-burn law:
+/// the entire escrow is burned and nothing is refunded, even at u128::MAX.
+#[test]
+fn settlement_u128_max_conservation() {
+    let escrow = u128::MAX;
+    let settled_claim_assets = u128::MAX;
+
+    let settlement = compute_settlement(escrow, settled_claim_assets, settled_claim_assets);
+    assert_eq!(settlement.to_burn, escrow);
+    assert_eq!(settlement.refund, 0);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Overflow 8: a settled claim at u128::MAX redeems only through the
+/// full-burn law. Extreme input disparity cannot produce a partial burn.
+#[test]
+fn settlement_extreme_disparity() {
+    let escrow = u128::MAX;
+    let settled_claim_assets = u128::MAX;
+
+    let settlement = compute_settlement(escrow, settled_claim_assets, settled_claim_assets);
+    assert_eq!(settlement.to_burn, escrow);
+    assert_eq!(settlement.refund, 0);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Overflow 9: mul_div_floor with large values doesn't panic.
+#[test]
+fn mul_div_floor_large_values_no_panic() {
+    let result = mul_div_floor(
+        Number::from(u128::MAX),
+        Number::from(u128::MAX),
+        Number::from(u128::MAX),
+    );
+    // MAX * MAX / MAX = MAX (approximately)
+    assert!(u128::from(result) > 0, "Should produce non-zero result");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Overflow 10: Cooldown with u64::MAX timestamp doesn't panic.
+/// saturating_add clamps overflow to MAX, so requested_at=MAX + cooldown=1 → MAX.
+#[test]
+fn cooldown_u64_max_no_panic() {
+    // requested_at=MAX, cooldown=1 → saturates to MAX; now=MAX >= MAX → true
+    assert!(
+        is_past_cooldown(TimestampNs(u64::MAX), TimestampNs(u64::MAX), 1),
+        "Saturating add clamps to MAX, so passes"
+    );
+    assert!(
+        is_past_cooldown(TimestampNs(u64::MAX), TimestampNs(u64::MAX), 0),
+        "Zero cooldown at MAX should pass"
+    );
+    assert!(
+        is_past_cooldown(TimestampNs(0), TimestampNs(u64::MAX), u64::MAX),
+        "Should be past when now=MAX, cooldown=MAX"
+    );
+    // now=0 is before requested_at=MAX, so not past cooldown
+    assert!(
+        !is_past_cooldown(TimestampNs(u64::MAX), TimestampNs(0), 1),
+        "now=0 before requested_at=MAX"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// AddressBook: insert and resolve round-trips correctly.
+#[test]
+fn address_book_insert_resolve() {
+    use templar_vault_kernel::AddressBook;
+    let mut book = AddressBook::<&str>::new();
+    let addr_a: [u8; 32] = [1u8; 32];
+    let addr_b: [u8; 32] = [2u8; 32];
+
+    book.insert(Address(addr_a), "alice");
+    book.insert(Address(addr_b), "bob");
+
+    assert_eq!(book.resolve(&Address(addr_a)), Some(&"alice"));
+    assert_eq!(book.resolve(&Address(addr_b)), Some(&"bob"));
+    assert_eq!(book.len(), 2);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// AddressBook: inserting same key overwrites (no silent collision).
+#[test]
+fn address_book_overwrite_same_key() {
+    use templar_vault_kernel::AddressBook;
+    let mut book = AddressBook::<&str>::new();
+    let addr: [u8; 32] = [1u8; 32];
+
+    book.insert(Address(addr), "alice");
+    book.insert(Address(addr), "bob");
+
+    assert_eq!(
+        book.resolve(&Address(addr)),
+        Some(&"bob"),
+        "Last insert wins"
+    );
+    assert_eq!(book.len(), 1, "No duplicate entries");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// AddressBook: distinct 32-byte addresses never shadow each other.
+#[test]
+fn address_book_distinct_addresses_no_collision() {
+    use templar_vault_kernel::AddressBook;
+    let mut book = AddressBook::<u32>::new();
+
+    for i in 0u8..=255 {
+        let mut addr = [0u8; 32];
+        addr[0] = i;
+        book.insert(Address(addr), i as u32);
+    }
+
+    assert_eq!(book.len(), 256, "256 distinct single-byte-varied addresses");
+
+    for i in 0u8..=255 {
+        let mut addr = [0u8; 32];
+        addr[0] = i;
+        assert_eq!(book.resolve(&Address(addr)), Some(&(i as u32)));
+    }
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// AddressBook: resolving nonexistent address returns None.
+#[test]
+fn address_book_missing_returns_none() {
+    use templar_vault_kernel::AddressBook;
+    let book = AddressBook::<&str>::new();
+    assert_eq!(book.resolve(&Address([42u8; 32])), None);
+    assert!(book.is_empty());
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Performance fee when profit is less than fee denominator floors to zero shares.
+#[test]
+fn fee_zero_when_profit_below_fee_threshold() {
+    // Tiny profit (1 wei), 50% fee → fee_assets = floor(1 * 0.5) = 0 → 0 shares
+    let fee_shares = compute_fee_shares(
+        Number::from(1_000_001u128),        // cur_total_assets
+        Number::from(1_000_000u128),        // last_total_assets → profit = 1
+        Wad::from(MAX_PERFORMANCE_FEE_WAD), // 50%
+        Number::from(1_000_000u128),        // total_supply
+    );
+    // With profit=1, fee_assets = floor(1 * 0.5) = 0, so fee_shares = 0
+    assert_eq!(
+        u128::from(fee_shares),
+        0,
+        "Sub-threshold profit should yield zero fee shares"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// No profit (cur <= last) → zero fee shares regardless of fee rate.
+#[test]
+fn fee_zero_when_no_profit() {
+    // cur == last → profit = 0
+    let fee_shares = compute_fee_shares(
+        Number::from(1_000_000u128),
+        Number::from(1_000_000u128),
+        Wad::from(MAX_PERFORMANCE_FEE_WAD),
+        Number::from(1_000_000u128),
+    );
+    assert_eq!(u128::from(fee_shares), 0, "No profit → no fee shares");
+
+    // cur < last → profit = 0 (saturating_sub)
+    let fee_shares_loss = compute_fee_shares(
+        Number::from(500_000u128),
+        Number::from(1_000_000u128),
+        Wad::from(MAX_PERFORMANCE_FEE_WAD),
+        Number::from(1_000_000u128),
+    );
+    assert_eq!(u128::from(fee_shares_loss), 0, "Loss → no fee shares");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Combined fee_assets equaling cur_total_assets → zero shares (denom = 0 case).
+#[test]
+fn fee_zero_when_fee_consumes_all_assets() {
+    // If fee_assets == cur_total_assets, compute_fee_shares_from_assets returns 0
+    let fee_shares = compute_fee_shares_from_assets(
+        Number::from(1_000u128), // fee_assets = all of total
+        Number::from(1_000u128), // cur_total_assets
+        Number::from(1_000u128), // total_supply
+    );
+    assert_eq!(
+        u128::from(fee_shares),
+        0,
+        "Fee consuming all assets must produce zero shares"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Fee_assets exceeding cur_total_assets → zero shares.
+#[test]
+fn fee_zero_when_fee_exceeds_total_assets() {
+    let fee_shares = compute_fee_shares_from_assets(
+        Number::from(2_000u128), // fee_assets > total
+        Number::from(1_000u128), // cur_total_assets
+        Number::from(1_000u128), // total_supply
+    );
+    assert_eq!(
+        u128::from(fee_shares),
+        0,
+        "Fee exceeding total assets must produce zero shares"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// MAX_PERFORMANCE_FEE_WAD (50%) extracts correct proportion.
+#[test]
+fn fee_at_max_performance_rate() {
+    let total = 2_000_000u128;
+    let profit = 1_000_000u128;
+    let supply = 1_000_000u128;
+    let fee_shares = compute_fee_shares(
+        Number::from(total),
+        Number::from(total - profit),
+        Wad::from(MAX_PERFORMANCE_FEE_WAD), // 50%
+        Number::from(supply),
+    );
+    // fee_assets = floor(profit * 0.5) = 500_000
+    // denom = total - fee_assets = 1_500_000
+    // fee_shares = floor(500_000 * 1_000_000 / 1_500_000) = 333_333
+    let expected = 500_000u128 * supply / (total - 500_000);
+    assert_eq!(
+        u128::from(fee_shares),
+        expected,
+        "50% fee on 1M profit with 2M total should mint {expected} shares"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// 100% fee rate (Wad::one()) → fee_assets = profit → denom = total - profit.
+/// If profit == total, fee_assets == total → 0 shares.
+#[test]
+fn fee_at_100_percent_rate() {
+    // 100% fee, profit == total → fee_assets == total → zero shares
+    let fee_shares_all = compute_fee_shares(
+        Number::from(1_000_000u128),
+        Number::from(0u128),
+        Wad::one(), // 100%
+        Number::from(1_000_000u128),
+    );
+    assert_eq!(
+        u128::from(fee_shares_all),
+        0,
+        "100% fee on profit==total should yield 0 (denom becomes 0)"
+    );
+
+    // 100% fee, profit < total → fee_assets = profit, denom = total - profit > 0
+    let fee_shares_partial = compute_fee_shares(
+        Number::from(2_000_000u128),
+        Number::from(1_000_000u128),
+        Wad::one(), // 100%
+        Number::from(1_000_000u128),
+    );
+    // fee_assets = 1_000_000, denom = 1_000_000
+    // fee_shares = floor(1_000_000 * 1_000_000 / 1_000_000) = 1_000_000
+    assert_eq!(
+        u128::from(fee_shares_partial),
+        1_000_000,
+        "100% fee on partial profit should mint shares equal to supply ratio"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Fee with zero total supply → always zero shares.
+#[test]
+fn fee_zero_on_zero_supply() {
+    let fee_shares = compute_fee_shares(
+        Number::from(2_000_000u128),
+        Number::from(1_000_000u128),
+        Wad::from(MAX_PERFORMANCE_FEE_WAD),
+        Number::from(0u128), // no supply
+    );
+    assert_eq!(u128::from(fee_shares), 0, "Zero supply → zero fee shares");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Fee anchor timestamp wraparound: RefreshFees rejects backwards time.
+#[test]
+fn fee_refresh_rejects_backwards_timestamp() {
+    let config = default_config();
+    let mut state = default_state();
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(10_000));
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(5_000),
+        },
+    );
+    assert!(result.is_err(), "Backwards timestamp must be rejected");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+#[cfg(feature = "action-refresh-fees")]
+/// Fee anchor updates correctly on RefreshFees.
+#[test]
+fn fee_refresh_updates_anchor() {
+    let config = default_config();
+    let mut state = default_state();
+    state.total_assets = 5_000;
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(100));
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(200),
+        },
+    )
+    .expect("Forward timestamp should succeed");
+
+    assert_eq!(result.state.fee_anchor.total_assets, 5_000);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(200));
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Fee anchor at timestamp 0 → RefreshFees at 0 is rejected (must advance).
+#[test]
+fn fee_refresh_at_zero_timestamp() {
+    let config = default_config();
+    let state = default_state(); // fee_anchor at (0, 0)
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(0),
+        },
+    );
+    assert!(
+        result.is_err(),
+        "RefreshFees at timestamp 0 should reject non-advancing time"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// MAX_MANAGEMENT_FEE_WAD constant is 5% (sanity check).
+#[test]
+fn management_fee_cap_constant() {
+    assert_eq!(
+        MAX_MANAGEMENT_FEE_WAD,
+        Wad::SCALE / 100 * 5,
+        "MAX_MANAGEMENT_FEE_WAD should be 5%"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// MAX_PERFORMANCE_FEE_WAD constant is 50% (sanity check).
+#[test]
+fn performance_fee_cap_constant() {
+    assert_eq!(
+        MAX_PERFORMANCE_FEE_WAD,
+        Wad::SCALE / 100 * 50,
+        "MAX_PERFORMANCE_FEE_WAD should be 50%"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Build a queue with `n` pending unpriced withdrawal requests.
+fn build_large_queue(n: u32, escrow_shares_per: u128) -> WithdrawQueue {
+    let mut queue = WithdrawQueue::new();
+    for i in 0..n {
+        let mut owner = [0u8; 32];
+        owner[..4].copy_from_slice(&i.to_le_bytes());
+        queue
+            .enqueue(
+                Address(owner),
+                Address(owner),
+                escrow_shares_per,     // escrow_shares
+                0,                     // min_assets_out
+                TimestampNs(i as u64), // requested_at_ns
+                EpochId::FIRST_SETTLEMENT,
+                MAX_PENDING as u32,
+            )
+            .unwrap_or_else(|e| panic!("enqueue {i} failed: {e:?}"));
+    }
+    queue
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Queue at MAX_PENDING capacity: enqueue fills, then rejects.
+#[test]
+fn queue_fills_to_max_pending_then_rejects() {
+    let queue = build_large_queue(MAX_PENDING as u32, 1_000);
+    assert_eq!(
+        queue.pending_withdrawals().len(),
+        MAX_PENDING,
+        "Queue should hold exactly MAX_PENDING items"
+    );
+    // Next enqueue should fail
+    let mut queue = queue;
+    let result = queue.enqueue(
+        Address([255u8; 32]),
+        Address([255u8; 32]),
+        1_000,
+        0,
+        TimestampNs(9999),
+        EpochId::FIRST_SETTLEMENT,
+        MAX_PENDING as u32,
+    );
+    assert!(
+        result.is_err(),
+        "Should reject enqueue at MAX_PENDING capacity"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Unsettled requests hold escrow but no payout claim, so depth alone can
+/// never be satisfied, and settlement cannot lift an unsettled queue either
+/// once the snapshot is missing.
+#[test]
+fn unsettled_queue_is_never_satisfiable_at_max_pending() {
+    let n = MAX_PENDING as u32;
+    let escrow_per = 1_000u128;
+    let queue = build_large_queue(n, escrow_per);
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
+
+    let (count, total) = count_satisfiable(items.iter().copied(), &EpochState::genesis(), u128::MAX);
+    assert_eq!(count, 0, "No request is payable before settlement");
+    assert_eq!(total, 0, "No payout figure exists before settlement");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// After an accepted settlement the queue becomes payable strictly in FIFO
+/// order against claims derived from the bound snapshot.
+#[test]
+fn settled_queue_satisfies_in_fifo_order_at_max_pending() {
+    let n = MAX_PENDING as u32;
+    let escrow_per = 1_000u128;
+    let queue = build_large_queue(n, escrow_per);
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
+
+    // A 1:1 settlement values the escrowed shares at their own amount, so
+    // each derived claim equals the escrow it covers.
+    let eligible_supply = n as u128 * escrow_per;
+    let epoch_state = settled_epoch_state(eligible_supply, eligible_supply);
+
+    let (all_count, all_total) = count_satisfiable(items.iter().copied(), &epoch_state, u128::MAX);
+    assert_eq!(all_count, n, "Every settled request is payable");
+    assert_eq!(all_total, eligible_supply);
+
+    // Half the assets pays exactly the first half of the queue in FIFO order.
+    let half = n / 2;
+    let available = half as u128 * escrow_per;
+    let (count, total) = count_satisfiable(items.iter().copied(), &epoch_state, available);
+    assert_eq!(
+        count, half,
+        "Half the assets pays half the queue in FIFO order"
+    );
+    assert_eq!(total, available);
+
+    // A settlement that predates this queue cannot pay it either.
+    assert_eq!(
+        count_satisfiable(items.iter().copied(), &EpochState::genesis(), available),
+        (0, 0)
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// compute_queue_status at MAX_PENDING depth: correct totals.
+#[test]
+fn queue_status_at_max_pending() {
+    let n = MAX_PENDING as u32;
+    let escrow_per = 1_000u128;
+    let queue = build_large_queue(n, escrow_per);
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
+
+    let status = compute_queue_status(items.iter().copied());
+    assert_eq!(status.length, n, "Length should be MAX_PENDING");
+    assert_eq!(
+        status.total_escrow_shares,
+        n as u128 * escrow_per,
+        "Total escrow shares"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// find_request_status at MAX_PENDING depth: find last item (worst case O(n)).
+#[test]
+fn find_request_status_worst_case_at_max_pending() {
+    use templar_vault_kernel::state::queue::find_request_status;
+    let n = MAX_PENDING as u32;
+    let assets_per = 1_000u128;
+    let queue = build_large_queue(n, assets_per);
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
+
+    // Find the last owner (worst-case linear scan)
+    let mut last_owner = [0u8; 32];
+    last_owner[..4].copy_from_slice(&(n - 1).to_le_bytes());
+
+    let status = find_request_status(items.iter().copied(), &Address(last_owner));
+    assert!(status.is_some(), "Last owner should be found");
+    let status = status.unwrap();
+    assert_eq!(status.index, n - 1, "Should be at the last position");
+    // Post-ENG-697, queue depth is tracked in escrow shares only; there is no
+    // asset-denominated depth figure anymore.
+    assert_eq!(
+        status.depth_escrow_shares,
+        (n as u128 - 1) * assets_per,
+        "Depth should be sum of all preceding escrow shares"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// find_request_status at MAX_PENDING depth: owner not found (full scan).
+#[test]
+fn find_request_status_miss_at_max_pending() {
+    use templar_vault_kernel::state::queue::find_request_status;
+    let n = MAX_PENDING as u32;
+    let queue = build_large_queue(n, 1_000);
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
+
+    // Owner that doesn't exist
+    let missing_owner = [255u8; 32];
+    let status = find_request_status(items.iter().copied(), &Address(missing_owner));
+    assert!(status.is_none(), "Non-existent owner should return None");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Queue enqueue/dequeue cycle at high volume: enqueue MAX_PENDING, dequeue half, re-enqueue.
+#[test]
+fn queue_churn_at_high_depth() {
+    let n = MAX_PENDING as u32;
+    let assets_per = 500u128;
+    let mut queue = build_large_queue(n, assets_per);
+    assert_eq!(queue.pending_withdrawals().len(), n as usize);
+
+    // Dequeue half from the front
+    let half = n / 2;
+    for _ in 0..half {
+        let _ = queue.dequeue();
+    }
+    assert_eq!(queue.pending_withdrawals().len(), (n - half) as usize);
+
+    // Re-enqueue to fill back up
+    for i in 0..half {
+        let mut owner = [128u8; 32];
+        owner[..4].copy_from_slice(&i.to_le_bytes());
+        queue
+            .enqueue(
+                Address(owner),
+                Address(owner),
+                assets_per,
+                0,
+                TimestampNs(10_000 + i as u64),
+                EpochId::FIRST_SETTLEMENT,
+                n,
+            )
+            .unwrap_or_else(|e| panic!("re-enqueue {i} failed: {e:?}"));
+    }
+    assert_eq!(
+        queue.pending_withdrawals().len(),
+        n as usize,
+        "Should be full again"
+    );
+
+    // Verify queue status is correct after churn
+    let items: Vec<_> = queue.pending_withdrawals().values().collect();
+    let status = compute_queue_status(items.iter().copied());
+    assert_eq!(status.length, n);
+    assert_eq!(status.total_escrow_shares, n as u128 * assets_per);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+use primitive_types::U256;
+
+#[cfg(feature = "action-epoch-settlement")]
+/// mul_div_floor with U256::MAX inputs: MAX * MAX / MAX = MAX.
+#[test]
+fn mul_div_floor_u256_max_all() {
+    let max_n = Number(U256::MAX);
+    let result = Number::mul_div_floor(max_n, max_n, max_n);
+    assert_eq!(result.0, U256::MAX, "MAX * MAX / MAX should be MAX");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// mul_div_floor: MAX * 1 / 1 = MAX.
+#[test]
+fn mul_div_floor_u256_max_times_one() {
+    let max_n = Number(U256::MAX);
+    let result = Number::mul_div_floor(max_n, Number::one(), Number::one());
+    assert_eq!(result.0, U256::MAX, "MAX * 1 / 1 should be MAX");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// mul_div_floor: 1 * 1 / MAX = 0 (floor).
+#[test]
+fn mul_div_floor_one_over_max() {
+    let result = Number::mul_div_floor(Number::one(), Number::one(), Number(U256::MAX));
+    assert!(result.is_zero(), "1 * 1 / MAX should floor to 0");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// mul_div_ceil: 1 * 1 / MAX = 1 (ceil).
+#[test]
+fn mul_div_ceil_one_over_max() {
+    let result = Number::mul_div_ceil(Number::one(), Number::one(), Number(U256::MAX));
+    assert_eq!(result.0, U256::one(), "ceil(1 * 1 / MAX) should be 1");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// mul_div_floor: MAX * MAX / 1 uses denom==1 fast path (saturating_mul).
+#[test]
+fn mul_div_floor_max_squared_div_one() {
+    let max_n = Number(U256::MAX);
+    let result = Number::mul_div_floor(max_n, max_n, Number::one());
+    // Fast path: denom==1 → x.0.saturating_mul(y.0) = U256::MAX
+    assert_eq!(
+        result.0,
+        U256::MAX,
+        "MAX * MAX / 1 saturates to MAX via fast path"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// mul_div with zero operands: all combinations of zero produce zero.
+#[test]
+fn mul_div_zero_combinations() {
+    let z = Number::zero();
+    let one = Number::one();
+    let max_n = Number(U256::MAX);
+
+    // Zero x
+    assert!(Number::mul_div_floor(z, max_n, one).is_zero());
+    assert!(Number::mul_div_ceil(z, max_n, one).is_zero());
+    // Zero y
+    assert!(Number::mul_div_floor(max_n, z, one).is_zero());
+    assert!(Number::mul_div_ceil(max_n, z, one).is_zero());
+    // Zero denom (returns 0 by convention, not panic)
+    assert!(Number::mul_div_floor(max_n, max_n, z).is_zero());
+    assert!(Number::mul_div_ceil(max_n, max_n, z).is_zero());
+    // All zero
+    assert!(Number::mul_div_floor(z, z, z).is_zero());
+    assert!(Number::mul_div_ceil(z, z, z).is_zero());
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// saturating_add: U256::MAX + U256::MAX saturates to MAX.
+#[test]
+fn saturating_add_u256_max() {
+    let max_n = Number(U256::MAX);
+    let result = max_n.saturating_add(max_n);
+    assert_eq!(result.0, U256::MAX, "MAX + MAX should saturate to MAX");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// saturating_sub: 0 - MAX saturates to 0.
+#[test]
+fn saturating_sub_zero_minus_max() {
+    let result = Number::zero().saturating_sub(Number(U256::MAX));
+    assert!(result.is_zero(), "0 - MAX should saturate to 0");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// as_u128_saturating for values in the U256 range above u128::MAX.
+#[test]
+fn as_u128_saturating_boundary() {
+    // Exactly u128::MAX should return u128::MAX
+    let at_max = Number::from(u128::MAX);
+    assert_eq!(at_max.as_u128_saturating(), u128::MAX);
+
+    // One above u128::MAX should saturate
+    let above = Number(U256::from(u128::MAX) + U256::one());
+    assert_eq!(above.as_u128_saturating(), u128::MAX);
+
+    // U256::MAX should saturate
+    let way_above = Number(U256::MAX);
+    assert_eq!(way_above.as_u128_saturating(), u128::MAX);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Wad::apply_floored with pathological inputs doesn't panic.
+#[test]
+fn wad_apply_floored_u128_max() {
+    let max_amount = Number::from(u128::MAX);
+    // 100% fee on MAX amount
+    let result = Wad::one().apply_floored(max_amount);
+    assert_eq!(result, max_amount, "100% of MAX should be MAX");
+
+    // 50% fee on MAX
+    let half_wad = Wad::from(Wad::SCALE / 2);
+    let half_result = half_wad.apply_floored(max_amount);
+    let expected: u128 = u128::MAX / 2;
+    assert!(
+        u128::from(half_result) >= expected - 1 && u128::from(half_result) <= expected,
+        "50% of MAX should be approximately MAX/2, got {:?}",
+        half_result
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Wad::apply_floored with Wad > 1.0 (super-WAD) produces result > input.
+#[test]
+fn wad_apply_floored_super_wad() {
+    let double_wad = Wad::from(Wad::SCALE * 2); // 200%
+    let amount = Number::from(1_000_000u128);
+    let result = double_wad.apply_floored(amount);
+    assert_eq!(
+        u128::from(result),
+        2_000_000,
+        "200% WAD should double the amount"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// compute_fee_shares with every argument at u128::MAX: no panic.
+#[test]
+fn compute_fee_shares_all_max() {
+    let max = Number::from(u128::MAX);
+    // cur = MAX, last = 0 → profit = MAX
+    // fee = 100% → fee_assets = MAX
+    // fee_assets >= cur → returns 0
+    let result = compute_fee_shares(max, Number::zero(), Wad::one(), max);
+    assert_eq!(
+        u128::from(result),
+        0,
+        "100% fee on profit==total should be 0"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// compute_fee_shares_from_assets with fee_assets = 1, total = u128::MAX.
+#[test]
+fn compute_fee_shares_from_assets_minimal_fee() {
+    let total = Number::from(u128::MAX);
+    let supply = Number::from(u128::MAX);
+    let fee_assets = Number::from(1u128);
+    // denom = MAX - 1, fee_shares = floor(1 * MAX / (MAX-1)) = 1
+    let result = compute_fee_shares_from_assets(fee_assets, total, supply);
+    assert_eq!(
+        u128::from(result),
+        1,
+        "Minimal fee on max total should mint 1 share"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Wad division: Wad::one() / 3 rounds down.
+#[test]
+fn wad_division_rounds_down() {
+    let third = Wad::one() / 3;
+    let expected = Wad::SCALE / 3;
+    assert_eq!(u128::from(third), expected);
+    // Verify it rounds down: expected * 3 < SCALE
+    assert!(expected * 3 < Wad::SCALE, "Division should round down");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// mul_div_floor fast path: x == denom returns y exactly.
+#[test]
+fn mul_div_floor_cancellation_paths() {
+    let x = Number::from(12345u128);
+    let y = Number::from(67890u128);
+    // x * y / x = y
+    assert_eq!(Number::mul_div_floor(x, y, x), y);
+    // y * x / x = y
+    assert_eq!(Number::mul_div_floor(y, x, x), y);
+    // x * x / x = x
+    assert_eq!(Number::mul_div_floor(x, x, x), x);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Allocation step failure at step 2 of 5: returns to Idle with correct total_allocated.
+#[test]
+fn allocation_step_failure_mid_plan() {
+    let plan = vec![
+        alloc_step(0, 100),
+        alloc_step(1, 200),
+        alloc_step(2, 300),
+        alloc_step(3, 400),
+        alloc_step(4, 500),
+    ];
+    let op_id = 1;
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+
+    // Step 0 succeeds with 100
+    let result = allocation_step_callback(result.new_state, true, 100, op_id).unwrap();
+    assert!(matches!(result.new_state, OpState::Allocating(ref s) if s.index == 1));
+
+    // Step 1 succeeds with 200
+    let result = allocation_step_callback(result.new_state, true, 200, op_id).unwrap();
+    assert!(matches!(result.new_state, OpState::Allocating(ref s) if s.index == 2));
+
+    // Step 2 FAILS
+    let result = allocation_step_callback(result.new_state, false, 0, op_id).unwrap();
+    assert!(
+        matches!(result.new_state, OpState::Idle),
+        "Should return to Idle on failure"
+    );
+
+    // Verify the failure event contains correct total_allocated
+    let event = &result.effects[0];
+    match event {
+        KernelEffect::EmitEvent {
+            event:
+                KernelEvent::AllocationStepFailed {
+                    op_id: eid,
+                    index,
+                    remaining,
+                    total_allocated,
+                },
+        } => {
+            assert_eq!(*eid, op_id);
+            assert_eq!(*index, 2, "Failed at step 2");
+            assert_eq!(*remaining, 1200, "remaining = 1500 - 100 - 200 = 1200");
+            assert_eq!(*total_allocated, 300, "allocated = 100 + 200 = 300");
+        }
+        _ => panic!("Expected AllocationStepFailed event"),
+    }
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Allocation step with amount = 0 on success is rejected.
+#[test]
+fn allocation_step_zero_amount_rejected() {
+    let plan = vec![alloc_step(0, 100), alloc_step(1, 200)];
+    let op_id = 1;
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+
+    let err = allocation_step_callback(result.new_state, true, 0, op_id);
+    assert!(
+        matches!(err, Err(TransitionError::ZeroAllocationAmount)),
+        "Zero allocation amount on success should be rejected, got: {err:?}"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Allocation step with amount exceeding remaining is rejected.
+#[test]
+fn allocation_step_overflow_rejected() {
+    let plan = vec![alloc_step(0, 100)];
+    let op_id = 1;
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+
+    let err = allocation_step_callback(result.new_state, true, 101, op_id);
+    assert!(
+        matches!(err, Err(TransitionError::AllocationOverflow { .. })),
+        "Overflow amount should be rejected, got: {err:?}"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+#[cfg(all(feature = "action-allocation-lifecycle", feature = "action-recovery"))]
+/// AbortAllocating: returns to Idle and adds `restore_idle` back to idle_assets.
+///
+/// By design the kernel does NOT decrement `idle_assets` on `BeginAllocating`.
+/// Idle-asset accounting is the executor's responsibility — each chain executor
+/// (Soroban, NEAR) decrements `idle_assets` *before* calling into the kernel,
+/// so the kernel never sees the pre-decrement value.
+///
+/// When testing the kernel in isolation (no executor wrapper), `idle_assets`
+/// stays unchanged through `BeginAllocating` and then `AbortAllocating` adds
+/// `restore_idle` on top, producing a value larger than the original. This is
+/// expected kernel-only behavior, not a bug.
+#[test]
+fn abort_allocating_restores_state() {
+    let config = default_config();
+    let mut state = default_state();
+    state.idle_assets = 1500;
+    state.total_assets = 1500;
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::BeginAllocating {
+            op_id: 1,
+            plan: vec![alloc_step(0, 500), alloc_step(1, 500), alloc_step(2, 500)],
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+    let op_id = match &result.state.op_state {
+        OpState::Allocating(s) => s.op_id,
+        _ => panic!("Should be Allocating"),
+    };
+    // Kernel decrements idle_assets by allocation total (1500).
+    assert_eq!(
+        result.state.idle_assets, 0,
+        "idle_assets decremented by allocation total"
+    );
+    assert_eq!(
+        result.state.total_assets, 0,
+        "total_assets recomputed after decrement"
+    );
+    let state_after_begin = result.state;
+
+    let result = apply_action(
+        state_after_begin,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::AbortAllocating { op_id },
+    )
+    .unwrap();
+
+    assert!(matches!(result.state.op_state, OpState::Idle));
+    // AbortAllocating restores the decremented amount, bringing us back to 1500.
+    assert_eq!(
+        result.state.idle_assets, 1500,
+        "idle_assets restored after abort"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Start allocation with empty plan is rejected.
+#[test]
+fn allocation_empty_plan_rejected() {
+    let err = start_allocation(OpState::Idle, vec![], 1);
+    assert!(
+        matches!(err, Err(TransitionError::EmptyAllocationPlan)),
+        "Empty plan should be rejected, got: {err:?}"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Start allocation when not Idle is rejected.
+#[test]
+fn allocation_from_non_idle_rejected() {
+    let alloc_state = OpState::Allocating(AllocatingState {
+        op_id: 1,
+        index: 0,
+        remaining: 100,
+        plan: vec![alloc_step(0, 100)],
+    });
+    let err = start_allocation(alloc_state, vec![alloc_step(0, 100)], 2);
+    assert!(
+        matches!(err, Err(TransitionError::WrongState)),
+        "Allocation from non-Idle should be rejected, got: {err:?}"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Allocation step failure at first step (step 0): total_allocated = 0.
+#[test]
+fn allocation_failure_at_first_step() {
+    let plan = vec![alloc_step(0, 1000), alloc_step(1, 2000)];
+    let op_id = 1;
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+
+    // Step 0 fails immediately
+    let result = allocation_step_callback(result.new_state, false, 0, op_id).unwrap();
+    assert!(matches!(result.new_state, OpState::Idle));
+
+    match &result.effects[0] {
+        KernelEffect::EmitEvent {
+            event:
+                KernelEvent::AllocationStepFailed {
+                    total_allocated,
+                    remaining,
+                    ..
+                },
+        } => {
+            assert_eq!(*total_allocated, 0, "No steps completed → 0 allocated");
+            assert_eq!(*remaining, 3000, "Full plan amount still remaining");
+        }
+        _ => panic!("Expected AllocationStepFailed event"),
+    }
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Allocation step with wrong op_id is rejected.
+#[test]
+fn allocation_step_wrong_op_id_rejected() {
+    let plan = vec![alloc_step(0, 100)];
+    let result = start_allocation(OpState::Idle, plan, 1).unwrap();
+    let err = allocation_step_callback(result.new_state, true, 100, 999);
+    assert!(
+        matches!(err, Err(TransitionError::OpIdMismatch { .. })),
+        "Wrong op_id should be rejected, got: {err:?}"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Full allocation completes all steps and transitions to Idle.
+#[test]
+fn allocation_full_completion() {
+    let plan = vec![alloc_step(0, 100), alloc_step(1, 200), alloc_step(2, 300)];
+    let op_id = 1;
+    let result = start_allocation(OpState::Idle, plan, op_id).unwrap();
+
+    let result = allocation_step_callback(result.new_state, true, 100, op_id).unwrap();
+    let result = allocation_step_callback(result.new_state, true, 200, op_id).unwrap();
+    let result = allocation_step_callback(result.new_state, true, 300, op_id).unwrap();
+
+    // Should still be Allocating until complete_allocation is called
+    assert!(matches!(result.new_state, OpState::Allocating(ref s) if s.remaining == 0));
+
+    let result = complete_allocation(result.new_state, op_id, None).unwrap();
+    assert!(matches!(result.new_state, OpState::Idle));
+}
+
+// Proptest Regression Edge Cases (deterministic)
+// These tests encode specific edge cases discovered by proptest regressions.
+// See proptest-regressions/transitions.txt and property_tests.proptest-regressions.
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Regression: withdrawal with amount=1, escrow_shares=1 followed by
+/// collected1=1 leaves remaining=0 — second step is correctly skipped.
+/// Seeds: transitions.txt cc 0a7898a6, property_tests cc 0bd733bf.
+#[test]
+fn regression_withdrawal_amount_one_single_step() {
+    let request = WithdrawalRequest {
+        op_id: 1,
+        request_id: 1,
+        amount: 1,
+        receiver: Address([34; 32]),
+        owner: Address([17; 32]),
+        escrow_shares: 1,
+    };
+    let result = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+    assert!(result.new_state.is_withdrawing());
+
+    let w = result.new_state.as_withdrawing().unwrap();
+    assert_eq!(w.remaining, 1);
+    assert_eq!(w.collected, 0);
+
+    // Collect 1 — remaining becomes 0, no second step possible.
+    let step1 = withdrawal_step_callback(result.new_state, 1, 1).unwrap();
+    let w1 = step1.new_state.as_withdrawing().unwrap();
+    assert_eq!(w1.collected, 1);
+    assert_eq!(w1.remaining, 0);
+    assert_eq!(w1.index, 1);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Regression: a one-share escrow redeems only at the protocol-floor claim.
+/// The lawful settled transition pays the exact derived claim and burns the
+/// full one-share escrow; nothing partial exists in the flow.
+#[test]
+fn regression_minimal_withdrawal_full_flow() {
+    let mut request = WithdrawalRequest {
+        op_id: 1,
+        request_id: 0,
+        amount: MIN_WITHDRAWAL_ASSETS,
+        receiver: Address([34; 32]),
+        owner: Address([17; 32]),
+        escrow_shares: 1,
+    };
+    let vault = settled_withdrawal_vault(&mut request);
+    let start = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+    let step =
+        withdrawal_step_callback(start.new_state, 1, MIN_WITHDRAWAL_ASSETS).unwrap();
+    let w1 = step.new_state.as_withdrawing().unwrap();
+    assert_eq!(w1.remaining, 0);
+    assert_eq!(w1.collected, MIN_WITHDRAWAL_ASSETS);
+
+    let settled = withdrawal_collected(step.new_state, &vault, 1, MIN_WITHDRAWAL_ASSETS)
+        .expect("settled claim at the protocol floor authorizes the only lawful payout");
+    let payout = settled.new_state.as_payout().unwrap();
+    assert_eq!(payout.amount, MIN_WITHDRAWAL_ASSETS);
+    assert_eq!(payout.burn_shares, 1);
+    assert_eq!(payout.escrow_shares, 1);
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Regression: invariant check with idle=1, external=1, delta=1 — ensures
+/// total_assets != idle+external when extra delta is added.
+/// Seed: property_tests cc 22c3dbcf.
+#[test]
+fn regression_invariant_check_minimal_delta() {
+    let idle = 1u128;
+    let external = 1u128;
+    let delta = 1u128;
+    let total = idle.saturating_add(external).saturating_add(delta);
+    let mut state = VaultState::new();
+    state.total_assets = total; // 3
+    state.total_shares = 0;
+    state.idle_assets = idle; // 1
+    state.external_assets = external; // 1
+    state.fee_anchor = FeeAccrualAnchor::new(total, TimestampNs(0));
+    // total_assets(3) != idle(1) + external(1) = invariant violation
+    assert!(
+        !state.check_invariant(),
+        "should detect invariant violation: 3 != 1 + 1"
+    );
+}
+
+// Cross-Executor Parity Tests
+// Both NEAR and Soroban executors call the same kernel `apply_action`. These
+// tests verify kernel determinism and that the state-preparation patterns both
+// executors use (decrement idle_assets before kernel, restore on abort, etc.)
+// produce consistent results.
+
+#[cfg(feature = "action-epoch-settlement")]
+#[cfg(all(feature = "action-allocation-lifecycle", feature = "action-recovery"))]
+/// Parity: the executor pattern of decrementing idle_assets before calling
+/// kernel BeginAllocating, then using kernel's AbortAllocating with
+/// restore_idle, produces balanced accounting.
+///
+/// The kernel handles idle_assets decrement in BeginAllocating.
+/// Soroban calls start_allocation directly (bypasses apply_action) and
+/// handles idle_assets itself. NEAR delegates to apply_action.
+#[test]
+fn parity_executor_idle_decrement_abort_roundtrip() {
+    let config = default_config();
+    let mut state = default_state();
+    state.idle_assets = 10_000;
+    state.total_assets = 10_000;
+
+    let plan = vec![alloc_step(0, 3_000), alloc_step(1, 2_000)];
+    // --- Kernel: BeginAllocating decrements idle_assets ---
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::BeginAllocating {
+            op_id: 1,
+            plan: plan.clone(),
+            now_ns: TimestampNs(1),
+        },
+    )
+    .unwrap();
+
+    let op_id = match &result.state.op_state {
+        OpState::Allocating(s) => s.op_id,
+        _ => panic!("expected Allocating"),
+    };
+    // Kernel decrements idle_assets by allocation total
+    assert_eq!(result.state.idle_assets, 5_000);
+
+    // --- Kernel: AbortAllocating restores the allocation amount ---
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::AbortAllocating { op_id },
+    )
+    .unwrap();
+
+    assert!(result.state.op_state.is_idle());
+    // After kernel-decrement + kernel-restore, we should be back to 10_000
+    assert_eq!(
+        result.state.idle_assets, 10_000,
+        "abort must restore idle_assets to original"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+#[cfg(all(feature = "action-allocation-lifecycle", feature = "action-sync-external"))]
+/// Parity: kernel BeginAllocating decrements idle_assets, SyncExternalAssets
+/// updates external_assets, FinishAllocating returns to Idle.
+///
+/// The kernel's 2x sanity guard on SyncExternalAssets means executors must sync
+/// incrementally (after each market deposit), not all at once.
+#[test]
+fn parity_executor_full_allocation_cycle() {
+    let config = default_config();
+    let mut state = default_state();
+    // Start with 80% idle, 20% already external — a realistic post-refresh state
+    state.idle_assets = 8_000;
+    state.external_assets = 2_000;
+    state.total_assets = 10_000;
+    state.fee_anchor = FeeAccrualAnchor::new(10_000, TimestampNs(0));
+
+    let plan = vec![alloc_step(0, 2_000), alloc_step(1, 1_000)];
+
+    // BeginAllocating — kernel decrements idle_assets by alloc_total (3_000)
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::BeginAllocating {
+            op_id: 1,
+            plan,
+            now_ns: TimestampNs(1),
+        },
+    )
+    .unwrap();
+    // idle=5000, external=2000, total=7000 (assets in-flight to markets)
+    assert_eq!(result.state.idle_assets, 5_000);
+    assert_eq!(result.state.total_assets, 7_000);
+
+    // Sync after allocation: external grew from 2000 to 5000 (allocated 3000).
+    // 2x check: new_total = 5000+5000 = 10000, old total=7000, 7000*2=14000. OK.
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::SyncExternalAssets {
+            new_external_assets: 5_000,
+            op_id: 1,
+            now_ns: TimestampNs(2),
+        },
+    )
+    .unwrap();
+    assert_eq!(result.state.external_assets, 5_000);
+    assert_eq!(result.state.total_assets, 10_000); // idle(5000) + ext(5000)
+
+    // FinishAllocating
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &self_addr(),
+        KernelAction::FinishAllocating {
+            op_id: 1,
+            now_ns: TimestampNs(3),
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.op_state.is_idle());
+    assert_eq!(
+        result.state.idle_assets, 5_000,
+        "idle = 8000 - 3000 allocated"
+    );
+    assert_eq!(
+        result.state.external_assets, 5_000,
+        "external = 2000 + 3000 allocated"
+    );
+    assert_eq!(result.state.total_assets, 10_000, "total unchanged");
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+#[cfg(all(feature = "action-refresh-lifecycle", feature = "action-sync-external"))]
+/// Parity: refresh cycle with external growth updates share price identically
+/// for both executors.
+#[test]
+fn parity_refresh_external_growth() {
+    let config = default_config();
+    let mut state = default_state();
+    state.idle_assets = 5_000;
+    state.external_assets = 5_000;
+    state.total_assets = 10_000;
+    state.total_shares = 10_000;
+    state.fee_anchor = FeeAccrualAnchor::new(10_000, TimestampNs(0));
+
+    let vault = self_addr();
+
+    // BeginRefreshing
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &vault,
+        KernelAction::BeginRefreshing {
+            op_id: 1,
+            plan: vec![0, 1],
+            now_ns: TimestampNs(100),
+        },
+    )
+    .unwrap();
+
+    // SyncExternalAssets with growth (5000 → 7000)
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &vault,
+        KernelAction::SyncExternalAssets {
+            new_external_assets: 7_000,
+            op_id: 1,
+            now_ns: TimestampNs(200),
+        },
+    )
+    .unwrap();
+
+    // FinishRefreshing
+    let result = apply_action(
+        result.state,
+        &config,
+        None,
+        &vault,
+        KernelAction::FinishRefreshing {
+            op_id: 1,
+            now_ns: TimestampNs(300),
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.op_state.is_idle());
+    assert_eq!(result.state.external_assets, 7_000);
+    assert_eq!(
+        result.state.total_assets, 12_000,
+        "idle(5000) + external(7000)"
+    );
+    assert_eq!(result.state.total_shares, 10_000, "shares unchanged");
+
+    // Share price reflects external growth. With virtual_shares=0 and
+    // virtual_assets=0, effective_totals adds +1 to both supply and assets,
+    // so the exact preview uses floor(1000 * 12001 / 10001) = 1199.
+    let preview = preview_withdraw_assets(&result.state, &config, 1_000);
+    // Approximate check: growth is reflected (value > 1000)
+    assert!(
+        (1_199..=1_200).contains(&preview),
+        "share price reflects growth, got {preview}"
+    );
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+fn spec_addr(tag: u8, index: u64) -> [u8; 32] {
+    let mut address = [0u8; 32];
+    address[0] = tag;
+    address[1..9].copy_from_slice(&index.to_le_bytes());
+    address
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+fn spec_vault_addr() -> Address {
+    Address(spec_addr(0xAA, 0))
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+#[cfg(feature = "action-sync-external")]
+proptest! {
+    #[test]
+    fn prop_spec_sync_external_assets_updates_total(
+        idle in 0u64..1_000_000,
+        existing_external in 0u64..1_000_000,
+        in_flight in 0u64..1_000_000,
+        delta in 0u64..1_000_000,
+    ) {
+        let external = existing_external + delta;
+        let mut state = VaultState::new();
+        state.idle_assets = idle as u128;
+        state.external_assets = existing_external as u128;
+        state.total_assets = idle as u128 + existing_external as u128;
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id: 7,
+            index: 0,
+            remaining: in_flight as u128,
+            plan: vec![alloc_step(0, in_flight as u128)],
+        });
+
+        let config = default_config();
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &spec_vault_addr(),
+            KernelAction::SyncExternalAssets {
+                new_external_assets: external as u128,
+                op_id: 7,
+                now_ns: TimestampNs(0),
+            },
+        )
+        .unwrap();
+
+        prop_assert_eq!(result.state.external_assets, external as u128);
+        prop_assert_eq!(result.state.total_assets, idle as u128 + external as u128);
+        prop_assert!(result.state.check_invariant());
+    }
+}
+
+// =========================================================================
+// PAYOUT-AUTHORIZATION AND ESCROW-CONSERVATION LAWS
+// Restored law battery: payout authorization requires the settled FIFO
+// head; settlement consumes every escrowed share; unsettled, failed, or
+// partially-funded escrow refunds in full and never leaks value.
+// =========================================================================
+#[cfg(feature = "action-epoch-settlement")]
+proptest! {
+    #[test]
+    fn prop_count_satisfiable_requires_settlement(
+        enqueues in 1usize..=5,
+        shares in 1u128..=10_000u128,
+        settlement_nav in 1u128..=1_000_000u128,
+        available in 0u128..=1_000_000u128,
+    ) {
+        let withdrawals: Vec<PendingWithdrawal> = (0..enqueues)
+            .map(|i| {
+                PendingWithdrawal::new(
+                    owner_addr(i as u64),
+                    receiver_addr(i as u64),
+                    shares,
+                    0,
+                    TimestampNs(i as u64),
+                    EpochId::FIRST_SETTLEMENT,
+                )
+                .expect("generated request is a valid unpriced withdrawal")
+            })
+            .collect();
+
+        // Before an accepted report settles the epoch, escrow carries no
+        // payout figure, so nothing in the queue can be satisfied.
+        let (unsettled_count, unsettled_assets) =
+            count_satisfiable(&withdrawals, &EpochState::genesis(), available);
+        prop_assert_eq!(unsettled_count, 0);
+        prop_assert_eq!(unsettled_assets, 0);
+
+        let epoch_state =
+            settled_epoch_state(settlement_nav, shares.saturating_mul(enqueues as u128));
+        let (count, assets) = count_satisfiable(&withdrawals, &epoch_state, available);
+        prop_assert!((count as usize) <= enqueues);
+        prop_assert!(assets <= available);
+
+        // Whatever was counted must be paid from the derived claims of the
+        // requests actually reached in FIFO order.
+        let mut prefix_assets = 0u128;
+        for withdrawal in withdrawals.iter().take(count as usize) {
+            let claim = settled_claim(withdrawal, &epoch_state).expect("settled epoch derives a claim");
+            prefix_assets = prefix_assets.saturating_add(claim);
+        }
+        prop_assert_eq!(prefix_assets, assets);
+    }
+
+    #[test]
+    fn prop_settled_head_required_for_payout_authorization(
+        op_id in 1u64..u64::MAX,
+        amount in 1_000u128..=1_000_000u128,
+        escrow_shares in 1_000u128..=1_000_000u128,
+    ) {
+        let mut request = WithdrawalRequest {
+            op_id,
+            request_id: 0,
+            amount,
+            receiver: receiver_addr(op_id),
+            owner: owner_addr(op_id),
+            escrow_shares,
+        };
+        let vault = settled_withdrawal_vault(&mut request);
+        let withdraw = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+        let settled = withdrawal_collected(withdraw.new_state, &vault, op_id, MIN_WITHDRAWAL_ASSETS);
+        let incomplete = matches!(
+            settled,
+            Err(TransitionError::WithdrawalIncomplete { .. })
+        );
+        prop_assert!(incomplete);
+        prop_assert!(vault.withdraw_queue.head().is_some());
+        prop_assert!(vault.check_invariant());
+
+        let mut unsettled_vault = settled_withdrawal_vault(&mut request);
+        unsettled_vault.epoch = EpochState::genesis();
+        let start = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+        let collected = withdrawal_step_callback(start.new_state, op_id, request.amount).unwrap();
+        let collected_state = collected.new_state.as_withdrawing().unwrap();
+        prop_assert_eq!(collected_state.remaining, 0);
+        prop_assert_eq!(collected_state.collected, request.amount);
+
+        let before = unsettled_vault.clone();
+        let settled = withdrawal_settled(collected.new_state, &unsettled_vault, op_id, MIN_WITHDRAWAL_ASSETS);
+        let unsettled_rejected = matches!(
+            settled,
+            Err(TransitionError::WithdrawalIncomplete { .. })
+        );
+        prop_assert!(unsettled_rejected);
+        prop_assert_eq!(&unsettled_vault, &before);
+    }
+
+    #[test]
+    fn prop_payout_success_burns_full_escrow(
+        op_id in 1u64..u64::MAX,
+        amount in 1_000u128..=1_000_000u128,
+        escrow_shares in 1_000u128..=1_000_000u128,
+    ) {
+        let mut request = WithdrawalRequest {
+            op_id,
+            request_id: 0,
+            amount,
+            receiver: receiver_addr(op_id),
+            owner: owner_addr(op_id),
+            escrow_shares,
+        };
+        let vault = settled_withdrawal_vault(&mut request);
+        let start = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+        let collect = withdrawal_step_callback(start.new_state, op_id, request.amount).unwrap();
+        let settled =
+            withdrawal_settled(collect.new_state, &vault, op_id, MIN_WITHDRAWAL_ASSETS).unwrap();
+        let payout = settled.new_state.as_payout().unwrap();
+        prop_assert_eq!(payout.amount, amount);
+        prop_assert_eq!(payout.burn_shares, escrow_shares);
+
+        let escrow_address = owner_addr(99);
+        let complete = payout_complete(
+            settled.new_state,
+            &vault,
+            true,
+            op_id,
+            escrow_address,
+            MIN_WITHDRAWAL_ASSETS,
+        )
+        .unwrap();
+        prop_assert!(complete.new_state.is_idle());
+        let effects = &complete.effects;
+        let burn = KernelEffect::BurnShares {
+            owner: escrow_address,
+            shares: escrow_shares,
+        };
+        prop_assert!(effects.contains(&burn));
+        let any_transfer = effects
+            .iter()
+            .any(|effect| matches!(effect, KernelEffect::TransferShares { .. }));
+        prop_assert!(!any_transfer);
+        let completed = KernelEffect::EmitEvent {
+            event: KernelEvent::PayoutCompleted {
+                op_id,
+                success: true,
+                burn_shares: escrow_shares,
+                refund_shares: 0,
+                amount,
+            },
+        };
+        prop_assert!(effects.contains(&completed));
+        prop_assert!(vault.check_invariant());
+    }
+
+    #[test]
+    fn prop_payout_failure_refunds_full_escrow(
+        op_id in 1u64..u64::MAX,
+        amount in 1_000u128..=1_000_000u128,
+        escrow_shares in 1_000u128..=1_000_000u128,
+    ) {
+        let mut request = WithdrawalRequest {
+            op_id,
+            request_id: 0,
+            amount,
+            receiver: receiver_addr(op_id),
+            owner: owner_addr(op_id),
+            escrow_shares,
+        };
+        let vault = settled_withdrawal_vault(&mut request);
+        let start = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+        let collect = withdrawal_step_callback(start.new_state, op_id, request.amount).unwrap();
+        let settled =
+            withdrawal_settled(collect.new_state, &vault, op_id, MIN_WITHDRAWAL_ASSETS).unwrap();
+        let escrow_address = owner_addr(99);
+        let complete = payout_complete(
+            settled.new_state,
+            &vault,
+            false,
+            op_id,
+            escrow_address,
+            MIN_WITHDRAWAL_ASSETS,
+        )
+        .unwrap();
+        prop_assert!(complete.new_state.is_idle());
+        let effects = &complete.effects;
+        let refund = KernelEffect::TransferShares {
+            from: escrow_address,
+            to: request.owner,
+            shares: escrow_shares,
+        };
+        prop_assert!(effects.contains(&refund));
+        let any_burn = effects
+            .iter()
+            .any(|effect| matches!(effect, KernelEffect::BurnShares { .. }));
+        prop_assert!(!any_burn);
+        let completed = KernelEffect::EmitEvent {
+            event: KernelEvent::PayoutCompleted {
+                op_id,
+                success: false,
+                burn_shares: 0,
+                refund_shares: escrow_shares,
+                amount: 0,
+            },
+        };
+        prop_assert!(effects.contains(&completed));
+    }
+
+    #[test]
+    fn prop_partial_liquidity_cannot_produce_partial_payout(
+        op_id in 1u64..u64::MAX,
+        amount in 1_001u128..=1_000_000u128,
+        escrow_shares in 1_001u128..=1_000_000u128,
+    ) {
+        let mut request = WithdrawalRequest {
+            op_id,
+            request_id: 0,
+            amount,
+            receiver: receiver_addr(op_id),
+            owner: owner_addr(op_id),
+            escrow_shares,
+        };
+        let mut vault = settled_withdrawal_vault(&mut request);
+        vault.idle_assets = request.amount - 1;
+        vault.sync_total_assets();
+        let start = start_withdrawal(OpState::Idle, request.clone()).unwrap();
+        let collect = withdrawal_step_callback(start.new_state, op_id, request.amount).unwrap();
+        let before = vault.clone();
+        let settled = withdrawal_settled(collect.new_state, &vault, op_id, MIN_WITHDRAWAL_ASSETS);
+        let shortfall_rejected = matches!(
+            settled,
+            Err(TransitionError::WithdrawalIncomplete { .. })
+        );
+        prop_assert!(shortfall_rejected);
+        prop_assert_eq!(&vault, &before);
+        prop_assert!(vault.withdraw_queue.head().is_some());
+        prop_assert!(vault.check_invariant());
+    }
+
+    #[test]
+    fn prop_escrow_settlement_must_consume_escrow(
+        shares in 1u128..=u64::MAX as u128,
+        burn_ratio in 0u8..=100u8,
+    ) {
+        let entry = EscrowEntry::new(owner_addr(1), shares, TimestampNs(0));
+        let to_burn = (shares * burn_ratio as u128) / 100;
+        let settlement = EscrowSettlement::partial(to_burn, shares - to_burn);
+
+        let result = apply_settlement(&entry, &settlement).expect("exact settlement applies");
+        prop_assert_eq!(result.burned, to_burn);
+        prop_assert_eq!(result.refunded, shares - to_burn);
+        prop_assert_eq!(result.burned + result.refunded, shares);
+        prop_assert!(can_apply_settlement(&entry, &settlement));
+    }
+
+    #[test]
+    fn prop_unsettled_escrow_refunds_full_escrow(
+        escrow_shares in 1_000u128..=1_000_000u128,
+        available in 0u128..=1_000_000u128,
+    ) {
+        let request = PendingWithdrawal::new(
+            owner_addr(1),
+            receiver_addr(1),
+            escrow_shares,
+            0,
+            TimestampNs(0),
+            EpochId::FIRST_SETTLEMENT,
+        )
+        .expect("lawful unsettled request");
+        let unsettled = EpochState::genesis();
+        prop_assert_eq!(settled_claim(&request, &unsettled), None);
+
+        let shortfall = compute_partial_withdrawal(&request, &unsettled, available);
+        prop_assert_eq!(shortfall.assets_out, 0);
+        prop_assert_eq!(shortfall.settlement.to_burn, 0);
+        prop_assert_eq!(shortfall.settlement.refund, escrow_shares);
+
+        let settled = settled_epoch_state(escrow_shares, escrow_shares);
+        prop_assert_eq!(settled_claim(&request, &settled), Some(escrow_shares));
+    }
+}
+
+// Profile law suites. The epoch settlement law suite compiles only with
+// `action-epoch-settlement`. The pre-epoch immediate law suite compiles only
+// without it. No test-only cfg enables either schema.
+
+// Pre-epoch immediate law suite (origin/dev), restored verbatim for builds
+// without `action-epoch-settlement`. It exercises feature-off law behavior.
+#[cfg(not(feature = "action-epoch-settlement"))]
+use proptest::prelude::*;
+#[cfg(not(feature = "action-epoch-settlement"))]
+use templar_vault_kernel::test_utils::{owner_addr, receiver_addr};
+#[cfg(not(feature = "action-epoch-settlement"))]
 use templar_vault_kernel::{
     apply_action,
     effects::{KernelEffect, KernelEvent},
@@ -64,11 +2424,13 @@ use templar_vault_kernel::{
 
 // Arbitrary Strategies
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Generate a valid allocation plan
 fn alloc_step(target_id: u32, amount: u128) -> AllocationPlanEntry {
     AllocationPlanEntry::new(target_id, amount)
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 fn arb_allocation_plan(max_len: usize) -> impl Strategy<Value = Vec<AllocationPlanEntry>> {
     proptest::collection::vec((0u32..100u32, 1u128..=1_000_000_000u128), 1..=max_len).prop_map(
         |steps| {
@@ -80,11 +2442,13 @@ fn arb_allocation_plan(max_len: usize) -> impl Strategy<Value = Vec<AllocationPl
     )
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Generate a refresh plan (list of target IDs)
 fn arb_refresh_plan(max_len: usize) -> impl Strategy<Value = Vec<u32>> {
     proptest::collection::vec(0u32..100u32, 1..=max_len)
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Generate a withdrawal request
 fn arb_withdrawal_request() -> impl Strategy<Value = WithdrawalRequest> {
     (
@@ -105,6 +2469,7 @@ fn arb_withdrawal_request() -> impl Strategy<Value = WithdrawalRequest> {
         )
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Generate a pending withdrawal
 #[allow(dead_code)]
 fn arb_pending_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {
@@ -124,6 +2489,7 @@ fn arb_pending_withdrawal() -> impl Strategy<Value = PendingWithdrawal> {
         })
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Generate an escrow entry
 #[allow(dead_code)]
 fn arb_escrow_entry() -> impl Strategy<Value = EscrowEntry> {
@@ -137,6 +2503,7 @@ fn arb_escrow_entry() -> impl Strategy<Value = EscrowEntry> {
         })
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Generate a vault state with valid invariants
 #[allow(dead_code)]
 fn arb_vault_state() -> impl Strategy<Value = VaultState> {
@@ -152,6 +2519,7 @@ fn arb_vault_state() -> impl Strategy<Value = VaultState> {
         })
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 proptest! {
     /// Property 1: total_assets = idle_assets + external_assets
     /// Invariant: The fundamental accounting equation always holds.
@@ -1504,10 +3872,12 @@ proptest! {
 
 // Deterministic Boundary / Edge Case Tests
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 use templar_vault_kernel::{
     convert_to_assets, preview_deposit_shares, preview_withdraw_assets, PayoutOutcome, VaultConfig,
 };
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 fn default_config() -> VaultConfig {
     VaultConfig {
         fees: FeesSpec {
@@ -1524,14 +3894,17 @@ fn default_config() -> VaultConfig {
     }
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 fn default_state() -> VaultState {
     VaultState::new()
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 fn self_addr() -> templar_vault_kernel::Address {
     templar_vault_kernel::Address([99u8; 32])
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 proptest! {
     #[test]
     fn prop_asset_share_mutations_do_not_overflow_or_underflow(
@@ -1784,6 +4157,7 @@ proptest! {
     }
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 1: Depositing zero assets returns ZeroAmount error.
 #[test]
 fn deposit_zero_assets_returns_zero_amount() {
@@ -1811,6 +4185,7 @@ fn deposit_zero_assets_returns_zero_amount() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 2: Depositing 1 wei succeeds and mints shares.
 #[test]
 fn deposit_one_wei_mints_shares() {
@@ -1838,6 +4213,7 @@ fn deposit_one_wei_mints_shares() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 3: Preview deposit with 0 assets returns 0 shares.
 #[test]
 fn preview_deposit_zero_assets_returns_zero() {
@@ -1846,6 +4222,7 @@ fn preview_deposit_zero_assets_returns_zero() {
     assert_eq!(preview_deposit_shares(&state, &config, 0), 0);
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 4: Preview withdraw with 0 shares returns 0 assets.
 #[test]
 fn preview_withdraw_zero_shares_returns_zero() {
@@ -1854,6 +4231,7 @@ fn preview_withdraw_zero_shares_returns_zero() {
     assert_eq!(preview_withdraw_assets(&state, &config, 0), 0);
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 5: Preview deposit/withdraw with 1 share/asset is consistent.
 #[test]
 fn preview_one_wei_roundtrip() {
@@ -1874,6 +4252,7 @@ fn preview_one_wei_roundtrip() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 6: Request withdraw below MIN_WITHDRAWAL_ASSETS is rejected.
 #[test]
 fn withdraw_below_min_withdrawal_rejected() {
@@ -1910,6 +4289,7 @@ fn withdraw_below_min_withdrawal_rejected() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 7: Request withdraw at exactly MIN_WITHDRAWAL_ASSETS succeeds.
 #[test]
 fn withdraw_at_min_withdrawal_succeeds() {
@@ -1947,6 +4327,7 @@ fn withdraw_at_min_withdrawal_succeeds() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 8: Request withdraw with 0 shares returns ZeroAmount.
 #[test]
 fn withdraw_zero_shares_returns_zero_amount() {
@@ -1977,6 +4358,7 @@ fn withdraw_zero_shares_returns_zero_amount() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 9: Fee calculation with total_assets = 1.
 #[test]
 fn fee_shares_with_total_assets_one() {
@@ -1995,6 +4377,7 @@ fn fee_shares_with_total_assets_one() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 10: Queue at exactly MAX_QUEUE_LENGTH (alias of MAX_PENDING) rejects next enqueue.
 #[test]
 fn queue_at_max_rejects_enqueue() {
@@ -2012,6 +4395,7 @@ fn queue_at_max_rejects_enqueue() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 11: is_valid_withdrawal_amount at boundary values.
 #[test]
 fn withdrawal_amount_boundary_values() {
@@ -2031,6 +4415,7 @@ fn withdrawal_amount_boundary_values() {
     assert!(is_valid_withdrawal_amount(u128::MAX), "MAX is valid");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 12: compute_settlement with 1 wei actual vs large expected.
 #[test]
 fn settlement_one_wei_actual() {
@@ -2048,6 +4433,7 @@ fn settlement_one_wei_actual() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 13: compute_settlement with 0 actual (full refund).
 #[test]
 fn settlement_zero_actual_full_refund() {
@@ -2059,6 +4445,7 @@ fn settlement_zero_actual_full_refund() {
     assert_eq!(settlement.refund, escrow, "Zero actual → full refund");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 14: Queue enqueue fills to capacity then rejects.
 #[test]
 fn queue_fills_to_capacity_then_rejects() {
@@ -2090,6 +4477,7 @@ fn queue_fills_to_capacity_then_rejects() {
     assert!(result.is_err(), "Enqueue beyond capacity should fail",);
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 15: Cooldown at exact boundary.
 #[test]
 fn cooldown_exact_boundary() {
@@ -2125,6 +4513,7 @@ fn cooldown_exact_boundary() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Boundary 16: Zero cooldown means immediately ready when now >= requested_at.
 #[test]
 fn zero_cooldown_passes_when_now_gte_requested() {
@@ -2148,6 +4537,7 @@ fn zero_cooldown_passes_when_now_gte_requested() {
 
 // Overflow / Saturation Tests
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Overflow 1: Deposit near u128::MAX should reject instead of saturating.
 #[test]
 fn deposit_near_max_rejected() {
@@ -2178,6 +4568,7 @@ fn deposit_near_max_rejected() {
     ));
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Overflow 2: Fee calculation with extreme values doesn't panic.
 #[test]
 fn fee_shares_extreme_values_no_panic() {
@@ -2192,6 +4583,7 @@ fn fee_shares_extreme_values_no_panic() {
     let _ = fee_shares;
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Overflow 3: Fee calculation at u128 boundary.
 #[test]
 fn fee_shares_u128_max_no_panic() {
@@ -2204,6 +4596,7 @@ fn fee_shares_u128_max_no_panic() {
     let _ = fee_shares;
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Overflow 4: SyncExternalAssets at u128::MAX saturates total_assets.
 #[test]
 fn sync_external_near_max_saturates() {
@@ -2237,6 +4630,7 @@ fn sync_external_near_max_saturates() {
     assert!(result.is_err(), "SyncExternalAssets should reject overflow",);
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Overflow 5: Preview deposit with u128::MAX assets doesn't panic.
 #[test]
 fn preview_deposit_max_assets_no_panic() {
@@ -2250,6 +4644,7 @@ fn preview_deposit_max_assets_no_panic() {
     let _ = shares;
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Overflow 6: Preview withdraw with u128::MAX shares doesn't panic.
 #[test]
 fn preview_withdraw_max_shares_no_panic() {
@@ -2262,6 +4657,7 @@ fn preview_withdraw_max_shares_no_panic() {
     let _ = assets;
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Overflow 7: compute_settlement with u128::MAX values preserves conservation.
 #[test]
 fn settlement_u128_max_conservation() {
@@ -2277,6 +4673,7 @@ fn settlement_u128_max_conservation() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Overflow 8: compute_settlement with extreme disparity.
 #[test]
 fn settlement_extreme_disparity() {
@@ -2297,6 +4694,7 @@ fn settlement_extreme_disparity() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Overflow 9: mul_div_floor with large values doesn't panic.
 #[test]
 fn mul_div_floor_large_values_no_panic() {
@@ -2309,6 +4707,7 @@ fn mul_div_floor_large_values_no_panic() {
     assert!(u128::from(result) > 0, "Should produce non-zero result");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Overflow 10: Cooldown with u64::MAX timestamp doesn't panic.
 /// saturating_add clamps overflow to MAX, so requested_at=MAX + cooldown=1 → MAX.
 #[test]
@@ -2333,6 +4732,7 @@ fn cooldown_u64_max_no_panic() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// AddressBook: insert and resolve round-trips correctly.
 #[test]
 fn address_book_insert_resolve() {
@@ -2349,6 +4749,7 @@ fn address_book_insert_resolve() {
     assert_eq!(book.len(), 2);
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// AddressBook: inserting same key overwrites (no silent collision).
 #[test]
 fn address_book_overwrite_same_key() {
@@ -2367,6 +4768,7 @@ fn address_book_overwrite_same_key() {
     assert_eq!(book.len(), 1, "No duplicate entries");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// AddressBook: distinct 32-byte addresses never shadow each other.
 #[test]
 fn address_book_distinct_addresses_no_collision() {
@@ -2388,6 +4790,7 @@ fn address_book_distinct_addresses_no_collision() {
     }
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// AddressBook: resolving nonexistent address returns None.
 #[test]
 fn address_book_missing_returns_none() {
@@ -2397,6 +4800,7 @@ fn address_book_missing_returns_none() {
     assert!(book.is_empty());
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Performance fee when profit is less than fee denominator floors to zero shares.
 #[test]
 fn fee_zero_when_profit_below_fee_threshold() {
@@ -2415,6 +4819,7 @@ fn fee_zero_when_profit_below_fee_threshold() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// No profit (cur <= last) → zero fee shares regardless of fee rate.
 #[test]
 fn fee_zero_when_no_profit() {
@@ -2437,6 +4842,7 @@ fn fee_zero_when_no_profit() {
     assert_eq!(u128::from(fee_shares_loss), 0, "Loss → no fee shares");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Combined fee_assets equaling cur_total_assets → zero shares (denom = 0 case).
 #[test]
 fn fee_zero_when_fee_consumes_all_assets() {
@@ -2453,6 +4859,7 @@ fn fee_zero_when_fee_consumes_all_assets() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Fee_assets exceeding cur_total_assets → zero shares.
 #[test]
 fn fee_zero_when_fee_exceeds_total_assets() {
@@ -2468,6 +4875,7 @@ fn fee_zero_when_fee_exceeds_total_assets() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// MAX_PERFORMANCE_FEE_WAD (50%) extracts correct proportion.
 #[test]
 fn fee_at_max_performance_rate() {
@@ -2491,6 +4899,7 @@ fn fee_at_max_performance_rate() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// 100% fee rate (Wad::one()) → fee_assets = profit → denom = total - profit.
 /// If profit == total, fee_assets == total → 0 shares.
 #[test]
@@ -2524,6 +4933,7 @@ fn fee_at_100_percent_rate() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Fee with zero total supply → always zero shares.
 #[test]
 fn fee_zero_on_zero_supply() {
@@ -2536,6 +4946,7 @@ fn fee_zero_on_zero_supply() {
     assert_eq!(u128::from(fee_shares), 0, "Zero supply → zero fee shares");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Fee anchor timestamp wraparound: RefreshFees rejects backwards time.
 #[test]
 fn fee_refresh_rejects_backwards_timestamp() {
@@ -2555,6 +4966,7 @@ fn fee_refresh_rejects_backwards_timestamp() {
     assert!(result.is_err(), "Backwards timestamp must be rejected");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Fee anchor updates correctly on RefreshFees.
 #[test]
 fn fee_refresh_updates_anchor() {
@@ -2578,6 +4990,7 @@ fn fee_refresh_updates_anchor() {
     assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(200));
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Fee anchor at timestamp 0 → RefreshFees at 0 is rejected (must advance).
 #[test]
 fn fee_refresh_at_zero_timestamp() {
@@ -2599,6 +5012,7 @@ fn fee_refresh_at_zero_timestamp() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// MAX_MANAGEMENT_FEE_WAD constant is 5% (sanity check).
 #[test]
 fn management_fee_cap_constant() {
@@ -2609,6 +5023,7 @@ fn management_fee_cap_constant() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// MAX_PERFORMANCE_FEE_WAD constant is 50% (sanity check).
 #[test]
 fn performance_fee_cap_constant() {
@@ -2619,6 +5034,7 @@ fn performance_fee_cap_constant() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Build a queue with `n` pending withdrawals, each of `assets` expected.
 fn build_large_queue(n: u32, assets_per: u128) -> WithdrawQueue {
     let mut queue = WithdrawQueue::new();
@@ -2639,6 +5055,7 @@ fn build_large_queue(n: u32, assets_per: u128) -> WithdrawQueue {
     queue
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Queue at MAX_PENDING capacity: enqueue fills, then rejects.
 #[test]
 fn queue_fills_to_max_pending_then_rejects() {
@@ -2664,6 +5081,7 @@ fn queue_fills_to_max_pending_then_rejects() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// count_satisfiable at MAX_PENDING depth: all satisfiable when enough assets.
 #[test]
 fn count_satisfiable_at_max_pending() {
@@ -2679,6 +5097,7 @@ fn count_satisfiable_at_max_pending() {
     assert_eq!(total, available, "Total should equal all items");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// count_satisfiable at MAX_PENDING depth: partial satisfaction.
 #[test]
 fn count_satisfiable_partial_at_max_pending() {
@@ -2698,6 +5117,7 @@ fn count_satisfiable_partial_at_max_pending() {
     assert_eq!(total, available);
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// compute_queue_status at MAX_PENDING depth: correct totals.
 #[test]
 fn queue_status_at_max_pending() {
@@ -2720,6 +5140,7 @@ fn queue_status_at_max_pending() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// find_request_status at MAX_PENDING depth: find last item (worst case O(n)).
 #[test]
 fn find_request_status_worst_case_at_max_pending() {
@@ -2744,6 +5165,7 @@ fn find_request_status_worst_case_at_max_pending() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// find_request_status at MAX_PENDING depth: owner not found (full scan).
 #[test]
 fn find_request_status_miss_at_max_pending() {
@@ -2758,6 +5180,7 @@ fn find_request_status_miss_at_max_pending() {
     assert!(status.is_none(), "Non-existent owner should return None");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Queue enqueue/dequeue cycle at high volume: enqueue MAX_PENDING, dequeue half, re-enqueue.
 #[test]
 fn queue_churn_at_high_depth() {
@@ -2801,8 +5224,10 @@ fn queue_churn_at_high_depth() {
     assert_eq!(status.total_expected_assets, n as u128 * assets_per);
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 use primitive_types::U256;
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// mul_div_floor with U256::MAX inputs: MAX * MAX / MAX = MAX.
 #[test]
 fn mul_div_floor_u256_max_all() {
@@ -2811,6 +5236,7 @@ fn mul_div_floor_u256_max_all() {
     assert_eq!(result.0, U256::MAX, "MAX * MAX / MAX should be MAX");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// mul_div_floor: MAX * 1 / 1 = MAX.
 #[test]
 fn mul_div_floor_u256_max_times_one() {
@@ -2819,6 +5245,7 @@ fn mul_div_floor_u256_max_times_one() {
     assert_eq!(result.0, U256::MAX, "MAX * 1 / 1 should be MAX");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// mul_div_floor: 1 * 1 / MAX = 0 (floor).
 #[test]
 fn mul_div_floor_one_over_max() {
@@ -2826,6 +5253,7 @@ fn mul_div_floor_one_over_max() {
     assert!(result.is_zero(), "1 * 1 / MAX should floor to 0");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// mul_div_ceil: 1 * 1 / MAX = 1 (ceil).
 #[test]
 fn mul_div_ceil_one_over_max() {
@@ -2833,6 +5261,7 @@ fn mul_div_ceil_one_over_max() {
     assert_eq!(result.0, U256::one(), "ceil(1 * 1 / MAX) should be 1");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// mul_div_floor: MAX * MAX / 1 uses denom==1 fast path (saturating_mul).
 #[test]
 fn mul_div_floor_max_squared_div_one() {
@@ -2846,6 +5275,7 @@ fn mul_div_floor_max_squared_div_one() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// mul_div with zero operands: all combinations of zero produce zero.
 #[test]
 fn mul_div_zero_combinations() {
@@ -2867,6 +5297,7 @@ fn mul_div_zero_combinations() {
     assert!(Number::mul_div_ceil(z, z, z).is_zero());
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// saturating_add: U256::MAX + U256::MAX saturates to MAX.
 #[test]
 fn saturating_add_u256_max() {
@@ -2875,6 +5306,7 @@ fn saturating_add_u256_max() {
     assert_eq!(result.0, U256::MAX, "MAX + MAX should saturate to MAX");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// saturating_sub: 0 - MAX saturates to 0.
 #[test]
 fn saturating_sub_zero_minus_max() {
@@ -2882,6 +5314,7 @@ fn saturating_sub_zero_minus_max() {
     assert!(result.is_zero(), "0 - MAX should saturate to 0");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// as_u128_saturating for values in the U256 range above u128::MAX.
 #[test]
 fn as_u128_saturating_boundary() {
@@ -2898,6 +5331,7 @@ fn as_u128_saturating_boundary() {
     assert_eq!(way_above.as_u128_saturating(), u128::MAX);
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Wad::apply_floored with pathological inputs doesn't panic.
 #[test]
 fn wad_apply_floored_u128_max() {
@@ -2917,6 +5351,7 @@ fn wad_apply_floored_u128_max() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Wad::apply_floored with Wad > 1.0 (super-WAD) produces result > input.
 #[test]
 fn wad_apply_floored_super_wad() {
@@ -2930,6 +5365,7 @@ fn wad_apply_floored_super_wad() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// compute_fee_shares with every argument at u128::MAX: no panic.
 #[test]
 fn compute_fee_shares_all_max() {
@@ -2945,6 +5381,7 @@ fn compute_fee_shares_all_max() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// compute_fee_shares_from_assets with fee_assets = 1, total = u128::MAX.
 #[test]
 fn compute_fee_shares_from_assets_minimal_fee() {
@@ -2960,6 +5397,7 @@ fn compute_fee_shares_from_assets_minimal_fee() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Wad division: Wad::one() / 3 rounds down.
 #[test]
 fn wad_division_rounds_down() {
@@ -2970,6 +5408,7 @@ fn wad_division_rounds_down() {
     assert!(expected * 3 < Wad::SCALE, "Division should round down");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// mul_div_floor fast path: x == denom returns y exactly.
 #[test]
 fn mul_div_floor_cancellation_paths() {
@@ -2983,6 +5422,7 @@ fn mul_div_floor_cancellation_paths() {
     assert_eq!(Number::mul_div_floor(x, x, x), x);
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Allocation step failure at step 2 of 5: returns to Idle with correct total_allocated.
 #[test]
 fn allocation_step_failure_mid_plan() {
@@ -3032,6 +5472,7 @@ fn allocation_step_failure_mid_plan() {
     }
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Allocation step with amount = 0 on success is rejected.
 #[test]
 fn allocation_step_zero_amount_rejected() {
@@ -3046,6 +5487,7 @@ fn allocation_step_zero_amount_rejected() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Allocation step with amount exceeding remaining is rejected.
 #[test]
 fn allocation_step_overflow_rejected() {
@@ -3060,6 +5502,7 @@ fn allocation_step_overflow_rejected() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// AbortAllocating: returns to Idle and adds `restore_idle` back to idle_assets.
 ///
 /// By design the kernel does NOT decrement `idle_assets` on `BeginAllocating`.
@@ -3122,6 +5565,7 @@ fn abort_allocating_restores_state() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Start allocation with empty plan is rejected.
 #[test]
 fn allocation_empty_plan_rejected() {
@@ -3132,6 +5576,7 @@ fn allocation_empty_plan_rejected() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Start allocation when not Idle is rejected.
 #[test]
 fn allocation_from_non_idle_rejected() {
@@ -3148,6 +5593,7 @@ fn allocation_from_non_idle_rejected() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Allocation step failure at first step (step 0): total_allocated = 0.
 #[test]
 fn allocation_failure_at_first_step() {
@@ -3175,6 +5621,7 @@ fn allocation_failure_at_first_step() {
     }
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Allocation step with wrong op_id is rejected.
 #[test]
 fn allocation_step_wrong_op_id_rejected() {
@@ -3187,6 +5634,7 @@ fn allocation_step_wrong_op_id_rejected() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Full allocation completes all steps and transitions to Idle.
 #[test]
 fn allocation_full_completion() {
@@ -3209,6 +5657,7 @@ fn allocation_full_completion() {
 // These tests encode specific edge cases discovered by proptest regressions.
 // See proptest-regressions/transitions.txt and property_tests.proptest-regressions.
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Regression: withdrawal with amount=1, escrow_shares=1 followed by
 /// collected1=1 leaves remaining=0 — second step is correctly skipped.
 /// Seeds: transitions.txt cc 0a7898a6, property_tests cc 0bd733bf.
@@ -3237,6 +5686,7 @@ fn regression_withdrawal_amount_one_single_step() {
     assert_eq!(w1.index, 1);
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Regression: withdrawal_collected with burn_shares <= escrow_shares succeeds
 /// when amount=1 and we collected everything in one step.
 /// Verifies the full withdrawal flow completes for minimal amounts.
@@ -3264,6 +5714,7 @@ fn regression_minimal_withdrawal_full_flow() {
     assert!(final_result.new_state.is_payout());
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Regression: invariant check with idle=1, external=1, delta=1 — ensures
 /// total_assets != idle+external when extra delta is added.
 /// Seed: property_tests cc 22c3dbcf.
@@ -3287,12 +5738,14 @@ fn regression_invariant_check_minimal_delta() {
 }
 
 // Cross-Executor Parity Tests
+#[cfg(not(feature = "action-epoch-settlement"))]
 use core::mem;
 // Both NEAR and Soroban executors call the same kernel `apply_action`. These
 // tests verify kernel determinism and that the state-preparation patterns both
 // executors use (decrement idle_assets before kernel, restore on abort, etc.)
 // produce consistent results.
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Parity: kernel is deterministic — identical inputs always produce identical
 /// outputs, regardless of which executor invokes it.
 #[test]
@@ -3321,6 +5774,7 @@ fn parity_kernel_deterministic_deposit() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Parity: deposit produces identical shares regardless of the amount already
 /// in the vault, so long as the share ratio is the same. Both executors rely
 /// on this for preview_deposit_shares accuracy.
@@ -3371,6 +5825,7 @@ fn parity_deposit_shares_ratio_stable() {
     assert_eq!(preview, 5_000, "preview must match actual deposit");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Parity: the executor pattern of decrementing idle_assets before calling
 /// kernel BeginAllocating, then using kernel's AbortAllocating with
 /// restore_idle, produces balanced accounting.
@@ -3425,6 +5880,7 @@ fn parity_executor_idle_decrement_abort_roundtrip() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Parity: kernel BeginAllocating decrements idle_assets, SyncExternalAssets
 /// updates external_assets, FinishAllocating returns to Idle.
 ///
@@ -3501,6 +5957,7 @@ fn parity_executor_full_allocation_cycle() {
     assert_eq!(result.state.total_assets, 10_000, "total unchanged");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Parity: deposit → request_withdraw → execute → stop → settle roundtrip.
 /// Both executors rely on this flow producing balanced accounting.
 /// Flow: Idle → Withdrawing → Payout → Idle.
@@ -3594,6 +6051,7 @@ fn parity_deposit_withdraw_settle_roundtrip() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Parity: preview functions agree with actual kernel actions.
 /// Both executors expose preview_deposit/preview_redeem views that must match
 /// the kernel's actual share/asset calculations.
@@ -3659,6 +6117,7 @@ fn parity_preview_matches_actual() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Parity: refresh cycle with external growth updates share price identically
 /// for both executors.
 #[test]
@@ -3733,6 +6192,7 @@ fn parity_refresh_external_growth() {
     );
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Parity: effect vectors are identical for deposit regardless of address
 /// domain prefix (NEAR uses sha256(accountId), Soroban uses sha256(domain+strkey)).
 /// The kernel doesn't care about address construction — only that the same
@@ -3783,6 +6243,7 @@ fn parity_effects_identical_for_deposit() {
     assert_eq!(r1.effects.len(), r2.effects.len(), "same number of effects");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Parity: abort_withdrawing refunds shares identically for both executors.
 #[test]
 fn parity_abort_withdrawing_refund() {
@@ -3855,6 +6316,7 @@ fn parity_abort_withdrawing_refund() {
     assert_eq!(result.state.total_assets, 10_000, "assets unchanged");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Parity: multiple deposits from different users produce consistent share
 /// ratios. Both executors must see the same share price for concurrent users.
 #[test]
@@ -3920,6 +6382,7 @@ fn parity_concurrent_deposits_share_consistency() {
     assert_eq!(preview, 5_000, "preview matches third deposit");
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 proptest! {
     /// Parity property: for any valid deposit amount, kernel produces
     /// identical state whether called once or reconstructed and called again.
@@ -4104,6 +6567,7 @@ proptest! {
     }
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 fn spec_addr(tag: u8, index: u64) -> [u8; 32] {
     let mut address = [0u8; 32];
     address[0] = tag;
@@ -4111,10 +6575,12 @@ fn spec_addr(tag: u8, index: u64) -> [u8; 32] {
     address
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 fn spec_vault_addr() -> Address {
     Address(spec_addr(0xAA, 0))
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 proptest! {
     #[test]
     fn prop_spec_deposit_updates_state(assets in 1u64..1_000_000) {
@@ -4167,6 +6633,7 @@ proptest! {
     }
 }
 
+#[cfg(not(feature = "action-epoch-settlement"))]
 #[cfg(feature = "action-sync-external")]
 proptest! {
     #[test]

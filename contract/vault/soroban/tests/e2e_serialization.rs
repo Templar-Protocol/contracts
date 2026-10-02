@@ -1,3 +1,6 @@
+// Origin/dev immediate law suite: compiled for immediate builds only. The
+// ENG-697 settlement-anchored suite lives in epoch_e2e_serialization.rs.
+#![cfg(not(feature = "epoch"))]
 use soroban_sdk::{contract, contractimpl, Env};
 use templar_curator_primitives::MarketConfig;
 use templar_soroban_runtime::{
