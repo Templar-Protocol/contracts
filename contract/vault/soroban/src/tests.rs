@@ -350,10 +350,12 @@ mod contract_tests {
     use crate::error::RuntimeError;
     use crate::storage::{SorobanStorage, Storage};
     use crate::test_utils::{begin_allocating, finish_allocating, MemoryStorage};
+    #[cfg(feature = "async-withdrawals")]
     use alloc::collections::BTreeMap;
     use alloc::string::{String as AllocString, ToString};
     use alloc::vec;
     use alloc::vec::Vec;
+    #[cfg(feature = "async-withdrawals")]
     use proptest::prelude::*;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env, String as SdkString, Symbol};
@@ -361,22 +363,27 @@ mod contract_tests {
     use templar_curator_primitives::PolicyState;
     use templar_soroban_governance::SorobanVaultGovernanceContract;
     use templar_soroban_shared_types::{
-        DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus,
-        GovernanceCommand, I128Receipt, ReceiptAddress, RequestWithdrawReceipt,
-        RuntimeVersionResponse, VaultCommand, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
-        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
-        RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_PAUSE,
-        RUNTIME_FEATURE_ACTION_RECOVERY, RUNTIME_FEATURE_ACTION_REFRESH_FEES,
-        RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
+        DepositReceipt, GovernanceCommand, I128Receipt, RuntimeVersionResponse, VaultCommand,
+        GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+        GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE,
+        RUNTIME_FEATURE_ACTION_PAUSE, RUNTIME_FEATURE_ACTION_RECOVERY,
+        RUNTIME_FEATURE_ACTION_REFRESH_FEES, RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
+        RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL, RUNTIME_FEATURE_ASYNC_WITHDRAWALS,
         RUNTIME_FEATURE_COMPANION_UPGRADE,
+    };
+    #[cfg(feature = "async-withdrawals")]
+    use templar_soroban_shared_types::{
+        EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus, ReceiptAddress,
+        RequestWithdrawReceipt,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::fee::FeeSlot;
     use templar_vault_kernel::math::wad::{Wad, YEAR_NS};
     use templar_vault_kernel::{
-        FeeAccrualAnchor, FeesSpec, OpState, Restrictions, TimestampNs, VaultState,
-        WithdrawingState, MIN_WITHDRAWAL_ASSETS,
+        FeeAccrualAnchor, FeesSpec, Restrictions, TimestampNs, VaultState, MIN_WITHDRAWAL_ASSETS,
     };
+    #[cfg(feature = "async-withdrawals")]
+    use templar_vault_kernel::{OpState, WithdrawingState};
 
     #[derive(Clone, Copy, Default)]
     struct TestPermissiveAuth;
@@ -479,14 +486,17 @@ mod contract_tests {
         DepositReceipt::decode(&bytes.to_alloc_vec()).expect("decode deposit receipt")
     }
 
+    #[cfg(feature = "async-withdrawals")]
     fn decode_request_withdraw_receipt(bytes: &Bytes) -> RequestWithdrawReceipt {
         RequestWithdrawReceipt::decode(&bytes.to_alloc_vec()).expect("decode request receipt")
     }
 
+    #[cfg(feature = "async-withdrawals")]
     fn decode_empty_receipt(bytes: &Bytes) -> EmptyReceipt {
         EmptyReceipt::decode(&bytes.to_alloc_vec()).expect("decode empty receipt")
     }
 
+    #[cfg(feature = "async-withdrawals")]
     fn decode_execute_withdraw_receipt(bytes: &Bytes) -> ExecuteWithdrawReceipt {
         ExecuteWithdrawReceipt::decode(&bytes.to_alloc_vec()).expect("decode execute receipt")
     }
@@ -500,12 +510,14 @@ mod contract_tests {
         SorobanVaultContract::execute_governance(env.clone(), caller.clone(), payload)
     }
 
+    #[cfg(feature = "async-withdrawals")]
     #[derive(Clone, Debug, Default)]
     struct TrackingInterpreter {
         addresses: BTreeMap<templar_vault_kernel::Address, SdkAddress>,
         effects: Vec<KernelEffect>,
     }
 
+    #[cfg(feature = "async-withdrawals")]
     impl TrackingInterpreter {
         fn new() -> Self {
             Self {
@@ -515,6 +527,7 @@ mod contract_tests {
         }
     }
 
+    #[cfg(feature = "async-withdrawals")]
     impl EffectInterpreter for TrackingInterpreter {
         fn execute_effect(
             &mut self,
@@ -526,6 +539,7 @@ mod contract_tests {
         }
     }
 
+    #[cfg(feature = "async-withdrawals")]
     impl AddressRegistrar for TrackingInterpreter {
         fn register_address(
             &mut self,
@@ -600,6 +614,10 @@ mod contract_tests {
         }
         assert_ne!(feature_flags & RUNTIME_FEATURE_ACTION_PAUSE, 0);
         assert_eq!(feature_flags & RUNTIME_FEATURE_COMPANION_UPGRADE, 0);
+        assert_eq!(
+            feature_flags & RUNTIME_FEATURE_ASYNC_WITHDRAWALS != 0,
+            cfg!(feature = "async-withdrawals")
+        );
 
         if templar_vault_kernel::ACTION_RECOVERY_ENABLED
             && templar_vault_kernel::ACTION_SYNC_EXTERNAL_ENABLED
@@ -607,10 +625,13 @@ mod contract_tests {
             && templar_vault_kernel::ACTION_ALLOCATION_LIFECYCLE_ENABLED
             && templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED
         {
-            assert_eq!(
-                feature_flags,
-                templar_soroban_shared_types::RUNTIME_DEFAULT_FEATURE_FLAGS
-            );
+            let expected_flags = templar_soroban_shared_types::RUNTIME_DEFAULT_FEATURE_FLAGS
+                | if cfg!(feature = "async-withdrawals") {
+                    RUNTIME_FEATURE_ASYNC_WITHDRAWALS
+                } else {
+                    0
+                };
+            assert_eq!(feature_flags, expected_flags);
         }
     }
 
@@ -1220,6 +1241,7 @@ mod contract_tests {
         assert!(state.op_state.is_idle());
     }
 
+    #[cfg(feature = "async-withdrawals")]
     #[test]
     fn test_execute_withdraw_respects_min_withdrawal_assets() {
         let mut vault = create_test_vault();
@@ -1282,6 +1304,7 @@ mod contract_tests {
         assert_eq!(head_expected_before, deposit_amount);
     }
 
+    #[cfg(feature = "async-withdrawals")]
     #[test]
     fn test_abort_withdrawing_recovers_low_liquidity_stuck_state() {
         let mut vault = create_test_vault();
@@ -1350,6 +1373,7 @@ mod contract_tests {
         assert_eq!(recovery_summary.events_emitted, 1);
     }
 
+    #[cfg(feature = "async-withdrawals")]
     proptest! {
         #[test]
         fn prop_low_liquidity_execute_refuses_and_stale_withdrawing_has_abort_recovery(
@@ -1452,6 +1476,7 @@ mod contract_tests {
         }
     }
 
+    #[cfg(feature = "async-withdrawals")]
     #[test]
     fn test_execute_withdraw_insufficient_idle_refuses_partial_settlement() {
         let mut vault = create_test_vault();
@@ -1510,6 +1535,7 @@ mod contract_tests {
         assert_eq!(head_expected_before, deposit_amount);
     }
 
+    #[cfg(feature = "async-withdrawals")]
     #[test]
     fn test_address_mapping_persists_for_execute_withdraw() {
         use soroban_sdk::testutils::Address as _;
@@ -2765,6 +2791,7 @@ mod contract_tests {
         );
     }
 
+    #[cfg(feature = "async-withdrawals")]
     #[test]
     fn test_abort_withdrawing_command_recovers_public_stuck_withdrawal() {
         use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
@@ -2936,6 +2963,7 @@ mod contract_tests {
         assert_eq!(share_client.balance(&contract_id), 0);
     }
 
+    #[cfg(feature = "async-withdrawals")]
     #[test]
     fn test_execute_withdraw_command_returns_structured_status() {
         use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};

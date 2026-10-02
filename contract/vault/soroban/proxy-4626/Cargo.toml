@@ -14,6 +14,8 @@ doctest = false
 [features]
 default = []
 testutils = ["soroban-sdk/testutils"]
+# Opt-in queued-withdrawal intake in the embedded vault runtime (integration tests only).
+async-withdrawals = ["templar-soroban-runtime/async-withdrawals"]
 
 [dependencies]
 soroban-sdk = { version = "25.3.0", features = ["alloc"] }

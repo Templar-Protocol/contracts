@@ -26,6 +26,8 @@ action-refresh-fees = ["templar-vault-kernel/action-refresh-fees"]
 action-allocation-lifecycle = ["templar-vault-kernel/action-allocation-lifecycle"]
 action-refresh-lifecycle = ["templar-vault-kernel/action-refresh-lifecycle"]
 action-pause = ["templar-vault-kernel/action-pause"]
+# Opt-in: accept new queued withdrawal requests (RequestWithdraw). Not a kernel capability bit.
+async-withdrawals = []
 
 [dependencies]
 # Core dependency - vault kernel types

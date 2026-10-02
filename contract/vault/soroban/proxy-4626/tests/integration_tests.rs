@@ -7,6 +7,7 @@ use soroban_sdk::{
 use templar_4626_proxy_soroban::Soroban4626ProxyContract;
 use templar_soroban_runtime::SorobanVaultContract;
 use templar_soroban_shared_types::{ProxyViewFields, ProxyViewResponse};
+#[cfg(feature = "async-withdrawals")]
 use templar_vault_kernel::DEFAULT_COOLDOWN_NS;
 
 const INITIAL_TIMESTAMP: u64 = 100;
@@ -102,6 +103,7 @@ fn set_timestamp(env: &Env, timestamp: u64) {
     });
 }
 
+#[cfg(feature = "async-withdrawals")]
 fn advance_past_cooldown(env: &Env) {
     let cooldown_seconds = DEFAULT_COOLDOWN_NS / 1_000_000_000;
     set_timestamp(
@@ -145,6 +147,7 @@ fn proxy_deposit(harness: &Harness, caller: &Address, assets: i128, receiver: &A
     )
 }
 
+#[cfg(feature = "async-withdrawals")]
 fn proxy_request_withdraw(
     harness: &Harness,
     owner: &Address,
@@ -159,6 +162,7 @@ fn proxy_request_withdraw(
     )
 }
 
+#[cfg(feature = "async-withdrawals")]
 fn proxy_execute_withdraw(harness: &Harness, caller: &Address) {
     harness.env.invoke_contract::<()>(
         &harness.proxy,
@@ -183,6 +187,7 @@ fn proxy_convert_to_shares(harness: &Harness, assets: i128) -> i128 {
     )
 }
 
+#[cfg(feature = "async-withdrawals")]
 fn proxy_convert_to_assets(harness: &Harness, shares: i128) -> i128 {
     harness.env.invoke_contract::<i128>(
         &harness.proxy,
@@ -199,6 +204,7 @@ fn proxy_max_deposit(harness: &Harness, receiver: &Address) -> i128 {
     )
 }
 
+#[cfg(feature = "async-withdrawals")]
 fn proxy_withdraw(
     harness: &Harness,
     caller: &Address,
@@ -213,6 +219,7 @@ fn proxy_withdraw(
     )
 }
 
+#[cfg(feature = "async-withdrawals")]
 fn proxy_redeem(
     harness: &Harness,
     caller: &Address,
@@ -306,6 +313,7 @@ fn view_methods_match_vault_proxy_view() {
     assert_eq!(expected_max_deposit, i128::MAX);
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[test]
 fn request_execute_withdraw_flow_burns_shares_and_returns_assets() {
     let harness = setup_harness();
@@ -348,6 +356,7 @@ fn request_execute_withdraw_flow_burns_shares_and_returns_assets() {
     assert_eq!(proxy_total_assets(&harness), 0);
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[test]
 fn withdraw_flow_completes_queued_withdrawal() {
     let harness = setup_harness();
@@ -404,6 +413,7 @@ fn withdraw_flow_completes_queued_withdrawal() {
     );
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[test]
 fn redeem_flow_completes_queued_withdrawal() {
     let harness = setup_harness();
@@ -455,4 +465,66 @@ fn redeem_flow_completes_queued_withdrawal() {
         proxy_total_assets(&harness),
         deposit_assets - redeemed_assets
     );
+}
+
+#[cfg(not(feature = "async-withdrawals"))]
+#[test]
+fn queued_withdrawal_intake_is_rejected_by_default() {
+    use templar_4626_proxy_soroban::ContractError;
+
+    let harness = setup_harness();
+    let deposit_assets = 1_200_i128;
+    mint_and_approve_assets(&harness, &harness.users.user, deposit_assets);
+    let minted_shares = proxy_deposit(
+        &harness,
+        &harness.users.user,
+        deposit_assets,
+        &harness.users.user,
+    );
+
+    let request_result = harness.env.try_invoke_contract::<u64, ContractError>(
+        &harness.proxy,
+        &Symbol::new(&harness.env, "request_withdraw"),
+        (
+            &harness.users.user,
+            &harness.users.receiver,
+            &minted_shares,
+            &0_i128,
+        )
+            .into_val(&harness.env),
+    );
+    assert_eq!(request_result, Err(Ok(ContractError::VaultError)));
+
+    let withdraw_result = harness.env.try_invoke_contract::<u64, ContractError>(
+        &harness.proxy,
+        &Symbol::new(&harness.env, "withdraw"),
+        (
+            &harness.users.user,
+            &deposit_assets,
+            &harness.users.receiver,
+            &harness.users.user,
+        )
+            .into_val(&harness.env),
+    );
+    assert_eq!(withdraw_result, Err(Ok(ContractError::VaultError)));
+
+    let redeem_result = harness.env.try_invoke_contract::<u64, ContractError>(
+        &harness.proxy,
+        &Symbol::new(&harness.env, "redeem"),
+        (
+            &harness.users.user,
+            &minted_shares,
+            &harness.users.receiver,
+            &harness.users.user,
+        )
+            .into_val(&harness.env),
+    );
+    assert_eq!(redeem_result, Err(Ok(ContractError::VaultError)));
+
+    // Rejected intake attempts escrowed nothing and burned no shares.
+    assert_eq!(
+        share_client(&harness).balance(&harness.users.user),
+        minted_shares
+    );
+    assert_eq!(vault_total_shares(&harness), minted_shares);
 }

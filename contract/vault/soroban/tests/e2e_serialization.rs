@@ -1,3 +1,5 @@
+#![cfg(feature = "async-withdrawals")]
+
 use soroban_sdk::{contract, contractimpl, Env};
 use templar_curator_primitives::MarketConfig;
 use templar_soroban_runtime::{
