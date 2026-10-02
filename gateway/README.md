@@ -23,9 +23,9 @@ Examples:
 
 A read's `output` is the value itself — `Option<Proxy<Source>>`, `Vec<PriceIdentifier>`, `bool` — not a struct whose only field relabels it (`GetProxyResult { proxy }`). The method name already says what the value is, and a bare value can be piped from one command straight into another that takes it.
 
-Define a result struct only when it has two or more fields. `op.get` is the one exception: its `{ operation }` matches `WriteOperationResult`, so a write's response and a later lookup of the same operation share a shape.
+Give a read's output its own struct only when it has two or more fields. This governs the output itself, not the element types inside it (`Vec<PriceEntry>` is fine). `op.get` is the one exception: its `{ operation }` matches `WriteOperationResult`, so a write's response and a later lookup of the same operation share a shape.
 
-`read_outputs_are_not_single_field_wrappers` in `templar-gateway-catalog` enforces this for every method in the shared read lists (`for_each_read_method!`, `for_each_artifact_read_method!`); `op.get` is registered outside them.
+`read_outputs_are_not_single_field_wrappers` in `templar-gateway-catalog` is a tripwire for the common case, a single-field struct returned directly, across the shared read lists (`op.get` is registered outside them). It does not look inside `Option` or `Vec`; review covers the rest.
 
 ## Write Methods
 
