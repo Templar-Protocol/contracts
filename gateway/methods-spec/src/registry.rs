@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::{
     common::Pagination, contract::ContractKind, primitive::PublicKey, Base64Bytes, NearToken,
+    RegistryVersion,
 };
 
 /// List deployments in a registry.
@@ -66,6 +67,16 @@ pub struct GetVersion {
     pub version_key: String,
 }
 
+/// Get the code hash a registered version reports, served by every registry release.
+///
+/// Unlike `registry.getVersion`, it cannot tell a removed version from a deployable one.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "registry.getVersionCodeHash", output = Option<templar_gateway_types::CryptoHash>)]
+pub struct GetVersionCodeHash {
+    pub registry_id: AccountId,
+    pub version_key: String,
+}
+
 /// Add a deployable version to a registry.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "registry.addVersion")]
@@ -104,6 +115,46 @@ pub struct Deploy {
     #[serde(flatten)]
     pub target: DeployTarget,
     pub init_args: Base64Bytes,
+}
+
+/// The state layout of a registry that predates versioned state, which is what names its
+/// migration. Every such registry reports a stored state version of 0, so the layout follows from
+/// the release it runs and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Migration {
+    /// Releases before 1.1.0.
+    PreGlobalContracts,
+    /// Releases from 1.1.0 until versioned state.
+    WithGlobalContracts,
+}
+
+impl Migration {
+    /// The migration a registry at `version` needs, or `None` once it keeps a state version and
+    /// upgrades itself through `upgrade`.
+    pub fn for_version(version: RegistryVersion) -> Option<Self> {
+        if version.supports_upgrade() {
+            None
+        } else if version.supports_global_contracts() {
+            Some(Self::WithGlobalContracts)
+        } else {
+            Some(Self::PreGlobalContracts)
+        }
+    }
+}
+
+/// Replace the code of a registry that predates versioned state and migrate its state in the same
+/// transaction, signed by the registry account itself.
+///
+/// The deploy and `migrate` share a receipt, so a migration that fails reverts the new code with
+/// it. Refused unless `migration` is the one the registry's reported version needs and `wasm` is a
+/// catalogued registry release with versioned state.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "registry.upgrade")]
+pub struct Upgrade {
+    pub registry_id: AccountId,
+    pub wasm: Base64Bytes,
+    pub migration: Migration,
 }
 
 /// Remove a version from a registry.

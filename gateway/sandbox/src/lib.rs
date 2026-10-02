@@ -139,6 +139,7 @@ pub fn sandbox_config() -> SandboxConfig {
                     min_block_production_delay: duration_json(min_block_ms),
                     max_block_production_delay: duration_json(max_block_ms),
                 },
+                trie_viewer_state_size_limit: TRIE_VIEWER_STATE_SIZE_LIMIT,
             })
             .unwrap_or_else(|error| panic!("sandbox config serializes: {error}")),
         ),
@@ -154,9 +155,13 @@ pub fn sandbox_config() -> SandboxConfig {
     }
 }
 
+/// The default 50 kB refuses `view_state` for any account holding a contract blob.
+const TRIE_VIEWER_STATE_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
+
 #[derive(Serialize)]
 struct AdditionalConfig {
     consensus: ConsensusConfig,
+    trie_viewer_state_size_limit: u64,
 }
 
 #[derive(Serialize)]

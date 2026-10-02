@@ -108,7 +108,7 @@ impl Reporter {
                 Status::Failed { .. } => ("FAIL", Ansi::Red),
                 Status::Skipped { .. } => ("skip", Ansi::Yellow),
             };
-            let detail = truncate(detail_of(&check.status), DETAIL_WIDTH);
+            let detail = truncate(check.status.detail(), DETAIL_WIDTH);
             self.line(&format!(
                 "  {} {:<32} {detail}",
                 self.paint(mark, style),
@@ -188,7 +188,7 @@ impl Reporter {
             .checks
             .iter()
             .filter(|check| matches(&check.status))
-            .map(|check| (check.id.clone(), detail_of(&check.status).to_owned()))
+            .map(|check| (check.id.clone(), check.status.detail().to_owned()))
             .collect();
         if listed.is_empty() {
             return;
@@ -206,6 +206,10 @@ impl Reporter {
 
     pub(crate) fn checks(&self) -> &[Check] {
         &self.checks
+    }
+
+    pub(crate) fn has_failures(&self) -> bool {
+        self.checks.iter().any(|check| check.status.is_failure())
     }
 
     /// The plan, for a human about to authorize it.
@@ -290,13 +294,6 @@ impl Ansi {
             Self::Yellow => "33",
             Self::Dim => "2",
         }
-    }
-}
-
-const fn detail_of(status: &Status) -> &String {
-    match status {
-        Status::Passed { detail } | Status::Failed { detail } => detail,
-        Status::Skipped { reason } => reason,
     }
 }
 

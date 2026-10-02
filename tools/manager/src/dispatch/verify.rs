@@ -78,7 +78,7 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
         checks: &checks,
     })?;
 
-    crate::spec::check::gate(
+    crate::spec::check::gate_unskippable(
         &checks,
         args.market_id.as_str(),
         "this market does not match its spec",

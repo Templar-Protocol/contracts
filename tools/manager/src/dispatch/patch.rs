@@ -22,7 +22,7 @@ use crate::{
         signer::Authorization,
     },
     context::CliContext,
-    dispatch::patch_state::{fetch_complete_state, RawStateEntry, StateSnapshot},
+    dispatch::patch_state::{snapshot_final, RawStateEntry, StateSnapshot},
     report::Reporter,
     spec::{
         check::{gate, Check, Status},
@@ -312,37 +312,17 @@ pub(super) async fn build(
         .await?;
 
     let source = spec.resolve(&source_path)?;
-    let pinned_block = ctx
-        .final_client()?
-        .read(templar_gateway_methods_spec::chain::GetBlock::default())
-        .await?;
-    let block_hash = pinned_block.hash;
-    let state = fetch_complete_state(
-        ctx.network_config(),
+    let state = match snapshot_final(
+        ctx,
         &spec.account_id,
-        block_hash.into(),
         &limits,
+        "patch.state_complete",
+        reporter,
     )
-    .await;
-    let state = match state {
-        Ok(state) => {
-            reporter.record(Check::new(
-                "patch.state_complete",
-                Status::passed(format!(
-                    "complete {} storage entries in {} request(s), accounting for {} bytes at {}",
-                    state.entries.len(),
-                    state.request_count,
-                    state.storage_usage,
-                    state.block_hash
-                )),
-            ));
-            state
-        }
+    .await
+    {
+        Ok(state) => state,
         Err(error) => {
-            reporter.record(Check::new(
-                "patch.state_complete",
-                Status::failed(error.to_string()),
-            ));
             reporter.digest();
             return Err(error);
         }

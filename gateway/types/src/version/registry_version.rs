@@ -17,6 +17,11 @@ impl RegistryVersion {
         self >= (2, 0, 0)
     }
 
+    /// Whether the registry keeps a state version and has the owner-only `upgrade`.
+    pub fn supports_upgrade(self) -> bool {
+        self >= (2, 0, 0)
+    }
+
     pub fn deploy_method_name(self) -> &'static str {
         if self >= (1, 1, 0) {
             "deploy"
