@@ -240,3 +240,52 @@ This is a privileged authorization checklist:
 - Inspect all view before/after values and diffs, including no-expect checks.
 - Verify the apply-time stamp binding and resolved-state re-derivation checks.
 - Authorize only after the complete arbitrary-storage write is understood.
+
+## Upgrading a registry
+
+Registries released before 2.0.0 (`templar-alpha.near` on 0.1.0, `v1.tmplr.near` on 1.0.0,
+`user0.tmplr.near` on 1.1.0) have no `upgrade` method and no stored state version. Their first
+upgrade is one transaction the registry signs itself: deploy the new code, then `migrate` in the
+same receipt, so a failed migration reverts the deploy. Once it lands it cannot be undone, because
+the old code cannot read the migrated layout. From 2.0.0 on, the owner-only `upgrade` method
+replaces this path.
+
+```sh
+tmplrmgr registry upgrade --registry-id <registry> \
+  --network mainnet --signer-id <registry> --sign-with keychain
+```
+
+`--release <version>` picks a catalogued registry release; the newest is the default. The command
+submits nothing unless every check passes, and none can be skipped:
+
+- the deployed code hashes to a catalogued registry release whose NEP-330 version agrees, which
+  fixes the migration — the operator never chooses it;
+- the target WASM is a newer catalogued release with versioned state, verified against its pinned
+  sha256;
+- the signer is the registry, holding a full-access key, with the balance to stake the new code;
+- for a pre-1.1.0 registry, contract state is at most 3 MB. That migration rewrites every stored
+  code blob in one receipt, which may record at most 4 MB of storage proof, and mainnet's deeper
+  trie costs more proof than a sandbox shows. Prune with `registry remove-version` first;
+- the exact planned transaction is replayed against the registry's complete, block-pinned state in
+  a fresh sandbox. The replay must reproduce what mainnet serves, plan the same transaction,
+  succeed within half the attached gas, and leave the registry on the new code at a current state
+  version with its owner, versions, code hashes and deployments unchanged, and its storage moved
+  only by what the migration writes — the views cannot see a lost blob or reserved name, storage
+  can;
+- no name is still reserved by an unfinished deploy, whose finalize callback would otherwise run
+  against the new code (pre-1.1.0's does not exist there);
+- the account — code, keys and every storage entry, including writes not yet final — is byte for
+  byte what was snapshotted, re-read just before submitting, with its balance no lower; and the
+  signer plans the replayed transaction.
+
+After submitting, the same post-conditions are checked on chain. If the submission's outcome never
+comes back, nothing is verified: the transaction may still land, so read the registry's code hash
+and state version before doing anything else. `--print json --public-key <key>` runs every check
+against the key that will sign and prints the planned transaction instead of signing it; the checks
+hold only for the state they read, so sign it straight away or re-run. Like `patch export`, the
+snapshot needs an RPC that pages `view_state` past the stock 50 kB limit, such as FastNEAR's
+(`--rpc-url https://rpc.mainnet.fastnear.com`).
+
+The gateway caches each contract's reported version for up to an hour, so restart long-running
+gateway, relayer and `tmplrmgr` processes after upgrading a registry: a pre-1.1.0 registry's deploy
+method is renamed from `deploy_market` to `deploy`.

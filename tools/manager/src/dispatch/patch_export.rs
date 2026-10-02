@@ -12,9 +12,9 @@ use templar_gateway_methods_spec::chain;
 use crate::{
     commands::patch::Export,
     context::{print_json, CliContext},
-    dispatch::patch_state::fetch_complete_state,
+    dispatch::patch_state::snapshot_final,
     spec::{
-        check::{gate, Check, Status},
+        check::gate_unskippable,
         patch::{ByteExpr, Expectation, PatchCheck, PatchSpec, PatchStorageCheck},
     },
 };
@@ -28,39 +28,23 @@ struct ExportReport {
 
 pub(super) async fn export(ctx: CliContext, args: Export) -> Result<()> {
     let mut reporter = ctx.reporter(&[]);
-    let block = ctx.final_client()?.read(chain::GetBlock::default()).await?;
     let limits = ctx.client.read(chain::GetProtocolLimits).await?;
-    let state = fetch_complete_state(
-        ctx.network_config(),
+    let state = match snapshot_final(
+        &ctx,
         &args.account_id,
-        block.hash.into(),
         &limits,
+        "patch.state_complete",
+        &mut reporter,
     )
-    .await;
-    let state = match state {
-        Ok(state) => {
-            reporter.record(Check::new(
-                "patch.state_complete",
-                Status::passed(format!(
-                    "complete {} storage entries in {} request(s), accounting for {} bytes at {}",
-                    state.entries.len(),
-                    state.request_count,
-                    state.storage_usage,
-                    state.block_hash
-                )),
-            ));
-            state
-        }
+    .await
+    {
+        Ok(state) => state,
         Err(error) => {
-            reporter.record(Check::new(
-                "patch.state_complete",
-                Status::failed(error.to_string()),
-            ));
             reporter.digest();
             return Err(error);
         }
     };
-    gate(
+    gate_unskippable(
         reporter.checks(),
         args.account_id.as_str(),
         "no patch spec was written",

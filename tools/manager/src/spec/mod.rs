@@ -434,6 +434,17 @@ fn into_valid<A: AssetClass + PartialOrd>(
         .with_context(|| format!("invalid `{field}`: maximum must not be below minimum"))
 }
 
+/// Whether `account_id` belongs to the `selected` network, as a check verdict.
+pub(crate) fn network_status(selected: Network, account_id: &AccountId) -> check::Status {
+    match network_for_account(account_id) {
+        Ok(declared) if declared == selected => check::Status::passed(declared.to_string()),
+        Ok(declared) => check::Status::failed(format!(
+            "{account_id} is a {declared} account, but the selected network is {selected}"
+        )),
+        Err(error) => check::Status::failed(error.to_string()),
+    }
+}
+
 pub fn network_for_account(account_id: &AccountId) -> anyhow::Result<Network> {
     match account_id.as_str().rsplit('.').next() {
         Some("near") => Ok(Network::Mainnet),
