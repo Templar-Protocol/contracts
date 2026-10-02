@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-artifacts-dispatch-v0.3.3...templar-gateway-artifacts-dispatch-v0.4.0) - 2026-10-02
+
+### Changed
+
+- *(gateway)* [**breaking**] drop single-field read result wrappers (ENG-772) ([#648](https://github.com/Templar-Protocol/contracts/pull/648))
+
 ## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-artifacts-dispatch-v0.2.2...templar-gateway-artifacts-dispatch-v0.3.0) - 2026-08-24
 
 ### Added
