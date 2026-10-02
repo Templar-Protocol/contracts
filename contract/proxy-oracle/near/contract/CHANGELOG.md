@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-near-contract-v0.4.6...templar-proxy-oracle-near-contract-v0.5.0) - 2026-10-02
+
+### Changed
+
+- *(gateway)* [**breaking**] drop single-field read result wrappers (ENG-772) ([#648](https://github.com/Templar-Protocol/contracts/pull/648))
+
 ## [0.4.4](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-near-contract-v0.4.3...templar-proxy-oracle-near-contract-v0.4.4) - 2026-08-25
 
 ### Added

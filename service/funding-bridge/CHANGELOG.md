@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-funding-bridge-v0.1.8...templar-funding-bridge-v0.2.0) - 2026-10-02
+
+### Changed
+
+- *(gateway)* [**breaking**] drop single-field read result wrappers (ENG-772) ([#648](https://github.com/Templar-Protocol/contracts/pull/648))
+
 ## [0.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-funding-bridge-v0.1.0...templar-funding-bridge-v0.1.1) - 2026-08-03
 
 ### Added
