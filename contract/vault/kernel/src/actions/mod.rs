@@ -749,7 +749,7 @@ fn handle_deposit(
 
     let mut effects = Vec::new();
     #[cfg(any(feature = "action-refresh-fees", test))]
-    if should_refresh_fees_before_deposit(&state, config, now_ns) {
+    if should_refresh_fees_for_value_transfer(&state, config, now_ns) {
         let mut refresh = handle_refresh_fees(state, config, now_ns)?;
         state = refresh.state;
         effects.append(&mut refresh.effects);
@@ -809,16 +809,33 @@ fn handle_deposit(
     Ok(KernelResult::new(state, effects))
 }
 
-#[cfg(any(feature = "action-refresh-fees", test))]
 #[inline]
-fn should_refresh_fees_before_deposit(
+pub fn should_refresh_fees_for_value_transfer(
     state: &VaultState,
     config: &VaultConfig,
     now_ns: TimestampNs,
 ) -> bool {
+    if state.total_shares == 0 || !config.fees.has_active_slot_fees() {
+        return false;
+    }
+    if now_ns > state.fee_anchor.timestamp_ns {
+        return true;
+    }
+    now_ns == state.fee_anchor.timestamp_ns && performance_fee_is_due(state, config)
+}
+
+/// Returns true when a performance fee is accrued against the fee anchor
+/// right now. The evaluation window is the anchor's own timestamp: without a
+/// `max_total_assets_growth_rate` cap any gain over the anchor is
+/// fee-relevant and due immediately. With a cap configured, the
+/// zero-elapsed-time window clamps the fee base back to the anchor, so an
+/// equal-time gain accrues no fee and the prior anchor must be preserved.
+#[inline]
+fn performance_fee_is_due(state: &VaultState, config: &VaultConfig) -> bool {
     state.total_shares > 0
-        && config.fees.has_active_slot_fees()
-        && now_ns > state.fee_anchor.timestamp_ns
+        && !config.fees.performance.fee_wad.is_zero()
+        && config.fees.max_total_assets_growth_rate.is_none()
+        && state.total_assets > state.fee_anchor.total_assets
 }
 
 #[inline]
@@ -1698,7 +1715,7 @@ fn handle_refresh_fees(
     }
 
     // Reject backwards time to prevent fee calculation issues
-    if now_ns <= state.fee_anchor.timestamp_ns {
+    if now_ns < state.fee_anchor.timestamp_ns {
         return Err(KernelError::from(
             InvalidStateCode::FeeRefreshTimestampMustAdvance,
         ));
@@ -1709,6 +1726,17 @@ fn handle_refresh_fees(
     let anchor = state.fee_anchor;
     let mut effects = Vec::new();
 
+    // An equal-timestamp refresh is permitted only when an actual performance
+    // fee is due right now, so a gain booked at the anchor timestamp cannot
+    // bypass fee crystallization via a same-ledger withdrawal or refresh.
+    // When the configured growth-rate cap excludes the equal-time gain from
+    // fee accrual, no fee is chargeable at zero elapsed time and the refresh
+    // is rejected instead of re-anchoring that gain away uncharged.
+    if now_ns == anchor.timestamp_ns && !performance_fee_is_due(&state, config) {
+        return Err(KernelError::from(
+            InvalidStateCode::FeeRefreshTimestampMustAdvance,
+        ));
+    }
     if total_supply > 0 && anchor.is_uninitialized() && cur_total_assets == 0 {
         state.fee_anchor = FeeAccrualAnchor::new(cur_total_assets, now_ns);
         effects.push(KernelEffect::EmitEvent {

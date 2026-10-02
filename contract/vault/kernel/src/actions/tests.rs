@@ -2796,6 +2796,39 @@ fn refresh_fees_mints_performance_fee_shares() {
     ));
     assert_eq!(result.state.total_shares, 1_000 + 34);
 }
+#[test]
+fn refresh_fees_nonzero_anchor_at_one_nanosecond_mints_performance_shares() {
+    let mut state = idle_state(100, 100);
+    state.fee_anchor = FeeAccrualAnchor::new(50, TimestampNs::ZERO);
+    let recipient = addr(0x66);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, recipient),
+        FeeSlot::zero(),
+        None,
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::refresh_fees(TimestampNs::from_nanos(1)),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        result.effects.first(),
+        Some(KernelEffect::MintShares { owner, shares: 5 })
+            if owner == &recipient
+    ));
+    assert_eq!(result.state.total_shares, 105);
+    assert_eq!(result.state.fee_anchor.total_assets, 100);
+    assert_eq!(
+        result.state.fee_anchor.timestamp_ns,
+        TimestampNs::from_nanos(1)
+    );
+}
 
 #[test]
 fn refresh_fees_mints_management_fee_shares() {
@@ -2940,37 +2973,39 @@ fn refresh_fees_no_profit_skips_performance() {
 #[test]
 fn refresh_fees_zero_anchor_excludes_uncapped_donation_growth() {
     use crate::math::wad::YEAR_NS;
-    let mut state = VaultState::with_initial(2_000, 1_000, 2_000, 0, TimestampNs(0));
-    state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
+    for max_rate in [None, Some(Wad::one() / 5)] {
+        let mut state = VaultState::with_initial(2_000, 1_000, 2_000, 0, TimestampNs(0));
+        state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
 
-    let perf_recipient = addr(0xAA);
-    let mut config = test_config();
-    config.fees = FeesSpec::new(
-        FeeSlot::new(Wad::one() / 10, perf_recipient),
-        FeeSlot::zero(),
-        Some(Wad::one() / 5),
-    );
+        let perf_recipient = addr(0xAA);
+        let mut config = test_config();
+        config.fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, perf_recipient),
+            FeeSlot::zero(),
+            max_rate,
+        );
 
-    let result = apply_action(
-        state,
-        &config,
-        None,
-        &addr(0xFF),
-        KernelAction::RefreshFees {
-            now_ns: TimestampNs(YEAR_NS),
-        },
-    )
-    .unwrap();
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &addr(0xFF),
+            KernelAction::RefreshFees {
+                now_ns: TimestampNs(YEAR_NS),
+            },
+        )
+        .unwrap();
 
-    let minted: Vec<_> = result
-        .effects
-        .iter()
-        .filter(|effect| matches!(effect, KernelEffect::MintShares { .. }))
-        .collect();
-    assert!(minted.is_empty());
-    assert_eq!(result.state.total_shares, 1_000);
-    assert_eq!(result.state.fee_anchor.total_assets, 2_000);
-    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(YEAR_NS));
+        let minted: Vec<_> = result
+            .effects
+            .iter()
+            .filter(|effect| matches!(effect, KernelEffect::MintShares { .. }))
+            .collect();
+        assert!(minted.is_empty());
+        assert_eq!(result.state.total_shares, 1_000);
+        assert_eq!(result.state.fee_anchor.total_assets, 2_000);
+        assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(YEAR_NS));
+    }
 }
 
 #[test]

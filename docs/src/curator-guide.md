@@ -92,21 +92,27 @@ can differ.
 
 Operational details:
 
-- **Checkpoint, not all-time high-water mark.** Stellar share-pricing paths
-  (`DepositWithMin`, `RefreshFees`, `ResyncIdleBalance`) first reconcile
-  `idle_assets` against the live asset-token balance, then reset the `fee_anchor`
-  to the reconciled total at the current ledger time. Profit is measured as
-  `current_AUM − anchor_AUM`; if AUM is flat or down, the performance fee is zero.
-  Because the anchor resets after each interaction, a recovery following a loss is
-  chargeable — this is "growth since the last checkpoint", not "above the all-time
-  peak". When fees are active, a deposit first crystallizes elapsed fees before
-  the post-deposit anchor is written, so deposit principal cannot erase accrued
-  fees.
+- **Checkpoint, not all-time high-water mark.** When any fee is configured and ledger time is
+  newer than the stored `fee_anchor`, or equal to it while an uncapped performance fee is
+  actually due against the checkpoint, `DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance`
+  first crystallize the due management and performance fees, then restate any live-balance
+  mismatch as a capital flow: a positive delta raises `fee_anchor.total_assets` by exactly the
+  delta with the timestamp preserved, and a negative delta leaves both checkpoint fields
+  untouched so recovery from a loss is not recorded as profit. Reconciliation itself neither
+  lowers nor advances the checkpoint. A successful deposit rewrites the checkpoint to the
+  post-deposit total at deposit time, and later fee refreshes re-anchor to the then-current
+  recorded total under today's model. The checkpoint is therefore not an all-time high-water
+  mark and can move down when recorded AUM falls. Full per-share high-water-mark and
+  loss-recovery fee handling remains ENG-701 scope.
 - **Growth-rate cap** (`max_total_assets_growth_rate` internally and
   `--max-growth-rate-wad` in the CLI, optional). Caps how fast
   AUM is allowed to count for fee accrual:
   `effective_AUM = min(current, last × (1 + max_rate × dt/yr))`. Relaxing or
   removing this cap is timelocked.
+  Because a capped fee base is clamped back to the checkpoint at zero elapsed time, a gain booked
+  at the checkpoint ledger is not chargeable there. Absent an intervening deposit, whose success
+  rewrites the checkpoint to the post-deposit total by design, that gain stays accrued against the
+  preserved checkpoint and is charged by a later time-advanced refresh.
 - **Refresh order matters.** `curator refresh-fees` reconciles the live idle
   token balance, but it does not query every adapter. Refresh changed markets
   first, then crystallize fees against the resulting aggregate NAV.
@@ -474,9 +480,12 @@ tmplr-soroban-vault curator refresh-fees
 ```
 
 `resync-idle` requires the vault to be idle and is rate-limited by the idle
-resync cooldown, which defaults to 120 seconds. `refresh-fees` reconciles the
-live idle balance and advances the fee checkpoint. Neither call substitutes for
-`refresh-markets` when adapter NAV has changed.
+resync cooldown, which defaults to 120 seconds. Both calls crystallize elapsed
+fees and reconcile the live idle balance under the checkpoint behavior
+described in the fee accounting section above. A `refresh-fees` call that mints
+nothing still re-anchors the checkpoint, but only when no live-balance mismatch
+is detected. Neither call substitutes for `refresh-markets` when adapter NAV
+has changed.
 
 ## Withdrawal operations
 
