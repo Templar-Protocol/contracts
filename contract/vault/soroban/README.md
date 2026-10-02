@@ -137,6 +137,28 @@ the remaining share supply rather than by the already-queued request. This is an
 accounting tradeoff of the queued path and should be considered when setting withdrawal cooldowns,
 allocator response processes, and adapter risk limits.
 
+When either fee slot is active, `request_withdraw` first crystallizes accrued
+management and performance fees before it prices and persists the request's
+`expected_assets` claim, using the same lazy fee refresh that guards atomic exits
+and deposits. The queued claim is therefore always computed against the post-fee
+share supply and conversion rate, so a queued request cannot capture value that
+fee crystallization would assign to fee recipients, even when the request drains
+the requester's entire share balance. Fees that keep accruing after the request
+timestamp are not settled against that fixed claim today: only fee-recipient
+crediting occurs after request time, and settling post-request fees at a
+settlement boundary is the pending ENG-697 epoch-settlement work.
+
+Redemption conversions use the lower of the configured virtual-offset quote and
+the holder's real-asset pro-rata value, while deposit and mint pricing keeps the
+configured virtual basis. Virtual offsets can defend deposits against donation
+attacks, but cannot make queued or atomic exits consume assets that back the
+remaining real shares.
+
+Upgrade migration fails closed when a vault with configured virtual assets has
+pending withdrawals. Operators must settle the existing fixed claims before
+upgrading because their request-time real-asset basis cannot be reconstructed
+safely from current state.
+
 There is no user-callable cancellation path for queued withdrawals in this version. A queued user
 can exit only when the request is executed, skipped by policy as a zero/restricted request, or
 handled by an authorized recovery action such as `AbortWithdrawing` after execution has entered a

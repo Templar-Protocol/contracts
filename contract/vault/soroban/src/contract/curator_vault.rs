@@ -442,24 +442,12 @@ where
         let operator_kernel = self.register_sdk_address(env, operator)?;
         let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
 
-        let mut summary = EffectSummary::new();
-        let fees_active = !self.config.fees.management.fee_wad.is_zero()
-            || !self.config.fees.performance.fee_wad.is_zero();
-        if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns.as_u64() {
-            summary.merge(self.apply_kernel_action(
-                KernelAction::RefreshFees {
-                    now_ns: TimestampNs(now_ns),
-                },
-                now_ns,
-            )?);
-        }
-
         Ok((
             owner_kernel,
             receiver_kernel,
             operator_kernel,
             now_ns,
-            summary,
+            EffectSummary::new(),
         ))
     }
 
