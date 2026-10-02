@@ -7,11 +7,13 @@ use super::*;
 
 use alloc::vec;
 use alloc::vec::Vec as StdVec;
-use soroban_sdk::testutils::{Address as _, Events as _, Ledger, LedgerInfo};
+use soroban_sdk::testutils::{
+    storage::Temporary as _, Address as _, Events as _, Ledger, LedgerInfo,
+};
 use soroban_sdk::{contract, contractimpl, Bytes, Env, Event, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
-    normalized_to_sep40, MAX_CLOCK_DRIFT_SECS, MAX_SOURCE_AGE_SECS,
+    normalized_to_sep40, MAX_CACHE_AGE_SECS, MAX_CLOCK_DRIFT_SECS,
 };
 
 #[derive(Clone)]
@@ -157,6 +159,8 @@ fn proxy_sources(env: &Env, base: &Asset, asset: &Asset) -> (MockSources, Vec<So
         config_sources.push_back(SourceConfig {
             oracle: source_id,
             asset: asset.clone(),
+            max_age_secs: 30,
+            max_clock_drift_secs: 5,
         });
     }
     (sources, config_sources)
@@ -184,8 +188,7 @@ fn setup() -> (Env, SorobanProxyOracleClient<'static>, MockSources, Asset) {
         &ProxyConfig {
             sources,
             min_sources: 3,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
+            max_cache_age_secs: 30,
         },
     );
 
@@ -290,12 +293,12 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
 
     source.set_price(&asset, &5_100_000_000_i128, &69_u64);
     let stale = proxy.refresh(&asset.clone());
-    assert!(matches!(stale, RefreshStatus::ResolveFailed(_)));
+    assert_eq!(stale, RefreshStatus::SourceUnavailable);
     assert_refresh_failure_event(&env, &proxy, &asset);
     assert!(legacy_lastprice(&proxy, &asset).is_none());
     assert!(matches!(
         proxy.get_cached(&asset).unwrap().status,
-        CachedStatus::ResolveFailed(_)
+        CachedStatus::ResolveFailed(SOURCE_UNAVAILABLE_CODE)
     ));
 
     source.clear_price(&asset);
@@ -316,14 +319,15 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
     sources.push_back(SourceConfig {
         oracle: second_source_id,
         asset: asset.clone(),
+        max_age_secs: 300,
+        max_clock_drift_secs: 60,
     });
     proxy.set_proxy(
         &asset,
         &ProxyConfig {
             sources,
             min_sources: 4,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
+            max_cache_age_secs: 30,
         },
     );
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
@@ -340,8 +344,7 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
         &ProxyConfig {
             sources: wrong_base_sources,
             min_sources: 3,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
+            max_cache_age_secs: 30,
         },
     );
     let base_mismatch = proxy.refresh(&asset.clone());
@@ -350,20 +353,49 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
 }
 
 #[test]
-fn cached_read_requires_fresh_cache_and_source_timestamps() {
-    let accepted = |updated_at, timestamp| CachedProxyPrice {
-        updated_at,
-        status: CachedStatus::Accepted(NormalizedPrice {
-            mantissa: 5_000_000_000,
-            expo: -8,
-            timestamp,
-        }),
-    };
+fn refresh_persists_the_minimum_admitted_source_deadline() {
+    let (env, proxy, source, asset) = setup();
+    let mut config = proxy.get_proxy(&asset).unwrap();
+    config.max_cache_age_secs = 50;
+    for (index, max_age_secs) in [(0_u32, 10_u64), (1, 60), (2, 100)] {
+        let mut source_config = config.sources.get(index).unwrap();
+        source_config.max_age_secs = max_age_secs;
+        config.sources.set(index, source_config);
+    }
+    proxy.set_proxy(&asset, &config);
+    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
 
-    assert!(cached_accepted_no_older_than(&accepted(70, 100), 30, 100).is_some());
-    assert!(cached_accepted_no_older_than(&accepted(70, 100), 30, 101).is_none());
-    assert!(cached_accepted_no_older_than(&accepted(100, 70), 30, 100).is_some());
-    assert!(cached_accepted_no_older_than(&accepted(100, 70), 30, 101).is_none());
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+    let cached = proxy.get_cached(&asset).unwrap();
+    let CachedStatus::Accepted(accepted) = cached.status else {
+        panic!("expected accepted cache");
+    };
+    assert_eq!(accepted.valid_until, 110);
+
+    set_ledger(&env, 110);
+    assert!(legacy_lastprice(&proxy, &asset).is_some());
+    set_ledger(&env, 111);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
+}
+
+#[test]
+fn refresh_uses_cache_deadline_when_all_sources_are_longer_lived() {
+    let (env, proxy, source, asset) = setup();
+    let mut config = proxy.get_proxy(&asset).unwrap();
+    config.max_cache_age_secs = 50;
+    for index in 0..config.sources.len() {
+        let mut source_config = config.sources.get(index).unwrap();
+        source_config.max_age_secs = 200;
+        config.sources.set(index, source_config);
+    }
+    proxy.set_proxy(&asset, &config);
+    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
+
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+    set_ledger(&env, 150);
+    assert!(legacy_lastprice(&proxy, &asset).is_some());
+    set_ledger(&env, 151);
+    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
@@ -554,6 +586,7 @@ fn hal_21_rearm_delay_arms_at_execution_time() {
 #[test]
 fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     let (env, proxy, source, asset) = setup();
+
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.refresh(&asset.clone());
     assert!(proxy.get_cached(&asset).is_some());
@@ -564,7 +597,7 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     assert!(legacy_lastprice(&proxy, &asset).is_some());
 
     let mut changed = configured;
-    changed.max_age_secs = Some(31);
+    changed.max_cache_age_secs = 31;
     proxy.set_proxy(&asset, &changed);
     assert!(proxy.get_cached(&asset).is_none());
     assert_eq!(legacy_lastprice(&proxy, &asset), None);
@@ -589,6 +622,8 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
         SourceConfig {
             oracle: first_source.oracle,
             asset: Asset::Other(Symbol::new(&env, "BTC2")),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         },
     );
     proxy.set_proxy(&asset, &rotated);
@@ -617,6 +652,8 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     sources.push_back(SourceConfig {
         oracle: Address::generate(&unauth_env),
         asset: unauthorized_asset.clone(),
+        max_age_secs: 300,
+        max_clock_drift_secs: 60,
     });
 
     assert!(unauth_proxy
@@ -625,11 +662,39 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
             &ProxyConfig {
                 sources,
                 min_sources: 1,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
+                max_cache_age_secs: 30,
             },
         )
         .is_err());
+}
+#[test]
+fn policy_only_proxy_change_retains_tripped_breakers() {
+    let (env, proxy, source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &2);
+    proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
+    );
+    source.set_price(&asset, &100_i128, &100_u64);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+    set_ledger(&env, 101);
+    source.set_price(&asset, &200_i128, &101_u64);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Blocked(_)));
+    let tripped = stored_breakers(&env, &proxy.address, &asset);
+
+    let mut policy_only = proxy.get_proxy(&asset).unwrap();
+    policy_only.max_cache_age_secs = 31;
+    proxy.set_proxy(&asset, &policy_only);
+
+    assert_eq!(stored_breakers(&env, &proxy.address, &asset), tripped);
+    assert!(proxy.get_breaker_set_view(&asset).unwrap().is_blocking);
+    assert!(proxy.get_cached(&asset).is_none());
+    assert_eq!(
+        legacy_prices(&env, &proxy, &asset, MAX_HISTORY_RECORDS),
+        None
+    );
 }
 
 #[test]
@@ -705,8 +770,7 @@ fn event_proxy_set_topics_payload_are_exact() {
         &ProxyConfig {
             sources,
             min_sources: 3,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
+            max_cache_age_secs: 30,
         },
     );
 
@@ -873,6 +937,58 @@ fn event_proxy_breaker_governance_and_ttl_topics_payloads_are_exact() {
 }
 
 #[test]
+fn pending_owner_view_is_permissionless_deadline_aware_and_read_only() {
+    let (env, proxy, _sources, _asset) = setup();
+    env.mock_auths(&[]);
+    assert!(proxy.get_pending_owner().is_none());
+
+    env.mock_all_auths();
+    let pending_owner = Address::generate(&env);
+    let live_until_ledger = env.ledger().max_live_until_ledger();
+    proxy.transfer_ownership(&pending_owner, &live_until_ledger);
+    let ttl_before = env.as_contract(&proxy.address, || {
+        env.storage()
+            .temporary()
+            .get_ttl(&OwnableStorageKey::PendingOwner)
+    });
+
+    env.mock_auths(&[]);
+    let pending = proxy.get_pending_owner().expect("live pending owner");
+    assert_eq!(pending.address, pending_owner);
+    assert_eq!(pending.live_until_ledger, live_until_ledger);
+    let ttl_after = env.as_contract(&proxy.address, || {
+        env.storage()
+            .temporary()
+            .get_ttl(&OwnableStorageKey::PendingOwner)
+    });
+    assert_eq!(ttl_after, ttl_before);
+
+    env.ledger().set_sequence_number(live_until_ledger);
+    assert!(proxy.get_pending_owner().is_some());
+    env.ledger().set_sequence_number(
+        live_until_ledger
+            .checked_add(1)
+            .expect("test ledger deadline is below u32::MAX"),
+    );
+    assert!(proxy.get_pending_owner().is_none());
+}
+
+#[test]
+fn accepting_ownership_clears_pending_owner_view() {
+    let (env, proxy, _sources, _asset) = setup();
+    let pending_owner = Address::generate(&env);
+    let live_until_ledger = env.ledger().max_live_until_ledger();
+    proxy.transfer_ownership(&pending_owner, &live_until_ledger);
+    assert!(proxy.get_pending_owner().is_some());
+
+    proxy.accept_ownership();
+
+    assert_eq!(proxy.get_owner(), Some(pending_owner));
+    env.mock_auths(&[]);
+    assert!(proxy.get_pending_owner().is_none());
+}
+
+#[test]
 fn refresh_updates_sep40_lastprice() {
     let (_env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
@@ -883,22 +999,6 @@ fn refresh_updates_sep40_lastprice() {
     let price = legacy_lastprice(&proxy, &asset).unwrap();
     assert_eq!(price.price, 5_000_000_000);
     assert_eq!(price.timestamp, 100);
-}
-
-#[test]
-fn lastprice_fails_closed_when_cache_is_stale() {
-    let (env, proxy, source, asset) = setup();
-    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.refresh(&asset.clone());
-
-    env.ledger().set(LedgerInfo {
-        timestamp: 131,
-        protocol_version: 25,
-        sequence_number: 101,
-        ..Default::default()
-    });
-
-    assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
 #[test]
@@ -1056,30 +1156,76 @@ fn one_manipulated_source_cannot_move_the_median() {
 }
 
 #[test]
-fn same_timestamp_refresh_preserves_served_history_price() {
+fn nonadvancing_candidate_preserves_matching_live_cache_proof() {
     let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     assert!(matches!(
         proxy.refresh(&asset.clone()),
         RefreshStatus::Accepted(_)
     ));
+    let before = proxy.get_cached(&asset).unwrap();
+    set_ledger(&env, 105);
     source.set_price(&asset, &5_100_000_000_i128, &100_u64);
     assert!(matches!(
         proxy.refresh(&asset.clone()),
         RefreshStatus::Accepted(_)
     ));
+    let after = proxy.get_cached(&asset).unwrap();
+    let (CachedStatus::Accepted(before), CachedStatus::Accepted(after)) =
+        (before.status, after.status)
+    else {
+        panic!("expected accepted cache proof");
+    };
+    assert_eq!(after.price, before.price);
+    assert_eq!(after.valid_until, before.valid_until);
+    assert_eq!(after.valid_until, 130);
+    assert_eq!(after.price.mantissa, 5_000_000_000);
+    assert_eq!(after.price.timestamp, 100);
 
     let prices = legacy_prices(&env, &proxy, &asset, 2).unwrap();
     assert_eq!(prices.len(), 1);
     assert_eq!(prices.get(0).unwrap().price, 5_000_000_000);
     assert_eq!(
-        legacy_price(&proxy, &asset, 100).unwrap().price,
-        5_000_000_000
-    );
-    assert_eq!(
         legacy_lastprice(&proxy, &asset).unwrap().price,
         5_000_000_000
     );
+}
+
+#[test]
+fn nonadvancing_candidate_without_live_matching_proof_fails_closed() {
+    let (env, proxy, source, asset) = setup();
+    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
+    assert!(matches!(
+        proxy.refresh(&asset.clone()),
+        RefreshStatus::Accepted(_)
+    ));
+    env.as_contract(&proxy.address, || {
+        env.storage().persistent().set(
+            &DataKey::Cache(asset.clone()),
+            &CachedProxyPrice {
+                updated_at: 100,
+                status: CachedStatus::Accepted(AcceptedPrice {
+                    price: NormalizedPrice {
+                        mantissa: 5_000_000_000,
+                        expo: -8,
+                        timestamp: 100,
+                    },
+                    valid_until: 104,
+                }),
+            },
+        );
+    });
+    set_ledger(&env, 105);
+    source.set_price(&asset, &5_100_000_000_i128, &100_u64);
+
+    assert_eq!(
+        proxy.refresh(&asset),
+        RefreshStatus::ResolveFailed(NON_ADVANCING_WITHOUT_PROOF_CODE)
+    );
+    assert!(matches!(
+        proxy.get_cached(&asset).unwrap().status,
+        CachedStatus::ResolveFailed(NON_ADVANCING_WITHOUT_PROOF_CODE)
+    ));
 }
 
 #[test]
@@ -1235,8 +1381,7 @@ fn refresh_rejects_source_with_wrong_base_asset() {
         &ProxyConfig {
             sources,
             min_sources: 3,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
+            max_cache_age_secs: 30,
         },
     );
 
@@ -1253,7 +1398,7 @@ fn refresh_rejects_future_source_beyond_clock_drift() {
 
     let result = proxy.refresh(&asset.clone());
 
-    assert!(matches!(result, RefreshStatus::ResolveFailed(1)));
+    assert_eq!(result, RefreshStatus::SourceUnavailable);
     assert_eq!(legacy_lastprice(&proxy, &asset), None);
 }
 
@@ -1271,6 +1416,8 @@ fn set_proxy_rejects_unreachable_min_sources() {
         sources.push_back(SourceConfig {
             oracle: Address::generate(&env),
             asset: asset.clone(),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         });
     }
 
@@ -1280,8 +1427,7 @@ fn set_proxy_rejects_unreachable_min_sources() {
             &ProxyConfig {
                 sources: sources.clone(),
                 min_sources: 0,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
+                max_cache_age_secs: 30,
             },
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1292,8 +1438,7 @@ fn set_proxy_rejects_unreachable_min_sources() {
             &ProxyConfig {
                 sources,
                 min_sources: 4,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
+                max_cache_age_secs: 30,
             },
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1328,6 +1473,8 @@ fn invalid_config_duplicate_source_oracle_asset_pair() {
         sources.push_back(SourceConfig {
             oracle: source_id,
             asset: asset.clone(),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         });
     }
 
@@ -1337,8 +1484,7 @@ fn invalid_config_duplicate_source_oracle_asset_pair() {
             &ProxyConfig {
                 sources,
                 min_sources: 3,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
+                max_cache_age_secs: 30,
             },
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1373,6 +1519,8 @@ fn invalid_config_duplicate_oracle_is_rejected_even_for_distinct_assets() {
         sources.push_back(SourceConfig {
             oracle,
             asset: source_asset,
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         });
     }
 
@@ -1382,8 +1530,7 @@ fn invalid_config_duplicate_oracle_is_rejected_even_for_distinct_assets() {
             &ProxyConfig {
                 sources,
                 min_sources: 3,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
+                max_cache_age_secs: 30,
             },
         ),
         Err(Ok(ContractError::InvalidInput))
@@ -1404,6 +1551,8 @@ fn assert_set_proxy_rejected(num_sources: u32, min_sources: u32, expected: Contr
         sources.push_back(SourceConfig {
             oracle: Address::generate(&env),
             asset: asset.clone(),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         });
     }
     assert_eq!(
@@ -1412,8 +1561,7 @@ fn assert_set_proxy_rejected(num_sources: u32, min_sources: u32, expected: Contr
             &ProxyConfig {
                 sources,
                 min_sources,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
+                max_cache_age_secs: 30,
             },
         ),
         Err(Ok(expected))
@@ -1424,14 +1572,15 @@ fn assert_set_proxy_rejected(num_sources: u32, min_sources: u32, expected: Contr
 fn invalid_config_freshness_bounds_are_capped() {
     let (_env, proxy, _source, asset) = setup();
     let mut config = proxy.get_proxy(&asset).unwrap();
-    config.max_age_secs = Some(MAX_SOURCE_AGE_SECS + 1);
+    config.max_cache_age_secs = MAX_CACHE_AGE_SECS + 1;
     assert_eq!(
         proxy.try_set_proxy(&asset, &config),
         Err(Ok(ContractError::InvalidInput))
     );
-
-    config.max_age_secs = Some(MAX_SOURCE_AGE_SECS);
-    config.max_clock_drift_secs = Some(MAX_CLOCK_DRIFT_SECS + 1);
+    config.max_cache_age_secs = MAX_CACHE_AGE_SECS;
+    let mut source = config.sources.get(0).unwrap();
+    source.max_clock_drift_secs = MAX_CLOCK_DRIFT_SECS + 1;
+    config.sources.set(0, source);
     assert_eq!(
         proxy.try_set_proxy(&asset, &config),
         Err(Ok(ContractError::InvalidInput))
@@ -1458,7 +1607,7 @@ fn invalid_proxy_config_is_atomic_and_emits_nothing() {
     let cached = legacy_lastprice(&proxy, &asset);
     let events = contract_events(&env, &proxy.address);
     let mut invalid = configured.clone();
-    invalid.max_clock_drift_secs = None;
+    invalid.max_cache_age_secs = 0;
 
     assert_eq!(
         proxy.try_set_proxy(&asset, &invalid),
@@ -1491,13 +1640,14 @@ fn registry_cap_allows_reconfiguration_and_slot_reuse() {
             sources.push_back(SourceConfig {
                 oracle: source.oracle,
                 asset: asset.clone(),
+                max_age_secs: 300,
+                max_clock_drift_secs: 60,
             });
         }
         ProxyConfig {
             sources,
             min_sources: template.min_sources,
-            max_age_secs: template.max_age_secs,
-            max_clock_drift_secs: template.max_clock_drift_secs,
+            max_cache_age_secs: template.max_cache_age_secs,
         }
     };
 
@@ -1774,32 +1924,6 @@ fn cumulative_breaker_rejects_stale_cache_baseline() {
 }
 
 #[test]
-fn legacy_proxy_without_freshness_bounds_adds_non_cumulative_breakers() {
-    let (env, proxy, _source, asset) = setup();
-    proxy.configure_breakers(&asset, &0, &2);
-    env.as_contract(&proxy.address, || {
-        let mut config = env
-            .storage()
-            .persistent()
-            .get::<_, ProxyConfig>(&DataKey::Proxy(asset.clone()))
-            .unwrap();
-        config.max_age_secs = None;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Proxy(asset.clone()), &config);
-    });
-
-    assert!(proxy
-        .try_add_breaker(
-            &asset,
-            &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-                max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
-            }),
-        )
-        .is_ok());
-}
-
-#[test]
 fn inert_breaker_zero_history() {
     let (_env, proxy, _source, asset) = setup();
 
@@ -1937,18 +2061,6 @@ fn missing_config_lastprice_fails_closed_on_missing_proxy_config() {
 }
 
 #[test]
-fn missing_freshness_bounds_are_rejected() {
-    let (_env, proxy, _source, asset) = setup();
-    let mut config = proxy.get_proxy(&asset).unwrap();
-    config.max_age_secs = None;
-
-    assert_eq!(
-        proxy.try_set_proxy(&asset, &config),
-        Err(Ok(ContractError::InvalidInput))
-    );
-}
-
-#[test]
 fn missing_config_source_base_returns_none() {
     let (env, proxy, _source, _asset) = setup();
     env.as_contract(&proxy.address, || {
@@ -1990,6 +2102,8 @@ fn direct_governed_mutation_requires_governance_auth() {
     sources.push_back(SourceConfig {
         oracle: Address::generate(&env),
         asset: asset.clone(),
+        max_age_secs: 300,
+        max_clock_drift_secs: 60,
     });
 
     let result = proxy.try_set_proxy(
@@ -1997,8 +2111,7 @@ fn direct_governed_mutation_requires_governance_auth() {
         &ProxyConfig {
             sources,
             min_sources: 1,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
+            max_cache_age_secs: 30,
         },
     );
 

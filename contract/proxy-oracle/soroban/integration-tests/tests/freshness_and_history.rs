@@ -125,8 +125,7 @@ fn freshness_without_max_age_is_rejected() {
         ProxyConfig {
             sources: b.source_configs(&b.asset_btc),
             min_sources: 3,
-            max_age_secs: None,
-            max_clock_drift_secs: Some(60),
+            max_cache_age_secs: 0,
         },
     );
 

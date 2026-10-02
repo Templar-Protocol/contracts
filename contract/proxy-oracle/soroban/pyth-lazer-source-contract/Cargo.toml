@@ -1,10 +1,10 @@
 [package]
-name = "templar-proxy-oracle-soroban-sep40-adapter-contract"
+name = "templar-proxy-oracle-soroban-pyth-lazer-source-contract"
 license.workspace = true
 repository.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-version = "0.1.2"
+version = "0.1.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -15,15 +15,16 @@ default = []
 testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
+pyth-lazer-stellar-sdk.workspace = true
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 stellar-access = "0.7.1"
 stellar-macros = "0.7.1"
 templar-proxy-oracle-soroban-common = { path = "../common", features = ["owner-upgrade"] }
 
 [dev-dependencies]
+hex-literal.workspace = true
+rstest.workspace = true
 soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
-templar-proxy-oracle-soroban-sep40-adapter-contract = { path = ".", features = ["testutils"] }
-templar-proxy-oracle-soroban-contract = { path = "../contract", features = ["testutils"] }
 
 [lints]
 workspace = true

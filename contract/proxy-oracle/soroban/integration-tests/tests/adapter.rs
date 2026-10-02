@@ -13,25 +13,6 @@ use soroban_sdk::{Address, BytesN};
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 
 #[test]
-fn owner_can_update_decimals_and_preserve_immutable_metadata() {
-    let b = Bootstrap::new();
-    let base = b.adapter.base();
-    let resolution = b.adapter.resolution();
-    b.adapter.set_decimals(&4_u32);
-
-    assert_eq!(b.adapter.decimals(), 4);
-    assert_eq!(b.adapter.resolution(), resolution);
-    assert_eq!(b.adapter.base(), base);
-    assert_eq!(b.adapter.config().unwrap().decimals, 4);
-}
-
-#[test]
-fn decimals_above_18_are_rejected() {
-    let b = Bootstrap::new();
-    assert!(b.adapter.try_set_decimals(&19_u32).is_err());
-}
-
-#[test]
 fn adapter_upgrade_with_zero_hash_is_rejected() {
     let b = Bootstrap::new();
     let zero = BytesN::<32>::from_array(&b.env, &[0_u8; 32]);

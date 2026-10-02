@@ -58,8 +58,7 @@ fn add_feed(b: &Bootstrap, asset: &Asset) {
             ProxyConfig {
                 sources: b.source_configs(asset),
                 min_sources: 3,
-                max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                max_cache_age_secs: 300,
             },
         ),
     );
@@ -195,6 +194,8 @@ fn hostile_source_cannot_abort_a_separate_asset_refresh() {
         SourceConfig {
             oracle: hostile_oracle,
             asset: eth.clone(),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         },
     );
     b.submit_and_execute(
@@ -204,8 +205,7 @@ fn hostile_source_cannot_abort_a_separate_asset_refresh() {
             ProxyConfig {
                 sources,
                 min_sources: 3,
-                max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                max_cache_age_secs: 300,
             },
         ),
     );

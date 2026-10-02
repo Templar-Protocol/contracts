@@ -1,17 +1,34 @@
 # Soroban Proxy Oracle
 
-Aggregates external SEP-40 price feeds into a normalized, exponent-form cache. A companion `Sep40Adapter` contract re-exposes the cached prices as SEP-40 `PriceFeedTrait` for downstream consumers at per-adapter `decimals` / `resolution` / `base`.
+Aggregates external SEP-40 price feeds into a normalized, exponent-form cache. A companion `Sep40Adapter` contract re-exposes the cached prices as SEP-40 `PriceFeedTrait` for downstream consumers at per-adapter `decimals` / `resolution` / `base`. `PythLazerSource` turns Pyth Lazer's stateless on-chain verifier into a SEP-40 source the runtime can pull, and `ProxyOracleBatcher` fans the permissionless `refresh` / `extend_ttl` calls across assets so a keeper needs one transaction per sweep.
 
 The runtime is **not** itself a SEP-40 contract. It exposes:
 
-- `refresh(asset)` — pull one asset's source prices, aggregate through `templar-proxy-oracle-kernel`, apply freshness + breakers, and write the resulting status to its cache. A failed or blocked refresh replaces an accepted cache, so readers fail closed. A candidate with a non-advancing publication timestamp is still evaluated by breakers; if accepted, the cache retains the latest source-time aggregate and `RefreshEvaluated` records the candidate when it differs. The only path that performs source IO.
-- `aggregated_latest(asset) -> Option<NormalizedPrice>` — the most recently accepted source-time aggregate `{ mantissa, expo, timestamp }`, or `None` if not accepted or stale.
-- `aggregated_history(asset, records)` — the last N accepted aggregates with strictly increasing publication timestamps, or `None` while a manual or enforced automatic breaker blocks the asset. It is a monotonic source-time record, not a time-bucket view of `aggregated_latest`.
-- Introspection: `registered_assets`, `source_base`, `get_proxy`, `get_cached`, `get_breaker_set_view`, `get_owner`. `get_breaker_set_view` reports the live, semantically valid breaker configuration. Named to avoid colliding with SEP-40's `assets()` / `base()`: `source_base` is the validation invariant every source must report against; `registered_assets` enumerates assets with a proxy config.
+- `refresh(asset)` — pull one asset's source prices, aggregate through
+  `templar-proxy-oracle-kernel`, apply freshness + breakers, and write the
+  resulting status to its cache. The accepted cache persists a `valid_until`
+  equal to the earliest admitted-source deadline or cache-age deadline. Equal
+  non-advancing observations may refresh that proof. A different
+  non-advancing observation can serve the prior price only while its original
+  proof remains live and never extends it; otherwise refresh returns
+  `ResolveFailed(7)`. Failed and blocked refreshes replace an accepted cache.
+  This is the only source-IO path.
+- `aggregated_latest(asset) -> Option<NormalizedPrice>` — the most recently
+  accepted source-time aggregate `{ mantissa, expo, timestamp }`, or `None`
+  after its persisted acceptance deadline or any terminal cache status. Later
+  policy changes cannot resurrect an expired proof.
+- `aggregated_history(asset, records)` — the last N accepted aggregates with
+  strictly increasing publication timestamps, or `None` while a manual or
+  enforced automatic breaker blocks the asset. It is a monotonic source-time
+  record, not a time-bucket view of `aggregated_latest`.
+- Introspection: `registered_assets`, `source_base`, `get_proxy`, `get_cached`,
+  `get_breaker_set_view`, `get_owner`.
 
-Reads fail closed: `aggregated_latest` and adapter `lastprice` return `None` unless the latest cached status is accepted and still fresh. `aggregated_history` and adapter `price` / `prices` return `None` while the asset is blocked but otherwise retain historical records independent of freshness.
+Any changed proxy policy clears cache and accepted history. Freshness/cache-only
+changes retain breaker state; changing the ordered `(oracle, asset)` pairs or
+`min_sources` also clears breakers. Reads are storage-only and fail closed.
 
-RedStone enters through RedStone's own Stellar SEP-40 wrapper contracts; this proxy does not verify RedStone payloads.
+RedStone enters through its `RedStoneSep40` adapter (`CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF` on mainnet, assets keyed by SAC address); its published per-feed contracts are Chainlink-shaped, not SEP-40, and cannot be sources. Pyth Lazer enters through `PythLazerSource`. This proxy verifies no oracle payloads itself.
 
 ## Governance
 
@@ -27,33 +44,91 @@ The proposal state machine is shared with NEAR via the `no_std` `templar-proxy-o
 
 ## Sep40Adapter
 
-Each adapter is independently `Ownable`, binds one immutable
-`(parent_oracle, asset, base, resolution)` tuple, and requires the parent's
-`source_base` to equal its base at construction and before every price read. To
-repoint or relabel a feed, deploy a new adapter. Owner entrypoints:
+Each adapter is independently `Ownable` and binds one immutable
+`(parent_oracle, asset, decimals, resolution, base)` tuple. It requires the
+parent's `source_base` to equal its base at construction and before every price
+read. Repointing a feed, relabeling it, or changing output precision requires a
+new adapter. Owner entrypoints:
 
-- `set_decimals(decimals)` — updates only the output precision and emits `DecimalsUpdated`; `decimals ≤ 18`.
-- `decommission()` — permanently disables `price`, `prices`, and `lastprice`; call it before `renounce_ownership`.
-- `extend_ttl()` — permissionless instance-storage maintenance for adapter config.
-- `config() -> Option<Config>` — the full `{ parent_oracle, asset, decimals, resolution, base }`.
-- `upgrade(new_wasm_hash, operator)` — owner-gated wasm swap; emits `AdapterUpgraded`.
+- `decommission()` — permanently disables `price`, `prices`, and `lastprice`;
+  call it before `renounce_ownership`.
+- `upgrade(new_wasm_hash, operator)` — owner-gated wasm swap; emits
+  `AdapterUpgraded`.
+
+`extend_ttl()` is permissionless instance-storage maintenance. `config()` views
+the immutable `{ parent_oracle, asset, decimals, resolution, base }`.
 
 `PriceFeedTrait` projects parent prices to the adapter precision and resolution
 buckets; unrepresentable values and a parent-base mismatch fail closed. SEP-40
 metadata (`contractmeta!(key = "sep", val = "40")`) is declared here, not on the
-runtime. Official adapters are listed in the release manifest.
+runtime. The release manifest binds the adapter Wasm, not deployed feed addresses.
+
+## PythLazerSource
+
+Pyth's Lazer contract on Stellar is a stateless verifier: `verify_update(Bytes) -> Bytes`
+proves a payload was signed by a trusted signer and returns it, with no replay protection,
+ordering, or freshness check. `PythLazerSource` owns those controls and serves
+the result as SEP-40, keyed by the Lazer feed id itself: feed 23 is
+`Asset::Other("23")`. Which feed backs which proxy asset is decided in the
+runtime's governed `SetProxy`, not by this source.
+
+The owner-maintained `supported_feed_ids` registry admits at most 32 active
+feeds, keeping a full registry replacement inside Soroban's ledger-write limit,
+and makes SEP-40 discovery truthful. Removing a feed deletes its stored
+price. Replay watermarks remain allocated across feed removals within an epoch
+(bounded at 256). Owner-gated `set_verification_config` and
+`reset_verification_epoch` deliberately clear active prices and start a new
+replay domain; keepers must repopulate it with freshly verified updates. The
+verifier, channel, base, and output decimals are constructor configuration;
+decimals/base are not mutable.
+
+- `update_price_feeds(payload)` — permissionless. Verifies through the
+  configured verifier, requires the configured channel, then stores only
+  admitted feeds whose own update time is inside the freshness window and
+  strictly advances. Feeds without a positive price, exponent, or update
+  timestamp are skipped. Returns the number stored; `0` is not success evidence
+  for a keeper push.
+- `lastprice(asset)` rescales stored `(mantissa, expo)` to the constructor
+  decimals and keeps second-precision publish time. `resolution` is 1;
+  `price` / `prices` serve only the latest record.
+- Owner entrypoints: `set_freshness`, `set_supported_feed_ids`,
+  `set_verification_config`, `reset_verification_epoch`, and
+  `upgrade(new_wasm_hash, operator)`.
+- Permissionless `extend_ttl()` renews the instance. Views: `config`,
+  `supported_feed_ids`, `verification_epoch`, and `stored_price(feed_id)`.
+
+The payload parser and verifier client are Pyth's own `pyth-lazer-stellar-sdk` 0.3.0, vendored
+into the `Templar-Protocol/pyth-lazer-public` fork on soroban-sdk 25 (crates.io 0.3.0 requires
+soroban-sdk 26.1 and therefore Rust ≥ 1.91). Swap to the crates.io release once the workspace
+toolchain moves.
+
+## ProxyOracleBatcher
+
+Stateless, ownerless. `refresh_many(oracle, assets)`,
+`extend_ttl_many(oracle, assets)` and `extend_ttl_contracts(contracts)` forward
+the runtime's and sibling contracts' permissionless maintenance calls inside a
+single Soroban operation. Every vector is capped at 64 before dispatch;
+oversized calls trap with contract error 1 and the ledger atomically applies no
+prefix effects. A target trap likewise reverts the operation, while status-level
+and caught TTL failures remain visible in the returned vectors. The TTL paths
+renew target instance and code entries.
 
 ## Operational notes
 
 - Configure 3–16 sources; `min_sources` must be in `[3, sources.len()]`. Invalid quorum is rejected.
 - `refresh(asset)` is the only source-IO path; all reads are storage-only.
-- Manage breakers with the governed `add_breaker` / `remove_breaker` / `rearm` / `set_enforced`. Inert params and insufficient history are rejected; `MonotonicRun` requires zero sampling, while a `CumulativeChange` baseline is intentionally rebased only by remove → successful refresh → add. Changing an asset's source set or quorum clears its breaker set, cache, and history; configure and add breakers again after the source migration. Every persisted breaker set is semantically valid. An invalid stored set is unreachable; recover from genuine corruption with `remove_proxy` → `set_proxy`.
+- Manage breakers with the governed `add_breaker` / `remove_breaker` / `rearm` / `set_enforced`. Inert params and insufficient history are rejected; `MonotonicRun` requires zero sampling, while a `CumulativeChange` baseline is intentionally rebased only by remove → successful refresh → add. Changing an asset's ordered `(oracle, asset)` pairs or `min_sources` clears its breaker set, cache, and history; configure and add breakers again after the source migration. Every persisted breaker set is semantically valid. An invalid stored set is unreachable; recover from genuine corruption with `remove_proxy` → `set_proxy`.
 - Manual-trip metadata is event-only, capped at 1024 bytes, not stored in breaker state.
 - Schedule an ops/keeper job for Soroban TTL maintenance; do not rely on curators to remember this manually.
 - Runtime `extend_ttl(asset)` is permissionless for registered assets and renews every surviving persistent `Proxy`, `Breakers`, `Cache`, and `History` entry.
 - Governance `extend_ttl()` is permissionless and renews governance instance state plus active persistent proposal bodies.
 - SEP-40 adapter `extend_ttl()` is permissionless and renews adapter instance config. Adapter reads also refresh instance TTL when the remaining TTL is below threshold.
-- Keep optimized WASMs within budget: runtime & governance ≤ 128 KiB, adapter ≤ 32 KiB. Recheck after ABI/event changes.
+- Keep optimized WASMs within budget: runtime & governance ≤ 128 KiB; adapter,
+  Lazer source, and batcher ≤ 32 KiB. `size-check` is a developer gate only;
+  release evidence comes from a clean-source five-artifact `release-gate`.
+- The XLM testnet rehearsal pins Reflector, RedStone, the Pyth verifier, Lazer
+  feed 23, all policy values, provider code hashes, and the exact release
+  snapshot in its checkpoint. Resume refuses drift.
 
 ## Known limits
 
@@ -62,15 +137,40 @@ runtime. Official adapters are listed in the release manifest.
 - Not an in-place migration target for earlier prototype storage layouts — redeploy/reinitialize or ship an explicit migration first.
 - **OZ `upgradeable` not adopted**: crates.io v0.7.1 needs Rust ≥ 1.87 (`is_multiple_of`) but the toolchain pins 1.86; the 1.86-compat fork is locked to soroban-sdk 23.x, not the 25.0.1 used here. The hand-rolled `upgrade` is the stopgap until the toolchain bumps or the fork rebases — don't re-investigate without one of those.
 
-## Verification
+## Verification and release
 
 ```bash
-cargo test -p templar-proxy-oracle-kernel --features serde --lib
-cargo test -p templar-proxy-oracle-soroban-contract --features testutils
-cargo test -p templar-proxy-oracle-soroban-governance-contract --features testutils
-cargo test -p templar-proxy-oracle-soroban-sep40-adapter-contract --features testutils
-just -f contract/proxy-oracle/soroban/justfile build     # unoptimized WASMs
-just -f contract/proxy-oracle/soroban/justfile optimize   # optimized WASMs
+JF=contract/proxy-oracle/soroban/justfile
+just -f $JF test
+just -f $JF test-integration
+just -f $JF test-scripts
+just -f $JF size-check       # developer build; no release claim
+just -f $JF release-gate     # clean tracked tree; exact five-Wasm release
 ```
 
-All three contracts must build via `stellar contract build` (not plain `cargo build`): `stellar-access` enables soroban-sdk's `experimental_spec_shaking_v2`, which only resolves under the Stellar CLI (v25.2.0+).
+`release-gate` builds all five Wasms fresh, publishes the optimized files and
+schema-4 manifest last, then validates byte/spec hashes, package/tool versions,
+canonical paths, and size limits without rebuilding. Developer `build`,
+`optimize`, and `size-check` invalidate prior PASS evidence and never emit a
+release manifest.
+
+The live proof is testnet-only and consumes that validated release:
+
+```bash
+SRC=<funded-cli-identity> PYTH_LAZER_API_KEY_FILE=<mode-600-file> \
+  contract/proxy-oracle/soroban/scripts/e2e_live.sh all
+```
+
+The mode-0700 checkpoint directory stores immutable artifact snapshots,
+deterministically revalidated contract plans, signed envelopes, transaction
+hashes, independent RPC results, postconditions, and terminal phase outcomes.
+When simulation produces a total fee above the inner transaction's `u32`
+limit, the rehearsal signs the inner transaction, wraps it in a fee-bump paid
+and signed by the same `SRC`, and persists the outer envelope and hash before
+submission.
+Re-running re-hashes and resumes one unresolved envelope by its transaction
+hash. Use `--reinitialize` only to deliberately discard that state and plan new
+contract IDs; destructive reset refuses an unmarked non-empty output directory.
+
+All five contracts build through `stellar contract build` with the pinned
+toolchain. Plain `cargo build` is not the release path.

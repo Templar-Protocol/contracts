@@ -54,8 +54,7 @@ fn two_step_ownership_handoff_through_governance() {
         templar_proxy_oracle_soroban_common::ProxyConfig {
             sources,
             min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
+            max_cache_age_secs: 300,
         },
     );
     let id_old = b.governance.next_proposal_id();
@@ -97,8 +96,7 @@ fn renounced_owner_cannot_mutate() {
             templar_proxy_oracle_soroban_common::ProxyConfig {
                 sources,
                 min_sources: 3,
-                max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                max_cache_age_secs: 300,
             },
         ),
     );

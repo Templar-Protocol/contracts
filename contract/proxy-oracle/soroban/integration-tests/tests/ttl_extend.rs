@@ -36,8 +36,7 @@ fn runtime_extend_ttl_is_public_and_succeeds_with_assets_configured() {
             ProxyConfig {
                 sources,
                 min_sources: 3,
-                max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                max_cache_age_secs: 300,
             },
         ),
     );

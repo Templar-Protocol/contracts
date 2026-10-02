@@ -135,6 +135,10 @@ jobs:
               - 'tools/tools-common/**'
             soroban:
               - '.github/workflows/test.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'justfile'
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
               - 'contract/proxy-oracle/soroban/**'
@@ -298,7 +302,7 @@ jobs:
       - name: Install tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
-          tool: just
+          tool: nextest,just
 
       - name: Install stellar CLI
         uses: stellar/stellar-cli@60f7458e7ecffddf2f2d91dc6d0d2db4fab03ecc
@@ -311,8 +315,8 @@ jobs:
       - name: Verify ENG-484 Soroban release ABIs
         run: just -f contract/vault/soroban/justfile verify-release-wasm-abi
 
-      - name: Enforce proxy-oracle Soroban size budgets
-        run: just -f contract/proxy-oracle/soroban/justfile size-check
+      - name: Run proxy-oracle Soroban release gate
+        run: just -f contract/proxy-oracle/soroban/justfile release-gate
 
       - name: Check curator-primitives (default)
         run: cargo check -p templar-curator-primitives

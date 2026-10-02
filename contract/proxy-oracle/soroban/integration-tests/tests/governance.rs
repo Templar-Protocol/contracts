@@ -31,8 +31,7 @@ fn dummy_setproxy(b: &Bootstrap, label: &str) -> GovernanceAction {
         ProxyConfig {
             sources,
             min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
+            max_cache_age_secs: 300,
         },
     )
 }

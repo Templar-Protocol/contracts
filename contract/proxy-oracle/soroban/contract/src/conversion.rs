@@ -21,7 +21,7 @@ use templar_proxy_oracle_soroban_common::{
     CircuitBreakerConfig, ContractError, CumulativeChangeConfig as SorobanCumulativeChangeConfig,
     MonotonicRunConfig as SorobanMonotonicRunConfig, NormalizedPrice, PriceData, PriceFeedClient,
     ProxyConfig, StepwiseChangeConfig as SorobanStepwiseChangeConfig,
-    WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig,
+    WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig, MAX_SUPPORTED_SEP40_DECIMALS,
 };
 
 /// Convert a source feed's `PriceData` (decimal-prefixed i128) into the
@@ -31,7 +31,7 @@ pub fn source_price_to_kernel(
     source_price: PriceData,
     source_decimals: u32,
 ) -> Result<Price, ContractError> {
-    if source_decimals > 18 {
+    if source_decimals > MAX_SUPPORTED_SEP40_DECIMALS {
         return Err(ContractError::InvalidInput);
     }
     let mut value = source_price.price;
@@ -49,7 +49,8 @@ pub fn source_price_to_kernel(
         price: i64::try_from(value).map_err(|_| ContractError::ConversionOverflow)?,
         conf: 0,
         expo,
-        publish_time_ns: Nanoseconds::from_secs(source_price.timestamp),
+        publish_time_ns: Nanoseconds::checked_from_secs(source_price.timestamp)
+            .ok_or(ContractError::ConversionOverflow)?,
     })
 }
 
@@ -133,13 +134,7 @@ pub fn kernel_proxy_from_config(config: &ProxyConfig) -> Proxy<u32> {
     let mut median =
         MedianLow::new((0..config.sources.len()).map(|index| WeightedSource::new(index, 1)));
     median.min_sources = config.min_sources;
-    Proxy::new(
-        Aggregator::MedianLow(median),
-        FreshnessFilter::new(
-            config.max_age_secs.map(Nanoseconds::from_secs),
-            config.max_clock_drift_secs.map(Nanoseconds::from_secs),
-        ),
-    )
+    Proxy::new(Aggregator::MedianLow(median), FreshnessFilter::empty())
 }
 
 pub fn validate_source_decimals(env: &Env, config: &ProxyConfig) -> Result<(), ContractError> {
@@ -148,7 +143,7 @@ pub fn validate_source_decimals(env: &Env, config: &ProxyConfig) -> Result<(), C
             .try_decimals()
             .map_err(|_| ContractError::InvalidInput)?
             .map_err(|_| ContractError::InvalidInput)?;
-        if decimals > 18 {
+        if decimals > MAX_SUPPORTED_SEP40_DECIMALS {
             return Err(ContractError::InvalidInput);
         }
     }

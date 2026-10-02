@@ -103,16 +103,16 @@ fn sample_proxy_config(env: &Env, asset: Asset, _source: Address) -> ProxyConfig
         sources.push_back(SourceConfig {
             oracle: env.register(MockSource, ()),
             asset: asset.clone(),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         });
     }
     ProxyConfig {
         sources,
         min_sources: 3,
-        max_age_secs: Some(30),
-        max_clock_drift_secs: Some(5),
+        max_cache_age_secs: 30,
     }
 }
-
 fn accept_now(env: &Env, governance_id: &Address, admin: &Address, proposal_id: u64) {
     env.as_contract(governance_id, || {
         ProxyOracleGovernance::execute_proposal(env.clone(), admin.clone(), proposal_id).unwrap();
@@ -983,8 +983,7 @@ fn validation_rejects_empty_proxy_invalid_ttls_and_large_metadata() {
     let empty_proxy = ProxyConfig {
         sources: Vec::new(&env),
         min_sources: 0,
-        max_age_secs: None,
-        max_clock_drift_secs: None,
+        max_cache_age_secs: 0,
     };
     assert_eq!(
         env.as_contract(&governance_id, || {
