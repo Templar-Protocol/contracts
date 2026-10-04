@@ -117,7 +117,7 @@ pub fn feed_data_from_parsed(
     now: Nanoseconds,
     max_ahead_s: u64,
 ) -> Option<FeedData> {
-    let price = parsed.price?.0;
+    let price = parsed.price?;
     let exponent = parsed.exponent?;
     let conf = require_confidence(parsed.confidence.map(|value| value.0))?;
 
@@ -131,14 +131,14 @@ pub fn feed_data_from_parsed(
 
     // Never synthesize EMA from spot: half-specified EMA skips the whole feed.
     let ema = EmaData {
-        price: I64(parsed.ema_price?.0),
+        price: parsed.ema_price?,
         conf: U64(require_confidence(
             parsed.ema_confidence.map(|value| value.0),
         )?),
     };
 
     Some(FeedData {
-        price: I64(price),
+        price,
         conf: U64(conf),
         ema,
         expo: i32::from(exponent),
@@ -187,6 +187,19 @@ mod tests {
         }
     }
 
+    fn expected_projection(publish_ns: u64) -> FeedData {
+        FeedData {
+            price: I64(123_456),
+            conf: U64(50),
+            ema: EmaData {
+                price: I64(123_000),
+                conf: U64(40),
+            },
+            expo: -8,
+            publish_time_ns: Nanoseconds::from_ns(publish_ns),
+        }
+    }
+
     #[rstest]
     #[case::valid(Some(123_456), Some(-8), Some(123_000), true)]
     #[case::missing_spot(None, Some(-8), Some(123_000), false)]
@@ -210,31 +223,20 @@ mod tests {
             Nanoseconds::from_secs(100),
             2,
         );
-        let expected = valid.then_some(FeedData {
-            price: I64(123_456),
-            conf: U64(50),
-            ema: EmaData {
-                price: I64(123_000),
-                conf: U64(40),
-            },
-            expo: -8,
-            publish_time_ns: Nanoseconds::from_ns(99_987_654_321),
-        });
+        let expected = valid.then_some(expected_projection(99_987_654_321));
         assert_eq!(projected, expected);
     }
 
     #[rstest]
-    #[case::valid(Some(50), Some(40), true)]
-    #[case::missing_spot(None, Some(40), false)]
-    #[case::zero_spot(Some(0), Some(40), false)]
-    #[case::negative_spot(Some(-1), Some(40), false)]
-    #[case::missing_ema(Some(50), None, false)]
-    #[case::zero_ema(Some(50), Some(0), false)]
-    #[case::negative_ema(Some(50), Some(-1), false)]
+    #[case::missing_spot(None, Some(40))]
+    #[case::zero_spot(Some(0), Some(40))]
+    #[case::negative_spot(Some(-1), Some(40))]
+    #[case::missing_ema(Some(50), None)]
+    #[case::zero_ema(Some(50), Some(0))]
+    #[case::negative_ema(Some(50), Some(-1))]
     fn projection_requires_positive_confidences(
         #[case] confidence: Option<i64>,
         #[case] ema_confidence: Option<i64>,
-        #[case] valid: bool,
     ) {
         let parsed = ParsedFeedView {
             confidence: confidence.map(I64),
@@ -247,17 +249,7 @@ mod tests {
             Nanoseconds::from_secs(100),
             2,
         );
-        let expected = valid.then_some(FeedData {
-            price: I64(123_456),
-            conf: U64(50),
-            ema: EmaData {
-                price: I64(123_000),
-                conf: U64(40),
-            },
-            expo: -8,
-            publish_time_ns: Nanoseconds::from_ns(99_987_654_321),
-        });
-        assert_eq!(projected, expected);
+        assert!(projected.is_none());
     }
 
     #[rstest]
@@ -283,16 +275,7 @@ mod tests {
             Nanoseconds::from_secs(100),
             max_ahead_s,
         );
-        let expected = expected_ns.map(|publish_ns| FeedData {
-            price: I64(123_456),
-            conf: U64(50),
-            ema: EmaData {
-                price: I64(123_000),
-                conf: U64(40),
-            },
-            expo: -8,
-            publish_time_ns: Nanoseconds::from_ns(publish_ns),
-        });
+        let expected = expected_ns.map(expected_projection);
         assert_eq!(projected, expected);
     }
 
