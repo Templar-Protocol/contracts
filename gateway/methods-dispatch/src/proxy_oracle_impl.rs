@@ -1,7 +1,8 @@
 use async_trait::async_trait;
-use near_api::types::transaction::actions::{Action, DeployContractAction, FunctionCallAction};
+use near_api::types::transaction::actions::Action;
 use serde::Serialize;
 use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::upgrade::MIGRATE_METHOD;
 use templar_gateway_core::{
     client::proxy_oracle::{
         AdminSetProxyArgs, GetProxyArgs, GetProxyCircuitBreakerSetArgs, ListProxiesArgs,
@@ -15,7 +16,7 @@ use templar_gateway_types::{NearGas, NearToken, ProxyOracle, ProxyOracleVersion}
 use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::input::Source;
 
-use crate::{registry_impl::plan_create_from_registry, Dispatch};
+use crate::{registry_impl::plan_create_from_registry, tx_impl::deploy_and_call_actions, Dispatch};
 
 #[derive(Serialize)]
 struct ProxyOracleInitArgs {
@@ -101,15 +102,13 @@ fn v0_upgrade_actions(
         )));
     }
 
-    Ok(vec![
-        Action::DeployContract(DeployContractAction { code: wasm }),
-        Action::FunctionCall(Box::new(FunctionCallAction {
-            method_name: "migrate".to_owned(),
-            args: MIGRATE_ARGS.to_vec(),
-            gas: MIGRATE_GAS,
-            deposit: NearToken::from_yoctonear(0),
-        })),
-    ])
+    Ok(deploy_and_call_actions(
+        wasm,
+        MIGRATE_METHOD.to_owned(),
+        MIGRATE_ARGS.to_vec(),
+        MIGRATE_GAS,
+        NearToken::from_yoctonear(0),
+    ))
 }
 
 #[async_trait]

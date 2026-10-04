@@ -7,7 +7,9 @@ use templar_gateway_core::{
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::tx;
-use templar_gateway_types::{operation::ReceiptStatus, protocol::MAX_ACTIONS_PER_RECEIPT};
+use templar_gateway_types::{
+    operation::ReceiptStatus, protocol::MAX_ACTIONS_PER_RECEIPT, NearGas, NearToken,
+};
 
 use crate::Dispatch;
 
@@ -170,26 +172,43 @@ impl<C: Send + 'static> PlanWrite<tx::DeployContract, C> for Dispatch {
     }
 }
 
+/// Deploy `code`, then call `method_name` on it in the same receipt, so a failed call reverts the
+/// deploy with it.
+pub(crate) fn deploy_and_call_actions(
+    code: Vec<u8>,
+    method_name: String,
+    args: Vec<u8>,
+    gas: NearGas,
+    deposit: NearToken,
+) -> Vec<Action> {
+    vec![
+        Action::DeployContract(DeployContractAction { code }),
+        Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name,
+            args,
+            gas,
+            deposit,
+        })),
+    ]
+}
+
 #[async_trait]
 impl<C: Send + 'static> PlanWrite<tx::DeployAndInit, C> for Dispatch {
     async fn plan(
         request: templar_gateway_types::common::WriteRequest<tx::DeployAndInit>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
         Ok(OperationPlan::execute(
             request.signer_account_id,
-            request.body.account_id,
-            vec![
-                Action::DeployContract(DeployContractAction {
-                    code: request.body.code.0,
-                }),
-                Action::FunctionCall(Box::new(FunctionCallAction {
-                    method_name: request.body.method_name.0,
-                    args: request.body.args.try_into_bytes()?,
-                    gas: request.body.gas,
-                    deposit: request.body.deposit,
-                })),
-            ],
+            body.account_id,
+            deploy_and_call_actions(
+                body.code.0,
+                body.method_name.0,
+                body.args.try_into_bytes()?,
+                body.gas,
+                body.deposit,
+            ),
         ))
     }
 }
