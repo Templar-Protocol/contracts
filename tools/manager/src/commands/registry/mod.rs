@@ -7,6 +7,7 @@ mod list_deployments_by_kind;
 mod list_versions;
 mod remove;
 mod remove_version;
+mod upgrade;
 
 pub use add_version::AddVersion;
 pub(crate) use add_version::STORAGE_AMOUNT_PER_BYTE;
@@ -18,6 +19,7 @@ pub use list_deployments_by_kind::ListDeploymentsByKind;
 pub use list_versions::ListVersions;
 pub use remove::Remove;
 pub use remove_version::RemoveVersion;
+pub use upgrade::Upgrade;
 
 use clap::Subcommand;
 
@@ -40,6 +42,10 @@ pub enum RegistryNs {
     RemoveVersion(RemoveVersion),
     /// Remove every version from the registry, then delete the (signer) account.
     Remove(Remove),
+    /// Upgrade a registry that predates versioned state onto a released registry, migrating its
+    /// state in the same transaction. Submits nothing unless every check passes, including a
+    /// sandbox replay of the exact transaction against the registry's complete state.
+    Upgrade(Upgrade),
     /// Remove every market deployed from the registry (signing as each with the
     /// shared `--secret-key`).
     ClearDeployments(ClearDeployments),

@@ -728,3 +728,18 @@ fn migrated_specs_reproduce_their_deployed_configurations(
         "every recorded {suite} configuration must be covered"
     );
 }
+
+#[rstest]
+#[case::matching("templar-alpha.near", false)]
+#[case::other_network("registry.testnet", true)]
+#[case::undeclared("registry.funder", true)]
+fn network_status_requires_the_account_to_be_on_the_selected_network(
+    #[case] account: &str,
+    #[case] fails: bool,
+) {
+    let status = crate::spec::network_status(
+        templar_gateway_client::Network::Mainnet,
+        &account.parse().unwrap(),
+    );
+    assert_eq!(status.is_failure(), fails, "{status:?}");
+}

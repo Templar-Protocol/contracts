@@ -357,7 +357,7 @@ pub(crate) fn failed_receipt_contracts(result: &WriteOperationResult) -> Vec<&st
         .unwrap_or_default()
 }
 
-fn print_plan(format: PrintFormat, plan: OperationPlan) -> anyhow::Result<()> {
+pub(crate) fn print_plan(format: PrintFormat, plan: OperationPlan) -> anyhow::Result<()> {
     let transaction = single_transaction(plan)?;
     match format {
         PrintFormat::Json => print_json(&transaction),

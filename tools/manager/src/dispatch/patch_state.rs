@@ -11,6 +11,12 @@ use near_token::NearToken;
 use serde::{Deserialize, Serialize};
 use templar_gateway_types::ProtocolLimits;
 
+use crate::{
+    context::CliContext,
+    report::Reporter,
+    spec::check::{Check, Status},
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RawStateEntry {
     pub key: Vec<u8>,
@@ -54,6 +60,44 @@ impl StateSnapshot {
         };
         Ok(crate::spec::plan::digest(&serde_json::to_vec(&snapshot)?))
     }
+}
+
+/// Snapshot `account_id` at the latest final block, recording `check_id` either way.
+pub(crate) async fn snapshot_final(
+    ctx: &CliContext,
+    account_id: &AccountId,
+    limits: &ProtocolLimits,
+    check_id: &str,
+    reporter: &mut Reporter,
+) -> Result<StateSnapshot> {
+    let state = fetch_state(ctx, &ctx.final_client()?, account_id, limits).await;
+    reporter.record(Check::new(
+        check_id,
+        match &state {
+            Ok(state) => Status::passed(format!(
+                "complete {} storage entries in {} request(s), accounting for {} bytes at {}",
+                state.entries.len(),
+                state.request_count,
+                state.storage_usage,
+                state.block_hash
+            )),
+            Err(error) => Status::failed(format!("{error:#}")),
+        },
+    ));
+    state
+}
+
+/// Complete state of `account_id` at the newest block `client` reads at.
+pub(crate) async fn fetch_state(
+    ctx: &CliContext,
+    client: &templar_gateway_client::Client,
+    account_id: &AccountId,
+    limits: &ProtocolLimits,
+) -> Result<StateSnapshot> {
+    let block = client
+        .read(templar_gateway_methods_spec::chain::GetBlock::default())
+        .await?;
+    fetch_complete_state(ctx.network_config(), account_id, block.hash.into(), limits).await
 }
 
 pub async fn fetch_complete_state(

@@ -21,6 +21,7 @@ mod plan_file;
 mod proxy_oracle;
 mod redstone;
 mod registry;
+mod registry_upgrade;
 mod spec;
 mod storage;
 

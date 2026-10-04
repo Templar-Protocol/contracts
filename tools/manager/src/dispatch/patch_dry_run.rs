@@ -1,5 +1,3 @@
-use borsh::BorshDeserialize as _;
-
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -12,14 +10,19 @@ use near_primitives::{
 use near_token::NearToken;
 use serde::Serialize;
 use templar_gateway_methods_spec::{account, contract, tx};
-use templar_gateway_types::{
-    common::ContractArgs, ActionInput, Base64Bytes, ManagedAccountId, OperationStatus,
-};
+use templar_gateway_types::{common::ContractArgs, ManagedAccountId};
 
 use crate::{
     commands::patch::DryRun,
     context::{print_json, CliContext},
-    dispatch::{patch::build, patch_state::StateSnapshot},
+    dispatch::{
+        patch::build,
+        patch_state::StateSnapshot,
+        sandbox_replay::{
+            build_local_client, random_secret_key, reset_account_metadata, setup_account,
+            stage_local_code, start_sandbox,
+        },
+    },
     spec::{
         check::{gate, Check, Status},
         patch_plan::{DryRunStamp, PatchPlan, RestoreCode, PATCH_PLAN_SCHEMA_VERSION},
@@ -82,10 +85,16 @@ pub(super) async fn dry_run(ctx: CliContext, args: DryRun) -> Result<()> {
     );
 
     let (sandbox, local_network) = start_sandbox().await?;
-    let secret_key = setup_account(&local_network, &plan, &built.state).await?;
+    let secret_key = setup_account(
+        &local_network,
+        &plan.spec.account_id,
+        &plan.public_key,
+        &built.state,
+    )
+    .await?;
     let local_client = build_local_client(&local_network, &plan.spec.account_id, &secret_key)?;
     stage_code(&local_network, &plan, &built.state, &secret_key).await?;
-    reset_account_metadata(&local_network, &plan, &built.state).await?;
+    reset_account_metadata(&local_network, &plan.spec.account_id, &built.state).await?;
     anyhow::ensure!(
         restore_matches(&local_client, &plan).await?,
         "sandbox staging did not reproduce the reviewed code/linkage"
@@ -189,75 +198,6 @@ fn ensure_plan_matches(plan: &PatchPlan, rederived: &PatchPlan) -> Result<()> {
     Ok(())
 }
 
-async fn start_sandbox() -> Result<(near_sandbox::Sandbox, NetworkConfig)> {
-    let sandbox =
-        near_sandbox::Sandbox::start_sandbox_with_config(templar_sandbox::sandbox_config())
-            .await
-            .context("start dry-run sandbox")?;
-    let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
-    Ok((sandbox, network))
-}
-
-async fn setup_account(
-    network: &NetworkConfig,
-    plan: &PatchPlan,
-    state: &StateSnapshot,
-) -> Result<SecretKey> {
-    let key_type = match plan.public_key.to_string().split_once(':') {
-        Some(("ed25519", _)) => KeyType::ED25519,
-        Some(("secp256k1", _)) => KeyType::SECP256K1,
-        _ => anyhow::bail!("unsupported reviewed public key type"),
-    };
-    let secret_key = random_secret_key(key_type)?;
-    let replacement_key: near_crypto::PublicKey = secret_key
-        .public_key()
-        .to_string()
-        .parse()
-        .context("parse dry-run public key")?;
-    anyhow::ensure!(
-        state
-            .access_keys
-            .iter()
-            .any(|(key, _)| *key == plan.public_key),
-        "reviewed signing key is absent from the finalized target snapshot"
-    );
-    let mut records = vec![StateRecord::Account {
-        account_id: plan.spec.account_id.clone(),
-        account: ChainAccount::new(
-            NearToken::from_near(100_000_000),
-            NearToken::from_yoctonear(0),
-            AccountContract::None,
-            state.storage_usage,
-        ),
-    }];
-    for (public_key, access_key) in &state.access_keys {
-        let public_key = if *public_key == plan.public_key {
-            replacement_key.clone()
-        } else {
-            public_key
-                .to_string()
-                .parse()
-                .context("parse source public key")?
-        };
-        let mut access_key =
-            near_primitives::account::AccessKey::try_from_slice(&borsh::to_vec(access_key)?)?;
-        access_key.nonce = 0;
-        records.push(StateRecord::AccessKey {
-            account_id: plan.spec.account_id.clone(),
-            public_key,
-            access_key,
-        });
-    }
-    records.extend(state.entries.iter().map(|entry| StateRecord::Data {
-        account_id: plan.spec.account_id.clone(),
-        data_key: entry.key.clone().into(),
-        value: entry.value.clone().into(),
-    }));
-    templar_sandbox::patch_records(network, records).await?;
-    templar_sandbox::wait_until_final(network, &plan.spec.account_id, &replacement_key).await?;
-    Ok(secret_key)
-}
-
 async fn stage_code(
     network: &NetworkConfig,
     plan: &PatchPlan,
@@ -267,66 +207,13 @@ async fn stage_code(
     match plan.restore {
         RestoreCode::Local { .. } => {
             let client = build_local_client(network, &plan.spec.account_id, target_secret_key)?;
-            let staging = client
-                .execute_as(
-                    ManagedAccountId(plan.spec.account_id.clone()),
-                    tx::Batch {
-                        receiver_id: plan.spec.account_id.clone(),
-                        actions: vec![ActionInput::DeployContract {
-                            code: Base64Bytes(state.code.clone()),
-                        }],
-                    },
-                )
-                .await?;
-            anyhow::ensure!(
-                staging.operation.status == OperationStatus::Succeeded,
-                "staging target-code deployment failed: {:?}",
-                staging.operation.status
-            );
+            stage_local_code(&client, &plan.spec.account_id, &state.code).await?;
         }
         RestoreCode::GlobalCodeHash { .. } | RestoreCode::GlobalAccount { .. } => {
             publish_global_code(network, plan, &state.code, target_secret_key).await?;
         }
     }
     Ok(())
-}
-
-async fn reset_account_metadata(
-    network: &NetworkConfig,
-    plan: &PatchPlan,
-    state: &StateSnapshot,
-) -> Result<()> {
-    templar_sandbox::patch_records(
-        network,
-        vec![StateRecord::Account {
-            account_id: plan.spec.account_id.clone(),
-            account: ChainAccount::new(
-                state.amount,
-                state.locked,
-                state.contract.clone(),
-                state.storage_usage,
-            ),
-        }],
-    )
-    .await
-}
-
-fn build_local_client(
-    network: &NetworkConfig,
-    account_id: &AccountId,
-    secret_key: &SecretKey,
-) -> Result<templar_gateway_client::Client> {
-    templar_gateway_client::Client::builder(network.clone())
-        .secret_key(account_id.clone(), secret_key.clone())?
-        .build()
-        .context("build local dry-run client")
-}
-
-fn random_secret_key(key_type: KeyType) -> Result<SecretKey> {
-    near_crypto::SecretKey::from_random(key_type)
-        .to_string()
-        .parse()
-        .context("parse generated dry-run secret key")
 }
 
 async fn publish_global_code(
