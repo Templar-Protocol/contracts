@@ -16,6 +16,8 @@ mod pyth_impl;
 mod redstone_impl;
 mod ref_finance_impl;
 mod registry_impl;
+
+pub use registry_impl::registry_release;
 mod registry_wasm;
 mod storage_impl;
 #[cfg(test)]
