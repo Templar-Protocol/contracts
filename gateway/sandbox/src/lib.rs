@@ -80,19 +80,33 @@ pub async fn patch_data(
 
 /// State patches are optimistic; call [`wait_until_final`] before signing with a
 /// patched key, because near-api reads signer keys at `Final`.
+///
+/// Large patches go over several requests, applied in order but not atomically: a failure leaves
+/// earlier batches applied, and only a record in the last batch reaching `Final` implies the rest
+/// has.
 pub async fn patch_records(network: &NetworkConfig, records: Vec<StateRecord>) -> Result<()> {
     let client = client(network);
-    for records in batches(records)? {
+    let batches = batches(records)?;
+    let count = batches.len();
+    for (index, records) in batches.into_iter().enumerate() {
+        let len = records.len();
         client
             .call(RpcSandboxPatchStateRequest { records })
             .await
-            .context("sandbox_patch_state failed")?;
+            .with_context(|| {
+                format!(
+                    "sandbox_patch_state failed on batch {} of {count} ({len} records); earlier \
+                     batches stay applied",
+                    index + 1
+                )
+            })?;
     }
     Ok(())
 }
 
-/// A whole account of contract blobs in one `sandbox_patch_state` is refused as too large.
-const PATCH_REQUEST_BYTES: usize = 512 * 1024;
+/// neard's RPC refuses a request body over 2 MiB whatever `json_payload_max_size` allows, so one
+/// record larger than this cannot be patched at all.
+const PATCH_REQUEST_BYTES: usize = 1536 * 1024;
 
 /// Split `records` into requests of at most [`PATCH_REQUEST_BYTES`] each, in order; a single
 /// larger record travels alone.
@@ -253,9 +267,9 @@ mod tests {
         let records = vec![
             record(0, 100),
             record(1, PATCH_REQUEST_BYTES),
-            record(2, 100_000),
-            record(3, 100_000),
-            record(4, 300_000),
+            record(2, PATCH_REQUEST_BYTES / 3),
+            record(3, PATCH_REQUEST_BYTES / 3),
+            record(4, PATCH_REQUEST_BYTES / 2),
         ];
 
         let batches = batches(records).unwrap();
@@ -272,5 +286,10 @@ mod tests {
                 .sum();
             assert!(size <= PATCH_REQUEST_BYTES, "{size}");
         }
+    }
+
+    #[test]
+    fn no_records_means_no_requests() {
+        assert!(batches(Vec::new()).unwrap().is_empty());
     }
 }

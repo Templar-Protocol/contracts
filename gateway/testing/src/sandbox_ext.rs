@@ -54,8 +54,8 @@ pub(crate) async fn create_accounts(
         })
         .collect();
     patch_records(network, records).await?;
-    // One patch applies as a unit in one block, so any one account reaching
-    // final finality means every account in the batch has.
+    // Batches apply in order, so the last account reaching final finality means
+    // every earlier one has.
     match accounts.last() {
         Some((account_id, _)) => wait_until_final(network, account_id, &public_key).await,
         None => Ok(()),
