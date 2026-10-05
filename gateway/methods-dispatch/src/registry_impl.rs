@@ -320,20 +320,43 @@ fn upgrade_actions(
     ))
 }
 
-/// Nothing can roll this upgrade back, so only a released registry that has `migrate` may land.
-fn require_upgradable_release(wasm: &[u8]) -> GatewayResult<()> {
-    let hash = near_api::types::CryptoHash::hash(wasm);
-    match templar_contract_artifacts::release_by_sha256(&hash.0) {
-        Some((templar_contract_artifacts::ArtifactId::Registry, release))
-            if release
-                .version
-                .parse::<RegistryVersion>()
-                .is_ok_and(RegistryVersion::supports_upgrade) =>
-        {
-            Ok(())
+/// The catalogued registry release whose bytes hash to `sha256`.
+pub fn registry_release(sha256: &[u8; 32]) -> Option<RegistryVersion> {
+    match templar_contract_artifacts::release_by_sha256(sha256) {
+        Some((templar_contract_artifacts::ArtifactId::Registry, release)) => {
+            release.version.parse().ok()
         }
-        _ => Err(GatewayError::RequestPreconditionFailed(format!(
-            "the wasm ({hash}) is not a catalogued registry release with versioned state"
+        _ => None,
+    }
+}
+
+/// Nothing can roll this upgrade back, so only a released registry that has `migrate` may land.
+fn require_upgradable_release(sha256: &[u8; 32]) -> GatewayResult<()> {
+    if registry_release(sha256).is_some_and(RegistryVersion::supports_upgrade) {
+        Ok(())
+    } else {
+        Err(GatewayError::RequestPreconditionFailed(format!(
+            "the wasm ({}) is not a catalogued registry release with versioned state",
+            near_api::types::CryptoHash(*sha256)
+        )))
+    }
+}
+
+/// The migration follows from the state layout, which only the deployed code fixes: its metadata
+/// must name the catalogued release those bytes are.
+fn require_deployed_release(
+    registry_id: &AccountId,
+    deployed_sha256: Option<[u8; 32]>,
+    reported: RegistryVersion,
+) -> GatewayResult<()> {
+    match deployed_sha256.as_ref().and_then(registry_release) {
+        Some(release) if release == <(u64, u64, u64)>::from(reported) => Ok(()),
+        Some(release) => Err(GatewayError::RequestPreconditionFailed(format!(
+            "registry {registry_id} runs the code of registry {release} but reports {reported}"
+        ))),
+        None => Err(GatewayError::RequestPreconditionFailed(format!(
+            "registry {registry_id} does not run a catalogued registry release, so its state \
+             layout is unknown"
         ))),
     }
 }
@@ -352,13 +375,19 @@ impl<C: HasNearClient> PlanWrite<registry::Upgrade, C> for Dispatch {
                 request.signer_account_id.0
             )));
         }
-        require_upgradable_release(&request.body.wasm.0)?;
+        require_upgradable_release(&near_api::types::CryptoHash::hash(&request.body.wasm.0).0)?;
         // Uncached: the code this plan replaces is exactly what a stale cached version would hide.
         let version = ctx
             .near_client()
             .contract(registry_id.clone())
             .version::<Registry>()
             .await?;
+        let account = ctx.near_client().account().get(registry_id.clone()).await?;
+        let deployed_sha256 = match account.contract_state {
+            near_api::types::account::ContractState::LocalHash(hash) => Some(hash.0),
+            _ => None,
+        };
+        require_deployed_release(&registry_id, deployed_sha256, version)?;
         let actions = upgrade_actions(request.body, version)?;
 
         Ok(OperationPlan::execute(
@@ -488,27 +517,69 @@ mod tests {
         );
     }
 
+    fn catalogued(release: &str) -> [u8; 32] {
+        let sha256 = templar_contract_artifacts::ArtifactId::Registry
+            .metadata()
+            .release(release)
+            .expect("a catalogued registry release")
+            .sha256;
+        let mut bytes = [0u8; 32];
+        for (byte, pair) in bytes.iter_mut().zip(sha256.as_bytes().chunks(2)) {
+            *byte = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+        }
+        bytes
+    }
+
     #[rstest]
     #[case::versioned_state("2.0.0", true)]
     #[case::predates_it("1.2.4", false)]
-    #[tokio::test]
-    async fn only_a_released_registry_with_versioned_state_may_land(
+    fn only_a_released_registry_with_versioned_state_may_land(
         #[case] release: &str,
         #[case] accepted: bool,
     ) {
-        let wasm = templar_contract_artifacts::fetch::released_bytes(
-            templar_contract_artifacts::ArtifactId::Registry,
-            release,
-        )
-        .await
-        .unwrap();
-        assert_eq!(require_upgradable_release(&wasm).is_ok(), accepted);
+        assert_eq!(
+            require_upgradable_release(&catalogued(release)).is_ok(),
+            accepted
+        );
     }
 
     #[test]
     fn uncatalogued_code_may_not_land() {
-        let error = require_upgradable_release(b"\0asm\x01\0\0\0registry")
+        let error = require_upgradable_release(&[7; 32])
             .expect_err("unreleased bytes must not replace a registry");
         assert!(error.to_string().contains("not a catalogued"), "{error}");
+    }
+
+    #[rstest]
+    #[case::alpha_near("0.1.0", (0, 1, 0), true)]
+    #[case::user0_tmplr_near("1.1.0", (1, 1, 0), true)]
+    #[case::metadata_disagrees("1.0.0", (1, 1, 0), false)]
+    fn the_deployed_code_must_be_the_release_its_metadata_names(
+        #[case] code: &str,
+        #[case] reported: (u64, u64, u64),
+        #[case] accepted: bool,
+    ) {
+        let result = require_deployed_release(
+            &REGISTRY.parse().unwrap(),
+            Some(catalogued(code)),
+            RegistryVersion::from(reported),
+        );
+        assert_eq!(result.is_ok(), accepted, "{result:?}");
+    }
+
+    #[rstest]
+    #[case::uncatalogued(Some([7; 32]))]
+    #[case::not_local_code(None)]
+    fn unknown_deployed_code_is_refused(#[case] deployed: Option<[u8; 32]>) {
+        let error = require_deployed_release(
+            &REGISTRY.parse().unwrap(),
+            deployed,
+            RegistryVersion::from((1, 0, 0)),
+        )
+        .expect_err("an unknown layout must not be migrated");
+        assert!(
+            error.to_string().contains("not run a catalogued"),
+            "{error}"
+        );
     }
 }
