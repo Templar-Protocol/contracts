@@ -70,7 +70,10 @@ pub(crate) async fn snapshot_final(
     check_id: &str,
     reporter: &mut Reporter,
 ) -> Result<StateSnapshot> {
-    let state = fetch_state(ctx, &ctx.final_client()?, account_id, limits).await;
+    let state = match ctx.final_client() {
+        Ok(client) => fetch_state(ctx, &client, account_id, limits).await,
+        Err(error) => Err(error),
+    };
     reporter.record(Check::new(
         check_id,
         match &state {

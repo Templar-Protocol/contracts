@@ -55,6 +55,13 @@ pub(super) async fn setup_account(
             state.storage_usage,
         ),
     }];
+    records.extend(state.entries.iter().map(|entry| StateRecord::Data {
+        account_id: account_id.clone(),
+        data_key: entry.key.clone().into(),
+        value: entry.value.clone().into(),
+    }));
+    // Keys last: batches land in order, so the replacement key reaching `Final` implies the state
+    // before it has.
     for (public_key, access_key) in &state.access_keys {
         let public_key = if public_key == signing_key {
             replacement_key.clone()
@@ -73,11 +80,6 @@ pub(super) async fn setup_account(
             access_key,
         });
     }
-    records.extend(state.entries.iter().map(|entry| StateRecord::Data {
-        account_id: account_id.clone(),
-        data_key: entry.key.clone().into(),
-        value: entry.value.clone().into(),
-    }));
     templar_sandbox::patch_records(network, records).await?;
     templar_sandbox::wait_until_final(network, account_id, &replacement_key).await?;
     Ok(secret_key)

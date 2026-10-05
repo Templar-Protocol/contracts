@@ -10,9 +10,10 @@ use near_api::types::transaction::actions::{AccessKeyPermission, Action};
 use near_primitives::{account::AccountContract, hash::CryptoHash};
 use near_token::NearToken;
 use serde::Serialize;
-use templar_contract_artifacts::{fetch, release_by_sha256, ArtifactId, ArtifactRelease};
+use templar_contract_artifacts::{fetch, ArtifactId, ArtifactRelease};
 use templar_gateway_client::{collect_paginated, Client};
 use templar_gateway_core::{GatewayError, OperationPlan};
+use templar_gateway_methods_dispatch::registry_release;
 use templar_gateway_methods_spec::{
     account, chain,
     contract::{self, GetStateVersionResult},
@@ -100,6 +101,19 @@ enum Sink {
     Submit(Client),
 }
 
+impl Expected {
+    /// The same transaction on byte-identical state, so mainnet must land on what the replay
+    /// measured.
+    fn exactly(&self, storage_usage: u64) -> Self {
+        Self {
+            code_hash: self.code_hash,
+            storage_usage,
+            growth: 0,
+            shrink: 0,
+        }
+    }
+}
+
 /// What the preflight establishes before anything runs in the sandbox.
 struct Prepared {
     snapshot: StateSnapshot,
@@ -131,7 +145,16 @@ pub(super) async fn upgrade(ctx: CliContext, args: Upgrade) -> Result<()> {
         return finish(&registry_id, reporter);
     }
 
-    let (sink, signing_key) = sink(&ctx, authorization).await?;
+    let (sink, signing_key) = match sink(&ctx, authorization).await {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            reporter.record(Check::new(
+                "upgrade.signing_key",
+                Status::failed(format!("{error:#}")),
+            ));
+            return finish(&registry_id, reporter);
+        }
+    };
 
     let prepared = prepare(
         &ctx,
@@ -171,15 +194,11 @@ pub(super) async fn upgrade(ctx: CliContext, args: Upgrade) -> Result<()> {
     }
 
     reporter.phase("sandbox replay of the exact transaction");
-    if let Err(error) = replay(&prepared, &request, &mainnet_plan, &before, &mut reporter).await {
-        reporter.record(Check::new(
-            "upgrade.replay.sandbox",
-            Status::failed(format!("{error:#}")),
-        ));
-    }
-    if reporter.has_failures() {
+    let replayed_storage =
+        replay_storage(&prepared, &request, &mainnet_plan, &before, &mut reporter).await;
+    let Some(replayed_storage) = replayed_storage.filter(|_| !reporter.has_failures()) else {
         return finish(&registry_id, reporter);
-    }
+    };
 
     reporter.phase("drift since the snapshot");
     reporter.record(Check::new(
@@ -200,7 +219,7 @@ pub(super) async fn upgrade(ctx: CliContext, args: Upgrade) -> Result<()> {
                 &ctx,
                 &client,
                 request,
-                &prepared.expected,
+                &prepared.expected.exactly(replayed_storage),
                 &mainnet_plan,
                 &before,
                 reporter,
@@ -263,26 +282,35 @@ async fn submit(
         return finish(&registry_id, reporter);
     }
 
-    let output = match client
+    let submitted = client
         .execute_as(request.signer_account_id, request.body)
-        .await
-    {
-        Ok(output) => output,
-        // A broadcast may have landed and still be landing, so reading the registry now would
-        // misreport it either way.
-        Err(error) => {
-            reporter.record(Check::new(
-                "upgrade.submit",
-                Status::failed(format!(
-                    "outcome unknown: {error}. The transaction may still land; read {registry_id}'s \
-                     code hash and state version before doing anything else"
-                )),
-            ));
-            reporter.digest();
-            print_report(&registry_id, reporter.checks(), None)?;
-            anyhow::bail!("the upgrade of {registry_id} was submitted with an unknown outcome");
-        }
+        .await;
+    // A broadcast whose outcome never came back, or is not yet terminal, may still be landing, so
+    // reading the registry now would misreport it either way.
+    let unknown = match &submitted {
+        Ok(output) => matches!(
+            output.operation.status,
+            OperationStatus::Pending | OperationStatus::InProgress
+        )
+        .then(|| format!("{:?}", output.operation.status)),
+        Err(error) => Some(error.to_string()),
     };
+    if let Some(reason) = unknown {
+        if let Ok(output) = &submitted {
+            ctx.report_tx(output);
+        }
+        reporter.record(Check::new(
+            "upgrade.submit",
+            Status::failed(format!(
+                "outcome unknown: {reason}. The transaction may still land; read {registry_id}'s \
+                 code hash and state version before doing anything else"
+            )),
+        ));
+        reporter.digest();
+        print_report(&registry_id, reporter.checks(), submitted.as_ref().ok())?;
+        anyhow::bail!("the upgrade of {registry_id} was submitted with an unknown outcome");
+    }
+    let output = submitted?;
     ctx.report_tx(&output);
 
     reporter.phase("the registry on chain");
@@ -290,7 +318,7 @@ async fn submit(
     // still predate it.
     let mut verified = Vec::new();
     for attempt in 1..=VERIFY_ATTEMPTS {
-        verified = verify(client, &registry_id, expected, before, "upgrade.verify").await;
+        (verified, _) = verify(client, &registry_id, expected, before, "upgrade.verify").await;
         let settled = output.operation.status != OperationStatus::Succeeded
             || !verified.iter().any(|check| check.status.is_failure());
         if settled || attempt == VERIFY_ATTEMPTS {
@@ -345,6 +373,19 @@ async fn prepare(
     signing_key: Option<&near_api::types::PublicKey>,
     reporter: &mut Reporter,
 ) -> Option<Prepared> {
+    let (status, target) = target_status(release);
+    reporter.record(Check::new("upgrade.target_release", status));
+    let target = target?;
+    let Some(signing_key) = signing_key else {
+        reporter.record(Check::new(
+            "upgrade.signing_key",
+            Status::failed(
+                "pass --public-key with --print, naming the full-access key that will sign the plan",
+            ),
+        ));
+        return None;
+    };
+
     let metadata_version = async {
         ctx.client
             .read(contract::GetVersion {
@@ -386,9 +427,6 @@ async fn prepare(
     reporter.record(Check::new("upgrade.migration", status));
     let migration = migration?;
 
-    let (status, target) = target_status(release);
-    reporter.record(Check::new("upgrade.target_release", status));
-    let target = target?;
     let wasm = match fetch::released_bytes(ArtifactId::Registry, target.version).await {
         Ok(wasm) => {
             reporter.record(Check::new(
@@ -462,28 +500,15 @@ fn source_status(
         );
     };
     let sha256 = CryptoHash::hash_bytes(&snapshot.code).0;
-    let release = match release_by_sha256(&sha256) {
-        Some((ArtifactId::Registry, release)) => release,
-        Some((artifact, release)) => {
-            return (
-                Status::failed(format!(
-                    "the account runs {} {}, not a registry",
-                    artifact.as_str(),
-                    release.version
-                )),
-                None,
-            )
-        }
-        None => {
-            return (
-                Status::failed(format!(
-                    "the account's code (sha256 {}) is not a catalogued release, so its state \
-                     layout is unknown",
-                    hex::encode(sha256)
-                )),
-                None,
-            )
-        }
+    let Some(release) = registry_release(&sha256) else {
+        return (
+            Status::failed(format!(
+                "the account's code (sha256 {}) is not a catalogued registry release, so its \
+                 state layout is unknown",
+                hex::encode(sha256)
+            )),
+            None,
+        );
     };
     let reported = match reported {
         Ok(reported) => reported,
@@ -494,19 +519,19 @@ fn source_status(
             )
         }
     };
-    if *reported != release.version {
+    if reported
+        .parse::<RegistryVersion>()
+        .map(<(u64, u64, u64)>::from)
+        != Ok(release.into())
+    {
         return (
             Status::failed(format!(
-                "the code is registry {} but its metadata reports {reported}",
-                release.version
+                "the code is registry {release} but its metadata reports {reported}"
             )),
             None,
         );
     }
-    match release_version(release) {
-        Ok(version) => (Status::passed(format!("registry {version}")), Some(version)),
-        Err(status) => (status, None),
-    }
+    (Status::passed(format!("registry {release}")), Some(release))
 }
 
 fn release_version(release: &ArtifactRelease) -> Result<RegistryVersion, Status> {
@@ -562,30 +587,23 @@ fn target_status(requested: Option<&str>) -> (Status, Option<&'static ArtifactRe
 /// The key that will sign must hold full access, since the batch deploys code.
 fn signing_key_status(
     snapshot: &StateSnapshot,
-    signing_key: Option<&near_api::types::PublicKey>,
+    signing_key: &near_api::types::PublicKey,
 ) -> (Status, Option<near_api::types::PublicKey>) {
-    let mut full_access = snapshot
-        .access_keys
-        .iter()
-        .filter(|(_, access)| matches!(access.permission, AccessKeyPermission::FullAccess))
-        .map(|(key, _)| key);
-    match signing_key {
-        Some(key) if full_access.any(|held| held == key) => (
-            Status::passed(format!("{key} holds full access")),
-            Some(*key),
-        ),
-        Some(key) => (
+    let full_access = snapshot.access_keys.iter().any(|(held, access)| {
+        held == signing_key && matches!(access.permission, AccessKeyPermission::FullAccess)
+    });
+    if full_access {
+        (
+            Status::passed(format!("{signing_key} holds full access")),
+            Some(*signing_key),
+        )
+    } else {
+        (
             Status::failed(format!(
-                "{key} is not a full-access key on the registry, so it cannot deploy code"
+                "{signing_key} is not a full-access key on the registry, so it cannot deploy code"
             )),
             None,
-        ),
-        None => (
-            Status::failed(
-                "pass --public-key with --print, naming the full-access key that will sign the plan",
-            ),
-            None,
-        ),
+        )
     }
 }
 
@@ -705,6 +723,26 @@ fn reserved_status(snapshot: &StateSnapshot, listed_deployments: usize) -> Statu
     }
 }
 
+/// [`replay`], with an error that stops it recorded as a failed check.
+async fn replay_storage(
+    prepared: &Prepared,
+    request: &WriteRequest<registry::Upgrade>,
+    mainnet_plan: &OperationPlan,
+    before: &RegistryContents,
+    reporter: &mut Reporter,
+) -> Option<u64> {
+    match replay(prepared, request, mainnet_plan, before, reporter).await {
+        Ok(storage) => storage,
+        Err(error) => {
+            reporter.record(Check::new(
+                "upgrade.replay.sandbox",
+                Status::failed(format!("{error:#}")),
+            ));
+            None
+        }
+    }
+}
+
 /// Rebuild the registry from the snapshot in a fresh sandbox, run the transaction mainnet would
 /// run, and require that the registry comes out upgraded and holding exactly what it held.
 async fn replay(
@@ -713,7 +751,7 @@ async fn replay(
     mainnet_plan: &OperationPlan,
     before: &RegistryContents,
     reporter: &mut Reporter,
-) -> Result<()> {
+) -> Result<Option<u64>> {
     let registry_id = &prepared.body.registry_id;
     let (_sandbox, network) = start_sandbox().await?;
     let secret_key = setup_account(
@@ -754,7 +792,7 @@ async fn replay(
         },
     ));
     if reporter.has_failures() {
-        return Ok(());
+        return Ok(None);
     }
 
     let result = client
@@ -770,17 +808,16 @@ async fn replay(
             gas_status(result, mainnet_plan),
         ));
     }
-    reporter.extend(
-        verify(
-            &client,
-            registry_id,
-            &prepared.expected,
-            before,
-            "upgrade.replay",
-        )
-        .await,
-    );
-    Ok(())
+    let (checks, storage_usage) = verify(
+        &client,
+        registry_id,
+        &prepared.expected,
+        before,
+        "upgrade.replay",
+    )
+    .await;
+    reporter.extend(checks);
+    Ok(storage_usage)
 }
 
 fn outcome_status(result: &Result<WriteOperationResult, GatewayError>) -> Status {
@@ -846,7 +883,7 @@ async fn verify(
     expected: &Expected,
     before: &RegistryContents,
     prefix: &str,
-) -> Vec<Check> {
+) -> (Vec<Check>, Option<u64>) {
     let (account, state_version, after) = futures::join!(
         client.read(account::Get {
             account_id: registry_id.clone(),
@@ -856,6 +893,7 @@ async fn verify(
         }),
         read_contents(client, registry_id),
     );
+    let storage_usage = account.as_ref().ok().map(|account| account.storage_usage);
     let (code, storage) = match account {
         Ok(account) => (
             if account.code_hash == expected.code_hash.to_string() {
@@ -881,7 +919,7 @@ async fn verify(
         Ok(after) => contents_status(before, &after),
         Err(error) => Status::failed(format!("{error:#}")),
     };
-    [
+    let checks = [
         ("code", code),
         ("storage", storage),
         ("state_version", state_version),
@@ -889,7 +927,8 @@ async fn verify(
     ]
     .into_iter()
     .map(|(leaf, status)| Check::new(format!("{prefix}.{leaf}"), status))
-    .collect()
+    .collect();
+    (checks, storage_usage)
 }
 
 /// The views cannot see a stored blob or a reserved name go missing, but storage can: beyond the
@@ -957,28 +996,34 @@ async fn drift_status(
     snapshot: &StateSnapshot,
     limits: &ProtocolLimits,
 ) -> Status {
-    let compared = async {
-        let mut now = fetch_state(ctx, &ctx.client, registry_id, limits).await?;
-        let at = now.block_hash;
-        now.block_hash = snapshot.block_hash;
-        now.request_count = snapshot.request_count;
-        // Anyone can send NEAR, and the replay does not depend on a balance that only grew.
-        if now.amount >= snapshot.amount {
-            now.amount = snapshot.amount;
+    match fetch_state(ctx, &ctx.client, registry_id, limits).await {
+        Ok(now) => {
+            let at = now.block_hash;
+            if unchanged(now, snapshot) {
+                Status::passed(format!(
+                    "unchanged between {} and {at}",
+                    snapshot.block_hash
+                ))
+            } else {
+                Status::failed(format!(
+                    "the account changed between {} and {at}; re-run against its current state",
+                    snapshot.block_hash
+                ))
+            }
         }
-        Ok::<_, anyhow::Error>((now == *snapshot, at))
-    };
-    match compared.await {
-        Ok((true, at)) => Status::passed(format!(
-            "unchanged between {} and {at}",
-            snapshot.block_hash
-        )),
-        Ok((false, at)) => Status::failed(format!(
-            "the account changed between {} and {at}; re-run against its current state",
-            snapshot.block_hash
-        )),
         Err(error) => Status::failed(format!("{error:#}")),
     }
+}
+
+/// Whether `now` is `snapshot` read again: only when and how it was fetched may differ, and the
+/// balance may grow, since anyone can send NEAR and the replay does not depend on it.
+fn unchanged(mut now: StateSnapshot, snapshot: &StateSnapshot) -> bool {
+    now.block_hash = snapshot.block_hash;
+    now.request_count = snapshot.request_count;
+    if now.amount >= snapshot.amount {
+        now.amount = snapshot.amount;
+    }
+    now == *snapshot
 }
 
 /// Read through views every registry release serves, so old and new code answer alike.
@@ -1117,7 +1162,10 @@ mod tests {
         let Status::Failed { detail } = status else {
             panic!("uncatalogued code must fail");
         };
-        assert!(detail.contains("not a catalogued release"), "{detail}");
+        assert!(
+            detail.contains("not a catalogued registry release"),
+            "{detail}"
+        );
     }
 
     #[test]
@@ -1161,22 +1209,14 @@ mod tests {
     fn the_signing_key_must_hold_full_access() {
         let state = snapshot(&[]);
 
-        let (status, replay) = signing_key_status(&state, Some(&key("full")));
+        let (status, replay) = signing_key_status(&state, &key("full"));
         assert!(!status.is_failure(), "{status:?}");
         assert_eq!(replay, Some(key("full")));
 
-        let (status, replay) = signing_key_status(&state, Some(&key("function-call")));
-        assert!(status.is_failure() && replay.is_none(), "{status:?}");
-
-        let (status, replay) = signing_key_status(&state, Some(&key("stranger")));
-        assert!(status.is_failure() && replay.is_none(), "{status:?}");
-    }
-
-    /// A plan is signed elsewhere, so the key that will sign it has to be named to be checked.
-    #[test]
-    fn a_plan_must_name_its_signing_key() {
-        let (status, replay) = signing_key_status(&snapshot(&[]), None);
-        assert!(status.is_failure() && replay.is_none(), "{status:?}");
+        for key in [key("function-call"), key("stranger")] {
+            let (status, replay) = signing_key_status(&state, &key);
+            assert!(status.is_failure() && replay.is_none(), "{status:?}");
+        }
     }
 
     #[rstest]
@@ -1329,6 +1369,128 @@ mod tests {
         #[case] fails: bool,
     ) {
         let status = reserved_status(&with_names(tags), listed);
+        assert_eq!(status.is_failure(), fails, "{status:?}");
+    }
+
+    #[test]
+    fn a_snapshot_read_again_is_unchanged() {
+        let mut now = snapshot(&[10, 20]);
+        now.block_hash = near_api::types::CryptoHash([9; 32]);
+        now.request_count = 7;
+        assert!(unchanged(now, &snapshot(&[10, 20])));
+    }
+
+    #[test]
+    fn a_balance_may_grow_but_not_shrink() {
+        let mut richer = snapshot(&[10]);
+        richer.amount = richer.amount.saturating_add(NearToken::from_near(1));
+        assert!(unchanged(richer, &snapshot(&[10])));
+
+        let mut poorer = snapshot(&[10]);
+        poorer.amount = poorer.amount.saturating_sub(NearToken::from_yoctonear(1));
+        assert!(!unchanged(poorer, &snapshot(&[10])));
+    }
+
+    #[rstest]
+    #[case::storage(|s: &mut StateSnapshot| s.entries[0].value.push(0))]
+    #[case::code(|s: &mut StateSnapshot| s.code.push(0))]
+    #[case::key(|s: &mut StateSnapshot| { s.access_keys.pop(); })]
+    #[case::nonce(|s: &mut StateSnapshot| s.access_keys[0].1.nonce = 9.into())]
+    #[case::locked(|s: &mut StateSnapshot| s.locked = NearToken::from_near(1))]
+    fn any_other_change_is_drift(#[case] change: fn(&mut StateSnapshot)) {
+        let mut now = snapshot(&[10]);
+        change(&mut now);
+        assert!(!unchanged(now, &snapshot(&[10])));
+    }
+
+    #[rstest]
+    #[case::pre_global_contracts(Migration::PreGlobalContracts, 3 + VERSION_RECORD_ALLOWANCE, 0)]
+    #[case::with_global_contracts(
+        Migration::WithGlobalContracts,
+        VERSION_RECORD_ALLOWANCE,
+        RETIRED_COLLECTION_ALLOWANCE
+    )]
+    fn the_storage_band_follows_the_migration(
+        #[case] migration: Migration,
+        #[case] growth: u64,
+        #[case] shrink: u64,
+    ) {
+        let mut state = snapshot(&[10]);
+        // Three version keys, and a hashed value key that happens to start with their prefix.
+        for index in 0u32..3 {
+            state.entries.push(RawStateEntry {
+                key: [VERSION_KEYS_PREFIX, &index.to_le_bytes()].concat(),
+                value: vec![0; 8],
+            });
+        }
+        state.entries.push(RawStateEntry {
+            key: [VERSION_KEYS_PREFIX, &[0; 30]].concat(),
+            value: vec![0; 8],
+        });
+        let wasm = vec![0; 250_000];
+
+        let expected = expected_after(&state, migration, &wasm);
+
+        assert_eq!(expected.storage_usage, 300_000 - 200_000 + 250_000);
+        assert_eq!(expected.growth, growth);
+        assert_eq!(expected.shrink, shrink);
+        assert_eq!(expected.code_hash, CryptoHash::hash_bytes(&wasm));
+    }
+
+    #[test]
+    fn mainnet_must_land_exactly_on_the_replayed_storage() {
+        let exact = expected().exactly(1_000_123);
+        assert!(!storage_status(&exact, 1_000_123).is_failure());
+        assert!(storage_status(&exact, 1_000_122).is_failure());
+        assert!(storage_status(&exact, 1_000_124).is_failure());
+    }
+
+    fn plan_attaching(tgas: u64) -> OperationPlan {
+        OperationPlan::single(templar_gateway_core::PlannedTransaction::single_action(
+            ManagedAccountId(registry_id()),
+            registry_id(),
+            Action::FunctionCall(Box::new(
+                near_api::types::transaction::actions::FunctionCallAction {
+                    method_name: "migrate".to_owned(),
+                    args: Vec::new(),
+                    gas: NearGas::from_tgas(tgas),
+                    deposit: NearToken::from_yoctonear(0),
+                },
+            )),
+        ))
+    }
+
+    fn burnt(tgas: u64) -> WriteOperationResult {
+        use templar_gateway_types::operation::{
+            ExecutionOutcome, OperationId, OperationRecord, StepStatus, TransactionStepRecord,
+        };
+        OperationRecord {
+            id: OperationId("op-1".to_owned()),
+            signer_account_id: ManagedAccountId(registry_id()),
+            status: OperationStatus::Succeeded,
+            steps: vec![TransactionStepRecord {
+                index: 0,
+                status: StepStatus::Succeeded {
+                    tx_hash: near_api::types::CryptoHash::default().into(),
+                    outcome: ExecutionOutcome {
+                        tokens_burnt: NearToken::from_yoctonear(0),
+                        total_gas_burnt: NearGas::from_tgas(tgas),
+                        receipts: Vec::new(),
+                        return_value: None,
+                        failure: None,
+                    },
+                },
+            }],
+        }
+        .into()
+    }
+
+    #[rstest]
+    #[case::well_within(176, false)]
+    #[case::exactly_half(300, false)]
+    #[case::over_half(301, true)]
+    fn the_replay_must_leave_half_the_attached_gas(#[case] tgas: u64, #[case] fails: bool) {
+        let status = gas_status(&burnt(tgas), &plan_attaching(600));
         assert_eq!(status.is_failure(), fails, "{status:?}");
     }
 }
