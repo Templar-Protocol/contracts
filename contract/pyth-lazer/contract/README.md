@@ -61,10 +61,13 @@ store+serve path above (NEAR has no synchronous cross-contract reads).
 ## Layout
 
 - `lib.rs` — state (`config`, `feeds: u32 -> FeedData`), init, admin, write path, feed-id read ABI
-  (`get_feeds_data` / `get_feed_data`). `FeedData` itself lives in `templar-common` (`oracle::lazer`).
+  (`get_feeds_data` / `get_feed_data`) and verifier-to-view conversions. `FeedData`,
+  `ParsedFeedView`, `VerifiedUpdateView` and the intrinsic storage projection
+  (`feed_data_from_parsed`) live in `templar-common::oracle::lazer`. Sharing these types and the
+  projection preserves the adapter's JSON/storage formats and behavior; no redeployment is needed.
 - `crypto.rs` — `Crypto` via `env::ed25519_verify`.  `events.rs` — `UpdatePrices` event.
 
 ## Build
 
-Build the deployable artifact with `--target wasm32-unknown-unknown`; run the integration tests on
-host with `cargo test`.
+Build the deployable artifact with `--target wasm32-unknown-unknown`; run host regressions with
+`just test-fast -p templar-pyth-lazer-verifier -p templar-pyth-lazer-adapter-contract`.

@@ -47,7 +47,7 @@ directs you to a `Lazer` source.
 ## Build & test
 
 ```sh
-cargo test -p templar-pyth-lazer-verifier -p templar-pyth-lazer-adapter-contract
+just test-fast -p templar-pyth-lazer-verifier -p templar-pyth-lazer-adapter-contract
 cargo check --target wasm32-unknown-unknown -p templar-pyth-lazer-adapter-contract
 ```
 

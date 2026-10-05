@@ -20,12 +20,14 @@ use std::ops::{Deref, DerefMut};
 
 use near_sdk::{
     assert_one_yocto, env,
-    json_types::{Base64VecU8, I64, U64},
+    json_types::{Base64VecU8, I64},
     near, AccountId, Gas, NearToken, PanicOnDefault, Promise,
 };
 use near_sdk_contract_tools::{owner::Owner, utils::apply_storage_fee_and_refund, Owner};
 use templar_common::{
-    oracle::lazer::{EmaData, FeedData, FeedDataResponse},
+    oracle::lazer::{
+        feed_data_from_parsed, FeedData, FeedDataResponse, ParsedFeedView, VerifiedUpdateView,
+    },
     upgrade::{UpgradeSource, MIGRATE_METHOD},
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Nanoseconds, UnwrapReject,
@@ -266,118 +268,31 @@ impl TryFrom<ConfigArgs> for Config {
     }
 }
 
-/// Fallibly build a storable [`FeedData`] from a parsed (wire) feed, owning every intrinsic
-/// validity rule. Returns `None` when the feed must be skipped: missing price or exponent, missing
-/// or invalid spot confidence, a missing or invalid EMA price/confidence, or an effective publish
-/// timestamp more than `max_ahead_s` seconds beyond `now`. (Anti-replay is relational and handled
-/// by the caller.)
-///
-/// EMA is **required** here: a spot-only signed payload is rejected (the whole feed is skipped) so
-/// it can never overwrite a stored feed and drop its EMA — a market-DoS vector, since consumers
-/// read EMA. This applies only to the stateful storage path; the stateless
-/// [`Contract::verify_update`] view does not call this and stays at parity with the official Pyth
-/// Lazer contracts (spot-only payloads allowed).
-fn feed_data_from_parsed(
-    parsed: &verifier::ParsedFeed,
-    package: Nanoseconds,
-    now: Nanoseconds,
-    max_ahead_s: u64,
-) -> Option<FeedData> {
-    let price = parsed.price?;
-    let exponent = parsed.exponent?;
-    let conf = require_confidence(parsed.confidence)?;
-
-    // Effective per-feed publish time: `FeedUpdateTimestamp` when present, else the payload's.
-    let publish_time_ns = parsed.feed_update_timestamp.unwrap_or(package);
-
-    // The verifier only bounds the package timestamp; reject a per-feed time too far ahead.
-    if publish_time_ns.as_secs() > now.as_secs().saturating_add(max_ahead_s) {
-        return None;
-    }
-
-    // EMA is mandatory on the stateful path: require both an EMA price and a valid EMA confidence,
-    // never falling back to spot. A missing or half-specified EMA skips the whole feed, so a
-    // spot-only update can't overwrite a stored feed and wipe its EMA.
-    let ema = EmaData {
-        price: I64(parsed.ema_price?),
-        conf: U64(require_confidence(parsed.ema_confidence)?),
-    };
-
-    Some(FeedData {
-        price: I64(price),
-        conf: U64(conf),
-        ema,
-        expo: i32::from(exponent),
-        publish_time_ns,
-    })
-}
-
-/// JSON view of one verified feed returned by [`Contract::verify_update`] — the full Lazer property
-/// set (not just the Pyth-compatible subset). Price-like values are raw `i64` mantissas (interpret
-/// with `exponent`); `_ns` timestamps are nanoseconds. `None` = property absent.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[near(serializers = [json])]
-pub struct ParsedFeedView {
-    pub feed_id: u32,
-    pub price: Option<I64>,
-    pub best_bid_price: Option<I64>,
-    pub best_ask_price: Option<I64>,
-    pub publisher_count: Option<u16>,
-    pub exponent: Option<i16>,
-    pub confidence: Option<I64>,
-    pub funding_rate: Option<I64>,
-    pub funding_timestamp_ns: Option<Nanoseconds>,
-    pub funding_rate_interval_ns: Option<Nanoseconds>,
-    pub market_session: Option<i16>,
-    pub ema_price: Option<I64>,
-    pub ema_confidence: Option<I64>,
-    pub feed_update_timestamp_ns: Option<Nanoseconds>,
-}
-
-impl From<&verifier::ParsedFeed> for ParsedFeedView {
-    fn from(f: &verifier::ParsedFeed) -> Self {
-        Self {
-            feed_id: f.feed_id,
-            price: f.price.map(I64),
-            best_bid_price: f.best_bid_price.map(I64),
-            best_ask_price: f.best_ask_price.map(I64),
-            publisher_count: f.publisher_count,
-            exponent: f.exponent,
-            confidence: f.confidence.map(I64),
-            funding_rate: f.funding_rate.map(I64),
-            funding_timestamp_ns: f.funding_timestamp,
-            funding_rate_interval_ns: f.funding_rate_interval,
-            market_session: f.market_session,
-            ema_price: f.ema_price.map(I64),
-            ema_confidence: f.ema_confidence.map(I64),
-            feed_update_timestamp_ns: f.feed_update_timestamp,
-        }
+fn parsed_feed_view(feed: &verifier::ParsedFeed) -> ParsedFeedView {
+    ParsedFeedView {
+        feed_id: feed.feed_id,
+        price: feed.price.map(I64),
+        best_bid_price: feed.best_bid_price.map(I64),
+        best_ask_price: feed.best_ask_price.map(I64),
+        publisher_count: feed.publisher_count,
+        exponent: feed.exponent,
+        confidence: feed.confidence.map(I64),
+        funding_rate: feed.funding_rate.map(I64),
+        funding_timestamp_ns: feed.funding_timestamp,
+        funding_rate_interval_ns: feed.funding_rate_interval,
+        market_session: feed.market_session,
+        ema_price: feed.ema_price.map(I64),
+        ema_confidence: feed.ema_confidence.map(I64),
+        feed_update_timestamp_ns: feed.feed_update_timestamp,
     }
 }
 
-/// JSON view of a verified update returned by [`Contract::verify_update`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[near(serializers = [json])]
-pub struct VerifiedUpdateView {
-    /// The trusted ed25519 signer public key (hex).
-    #[serde(
-        serialize_with = "hex::serde::serialize",
-        deserialize_with = "hex::serde::deserialize"
-    )]
-    pub signer: [u8; 32],
-    pub channel_id: u8,
-    pub timestamp_ns: Nanoseconds,
-    pub feeds: Vec<ParsedFeedView>,
-}
-
-impl From<verifier::VerifiedUpdate> for VerifiedUpdateView {
-    fn from(update: verifier::VerifiedUpdate) -> Self {
-        Self {
-            signer: update.signer,
-            channel_id: update.channel_id,
-            timestamp_ns: update.timestamp,
-            feeds: update.feeds.iter().map(ParsedFeedView::from).collect(),
-        }
+fn verified_update_view(update: verifier::VerifiedUpdate) -> VerifiedUpdateView {
+    VerifiedUpdateView {
+        signer: update.signer,
+        channel_id: update.channel_id,
+        timestamp_ns: update.timestamp,
+        feeds: update.feeds.iter().map(parsed_feed_view).collect(),
     }
 }
 
@@ -543,7 +458,7 @@ impl Contract {
             // Intrinsic validity lives in `feed_data_from_parsed`; `None` skips. Timestamps are
             // already `Nanoseconds` (converted once in the verifier).
             let Some(feed_data) = feed_data_from_parsed(
-                feed,
+                &parsed_feed_view(feed),
                 update.timestamp,
                 now,
                 self.config.max_timestamp_ahead_s,
@@ -600,7 +515,7 @@ impl Contract {
     /// on-chain callers through a cross-contract call + callback (NEAR has no sync read calls).
     pub fn verify_update(&self, payload: Base64VecU8) -> VerifiedUpdateView {
         let now = Nanoseconds::near_timestamp();
-        VerifiedUpdateView::from(self.verify(&payload.0, now))
+        verified_update_view(self.verify(&payload.0, now))
     }
 
     /// Shared verification: build the kernel signer slice from config and run the verifier (panics
@@ -618,18 +533,4 @@ impl Contract {
 
         verifier::verify_solana_update(&EnvCrypto, raw, &params).unwrap_or_reject()
     }
-}
-
-/// A confidence is usable only when explicitly present and strictly positive; absent, zero, or
-/// negative ⇒ `None`, and the caller skips the feed. On the Lazer wire a `0` confidence is indistinguishable
-/// from "absent" (both deserialize to `None` upstream), so a stored feed always carries a genuine
-/// positive confidence — we reject the ambiguous/invalid case rather than mold it into a
-/// precise-looking zero.
-fn require_confidence(confidence: Option<i64>) -> Option<u64> {
-    // Defense-in-depth: keep only strictly-positive confidences. Upstream `Price` is `NonZeroI64`,
-    // so a literal `Some(0)` should never reach here, but the explicit `> 0` filter means this
-    // never stores a zero confidence even if that invariant changes on a parser rev bump.
-    confidence
-        .and_then(|value| u64::try_from(value).ok())
-        .filter(|&value| value > 0)
 }
