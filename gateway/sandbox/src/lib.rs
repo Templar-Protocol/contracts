@@ -80,12 +80,51 @@ pub async fn patch_data(
 
 /// State patches are optimistic; call [`wait_until_final`] before signing with a
 /// patched key, because near-api reads signer keys at `Final`.
+///
+/// Large patches go over several requests, applied in order but not atomically: a failure leaves
+/// earlier batches applied, and only a record in the last batch reaching `Final` implies the rest
+/// has.
 pub async fn patch_records(network: &NetworkConfig, records: Vec<StateRecord>) -> Result<()> {
-    client(network)
-        .call(RpcSandboxPatchStateRequest { records })
-        .await
-        .context("sandbox_patch_state failed")?;
+    let client = client(network);
+    let batches = batches(records)?;
+    let count = batches.len();
+    for (index, records) in batches.into_iter().enumerate() {
+        let len = records.len();
+        client
+            .call(RpcSandboxPatchStateRequest { records })
+            .await
+            .with_context(|| {
+                format!(
+                    "sandbox_patch_state failed on batch {} of {count} ({len} records); earlier \
+                     batches stay applied",
+                    index + 1
+                )
+            })?;
+    }
     Ok(())
+}
+
+/// neard's RPC refuses a request body over 2 MiB whatever `json_payload_max_size` allows, so one
+/// record larger than this cannot be patched at all.
+const PATCH_REQUEST_BYTES: usize = 1536 * 1024;
+
+/// Split `records` into requests of at most [`PATCH_REQUEST_BYTES`] each, in order; a single
+/// larger record travels alone.
+fn batches(records: Vec<StateRecord>) -> Result<Vec<Vec<StateRecord>>> {
+    let mut batches: Vec<Vec<StateRecord>> = Vec::new();
+    let mut size = 0;
+    for record in records {
+        let record_size = serde_json::to_vec(&record)?.len();
+        match batches.last_mut() {
+            Some(batch) if size + record_size <= PATCH_REQUEST_BYTES => batch.push(record),
+            _ => {
+                batches.push(vec![record]);
+                size = 0;
+            }
+        }
+        size += record_size;
+    }
+    Ok(batches)
 }
 
 /// Advance the sandbox chain by `delta_height` blocks.
@@ -139,6 +178,7 @@ pub fn sandbox_config() -> SandboxConfig {
                     min_block_production_delay: duration_json(min_block_ms),
                     max_block_production_delay: duration_json(max_block_ms),
                 },
+                trie_viewer_state_size_limit: TRIE_VIEWER_STATE_SIZE_LIMIT,
             })
             .unwrap_or_else(|error| panic!("sandbox config serializes: {error}")),
         ),
@@ -154,9 +194,13 @@ pub fn sandbox_config() -> SandboxConfig {
     }
 }
 
+/// The default 50 kB refuses `view_state` for any account holding a contract blob.
+const TRIE_VIEWER_STATE_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
+
 #[derive(Serialize)]
 struct AdditionalConfig {
     consensus: ConsensusConfig,
+    trie_viewer_state_size_limit: u64,
 }
 
 #[derive(Serialize)]
@@ -192,4 +236,60 @@ fn block_delays_ms() -> (u64, u64) {
         Err(_) => MIN_BLOCK_MS,
     };
     (min, 2 * FAST_FORWARD_BLOCK_MS - min)
+}
+
+#[cfg(test)]
+mod tests {
+    use near_primitives::{
+        state_record::StateRecord,
+        types::{StoreKey, StoreValue},
+    };
+
+    use super::{batches, PATCH_REQUEST_BYTES};
+
+    fn record(index: u8, len: usize) -> StateRecord {
+        StateRecord::Data {
+            account_id: "registry.near".parse().unwrap(),
+            data_key: StoreKey::from(vec![index]),
+            value: StoreValue::from(vec![index; len]),
+        }
+    }
+
+    fn index_of(record: &StateRecord) -> u8 {
+        match record {
+            StateRecord::Data { data_key, .. } => data_key[0],
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn batches_keep_order_stay_bounded_and_send_an_oversized_record_alone() {
+        let records = vec![
+            record(0, 100),
+            record(1, PATCH_REQUEST_BYTES),
+            record(2, PATCH_REQUEST_BYTES / 3),
+            record(3, PATCH_REQUEST_BYTES / 3),
+            record(4, PATCH_REQUEST_BYTES / 2),
+        ];
+
+        let batches = batches(records).unwrap();
+
+        let order: Vec<Vec<u8>> = batches
+            .iter()
+            .map(|batch| batch.iter().map(index_of).collect())
+            .collect();
+        assert_eq!(order, vec![vec![0], vec![1], vec![2, 3], vec![4]]);
+        for batch in batches.iter().filter(|batch| batch.len() > 1) {
+            let size: usize = batch
+                .iter()
+                .map(|record| serde_json::to_vec(record).unwrap().len())
+                .sum();
+            assert!(size <= PATCH_REQUEST_BYTES, "{size}");
+        }
+    }
+
+    #[test]
+    fn no_records_means_no_requests() {
+        assert!(batches(Vec::new()).unwrap().is_empty());
+    }
 }
