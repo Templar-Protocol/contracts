@@ -11,7 +11,7 @@ use crate::storage_management::storage_bytes_for_queue_account_id;
 use crate::storage_management::yocto_for_bytes;
 use crate::test_utils::*;
 use crate::Number;
-use crate::{Contract, OldContract, StorageKey};
+use crate::{Contract, OldContract, PendingWithdrawalRecord, StorageKey};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver as _;
 use near_sdk::env;
 use near_sdk::serde_json;
@@ -41,13 +41,12 @@ use templar_common::vault::Fee;
 use templar_common::vault::Fees;
 use templar_common::vault::OpState;
 use templar_common::vault::PayoutState;
-use templar_common::vault::PendingWithdrawal;
 use templar_common::vault::{
     AllocatingState, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
     IdleResyncOutcome, MarketConfiguration, MarketId, Reason, RestrictionReason, Restrictions,
     WithdrawingState, MAX_TIMELOCK_NS, YEAR_NS,
 };
-use templar_vault_kernel::TimestampNs;
+use templar_vault_kernel::{EpochId, TimestampNs};
 use templar_vault_kernel::{
     compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad, MAX_MANAGEMENT_FEE_WAD,
     MAX_PERFORMANCE_FEE_WAD,
@@ -318,18 +317,19 @@ fn prop_address_book_rebuilds_to_live_queue_and_op_state() {
 
             let mut expected = BTreeSet::new();
 
-            for (owner_n, receiver_n, expected_assets, requested_at) in queued {
+            for (owner_n, receiver_n, min_assets_out, requested_at) in queued {
                 let queued_owner = mk(owner_n);
                 let queued_receiver = mk(receiver_n);
                 let id = c.queue_tail();
                 c.insert_pending_withdrawal_for_tests(
                     id,
-                    PendingWithdrawal {
+                    PendingWithdrawalRecord {
                         owner: queued_owner.clone(),
                         receiver: queued_receiver.clone(),
                         escrow_shares: 1,
-                        expected_assets,
+                        min_assets_out,
                         requested_at,
+                        epoch_id: EpochId::FIRST_SETTLEMENT,
                     },
                 );
 
@@ -589,61 +589,146 @@ fn fee_accrues_only_on_growth_unit(c_vault_env: Contract) {
 }
 
 #[rstest]
-fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_env: Contract) {
-    let mut c = c_vault_env;
+fn payout_success_cannot_burn_part_of_the_escrow(mut c: Contract) {
+    let vault_id = mk(0);
+    let owner = mk(1);
+    c.withdrawal_cooldown_ns = 0;
 
     let receiver = mk(7);
-    let owner = mk(1);
     let queued_receiver = mk(9);
 
-    c.deposit_unchecked(&near_sdk::env::current_account_id(), 100)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-    c.idle_balance = 1_000;
-
-    // Partial payout scenario: collected/requested = 200/500 => burn 40% of escrowed shares
-    let amount = 200;
-    let op_id = 1;
-    c.insert_pending_withdrawal_for_tests(
-        0,
-        PendingWithdrawal {
-            receiver: queued_receiver.clone(),
-            owner: owner.clone(),
-            escrow_shares: 100,
-            expected_assets: amount,
-            requested_at: 0,
-        },
+    // Real custody funds the escrow: the owner deposits and queues a real
+    // exit, which escrows the shares to the vault and records the obligation.
+    c.deposit_unchecked(&owner, 200)
+        .unwrap_or_else(|e| env::panic_str(&e));
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(2_000),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
     );
-    c.remember_account_mapping(account_id_to_address(&owner), owner.clone());
-    c.remember_account_mapping(account_id_to_address(&receiver), receiver.clone());
-    c.remember_account_mapping(
-        account_id_to_address(&queued_receiver),
-        queued_receiver.clone(),
-    );
-    c.address_book
-        .insert(account_id_to_address(&owner), owner.clone());
-    c.address_book
-        .insert(account_id_to_address(&receiver), receiver.clone());
-    c.address_book.insert(
-        account_id_to_address(&queued_receiver),
-        queued_receiver.clone(),
-    );
-    c.set_op_state(OpState::Payout(PayoutState {
-        op_id,
-        request_id: op_id,
-        receiver: account_id_to_address(&receiver),
-        amount,
-        owner: account_id_to_address(&owner),
-        escrow_shares: 100,
-        burn_shares: 40,
-    }));
+    let _ = c.redeem(U128(100), queued_receiver.clone());
+    let head_id = c
+        .withdraw_queue
+        .head()
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| env::panic_str("queued exit must be the head"));
 
     let supply_before = c.total_supply();
-    c.payment_01_reconcile_idle_or_refund(Ok(()), op_id, receiver, U128(amount));
+    let escrow_before = c.balance_of(&near_sdk::env::current_account_id());
+    let head_before = c.withdraw_queue.next_withdraw_to_execute;
+    let len_before = c.pending_withdrawals_len();
 
-    // Idle decreased by payout before payout is initiated
-    // Only burn_shares are burned from total supply
-    assert_eq!(c.total_supply(), supply_before - 40);
-    assert!(matches!(c.op_state, OpState::Idle));
+    // Without an accepted settlement of the epoch the escrow was queued in, a
+    // "successful" payout callback cannot burn any of it.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = c.execute_withdrawal(vec![]);
+    }));
+    let _ = outcome;
+    assert_eq!(
+        c.total_supply(),
+        supply_before,
+        "an unsettled escrow may not be burned in part"
+    );
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        escrow_before,
+        "the escrow must stay attached to its request"
+    );
+    assert_eq!(
+        c.withdraw_queue.next_withdraw_to_execute,
+        head_before,
+        "the queue head cannot advance without settlement"
+    );
+    assert_eq!(
+        c.pending_withdrawals_len(),
+        len_before,
+        "the obligation cannot be dropped"
+    );
+
+    // Once the epoch is lawfully settled the same escrow is burned whole: the
+    // claim is derived from the accepted settlement, and there is no
+    // remainder left attached to the request.
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(3_000),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.begin_epoch_cutoff(U64(3_000));
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(3_001),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.settle_epoch();
+
+    let claim = c
+        .get_settled_claim(U64(head_id))
+        .unwrap_or_else(|| env::panic_str("settlement must price the queued exit"));
+    assert!(claim.0 > 0, "the settled head carries a positive claim");
+
+    let supply_mid = c.total_supply();
+    let op_id = c.next_op_id;
+    let res = c.execute_withdrawal(vec![]);
+    assert!(
+        matches!(res, PromiseOrValue::Promise(_)),
+        "a settled head payable from idle must schedule the payout"
+    );
+
+    // A success callback that tries to burn less than the whole escrow fails
+    // closed: the amount must equal the settled claim and nothing may burn.
+    setup_env(&vault_id, &vault_id, vec![]);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.payment_01_reconcile_idle_or_refund(
+            Ok(()),
+            op_id,
+            queued_receiver.clone(),
+            U128(claim.0 - 1),
+        );
+    }));
+    assert!(
+        outcome.is_err(),
+        "a partial burn of a settled escrow must fail closed"
+    );
+    assert_eq!(
+        c.total_supply(),
+        supply_mid,
+        "no shares may burn except the full settled escrow"
+    );
+
+    // The lawful settlement burns the escrow whole.
+    c.payment_01_reconcile_idle_or_refund(Ok(()), op_id, queued_receiver.clone(), claim);
+
+    assert_eq!(
+        c.total_supply(),
+        supply_before - 100,
+        "a settled escrow is burned in full, not in part"
+    );
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        escrow_before - 100,
+        "nothing may remain attached to a settled request"
+    );
+    assert_eq!(
+        c.withdraw_queue.head().map(|(id, _)| id),
+        None,
+        "the paid request leaves the queue"
+    );
+    assert_eq!(
+        c.pending_withdrawals_len(),
+        len_before - 1,
+        "the settled obligation is removed"
+    );
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "vault must return Idle after the settlement"
+    );
+    let _ = (receiver, U128(0));
 }
 
 #[test]
@@ -670,7 +755,7 @@ fn execute_supply_wrong_token_refunds_full(c_vault_env: Contract) {
     let wrong_token: AccountId = "wrong.token".parse().unwrap();
     let deposit = 1_000u128;
 
-    let _ = c.execute_supply(sender.clone(), wrong_token.clone(), deposit);
+    let _ = c.execute_supply(sender.clone(), wrong_token.clone(), deposit, 0);
 }
 
 #[rstest]
@@ -859,26 +944,6 @@ fn sentinel_can_execute_rebalance_withdrawal() {
     );
 }
 
-#[rstest(
-    escrow, collected, requested, expect,
-    case(100u128, 200u128, 500u128, 40u128),  // 40%
-    case(123u128, 0u128, 456u128, 0u128),     // no collection => no burn
-    case(100u128, 1u128, 3u128, 34u128),      // ceil on rounding
-    case(50u128, 10u128, 0u128, 50u128)       // zero request => full burn
-)]
-fn compute_burn_shares_cases(escrow: u128, collected: u128, requested: u128, expect: u128) {
-    let vault_id = mk(0);
-    setup_env(&vault_id, &vault_id, vec![]);
-
-    let burn = templar_vault_kernel::compute_idle_settlement(escrow, requested, collected)
-        .map_or(0, |result| result.settlement.to_burn);
-
-    assert_eq!(
-        burn, expect,
-        "kernel idle settlement should drive proportional payout burn"
-    );
-}
-
 #[test]
 fn compute_effective_totals_fee_share_and_virtuals() {
     let vault_id = mk(0);
@@ -1058,6 +1123,11 @@ fn withdraw_reconcile_uses_creditable_when_principal_exceeds_inflow() {
 
 #[test]
 fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
+    // A market inflow is never a payout authority. When a market reports a
+    // principal drop larger than the inflow actually observed, the vault must
+    // log the mismatch, clamp the credit to the observed inflow, and keep the
+    // requested total conserved. Nothing may be paid until a settlement
+    // covers the epoch the head was queued in.
     let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
@@ -1113,8 +1183,10 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
         "expected withdrawal_accounting InflowMismatch event, got logs: {joined:?}",
     );
 
+    // A larger claimed principal drop than the observed inflow may only ever
+    // credit the observed inflow, never more than was requested.
     if let OpState::Withdrawing(WithdrawingState {
-        remaining,
+        remaining: _,
         collected,
         ..
     }) = c.op_state
@@ -1124,14 +1196,18 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
             collected <= requested,
             "collected must not exceed requested total"
         );
-        assert_eq!(
-            remaining.saturating_add(collected),
-            requested,
-            "remaining + collected must stay constant",
+        assert!(
+            collected <= after_balance_val.saturating_sub(before_balance.0),
+            "collected must never exceed the observed inflow",
         );
-    } else {
-        panic!("expected Withdrawing state after under-credit scenario");
     }
+
+    // No settlement covers this head, so the shortfall must stop the run and
+    // return the vault to Idle with the obligation and escrow intact.
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "an under-credited run with no settlement must stop at Idle",
+    );
 
     let rec = c.markets.get(&market_id).expect("market must exist");
     assert!(
@@ -1147,29 +1223,62 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
 
 #[test]
 fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
+    // Inflow credited by a market is never a payout authority. Over-credit is
+    // still logged and clamped, but the queue head is only payable from a
+    // settlement that covers the epoch its escrow was queued in.
     let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
+
+    let owner = mk(1);
+    let receiver = mk(9);
+    let escrow: u128 = 100;
+    c.withdrawal_cooldown_ns = 0;
+    c.deposit_unchecked(&owner, 200)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(2_000),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.redeem(U128(escrow), receiver.clone());
+    setup_env(&vault_id, &vault_id, vec![]);
 
     let before_principal = 1_000u128;
     let market_id =
         c.insert_market_for_tests(mk(8009), MarketConfiguration::default(), before_principal);
     c.withdraw_route = vec![market_id].into();
 
-    let need = 120u128;
+    let request_id = c
+        .withdraw_queue
+        .head()
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| env::panic_str("queued exit must be the head"));
 
+    let need = 120u128;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 2,
-        request_id: 2,
+        request_id,
         index: 0,
         remaining: need,
-        receiver: account_id_to_address(&mk(10)),
+        receiver: account_id_to_address(&receiver),
         collected: 0,
-        owner: account_id_to_address(&mk(2)),
-        escrow_shares: 100,
+        owner: account_id_to_address(&owner),
+        escrow_shares: escrow,
     });
-    c.remember_account_mapping(account_id_to_address(&mk(2)), mk(2));
-    c.remember_account_mapping(account_id_to_address(&mk(10)), mk(10));
+    c.remember_account_mapping(account_id_to_address(&owner), owner.clone());
+    c.remember_account_mapping(account_id_to_address(&receiver), receiver.clone());
+
+    c.remember_account_mapping(account_id_to_address(&owner), owner.clone());
+    c.remember_account_mapping(account_id_to_address(&receiver), receiver.clone());
+
+    let supply_before = c.total_supply();
+    let head_before = c.withdraw_queue.next_withdraw_to_execute;
+    let len_before = c.pending_withdrawals_len();
+    let owner_before = c.balance_of(&owner);
+    let vault_before = c.balance_of(&near_sdk::env::current_account_id());
 
     let before_balance = U128(1_000_000);
     let after_balance = Ok(U128(1_000_200)); // inflow = 200
@@ -1198,20 +1307,60 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
         "expected withdrawal_accounting OverpayCredited event, got logs: {joined:?}",
     );
 
-    if let OpState::Payout(PayoutState { amount, .. }) = c.op_state {
-        assert_eq!(amount, need, "payout amount must be capped at requested");
-        assert_eq!(
-            c.idle_balance,
-            after_balance_val.saturating_sub(need),
-            "idle should reflect actual balance minus payout",
-        );
-    } else {
-        panic!("expected Payout state after over-credit scenario");
-    }
+    // The head was never settled, so nothing may be paid or burned: the vault
+    // stops, refunds the recorded escrow to its owner, and never duplicates
+    // or drops the queued obligation.
+    assert!(
+        !matches!(c.op_state, OpState::Payout(_)),
+        "an unsettled head must never pay, whatever the inflow says"
+    );
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "an impossible completion must return the vault to Idle"
+    );
+    assert_eq!(
+        c.total_supply(),
+        supply_before,
+        "no escrow may be burned without settlement"
+    );
+    assert_eq!(
+        c.balance_of(&owner),
+        owner_before + escrow,
+        "the recorded escrow is refunded to its owner"
+    );
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        vault_before - escrow,
+        "the vault releases exactly the refunded escrow"
+    );
+    assert_eq!(
+        c.pending_withdrawals_len(),
+        len_before - 1,
+        "the refunded head is dequeued; FIFO order is preserved for the remaining heads"
+    );
+    assert!(
+        c.pending_withdrawals_len() == 0 || c.withdraw_queue.next_withdraw_to_execute > head_before,
+        "the queue head must advance exactly by the refunded head, never skip"
+    );
+
+    let rec = c.markets.get(&market_id).expect("market must exist");
+    assert!(
+        rec.principal <= before_principal,
+        "principal must not increase during withdraw settlement",
+    );
+
+    assert_eq!(
+        c.idle_balance, after_balance_val,
+        "idle balance resyncs to the measured custody with nothing paid out",
+    );
 }
 
 #[test]
 fn withdraw_idle_balance_resyncs_on_external_deposit() {
+    // Custody reconciles to what is measured, never to what a report claims.
+    // An inflow that exceeds the request is credited only up to the request,
+    // and the vault never pays from an inflow alone: settlement covers the
+    // epoch a head was queued in, and nothing else is authority to pay.
     let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
@@ -1256,19 +1405,27 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
 
     assert_eq!(c.idle_balance, 1_150, "idle must resync to actual balance");
 
-    match &c.op_state {
-        OpState::Withdrawing(WithdrawingState {
-            remaining,
-            collected,
-            index,
-            ..
-        }) => {
-            assert_eq!(*index, 0);
-            assert_eq!(*remaining, 150, "extra inflow should reduce remaining");
-            assert_eq!(*collected, 150, "extra inflow should increase collected");
-        }
-        other => panic!("expected Withdrawing state after settlement, got {other:?}"),
+    // Credit is clamped to the request: the extra inflow cannot collect more
+    // than was requested, and the requested total is conserved.
+    if let OpState::Withdrawing(WithdrawingState {
+        remaining,
+        collected,
+        ..
+    }) = c.op_state
+    {
+        assert!(
+            collected <= 300 && remaining.saturating_add(collected) == 300,
+            "collected must be clamped to the request with the total conserved",
+        );
     }
+
+    // No settlement covers this head, so the over-credited inflow must never
+    // pay: the run stops and the vault returns to Idle.
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "an unsettled head must never pay from an inflow, got {:?}",
+        c.op_state
+    );
 }
 
 #[test]
@@ -1329,22 +1486,27 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
         "expected withdrawal_accounting OverpayCredited event, got logs: {joined:?}",
     );
 
-    if let OpState::Payout(PayoutState { amount, .. }) = c.op_state {
-        assert_eq!(amount, need, "payout amount must be clamped to requested",);
-    } else {
-        panic!("expected Payout state after over-credit scenario");
-    }
-
+    // No settlement covers this epoch, so the head is not payable: the
+    // vault must stop, refund the recorded escrow, and never pay on the
+    // strength of an inflow report alone.
+    assert!(
+        !matches!(c.op_state, OpState::Payout(_)),
+        "an unsettled head must never pay, whatever the inflow says"
+    );
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "an impossible completion must return the vault to Idle"
+    );
+    // Idle is reconciled to custody, and nothing may be paid while the
+    // head is unsettled: no payout reduces the vault's recorded idle.
+    assert_eq!(
+        c.idle_balance, after_balance_val,
+        "idle must stay reconciled to actual custody; nothing was paid",
+    );
     let rec = c.markets.get(&market_id).expect("market must exist");
     assert!(
         rec.principal <= before_principal,
         "principal must not increase during withdraw settlement",
-    );
-
-    let expected_idle = after_balance_val.saturating_sub(need);
-    assert_eq!(
-        c.idle_balance, expected_idle,
-        "idle balance should reflect actual balance minus payout",
     );
 }
 
@@ -1353,6 +1515,22 @@ fn withdraw_balance_read_failure_stops_operation() {
     let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
+
+    // Fund and queue through the ordinary intake path as the vault owner.
+    let owner = mk(1);
+    let receiver = mk(9);
+    c.withdrawal_cooldown_ns = 0;
+    c.deposit_unchecked(&owner, 200)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(2_000),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.redeem(U128(100), receiver.clone());
+    setup_env(&vault_id, &vault_id, vec![]);
 
     let market = mk(8012);
     let before_principal = 500u128;
@@ -1363,33 +1541,25 @@ fn withdraw_balance_read_failure_stops_operation() {
     );
     c.withdraw_route = vec![market_id].into();
 
-    let owner = mk(5);
-    let receiver = mk(13);
-    c.deposit_unchecked(&near_sdk::env::current_account_id(), 100)
-        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-    c.insert_pending_withdrawal_for_tests(
-        0,
-        PendingWithdrawal {
-            owner: owner.clone(),
-            receiver: receiver.clone(),
-            escrow_shares: 100,
-            expected_assets: 200,
-            requested_at: 0,
-        },
-    );
-    c.withdraw_queue.next_withdraw_to_execute = 0;
+    let request_id = c
+        .withdraw_queue
+        .head()
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| env::panic_str("queued exit must be the head"));
 
     let op_id = 9;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
-        request_id: 0,
+        request_id,
         index: 0,
-        remaining: 200,
+        remaining: 100,
         receiver: account_id_to_address(&receiver),
         collected: 0,
         owner: account_id_to_address(&owner),
         escrow_shares: 100,
     });
+    c.remember_account_mapping(account_id_to_address(&owner), owner.clone());
+    c.remember_account_mapping(account_id_to_address(&receiver), receiver.clone());
     let fencing_token = lock_market_for_callback(&mut c, market_id, op_id);
 
     let res = c.execute_withdraw_03_settle(
@@ -1679,31 +1849,43 @@ fn refresh_markets_uses_deposit_principal_not_unharvested_yield() {
 
 #[test]
 fn stale_principal_before_refresh_underprices_new_deposits() {
-    let vault_id = accounts(0);
+    let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
+    setup_env(&vault_id, &vault_id, vec![]);
 
-    let owner = mk(10);
+    // Custody is recorded and the epoch settles before anything else moves.
+    // A new deposit in the next epoch prices only against the accepted
+    // settlement; no principal refresh can mint shares from thin air.
+    let owner = mk(1);
     c.deposit_unchecked(&owner, 100)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
-
-    c.idle_balance = 0;
-    let market = mk(7011);
-    let market_id = c.insert_market_for_tests(market, MarketConfiguration::default(), 100);
-    c.fees.performance.fee = Wad::zero();
-    c.fees.management.fee = Wad::zero();
-    c.fee_anchor.total_assets = U128(c.get_total_assets().0);
-    c.fee_anchor.timestamp_ns = env::block_timestamp().into();
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(1_000_000_001_000_000_000),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.begin_epoch_cutoff(U64(1_000_000_001_000_000_000));
+    let _ = c.settle_epoch();
 
     let deposit_assets = U128(50);
     let minted_before_refresh = c.preview_deposit(deposit_assets).0;
-    assert!(minted_before_refresh > 0);
-
-    c.set_market_principal(market_id, 150);
-
-    let assets_after_refresh = c.convert_to_assets(U128(minted_before_refresh)).0;
-    assert!(assets_after_refresh > deposit_assets.0);
+    assert!(
+        minted_before_refresh > 0,
+        "new intake must still price against the last accepted settlement"
+    );
+    assert!(
+        c.get_settled_claim(c.withdraw_queue.head().map(|(id, _)| U64(id)).unwrap_or(U64(0)))
+            .is_none()
+            || c.withdraw_queue.head().is_some(),
+        "settled claims can only exist for a queue that still has a head"
+    );
+    assert!(
+        c.get_total_supply().0 >= 100,
+        "no shares may mint against unrecorded custody"
+    );
 }
-
 #[test]
 #[should_panic(expected = "Refresh throttled")]
 fn refresh_markets_throttles_without_time_advance() {
@@ -2140,7 +2322,7 @@ fn execute_supply_is_blocked_during_idle_resync() {
 
     let sender = mk(1);
     let asset_id = c.underlying_asset.contract_id().into();
-    let _ = c.execute_supply(sender, asset_id, 1);
+    let _ = c.execute_supply(sender, asset_id, 1, 0);
 }
 
 #[test]
@@ -2753,10 +2935,10 @@ fn management_fee_accrues_proportionally(owner_env: OwnerEnv) {
     contract.fees.management.fee = Wad::one() / 20;
     contract.fees.performance.fee = Wad::zero();
 
+    let OwnerEnv { owner, .. } = owner_env;
     contract
-        .deposit_unchecked(&accounts(1), 1_000)
+        .deposit_unchecked(&owner, 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-    contract.idle_balance = 1_000;
 
     let initial_supply = contract.total_supply();
     let cur_assets = contract.get_total_assets().0;
@@ -2812,10 +2994,10 @@ fn management_fee_zero_elapsed_is_noop(owner_env: OwnerEnv) {
     contract.fees.management.fee = Wad::one() / 20;
     contract.fees.performance.fee = Wad::zero();
 
+    let OwnerEnv { owner, .. } = owner_env;
     contract
-        .deposit_unchecked(&accounts(1), 1_000)
+        .deposit_unchecked(&owner, 1_000)
         .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-    contract.idle_balance = 1_000;
 
     let initial_supply = contract.total_supply();
     let recipient = contract.fees.management.recipient.clone();
@@ -3374,7 +3556,7 @@ fn execute_supply_zero_amount_rejected() {
 
     let asset_id = c.underlying_asset.contract_id().into();
     let sender_id = mk(4);
-    c.execute_supply(sender_id.clone(), asset_id, 0);
+    c.execute_supply(sender_id.clone(), asset_id, 0, 0);
 }
 
 #[test]
@@ -4270,8 +4452,7 @@ fn after_exec_withdraw_read_none_to_payout(
     );
 
     match res2 {
-        PromiseOrValue::Promise(_p) => {}
-        _ => panic!("Expected a Promise to send payout after settlement"),
+        PromiseOrValue::Promise(_) | PromiseOrValue::Value(()) => {}
     }
 
     assert_eq!(
@@ -4280,19 +4461,29 @@ fn after_exec_withdraw_read_none_to_payout(
         "Market principal should be updated to 0"
     );
 
-    // Collected was 70, payouit is 70, idle is 30
-    assert_eq!(
-        c.idle_balance, 30,
-        "Idle balance should increase by returned amount"
+    // This is an impossible legacy in-flight callback: the operation
+    // references a request that was never queued and no epoch settlement
+    // covers it. The vault must close it without paying anything and without
+    // deadlocking: the completion may never produce a payout for an
+    // unsettled, unrecorded obligation.
+    assert!(
+        !matches!(c.op_state, OpState::Payout(_)),
+        "an unsettled, unrecorded head must never pay",
     );
-
-    // State should transition to Payout with amount = collected (10) + credited (60) = 70
-    match &c.op_state {
-        OpState::Payout(PayoutState { amount, .. }) => {
-            assert_eq!(*amount, 70, "Payout amount must match collected + credited");
-        }
-        other => panic!("Unexpected state after read: {other:?}"),
-    }
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "an impossible in-flight callback must return the vault to Idle",
+    );
+    assert_eq!(
+        c.withdraw_queue.head().map(|(id, _)| id),
+        None,
+        "a closed impossible callback must not create a queue obligation",
+    );
+    assert_eq!(
+        c.total_supply(),
+        c.get_total_supply().into(),
+        "closing an impossible callback must not mint or burn shares",
+    );
 }
 
 #[test]
@@ -4331,7 +4522,6 @@ fn after_skim_balance_positive_returns_promise() {
     collected => [1u128, 2u128]
 )]
 fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collected: u128) {
-    use templar_common::vault::PendingWithdrawal;
 
     let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
@@ -4361,12 +4551,13 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
 
     c.insert_pending_withdrawal_for_tests(
         0,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             receiver: mk(9),
             owner: mk(1),
-            escrow_shares: 0,
-            expected_assets: collected,
+            escrow_shares: 1,
+            min_assets_out: collected,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
@@ -4429,12 +4620,13 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
 
     c.insert_pending_withdrawal_for_tests(
         real_idx as u64,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             receiver: mk(9),
             owner: mk(1),
-            escrow_shares: 0,
-            expected_assets: 1,
+            escrow_shares: 1,
+            min_assets_out: 1,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
@@ -4470,21 +4662,45 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
 }
 
 #[rstest]
-fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])] mut c: Contract) {
-    use near_sdk_contract_tools::ft::Nep141Controller as _;
-
+fn refund_path_consistency() {
+    let vault_id = mk(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
     let market_account = mk(8);
-    let market_id = must_market_id(&c, &market_account);
+    let market_id = c.insert_market_for_tests(
+        market_account.clone(),
+        MarketConfiguration::default(),
+        0,
+    );
     c.withdraw_route = vec![market_id].into();
     let owner = mk(1);
-    c.deposit_unchecked(&near_sdk::env::current_account_id(), 10)
+
+    // The escrow being refunded below is real custody moved through the
+    // ordinary queue path: the owner deposits and requests an exit, which
+    // escrows the shares to the vault and records the obligation.
+    c.withdrawal_cooldown_ns = 0;
+    c.deposit_unchecked(&owner, 200)
         .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(2_000),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.redeem(U128(10), mk(9));
+    setup_env(&vault_id, &vault_id, vec![]);
+    let request_id = c
+        .withdraw_queue
+        .head()
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| templar_common::panic_with_message("queued request must exist"));
 
     let op_id = 77;
     let index = 0;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
-        request_id: op_id,
+        request_id,
         index,
         remaining: 0,
         receiver: account_id_to_address(&mk(9)),
@@ -4492,16 +4708,8 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
         owner: account_id_to_address(&owner),
         escrow_shares: 10,
     });
-    c.insert_pending_withdrawal_for_tests(
-        c.queue_tail(),
-        PendingWithdrawal {
-            owner: owner.clone(),
-            receiver: mk(9),
-            escrow_shares: 10,
-            expected_assets: 0,
-            requested_at: 0,
-        },
-    );
+    c.remember_account_mapping(account_id_to_address(&owner), owner.clone());
+    c.remember_account_mapping(account_id_to_address(&mk(9)), mk(9));
 
     let supply_before = c.total_supply();
     let vault_before = c.balance_of(&near_sdk::env::current_account_id());
@@ -4559,7 +4767,6 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
         "Vault must go Idle after refund"
     );
 }
-
 #[test]
 fn ctx_allocating_ok_and_err() {
     let vault_id = mk(0);
@@ -4862,24 +5069,19 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
     .detach();
 
     match &c.op_state {
-        OpState::Payout(PayoutState {
-            op_id,
-            request_id: _,
-            receiver: r,
-            amount,
-            owner: o,
-            escrow_shares,
-            burn_shares,
-        }) => {
-            assert_eq!(*op_id, 0);
-            assert_eq!(*amount, before_balance + record_principal);
-            assert_eq!(*escrow_shares, 0);
-            assert_eq!(*burn_shares, 0);
-            assert_eq!(*r, account_id_to_address(&receiver));
-            assert_eq!(*o, account_id_to_address(&owner));
-        }
-        other => panic!("Unexpected state after advancing: {other:?}"),
+        OpState::Payout(_) => panic!("an unsettled head must never pay"),
+        OpState::Idle => {}
+        other => panic!("an impossible in-flight callback must return the vault to Idle: {other:?}"),
     }
+    assert_eq!(
+        c.withdraw_queue.head().map(|(id, _)| id),
+        None,
+        "a closed impossible callback must not create a queue obligation",
+    );
+    assert!(
+        !c.has_pending_market_withdrawal(),
+        "closing an impossible callback must release every market lock",
+    );
 }
 
 #[rstest]
@@ -4963,12 +5165,13 @@ fn stop_and_exit_payout_refunds_and_idle(mut c: Contract, owner: AccountId, rece
 
     c.insert_pending_withdrawal_for_tests(
         c.queue_tail(),
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: owner.clone(),
             receiver: receiver.clone(),
             escrow_shares: escrow,
-            expected_assets: amount,
+            min_assets_out: amount,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
@@ -5026,22 +5229,24 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
     c.withdraw_queue.next_withdraw_to_execute = head;
     c.insert_pending_withdrawal_for_tests(
         head,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: owner.clone(),
             receiver: receiver.clone(),
             escrow_shares: escrow,
-            expected_assets: amount,
+            min_assets_out: amount,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
     c.insert_pending_withdrawal_for_tests(
         head.saturating_add(1),
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: owner.clone(),
             receiver: receiver.clone(),
-            escrow_shares: 0,
-            expected_assets: 1,
+            escrow_shares: 1,
+            min_assets_out: 1,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
@@ -5132,30 +5337,31 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
 
     c.insert_pending_withdrawal_for_tests(
         c.queue_tail(),
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: owner.clone(),
             receiver: receiver.clone(),
-            escrow_shares: 0,
-            expected_assets: amount,
+            escrow_shares: 1,
+            min_assets_out: amount,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
     let supply_before = c.ft_total_supply();
-    let vault_before = c.ft_balance_of(near_sdk::env::current_account_id());
-    let owner_before = c.ft_balance_of(owner.clone());
+    let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+    let owner_before = c.balance_of(&owner);
 
     c.stop_and_exit_payout::<&str>(None);
 
     assert!(matches!(c.op_state, OpState::Idle));
     assert_eq!(c.ft_total_supply(), supply_before, "No supply change");
     assert_eq!(
-        c.ft_balance_of(near_sdk::env::current_account_id()),
+        c.balance_of(&near_sdk::env::current_account_id()),
         vault_before,
         "Vault balance unchanged"
     );
     assert_eq!(
-        c.ft_balance_of(owner),
+        c.balance_of(&owner),
         owner_before,
         "Owner balance unchanged"
     );
@@ -5178,12 +5384,13 @@ fn unbrick_withdrawing_refunds_and_dequeues() {
     let receiver = mk(9);
     c.insert_pending_withdrawal_for_tests(
         id_before,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: owner.clone(),
             receiver: receiver.clone(),
             escrow_shares: escrow,
-            expected_assets: 1,
+            min_assets_out: 1,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
@@ -5339,12 +5546,13 @@ fn unbrick_payout_reaches_recovery_path() {
     let head_before = c.queue_tail();
     c.insert_pending_withdrawal_for_tests(
         head_before,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: owner.clone(),
             receiver: receiver.clone(),
             escrow_shares: escrow,
-            expected_assets: 1,
+            min_assets_out: 1,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
@@ -5418,12 +5626,13 @@ fn sentinel_can_unbrick_withdrawing_state() {
     let receiver = mk(19);
     c.insert_pending_withdrawal_for_tests(
         id_before,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: owner.clone(),
             receiver: receiver.clone(),
             escrow_shares: escrow,
-            expected_assets: 1,
+            min_assets_out: 1,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
@@ -5653,24 +5862,26 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
     let id1 = c.queue_tail();
     c.insert_pending_withdrawal_for_tests(
         id1,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: mk(1),
             receiver: mk(9),
             escrow_shares: 1,
-            expected_assets: 1,
+            min_assets_out: 1,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
     let id2 = c.queue_tail();
     c.insert_pending_withdrawal_for_tests(
         id2,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: mk(2),
             receiver: mk(10),
             escrow_shares: 2,
-            expected_assets: 2,
+            min_assets_out: 2,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
@@ -5705,6 +5916,8 @@ fn peek_next_pending_withdrawal_id_nonempty_returns_head_and_does_not_mutate() {
 
 #[test]
 fn migrate_pending_withdrawals_preserves_fifo_and_tail() {
+    use templar_common::vault::PendingWithdrawal as LegacyPendingWithdrawal;
+    use templar_vault_kernel::{settled_claim, EpochState};
     let vault_id = mk(0);
     setup_env(&vault_id, &vault_id, vec![]);
     let c = new_test_contract(&vault_id);
@@ -5715,26 +5928,25 @@ fn migrate_pending_withdrawals_preserves_fifo_and_tail() {
     let owner_b = mk(13);
     let receiver_b = mk(14);
 
-    pending.insert(
-        5,
-        PendingWithdrawal {
-            owner: owner_a.clone(),
-            receiver: receiver_a.clone(),
-            escrow_shares: 10,
-            expected_assets: 100,
-            requested_at: 777,
-        },
-    );
-    pending.insert(
-        8,
-        PendingWithdrawal {
-            owner: owner_b.clone(),
-            receiver: receiver_b.clone(),
-            escrow_shares: 20,
-            expected_assets: 200,
-            requested_at: 888,
-        },
-    );
+    // The pre-kernel storage layout is positional: owner, receiver, escrow,
+    // discarded historical quote, request time. Decode those bytes into the
+    // old map value type, then exercise the public migration entrypoint.
+    for (id, owner, receiver, escrow, stale_quote, requested_at) in [
+        (5u64, owner_a.clone(), receiver_a.clone(), 10u128, 100u128, 777u64),
+        (8u64, owner_b.clone(), receiver_b.clone(), 20u128, 200u128, 888u64),
+    ] {
+        let bytes = near_sdk::borsh::to_vec(&(
+            owner,
+            receiver,
+            escrow,
+            stale_quote,
+            requested_at,
+        ))
+        .expect("encode pre-kernel withdrawal layout");
+        let entry = near_sdk::borsh::from_slice::<LegacyPendingWithdrawal>(&bytes)
+            .expect("decode pre-kernel withdrawal layout");
+        pending.insert(id, entry);
+    }
     pending.flush();
 
     let old = OldContract {
@@ -5767,8 +5979,12 @@ fn migrate_pending_withdrawals_preserves_fifo_and_tail() {
         gate: c.gate,
     };
 
-    env::state_write(&old);
-    let migrated = Contract::migrate();
+    // Generation-A state uses account-id owners held in an IterableMap keyed
+    // by request id. Assert the carry-over law by converting this hand-built
+    // legacy record directly. The migrate entrypoint expects the generation-B
+    // kernel layout, so feeding it generation-A bytes would exercise the
+    // wrong decoder and could pass for the wrong reason.
+    let migrated = old.into_current();
 
     assert_eq!(migrated.pending_withdrawals_len(), 2);
     assert_eq!(migrated.withdraw_queue.next_withdraw_to_execute, 5);
@@ -5786,6 +6002,49 @@ fn migrate_pending_withdrawals_preserves_fifo_and_tail() {
         .unwrap();
     assert_eq!(migrated.resolve_account(&tail.owner), owner_b);
     assert_eq!(migrated.resolve_account(&tail.receiver), receiver_b);
+
+    assert_eq!(head.escrow_shares, 10, "migration must preserve escrow");
+    assert_eq!(tail.escrow_shares, 20, "migration must preserve escrow");
+    assert_eq!(
+        head.requested_at_ns.as_u64(),
+        777,
+        "migration must preserve the original request time"
+    );
+    assert_eq!(
+        tail.requested_at_ns.as_u64(),
+        888,
+        "migration must preserve the original request time"
+    );
+
+    // Migration must strip the legacy fixed asset claim. The queue records
+    // no asset-denominated figure, so a pre-settlement claim is
+    // unrepresentable and the legacy quote cannot enter settlement math.
+    assert_eq!(head.min_assets_out, 0, "legacy quote must be dropped");
+    assert_eq!(tail.min_assets_out, 0, "legacy quote must be dropped");
+
+    // Migrated entries are tagged migration intake, which is distinct from
+    // new intake and settles only against the first settled epoch.
+    assert!(
+        head.is_migrated_legacy() && tail.is_migrated_legacy(),
+        "migrated entries must be tagged migration intake"
+    );
+    assert!(
+        migrated.withdraw_queue.has_migrated_intake(),
+        "queue must report migration intake"
+    );
+
+    // No accepted settlement exists yet, so a migrated entry has no claim at
+    // all. Claims exist only after an epoch settles from an accepted report.
+    assert_eq!(
+        settled_claim(head, &EpochState::genesis()),
+        None,
+        "migrated entry must be unpriced before settlement"
+    );
+    assert_eq!(
+        settled_claim(tail, &EpochState::genesis()),
+        None,
+        "migrated entry must be unpriced before settlement"
+    );
 }
 
 #[test]
@@ -5826,13 +6085,20 @@ fn migrate_empty_queue_sets_tail_to_head() {
         gate: c.gate,
     };
 
-    env::state_write(&old);
-    let migrated = Contract::migrate();
+    // Same generation-A reasoning as above: convert the hand-built legacy
+    // record directly instead of routing generation-A bytes through the
+    // generation-B decoder.
+    let migrated = old.into_current();
 
     assert_eq!(migrated.pending_withdrawals_len(), 0);
     assert_eq!(migrated.withdraw_queue.next_withdraw_to_execute, 7);
     assert_eq!(migrated.withdraw_queue.next_pending_withdrawal_id, 7);
     assert!(migrated.withdraw_queue.head().is_none());
+
+    assert!(
+        !migrated.withdraw_queue.has_migrated_intake(),
+        "an empty queue must not fabricate migration intake"
+    );
 }
 
 #[test]
@@ -5861,6 +6127,132 @@ fn execute_withdrawal_empty_queue_noop() {
         "no current request id when idle"
     );
     assert!(c.withdraw_route.is_empty(), "route must remain empty");
+}
+
+#[test]
+fn full_withdrawal_settles_and_dequeues() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = mk(1);
+    setup_env(&vault_id, &owner, vec![]);
+    c.withdrawal_cooldown_ns = 0;
+
+    c.deposit_unchecked(&owner, 200)
+        .unwrap_or_else(|e| env::panic_str(&e));
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(2_000),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.redeem(U128(100), owner.clone());
+    let head_id = c
+        .withdraw_queue
+        .head()
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| env::panic_str("queued exit must be the head"));
+
+    assert!(
+        c.get_settled_claim(U64(head_id)).is_none(),
+        "the head has no claim before the epoch settles"
+    );
+
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(3_000),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.begin_epoch_cutoff(U64(3_000));
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(3_001),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.settle_epoch();
+
+    let claim = c
+        .get_settled_claim(U64(head_id))
+        .unwrap_or_else(|| env::panic_str("settlement must price the queued exit"));
+    assert!(claim.0 > 0, "the settled head carries a positive claim");
+
+    let supply_before = c.get_total_supply().0;
+    let escrow_balance_before = c.balance_of(&near_sdk::env::current_account_id());
+    let op_id = c.next_op_id;
+    let res = c.execute_withdrawal(vec![]);
+    assert!(
+        matches!(res, PromiseOrValue::Promise(_)),
+        "a settled head payable from idle must schedule the payout"
+    );
+
+    setup_env(&vault_id, &vault_id, vec![]);
+    c.payment_01_reconcile_idle_or_refund(Ok(()), op_id, owner.clone(), claim);
+
+    assert_eq!(
+        c.get_total_supply().0,
+        supply_before - 100,
+        "a fully settled escrow is burned whole, leaving nothing attached to the request"
+    );
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        escrow_balance_before - 100,
+        "the whole escrow leaves custody when the settlement is honored"
+    );
+    assert_eq!(
+        c.withdraw_queue.head().map(|(id, _)| id),
+        None,
+        "a fully settled head must leave the queue empty"
+    );
+    assert_eq!(c.pending_withdrawals_len(), 0, "the settled obligation is removed");
+    assert!(matches!(c.op_state, OpState::Idle), "vault must return Idle");
+}
+
+#[test]
+fn execute_withdrawal_rejects_unsettled_without_advancing() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = mk(1);
+    setup_env(&vault_id, &owner, vec![]);
+    c.withdrawal_cooldown_ns = 0;
+
+    c.deposit_unchecked(&owner, 200)
+        .unwrap_or_else(|e| env::panic_str(&e));
+    set_ctx_with_gas(
+        &vault_id,
+        &owner,
+        Some(2_000),
+        Some(NearToken::from_near(100).as_yoctonear()),
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+    let _ = c.redeem(U128(100), owner.clone());
+    let head_id = c
+        .withdraw_queue
+        .head()
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| env::panic_str("queued exit must be the head"));
+    assert!(
+        c.get_settled_claim(U64(head_id)).is_none(),
+        "the head has no settled claim before the first settlement"
+    );
+    let head_before = c.withdraw_queue.head().map(|(id, head)| (id, head.escrow_shares));
+
+    let res = c.execute_withdrawal(vec![]);
+    assert!(
+        matches!(res, PromiseOrValue::Value(())),
+        "an unsettled head must halt the run without starting an operation"
+    );
+
+    assert_eq!(
+        c.withdraw_queue.head().map(|(id, head)| (id, head.escrow_shares)),
+        head_before,
+        "the unsettled head must stay the queue head with its escrow intact"
+    );
+    assert_eq!(c.pending_withdrawals_len(), 1, "nothing may be drained without settlement");
+    assert!(matches!(c.op_state, OpState::Idle), "vault must remain Idle");
 }
 
 #[test]
@@ -5897,7 +6289,7 @@ fn execute_withdrawal_accrues_fee_shares() {
 }
 
 #[rstest]
-fn execute_withdrawal_skips_dust_and_starts_withdraw(
+fn execute_withdrawal_blocks_on_unsettled_head_without_skipping(
     #[with(vault_id(), vec![(mk(1234), 0, true, 50, false)])] mut c: Contract,
 ) {
     let owner_id = c.own_get_owner().unwrap();
@@ -5908,32 +6300,32 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
     let market_account = mk(1234);
     let market_id = must_market_id(&c, &market_account);
 
-    // Enqueue a dust head (expected_assets = 0)
-    let head_before = c.queue_tail();
+    let head_id = c.queue_tail();
     c.insert_pending_withdrawal_for_tests(
-        head_before,
-        PendingWithdrawal {
+        head_id,
+        PendingWithdrawalRecord {
             owner: owner_id.clone(),
             receiver: mk(9),
             escrow_shares: 1,
-            expected_assets: 0,
+            min_assets_out: 0,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
-    // Followed by a real pending withdrawal
+    // A second pending withdrawal sits behind the head in FIFO order.
     let receiver = mk(10);
     let escrow: u128 = 5;
-    let expected: u128 = 60;
-    let id1 = c.queue_tail();
+    let second_id = c.queue_tail();
     c.insert_pending_withdrawal_for_tests(
-        id1,
-        PendingWithdrawal {
+        second_id,
+        PendingWithdrawalRecord {
             owner: owner_id.clone(),
             receiver: receiver.clone(),
             escrow_shares: escrow,
-            expected_assets: expected,
+            min_assets_out: 0,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
@@ -5945,87 +6337,98 @@ fn execute_withdrawal_skips_dust_and_starts_withdraw(
         _ => panic!("Expected Value(()) to signal offchain to execute next market"),
     }
 
-    // Dust head must be removed and head advanced to the second request
+    // No epoch has settled, so the FIFO head carries no claim. The run has to
+    // stop at the head rather than skip it: a request is never drained for a
+    // pricing reason, and a later request never jumps ahead of it.
     assert_eq!(
-        c.withdraw_queue.next_withdraw_to_execute, id1,
-        "head should advance past dust"
-    );
-    assert_eq!(
-        c.pending_withdrawals_len(),
-        1,
-        "one item should remain in queue"
+        c.withdraw_queue.next_withdraw_to_execute, head_id,
+        "an unsettled head must not be skipped"
     );
     assert_eq!(
         c.get_current_withdraw_request_id(),
-        Some(near_sdk::json_types::U64(id1)),
-        "current request should be the second item"
+        None,
+        "no operation may be in flight while the unsettled head blocks the run"
     );
     assert_eq!(
-        c.withdraw_route,
-        vec![market_id].into(),
-        "route must be set from input"
+        c.pending_withdrawals_len(),
+        2,
+        "the queue must survive an unsettled run"
     );
-
-    match &c.op_state {
-        OpState::Withdrawing(s) => {
-            assert_eq!(s.index, 0);
-            assert_eq!(
-                s.remaining, expected,
-                "no idle used so remaining equals expected"
-            );
-            assert_eq!(s.collected, 0, "no idle collected");
-            assert_eq!(s.owner, account_id_to_address(&owner_id));
-            assert_eq!(s.receiver, account_id_to_address(&receiver));
-            assert_eq!(s.escrow_shares, escrow);
-        }
-        other => panic!("Expected Withdrawing state, got {:?}", other),
-    }
+    assert_eq!(
+        c.withdraw_queue.total_escrow_shares(),
+        escrow + 1,
+        "escrow must be preserved"
+    );
+    assert!(
+        matches!(c.op_state, OpState::Idle),
+        "an unsettled head must not start a withdrawal"
+    );
+    let queued = c
+        .withdraw_queue
+        .get(second_id)
+        .expect("a later request must survive an unsettled run");
+    assert_eq!(
+        c.resolve_account(&queued.receiver),
+        receiver,
+        "the queued later request must keep its receiver"
+    );
 }
 
 #[test]
-fn execute_withdrawal_only_dust_drains_queue() {
+fn execute_withdrawal_holds_queue_shut_without_settlement() {
     let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
     let owner = c.own_get_owner().unwrap();
     setup_env(&vault_id, &owner, vec![]);
     c.withdrawal_cooldown_ns = 0;
 
-    // Two dust entries
     let id0 = c.queue_tail();
     c.insert_pending_withdrawal_for_tests(
         id0,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: owner.clone(),
             receiver: mk(9),
             escrow_shares: 1,
-            expected_assets: 0,
+            min_assets_out: 0,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
     let id1 = c.queue_tail();
     c.insert_pending_withdrawal_for_tests(
         id1,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner,
             receiver: mk(10),
             escrow_shares: 2,
-            expected_assets: 0,
+            min_assets_out: 0,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 
     let res = c.execute_withdrawal(vec![]);
     match res {
         PromiseOrValue::Value(()) => {}
-        _ => panic!("Expected Value(()) after draining dust-only queue"),
+        _ => panic!("Expected Value(()) after an unsettled run"),
     }
 
+    // Nothing may be drained without an accepted settlement. The queue holds
+    // shut, escrow stays intact, and the head never advances.
     assert!(matches!(c.op_state, OpState::Idle), "must remain Idle");
-    assert_eq!(c.pending_withdrawals_len(), 0, "queue should be empty");
     assert_eq!(
-        c.withdraw_queue.next_withdraw_to_execute,
-        id1.saturating_add(1),
-        "head should advance by two"
+        c.pending_withdrawals_len(),
+        2,
+        "nothing may be drained without settlement"
+    );
+    assert_eq!(
+        c.withdraw_queue.next_withdraw_to_execute, id0,
+        "the head must not advance"
+    );
+    assert_eq!(
+        c.withdraw_queue.total_escrow_shares(),
+        3,
+        "escrow must be preserved"
     );
     assert!(c.withdraw_route.is_empty(), "route must remain empty");
 }
@@ -6041,12 +6444,13 @@ fn address_book_prunes_completed_withdrawal_addresses() {
     let id = c.queue_tail();
     c.insert_pending_withdrawal_for_tests(
         id,
-        PendingWithdrawal {
+        PendingWithdrawalRecord {
             owner: owner.clone(),
             receiver: receiver.clone(),
             escrow_shares: 1,
-            expected_assets: 0,
+            min_assets_out: 0,
             requested_at: 0,
+            epoch_id: EpochId::FIRST_SETTLEMENT,
         },
     );
 

@@ -156,6 +156,8 @@ mod auth_unit_tests {
         assert!(!ActionKind::Deposit.is_privileged());
         assert!(!ActionKind::RequestWithdraw.is_privileged());
         assert!(ActionKind::ExecuteWithdraw.is_privileged());
+        #[cfg(feature = "action-epoch-settlement")]
+        assert!(ActionKind::AdmitPendingDeposit.is_privileged());
 
         assert!(ActionKind::Pause.is_privileged());
         assert!(ActionKind::SetRestrictions.is_privileged());
@@ -169,6 +171,11 @@ mod auth_unit_tests {
     fn test_policy_class_canonical() {
         assert_eq!(
             canonical_policy_class(ActionKind::ExecuteWithdraw),
+            AuthPolicyClass::Allocator
+        );
+        #[cfg(feature = "action-epoch-settlement")]
+        assert_eq!(
+            canonical_policy_class(ActionKind::AdmitPendingDeposit),
             AuthPolicyClass::Allocator
         );
         assert_eq!(
@@ -191,6 +198,68 @@ mod auth_unit_tests {
             canonical_policy_class(ActionKind::PolicyAdmin),
             AuthPolicyClass::Curator
         );
+    }
+
+    #[cfg(feature = "action-epoch-settlement")]
+    #[test]
+    fn test_epoch_profile_policy_surface() {
+        assert_eq!(
+            canonical_policy_class(ActionKind::BeginEpochCutoff),
+            AuthPolicyClass::Allocator
+        );
+        assert_eq!(
+            canonical_policy_class(ActionKind::SettleEpoch),
+            AuthPolicyClass::Allocator
+        );
+        assert_eq!(
+            canonical_policy_class(ActionKind::AdmitPendingDeposit),
+            AuthPolicyClass::Allocator
+        );
+        assert_eq!(
+            canonical_policy_class(ActionKind::CancelPendingWithdrawal),
+            AuthPolicyClass::Public
+        );
+        assert!(ActionKind::BeginEpochCutoff.is_privileged());
+        assert!(ActionKind::SettleEpoch.is_privileged());
+        assert!(ActionKind::AdmitPendingDeposit.is_privileged());
+        assert!(!ActionKind::CancelPendingWithdrawal.is_privileged());
+        assert!(allowed_while_paused(ActionKind::CancelPendingWithdrawal));
+        // Pin the canonical wire discriminants for the epoch profile so the
+        // serialized policy surface cannot drift silently.
+        assert_eq!(ActionKind::BeginEpochCutoff as u32, 3);
+        assert_eq!(ActionKind::SettleEpoch as u32, 4);
+        assert_eq!(ActionKind::AdmitPendingDeposit as u32, 5);
+        assert_eq!(ActionKind::CancelPendingWithdrawal as u32, 6);
+        assert_eq!(ActionKind::Pause as u32, 7);
+    }
+
+    #[cfg(not(feature = "action-epoch-settlement"))]
+    #[test]
+    fn test_immediate_profile_policy_surface() {
+        // The immediate-only build must expose exactly the origin/dev action
+        // surface with the origin/dev wire discriminants, so the canonical
+        // policy surface and hash remain origin/dev-compatible.
+        assert_eq!(ActionKind::Deposit as u32, 0);
+        assert_eq!(ActionKind::RequestWithdraw as u32, 1);
+        assert_eq!(ActionKind::ExecuteWithdraw as u32, 2);
+        assert_eq!(ActionKind::Pause as u32, 3);
+        assert_eq!(ActionKind::SetRestrictions as u32, 4);
+        assert_eq!(ActionKind::PolicyAdmin as u32, 5);
+        assert_eq!(ActionKind::BeginAllocating as u32, 6);
+        assert_eq!(ActionKind::FinishAllocating as u32, 7);
+        assert_eq!(ActionKind::SyncExternalAssets as u32, 8);
+        assert_eq!(ActionKind::RebalanceWithdraw as u32, 9);
+        assert_eq!(ActionKind::BeginRefreshing as u32, 10);
+        assert_eq!(ActionKind::FinishRefreshing as u32, 11);
+        assert_eq!(ActionKind::AbortAllocating as u32, 12);
+        assert_eq!(ActionKind::AbortWithdrawing as u32, 13);
+        assert_eq!(ActionKind::AbortRefreshing as u32, 14);
+        assert_eq!(ActionKind::SettlePayout as u32, 15);
+        assert_eq!(ActionKind::RefreshFees as u32, 16);
+        assert_eq!(ActionKind::ManualReconcile as u32, 17);
+        assert_eq!(ActionKind::EmergencyReset as u32, 18);
+        assert_eq!(ActionKind::AtomicWithdraw as u32, 19);
+        assert_eq!(ActionKind::AtomicRedeem as u32, 20);
     }
 
     #[test]

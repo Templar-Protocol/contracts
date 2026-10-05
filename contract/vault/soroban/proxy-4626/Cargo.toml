@@ -17,11 +17,11 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = { version = "25.3.0", features = ["alloc"] }
-templar-soroban-shared-types = { path = "../shared-types" }
-templar-vault-kernel = { path = "../../kernel", features = ["postcard", "soroban"] }
-templar-curator-primitives = { path = "../../curator-primitives", features = ["postcard"] }
+templar-soroban-shared-types = { path = "../shared-types", features = ["immediate-commands"] }
+templar-vault-kernel = { path = "../../kernel", default-features = false, features = ["postcard", "soroban"] }
+templar-curator-primitives = { path = "../../curator-primitives", default-features = false, features = ["postcard"] }
 
 [dev-dependencies]
 soroban-sdk = { version = "25.3.0", features = ["testutils", "alloc"] }
 templar-soroban-governance = { path = "../governance" }
-templar-soroban-runtime = { path = "..", features = ["testutils"] }
+templar-soroban-runtime = { path = "..", features = ["immediate-entrypoints", "testutils"] }

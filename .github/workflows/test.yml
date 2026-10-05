@@ -147,6 +147,7 @@ jobs:
               - '.github/workflows/test.yml'
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
+              - 'contract/vault/kernel/**'
               - 'primitives/**'
             # A Cargo.toml version edit can drop a crate below a release that
             # is already recorded, without touching contract `src/**`.
@@ -404,6 +405,21 @@ jobs:
             cargo_command: check
             features: borsh,serde,schemars,std
             target: wasm32-unknown-unknown
+
+          - name: vault-kernel epoch-settlement
+            package: templar-vault-kernel
+            cargo_command: check
+            features: action-epoch-settlement
+
+          - name: vault-kernel all-actions
+            package: templar-vault-kernel
+            cargo_command: test
+            features: all-actions
+
+          - name: vault-kernel soroban no-actions
+            package: templar-vault-kernel
+            cargo_command: check
+            features: soroban
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5

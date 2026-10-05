@@ -49,7 +49,30 @@ pub enum InvalidStateCode {
     RebalanceWithdrawExceedsExternalAssets = 39,
     RebalanceWithdrawOverflowsIdleAssets = 40,
     WithdrawalLiquidityBelowMinimum = 41,
+    #[cfg(not(feature = "action-epoch-settlement"))]
     RequestWithdrawExpectedAssetsExceedTotalAssets = 42,
+    #[cfg(feature = "action-epoch-settlement")]
+    EpochRequiresIdle = 53,
+    EpochCutoffRequiresIdle = 54,
+    EpochCutoffUnauthorized = 55,
+    EpochCutoffRejected = 56,
+    EpochSettlementRejected = 57,
+    EpochIntakeNotOpen = 58,
+    EpochDrainRequired = 59,
+    EpochSettledNavImmutable = 60,
+    WithdrawalEpochUnsettled = 61,
+    WithdrawalBelowMinAssetsOut = 62,
+    CancelCallerNotOwner = 63,
+    CancelRequestNotFound = 64,
+    CancelInFlightRequest = 65,
+    CancelQueueRepairFailed = 66,
+    PayoutBurnMustMatchFullEscrow = 67,
+    PayoutClaimMismatch = 68,
+    DepositEpochUnsettled = 69,
+    DepositAdmissionOverflowTotalAssets = 70,
+    DepositAdmissionOverflowIdleAssets = 71,
+    #[cfg(feature = "action-epoch-settlement")]
+    EpochSeedRejected = 72,
 }
 
 impl InvalidStateCode {
@@ -122,8 +145,42 @@ impl InvalidStateCode {
             Self::WithdrawalLiquidityBelowMinimum => {
                 "withdrawal liquidity below minimum payout amount"
             }
+
+            #[cfg(not(feature = "action-epoch-settlement"))]
             Self::RequestWithdrawExpectedAssetsExceedTotalAssets => {
                 "request_withdraw expected assets exceed total_assets"
+            }
+            #[cfg(feature = "action-epoch-settlement")]
+            Self::EpochRequiresIdle => "epoch settlement requires Idle",
+            Self::EpochCutoffRequiresIdle => "epoch cutoff requires Idle",
+            Self::EpochCutoffUnauthorized => "epoch cutoff not authorized",
+            Self::EpochCutoffRejected => "epoch cutoff rejected by settlement law",
+            Self::EpochSettlementRejected => "epoch settlement rejected by settlement law",
+            Self::EpochIntakeNotOpen => "epoch intake is not open",
+            Self::EpochDrainRequired => {
+                "older withdrawal intake must drain before epoch advancement"
+            }
+            Self::EpochSettledNavImmutable => "settled epoch snapshot is immutable",
+            Self::WithdrawalEpochUnsettled => "withdrawal claim awaits epoch settlement",
+            Self::WithdrawalBelowMinAssetsOut => "settled claim below withdrawal min_assets_out",
+            Self::CancelCallerNotOwner => "withdrawal cancellation caller is not the owner",
+            Self::CancelRequestNotFound => "cancellation target withdrawal is not pending",
+            Self::CancelInFlightRequest => "withdrawal is in flight and cannot be cancelled",
+            Self::CancelQueueRepairFailed => "withdrawal queue repair failed after cancellation",
+            Self::PayoutBurnMustMatchFullEscrow => "payout success must burn all escrow shares",
+            Self::PayoutClaimMismatch => "payout amount does not match the settled claim",
+            Self::DepositEpochUnsettled => {
+                "pending deposit admission awaits a settled epoch covering its request"
+            }
+            Self::DepositAdmissionOverflowTotalAssets => {
+                "pending deposit admission would overflow total_assets"
+            }
+            Self::DepositAdmissionOverflowIdleAssets => {
+                "pending deposit admission would overflow idle_assets"
+            }
+            #[cfg(feature = "action-epoch-settlement")]
+            Self::EpochSeedRejected => {
+                "epoch backed seed rejected: vault state is not pristine or intake has progressed"
             }
         }
     }

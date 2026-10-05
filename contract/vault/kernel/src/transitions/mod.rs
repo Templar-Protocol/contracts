@@ -20,10 +20,14 @@
 //! Idle -> Refreshing (start_refresh)
 //! Allocating -> Withdrawing | Idle (complete_allocation)
 //! Withdrawing -> Withdrawing (advance_withdrawal)
-//! Withdrawing -> Payout (withdrawal_collected)
+//! Withdrawing -> Payout (withdrawal_collected / withdrawal_settled, only
+//!                     when the queue head's own epoch has an accepted
+//!                     settlement snapshot, at the derived claim and with the
+//!                     request's full escrow burned)
 //! Withdrawing -> Idle (stop_withdrawal)
 //! Refreshing -> Idle (complete_refresh)
-//! Payout -> Idle (payout_complete)
+//! Payout -> Idle (payout_complete, only when the stored payout still matches
+//!                the head's derived settled claim and exact full escrow burn)
 //! ```
 
 use alloc::vec;
@@ -35,6 +39,10 @@ use crate::state::op_state::{
     WithdrawingState,
 };
 use crate::types::Address;
+#[cfg(feature = "action-epoch-settlement")]
+use crate::state::queue::{settled_claim, MIN_WITHDRAWAL_ASSETS};
+#[cfg(feature = "action-epoch-settlement")]
+use crate::state::vault::VaultState;
 
 /// Error types for state transitions.
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -421,6 +429,226 @@ pub fn withdrawal_step_callback(
     )))
 }
 
+#[cfg(feature = "action-epoch-settlement")]
+/// Details of a payout whose settlement law was verified against accepted
+/// epoch state. Only [`Self::enforce`] can produce one.
+pub struct PayoutEscrowDetails {
+    amount: u128,
+    burn_shares: u128,
+    refund_shares: u128,
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+impl PayoutEscrowDetails {
+    /// Recompute the settlement law for the stored payout and return the
+    /// only permitted settlement details.
+    ///
+    /// The payout must still belong to the current FIFO queue head, the
+    /// head's own epoch must have an immutable accepted settlement
+    /// snapshot, the payout amount must equal the claim derived from that
+    /// snapshot, the claim must satisfy the request's minimum and the
+    /// protocol floor, and success must burn the request's full escrow.
+    /// Every violation is rejected before state or accounting changes.
+    fn enforce(
+        payout: &PayoutState,
+        vault: &VaultState,
+        min_withdrawal_assets: u128,
+    ) -> Result<Self, TransitionError> {
+        let (head_id, head) = vault
+            .withdraw_queue
+            .head()
+            .ok_or(TransitionError::WithdrawalIncomplete {
+                remaining: 0,
+                collected: payout.amount,
+            })?;
+        if head_id != payout.request_id
+            || head.owner != payout.owner
+            || head.receiver != payout.receiver
+            || head.escrow_shares != payout.escrow_shares
+        {
+            return Err(TransitionError::WrongState);
+        }
+
+        let claim =
+            settled_claim(head, &vault.epoch).ok_or(TransitionError::WithdrawalIncomplete {
+                remaining: 0,
+                collected: payout.amount,
+            })?;
+        let floor = head
+            .min_assets_out
+            .max(min_withdrawal_assets)
+            .max(MIN_WITHDRAWAL_ASSETS);
+        if claim == 0 || claim < floor {
+            return Err(TransitionError::WithdrawalIncomplete {
+                remaining: floor.saturating_sub(claim),
+                collected: claim,
+            });
+        }
+
+        if payout.amount != claim {
+            return Err(TransitionError::WithdrawalIncomplete {
+                remaining: payout.amount.saturating_sub(claim),
+                collected: claim,
+            });
+        }
+        if payout.burn_shares != payout.escrow_shares {
+            return Err(TransitionError::BurnExceedsEscrow {
+                burn: payout.burn_shares,
+                escrow: payout.escrow_shares,
+            });
+        }
+        Ok(Self {
+            amount: claim,
+            burn_shares: payout.escrow_shares,
+            refund_shares: payout.escrow_shares,
+        })
+    }
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Authorize the only lawful transition from `Withdrawing` to `Payout`.
+///
+/// The payout amount is not a caller input. It is derived exclusively from
+/// the queue head's own accepted epoch settlement, and the request's full
+/// escrow is the only permitted burn. Every check completes before any
+/// payout state or effect is constructed, so a rejected attempt leaves the
+/// unsettled head queued and vault accounting untouched.
+fn authorize_settled_payout(
+    state: &OpState,
+    vault: &VaultState,
+    op_id: u64,
+    min_withdrawal_assets: u128,
+) -> Result<PayoutState, TransitionError> {
+    let withdraw = match state {
+        OpState::Withdrawing(s) => s,
+        _ => return Err(TransitionError::WrongState),
+    };
+
+    if withdraw.op_id != op_id {
+        return Err(TransitionError::OpIdMismatch {
+            expected: withdraw.op_id,
+            actual: op_id,
+        });
+    }
+
+    if withdraw.remaining > 0 {
+        return Err(TransitionError::WithdrawalIncomplete {
+            remaining: withdraw.remaining,
+            collected: withdraw.collected,
+        });
+    }
+
+    // The payout may only serve the current FIFO head, and the withdrawing
+    // operation must be the queued request itself.
+    let (head_id, head) = vault
+        .withdraw_queue
+        .head()
+        .ok_or(TransitionError::WithdrawalIncomplete {
+            remaining: 0,
+            collected: 0,
+        })?;
+    if head_id != withdraw.request_id
+        || head.owner != withdraw.owner
+        || head.receiver != withdraw.receiver
+        || head.escrow_shares != withdraw.escrow_shares
+    {
+        return Err(TransitionError::WrongState);
+    }
+
+    // The head's own epoch must have an immutable accepted settlement
+    // snapshot; the claim is recomputed from that snapshot, never stored or
+    // accepted from a caller.
+    let claim = settled_claim(head, &vault.epoch).ok_or(TransitionError::WithdrawalIncomplete {
+        remaining: 0,
+        collected: withdraw.collected,
+    })?;
+    let floor = head
+        .min_assets_out
+        .max(min_withdrawal_assets)
+        .max(MIN_WITHDRAWAL_ASSETS);
+    if claim == 0 || claim < floor {
+        return Err(TransitionError::WithdrawalIncomplete {
+            remaining: floor.saturating_sub(claim),
+            collected: claim,
+        });
+    }
+    if withdraw.collected != claim {
+        return Err(TransitionError::WithdrawalIncomplete {
+            remaining: withdraw.collected.saturating_sub(claim),
+            collected: claim,
+        });
+    }
+
+    // Payable only in full from idle assets; partial liquidity must not
+    // construct a partial payout.
+    if claim > vault.idle_assets {
+        return Err(TransitionError::WithdrawalIncomplete {
+            remaining: claim - vault.idle_assets,
+            collected: withdraw.collected,
+        });
+    }
+
+    Ok(PayoutState {
+        op_id: withdraw.op_id,
+        request_id: withdraw.request_id,
+        receiver: withdraw.receiver,
+        amount: claim,
+        owner: withdraw.owner,
+        escrow_shares: head.escrow_shares,
+        burn_shares: head.escrow_shares,
+    })
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+fn settlement_effects(payout: &PayoutState) -> TransitionResult {
+    TransitionResult::with_effects(
+        OpState::Payout(payout.clone()),
+        vec![KernelEffect::EmitEvent {
+            event: KernelEvent::WithdrawalCollected {
+                op_id: payout.op_id,
+                burn_shares: payout.burn_shares,
+                collected: payout.amount,
+            },
+        }],
+    )
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Authorized transition `Withdrawing -> Payout` under the fixed settlement
+/// law.
+///
+/// The queue head's own epoch must have an immutable accepted settlement
+/// snapshot. The payout amount is derived only from that snapshot
+/// (`floor(head.escrow_shares * settlement_nav / eligible_supply)`, subject
+/// to the request's stored minimum and the protocol floor), and the request
+/// is authorized only when its full escrow is burned exactly once. Amount
+/// and burn values are no longer caller inputs; a wrong, below-floor, or
+/// unsettled claim is rejected before any payout or accounting change, and
+/// the unsettled head remains queued.
+///
+/// # Arguments
+/// * `state` - Current state (must be Withdrawing)
+/// * `vault` - Full vault state providing the withdrawal queue and epoch
+///   settlement context used to derive the settled claim
+/// * `op_id` - Operation ID to verify correlation
+/// * `min_withdrawal_assets` - Protocol payout floor applied to the derived
+///   claim
+///
+/// # Returns
+/// * `Ok(TransitionResult)` with Payout state only at the derived claim and
+///   full escrow burn
+/// * `Err` before constructing Payout on any settlement-law violation
+pub fn withdrawal_collected(
+    state: OpState,
+    vault: &VaultState,
+    op_id: u64,
+    min_withdrawal_assets: u128,
+) -> TransitionRes {
+    let payout = authorize_settled_payout(&state, vault, op_id, min_withdrawal_assets)?;
+    Ok(settlement_effects(&payout))
+}
+
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Transition from Withdrawing to Payout when enough has been collected.
 ///
 /// # Arguments
@@ -446,44 +674,6 @@ pub fn withdrawal_collected(state: OpState, op_id: u64, burn_shares: u128) -> Tr
             collected: withdraw.collected,
         });
     }
-
-    if burn_shares > withdraw.escrow_shares {
-        return Err(TransitionError::BurnExceedsEscrow {
-            burn: burn_shares,
-            escrow: withdraw.escrow_shares,
-        });
-    }
-
-    let new_state = OpState::Payout(PayoutState {
-        op_id: withdraw.op_id,
-        request_id: withdraw.request_id,
-        receiver: withdraw.receiver,
-        amount: withdraw.collected,
-        owner: withdraw.owner,
-        escrow_shares: withdraw.escrow_shares,
-        burn_shares,
-    });
-
-    Ok(TransitionResult::with_effects(
-        new_state,
-        vec![KernelEffect::EmitEvent {
-            event: KernelEvent::WithdrawalCollected {
-                op_id,
-                burn_shares,
-                collected: withdraw.collected,
-            },
-        }],
-    ))
-}
-
-pub fn withdrawal_settled(
-    state: OpState,
-    op_id: u64,
-    amount_collected: u128,
-    burn_shares: u128,
-) -> TransitionRes {
-    let stepped = withdrawal_step_callback(state, op_id, amount_collected)?;
-    let withdraw = require_state!(stepped.new_state, Withdrawing);
 
     if burn_shares > withdraw.escrow_shares {
         return Err(TransitionError::BurnExceedsEscrow {
@@ -554,6 +744,82 @@ pub fn stop_withdrawal(state: OpState, op_id: u64, escrow_address: Address) -> T
     });
 
     Ok(TransitionResult::with_effects(OpState::Idle, effects))
+}
+
+#[cfg(feature = "action-epoch-settlement")]
+/// Transition `Withdrawing -> Payout` under the fixed settlement law.
+///
+/// The payout amount is neither stored nor accepted from the caller: it is
+/// exactly `floor(head.escrow_shares * settlement_nav / eligible_supply)`
+/// recomputed from the immutable accepted snapshot of the queue head's own
+/// epoch, subject to the request's stored minimum and the protocol floor,
+/// and the request's full escrow is the only permitted burn. An unsettled,
+/// wrong-epoch, below-floor, or mismatched head stays queued and unpriced,
+/// with no state or accounting change.
+///
+/// Collection progress is recorded only through `withdrawal_step_callback`.
+/// This transition authorizes payout for a request whose collection is
+/// already complete at exactly the derived settled claim.
+///
+/// # Arguments
+/// * `state` - Current state (must be Withdrawing)
+/// * `vault` - Full vault state providing the withdrawal queue and epoch
+///   settlement context used to derive the settled claim
+/// * `op_id` - Operation ID to verify correlation
+/// * `min_withdrawal_assets` - Protocol payout floor applied to the derived
+///   claim
+///
+/// # Returns
+/// * `Ok(TransitionResult)` with Payout state only at the derived claim and
+///   full escrow burn
+/// * `Err` before constructing Payout on any settlement-law violation
+pub fn withdrawal_settled(
+    state: OpState,
+    vault: &VaultState,
+    op_id: u64,
+    min_withdrawal_assets: u128,
+) -> TransitionRes {
+    let payout = authorize_settled_payout(&state, vault, op_id, min_withdrawal_assets)?;
+    Ok(settlement_effects(&payout))
+}
+
+#[cfg(not(feature = "action-epoch-settlement"))]
+pub fn withdrawal_settled(
+    state: OpState,
+    op_id: u64,
+    amount_collected: u128,
+    burn_shares: u128,
+) -> TransitionRes {
+    let stepped = withdrawal_step_callback(state, op_id, amount_collected)?;
+    let withdraw = require_state!(stepped.new_state, Withdrawing);
+
+    if burn_shares > withdraw.escrow_shares {
+        return Err(TransitionError::BurnExceedsEscrow {
+            burn: burn_shares,
+            escrow: withdraw.escrow_shares,
+        });
+    }
+
+    let new_state = OpState::Payout(PayoutState {
+        op_id: withdraw.op_id,
+        request_id: withdraw.request_id,
+        receiver: withdraw.receiver,
+        amount: withdraw.collected,
+        owner: withdraw.owner,
+        escrow_shares: withdraw.escrow_shares,
+        burn_shares,
+    });
+
+    Ok(TransitionResult::with_effects(
+        new_state,
+        vec![KernelEffect::EmitEvent {
+            event: KernelEvent::WithdrawalCollected {
+                op_id,
+                burn_shares,
+                collected: withdraw.collected,
+            },
+        }],
+    ))
 }
 
 // Refresh Transitions
@@ -648,6 +914,85 @@ pub fn complete_refresh(state: OpState, op_id: u64) -> TransitionRes {
 
 // Payout Transitions
 
+#[cfg(feature = "action-epoch-settlement")]
+/// Complete payout and return to Idle after enforcing the settlement law.
+///
+/// Enforcement is recomputed at settlement time: the stored payout must
+/// still belong to the current FIFO queue head, the head's own epoch must
+/// still have an immutable accepted settlement snapshot, the payout amount
+/// must equal the claim derived from that snapshot, the claim must satisfy
+/// the request minimum and the protocol floor, and success must burn the
+/// request's full escrow exactly once. A rejected attempt emits no burn,
+/// no transfer, and no idle-asset change, and the unsettled head remains
+/// queued with accounting unchanged.
+///
+/// # Arguments
+/// * `state` - Current state (must be Payout)
+/// * `vault` - Full vault state providing the withdrawal queue and epoch
+///   settlement context used to re-derive the settled claim
+/// * `success` - Whether the transfer succeeded
+/// * `op_id` - Operation ID to verify correlation
+/// * `escrow_address` - Address holding escrowed shares
+/// * `min_withdrawal_assets` - Protocol payout floor applied to the derived
+///   claim
+///
+/// # Returns
+/// * `Ok(TransitionResult)` with Idle state and law-bound effects
+pub fn payout_complete(
+    state: OpState,
+    vault: &VaultState,
+    success: bool,
+    op_id: u64,
+    escrow_address: Address,
+    min_withdrawal_assets: u128,
+) -> TransitionRes {
+    let payout = require_state!(state, Payout);
+
+    if payout.op_id != op_id {
+        return Err(TransitionError::OpIdMismatch {
+            expected: payout.op_id,
+            actual: op_id,
+        });
+    }
+
+    let law = PayoutEscrowDetails::enforce(&payout, vault, min_withdrawal_assets)?;
+
+    let mut effects = vec![];
+
+    if success {
+        // A lawful payout burns exactly the request's full escrow, once,
+        // and refunds nothing.
+        if law.burn_shares > 0 {
+            effects.push(KernelEffect::BurnShares {
+                owner: escrow_address,
+                shares: law.burn_shares,
+            });
+        }
+    } else {
+        // A failed transfer refunds all escrowed shares and burns none.
+        if law.refund_shares > 0 {
+            effects.push(KernelEffect::TransferShares {
+                from: escrow_address,
+                to: payout.owner,
+                shares: law.refund_shares,
+            });
+        }
+    }
+
+    effects.push(KernelEffect::EmitEvent {
+        event: KernelEvent::PayoutCompleted {
+            op_id,
+            success,
+            burn_shares: if success { law.burn_shares } else { 0 },
+            refund_shares: if success { 0 } else { law.refund_shares },
+            amount: if success { law.amount } else { 0 },
+        },
+    });
+
+    Ok(TransitionResult::with_effects(OpState::Idle, effects))
+}
+
+#[cfg(not(feature = "action-epoch-settlement"))]
 /// Complete payout and return to Idle.
 ///
 /// # Arguments

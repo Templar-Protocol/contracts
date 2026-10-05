@@ -11,28 +11,69 @@ crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [features]
-default = [
+default = ["immediate-entrypoints"]
+std = []
+testutils = ["soroban-sdk/testutils"]
+# Default immediate product: origin/dev contract ABI, legacy queue schema,
+# immediate deposit/atomic-exit law, and the five production kernel action
+# gates. This is the shipped deploy profile.
+immediate-entrypoints = [
+    "templar-soroban-shared-types/immediate-commands",
+    "templar-vault-kernel/action-immediate-deposit",
+    "templar-vault-kernel/action-atomic-exit",
     "action-recovery",
     "action-sync-external",
     "action-refresh-fees",
     "action-allocation-lifecycle",
     "action-refresh-lifecycle",
 ]
-std = []
-testutils = ["soroban-sdk/testutils"]
-action-recovery = ["templar-vault-kernel/action-recovery"]
-action-sync-external = ["templar-vault-kernel/action-sync-external"]
-action-refresh-fees = ["templar-vault-kernel/action-refresh-fees"]
-action-allocation-lifecycle = ["templar-vault-kernel/action-allocation-lifecycle"]
-action-refresh-lifecycle = ["templar-vault-kernel/action-refresh-lifecycle"]
-action-pause = ["templar-vault-kernel/action-pause"]
+# Opt-in epoch settlement library: intake custody, cutoff, report-bound
+# settlement, admission, and cancellation law. Never enabled by default; the
+# immediate deploy artifact contains no epoch code or storage keys.
+epoch = [
+    "templar-soroban-shared-types/epoch-commands",
+    "templar-vault-kernel/action-epoch-settlement",
+    "templar-curator-primitives/action-epoch-settlement",
+]
+action-recovery = [
+    "templar-vault-kernel/action-recovery",
+    "templar-curator-primitives/action-recovery",
+]
+action-sync-external = [
+    "templar-vault-kernel/action-sync-external",
+    "templar-curator-primitives/action-sync-external",
+]
+action-refresh-fees = [
+    "templar-vault-kernel/action-refresh-fees",
+    "templar-curator-primitives/action-refresh-fees",
+]
+action-allocation-lifecycle = [
+    "templar-vault-kernel/action-allocation-lifecycle",
+    "templar-curator-primitives/action-allocation-lifecycle",
+]
+action-refresh-lifecycle = [
+    "templar-vault-kernel/action-refresh-lifecycle",
+    "templar-curator-primitives/action-refresh-lifecycle",
+]
+action-pause = [
+    "templar-vault-kernel/action-pause",
+    "templar-curator-primitives/action-pause",
+]
+action-immediate-deposit = [
+    "templar-vault-kernel/action-immediate-deposit",
+    "templar-curator-primitives/action-immediate-deposit",
+]
+action-atomic-exit = [
+    "templar-vault-kernel/action-atomic-exit",
+    "templar-curator-primitives/action-atomic-exit",
+]
 
 [dependencies]
 # Core dependency - vault kernel types
 templar-vault-kernel = { path = "../kernel", default-features = false, features = ["postcard", "soroban"] }
 
-templar-curator-primitives = { path = "../curator-primitives", features = ["postcard"] }
-templar-soroban-shared-types = { path = "./shared-types" }
+templar-curator-primitives = { path = "../curator-primitives", default-features = false, features = ["postcard"] }
+templar-soroban-shared-types = { path = "./shared-types", default-features = false }
 derive_more.workspace = true
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

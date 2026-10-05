@@ -14,8 +14,8 @@ libfuzzer-sys.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
 primitive-types.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
-templar-vault-kernel = { path = "../contract/vault/kernel", features = ["postcard", "soroban"] }
-templar-curator-primitives = { path = "../contract/vault/curator-primitives", features = ["postcard"] }
+templar-vault-kernel = { path = "../contract/vault/kernel", default-features = false, features = ["postcard", "soroban", "action-immediate-deposit", "action-atomic-exit", "action-recovery", "action-sync-external", "action-refresh-fees", "action-allocation-lifecycle", "action-refresh-lifecycle", "action-pause"] }
+templar-curator-primitives = { path = "../contract/vault/curator-primitives", default-features = false, features = ["postcard", "action-immediate-deposit", "action-atomic-exit", "action-recovery", "action-sync-external", "action-refresh-fees", "action-allocation-lifecycle", "action-refresh-lifecycle", "action-pause"] }
 templar-soroban-runtime = { path = "../contract/vault/soroban", features = ["testutils"] }
 templar-soroban-custodial-adapter = { path = "../contract/vault/soroban/custodial-adapter", features = ["testutils"] }
 

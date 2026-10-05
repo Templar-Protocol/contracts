@@ -6,7 +6,7 @@
 
 use alloc::string::String;
 use templar_vault_kernel::{
-    settle_proportional_raw, AllocatingState, EscrowSettlement, KernelAction, OpState,
+    compute_settlement, AllocatingState, EscrowSettlement, KernelAction, OpState,
     PayoutOutcome, PayoutState, RefreshingState, WithdrawingState,
 };
 use typed_builder::TypedBuilder;
@@ -278,7 +278,7 @@ pub fn compute_settlement_shares(
         });
     }
 
-    Ok(settle_proportional_raw(
+    Ok(compute_settlement(
         escrow_shares,
         expected_amount,
         collected_amount,

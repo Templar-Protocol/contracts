@@ -5,10 +5,9 @@ use crate::effects::{AddressRegistrar, EffectInterpreter, EffectSummary};
 use crate::error::RuntimeError;
 use crate::storage::{
     compose_policy_state, decode_cap_groups, decode_markets, decode_policy_locks,
-    decode_principals, decode_restrictions, decode_state_blob, decode_supply_queue,
-    decode_withdraw_queue_page, encode_cap_groups, encode_markets, encode_policy_locks,
-    encode_principals, encode_restrictions, encode_state_blob, encode_supply_queue,
-    encode_withdraw_queue_page, Storage,
+    decode_principals, decode_restrictions, decode_supply_queue, decode_withdraw_queue_page,
+    encode_cap_groups, encode_markets, encode_policy_locks, encode_principals,
+    encode_restrictions, encode_supply_queue, encode_withdraw_queue_page, Storage,
 };
 use alloc::vec::Vec;
 use core::mem;
@@ -81,16 +80,6 @@ pub mod fuzz_api {
 
     pub fn decode_policy_locks_bytes(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeError> {
         decode_policy_locks(bytes)
-    }
-
-    pub fn encode_state_blob_bytes(value: &templar_vault_kernel::VaultState) -> Vec<u8> {
-        encode_state_blob(value)
-    }
-
-    pub fn decode_state_blob_bytes(
-        bytes: &[u8],
-    ) -> Result<templar_vault_kernel::VaultState, RuntimeError> {
-        decode_state_blob(bytes)
     }
 
     pub fn encode_withdraw_queue_page_bytes(

@@ -1,0 +1,29 @@
+[package]
+name = "templar-soroban-epoch-runtime"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+description = "Dedicated Soroban custodial epoch-settlement vault deploy target; thin front-end over the feature-gated templar-soroban-runtime epoch law"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+doctest = false
+
+[features]
+default = []
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2"] }
+templar-soroban-runtime = { path = "..", default-features = false, features = ["epoch"] }
+templar-soroban-shared-types = { path = "../shared-types", default-features = false, features = ["epoch-commands"] }
+
+[dev-dependencies]
+soroban-sdk = { version = "25.3.0", features = ["testutils", "alloc", "experimental_spec_shaking_v2"] }
+rstest.workspace = true
+templar-soroban-custodial-adapter = { path = "../custodial-adapter" }
+
+[lints]
+workspace = true

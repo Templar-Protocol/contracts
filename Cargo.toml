@@ -30,6 +30,7 @@ members = [
     "contract/vault/kernel",
     "contract/vault/near",
     "contract/vault/soroban",
+    "contract/vault/soroban/epoch-runtime",
     "contract/vault/soroban/shared-types",
     "contract/vault/soroban/blend-adapter",
     "contract/vault/soroban/custodial-adapter",
@@ -174,7 +175,7 @@ templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
 templar-universal-account = { path = "./universal-account", version = "1.2.5" }
 templar-vault-contract = { path = "./contract/vault/near" }
-templar-vault-kernel = { path = "./contract/vault/kernel", version = "1.0.1", features = [
+templar-vault-kernel = { path = "./contract/vault/kernel", version = "1.0.1", default-features = false, features = [
     "near",
     "borsh-schema",
     "serde",

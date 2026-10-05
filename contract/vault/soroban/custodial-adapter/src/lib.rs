@@ -8,6 +8,28 @@ use soroban_sdk::{
     panic_with_error, symbol_short, Address, BytesN, Env,
 };
 use stellar_contract_utils::upgradeable::{self, Upgradeable};
+use templar_soroban_shared_types::CustodialValuationReport;
+
+/// Private storage payload for the latest accepted custodial valuation.
+///
+/// `submitted_at` is the ledger timestamp at submission and is tracked
+/// separately from the valuation time `as_of`, which is supplied by the
+/// reporter. Rejected submissions never reach this storage.
+#[contracttype]
+#[derive(Clone, Debug)]
+struct ValuationRecord {
+    sequence: u64,
+    as_of: u64,
+    submitted_at: u64,
+    assets_value: i128,
+    report_hash: Option<BytesN<32>>,
+}
+
+mod events;
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod valuation_tests;
 
 /// Re-extend instance TTL when remaining TTL drops below ~30 days.
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
@@ -26,6 +48,9 @@ enum DataKey {
     ReportedAssets(Address),
     ReportNonce(Address),
     ReportedAt(Address),
+    AcceptedSequence(Address),
+    LastValuationAsOf(Address),
+    ValuationRecord(Address),
 }
 
 #[contracterror]
@@ -39,6 +64,24 @@ pub enum AdapterError {
     ArithmeticUnderflow = 5,
     InsufficientReturnedLiquidity = 6,
     Paused = 7,
+    /// A valuation report sequence is not exactly one greater than the
+    /// last accepted sequence. Covers replays, out-of-order delivery,
+    /// gaps, and a first report that is not sequence 1.
+    ReportSequenceInvalid = 8,
+    /// The report sequence watermark cannot advance further.
+    ReportSequenceExhausted = 9,
+    /// The valuation `as_of` is later than the ledger timestamp at
+    /// submission.
+    ReportValuationFuture = 10,
+    /// The valuation `as_of` did not advance beyond the last accepted
+    /// valuation for this asset.
+    ReportAsOfNonMonotonic = 11,
+    /// The report is bound to a different vault, adapter, asset, or
+    /// network than this adapter and the live ledger network.
+    ReportDomainMismatch = 12,
+    /// The report payload is malformed (zero valuation time or negative
+    /// assets value).
+    ReportPayloadInvalid = 13,
 }
 
 #[contract]
@@ -133,6 +176,7 @@ impl CustodialAdapterContract {
 
         store_reported_assets(&env, &asset, next);
         store_report_nonce(&env, &asset, next_report_nonce);
+        invalidate_valuation(&env, &asset);
 
         env.events()
             .publish((symbol_short!("supply"), asset, custodian), amount);
@@ -168,6 +212,7 @@ impl CustodialAdapterContract {
         transfer_exact(&token, &adapter, &vault, amount)?;
         store_reported_assets(&env, &asset, next_reported);
         store_report_nonce(&env, &asset, next_report_nonce);
+        invalidate_valuation(&env, &asset);
 
         env.events()
             .publish((symbol_short!("withdraw"), asset), amount);
@@ -199,6 +244,7 @@ impl CustodialAdapterContract {
         transfer_exact(&token, &adapter, &vault, actual)?;
         store_reported_assets(&env, &asset, next_reported);
         store_report_nonce(&env, &asset, next_report_nonce);
+        invalidate_valuation(&env, &asset);
 
         env.events()
             .publish((symbol_short!("withdraw"), asset), actual);
@@ -223,6 +269,11 @@ impl CustodialAdapterContract {
     ///
     /// `None` means `set_reported_assets` has never succeeded for this asset.
     /// Allocation and withdrawal lifecycle mutations do not change this value.
+    ///
+    /// This is the submission time of the last successful
+    /// `set_reported_assets` call and is not a valuation time. It does
+    /// not make any report settlement-eligible; use `valuation` for the
+    /// compact view of the latest accepted full report.
     pub fn reported_at(env: Env, asset: Address) -> Result<Option<u64>, AdapterError> {
         extend_instance_ttl(&env);
         require_asset(&env, &asset)?;
@@ -241,6 +292,12 @@ impl CustodialAdapterContract {
     ///
     /// Pause blocks vault and custodian reporting, but intentionally leaves an
     /// admin recovery path for emergency NAV correction.
+    ///
+    /// This entrypoint is legacy accounting only: it can no longer grant
+    /// settlement eligibility. Eligibility requires a full valuation
+    /// accepted through `submit_report`, and every successful call here
+    /// invalidates the latest accepted valuation until a new full report
+    /// is accepted.
     #[allow(deprecated)]
     pub fn set_reported_assets(
         env: Env,
@@ -266,9 +323,118 @@ impl CustodialAdapterContract {
         store_reported_assets(&env, &asset, amount);
         store_report_nonce(&env, &asset, report_nonce);
         store_reported_at(&env, &asset, env.ledger().timestamp());
+        invalidate_valuation(&env, &asset);
         env.events()
             .publish((symbol_short!("report"), caller, asset), amount);
         Ok(())
+    }
+
+    /// Accept a full custodial valuation report for the configured asset.
+    ///
+    /// The complete report envelope is the authorized payload: Soroban
+    /// authentication binds the exact caller, entrypoint, and arguments,
+    /// and this contract re-checks every domain binding (vault, adapter,
+    /// asset, and the live ledger network identifier) before persistence.
+    ///
+    /// Only the configured custodian may submit settlement-eligible
+    /// reports. Pause blocks every submission path, including an admin
+    /// caller. Before any persistence this entrypoint rejects malformed
+    /// payloads (zero valuation time or negative assets value),
+    /// out-of-order or replayed sequences (the sequence must be exactly
+    /// one greater than the last accepted sequence), future-dated
+    /// valuations (`as_of` after the ledger timestamp), and
+    /// valuation-time regressions against the last accepted valuation
+    /// for this asset.
+    ///
+    /// Acceptance stores the submitted ledger time separately from the
+    /// reported valuation time, advances the accepted sequence and last
+    /// valuation-time watermarks, persists the accepted report metadata
+    /// (including any report integrity hash) as the settlement record, and
+    /// emits an accepted-report event carrying sequence, `as_of`,
+    /// submission time, assets value, and the report hash. Rejected
+    /// submissions leave all adapter storage unchanged.
+    #[allow(deprecated)]
+    pub fn submit_report(
+        env: Env,
+        caller: Address,
+        report: CustodialValuationReport,
+    ) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        require_report_submission_authority(&env, &caller)?;
+        if report.vault != get_vault(&env)?
+            || report.adapter != env.current_contract_address()
+            || report.asset != get_asset(&env)?
+            || report.network_id != env.ledger().network_id()
+        {
+            return Err(AdapterError::ReportDomainMismatch);
+        }
+        if report.sequence == 0 {
+            return Err(AdapterError::ReportPayloadInvalid);
+        }
+        let last_sequence = load_accepted_sequence(&env, &report.asset);
+        let next_sequence = last_sequence
+            .checked_add(1)
+            .ok_or(AdapterError::ReportSequenceExhausted)?;
+        if report.sequence != next_sequence {
+            return Err(AdapterError::ReportSequenceInvalid);
+        }
+        if report.as_of == 0 || report.assets_value < 0 {
+            return Err(AdapterError::ReportPayloadInvalid);
+        }
+        let submitted_at = env.ledger().timestamp();
+        if report.as_of > submitted_at {
+            return Err(AdapterError::ReportValuationFuture);
+        }
+        if report.as_of <= load_last_valuation_as_of(&env, &report.asset) {
+            return Err(AdapterError::ReportAsOfNonMonotonic);
+        }
+
+        let record = ValuationRecord {
+            sequence: next_sequence,
+            as_of: report.as_of,
+            submitted_at,
+            assets_value: report.assets_value,
+            report_hash: report.report_hash.clone(),
+        };
+        store_accepted_sequence(&env, &report.asset, next_sequence);
+        store_last_valuation_as_of(&env, &report.asset, report.as_of);
+        store_valuation_record(&env, &report.asset, &record);
+        events::report_accepted(
+            &env,
+            &report.asset,
+            report.sequence,
+            report.as_of,
+            submitted_at,
+            report.assets_value,
+            report.report_hash,
+        );
+        Ok(())
+    }
+
+    /// Return the compact latest-report metadata view consumed by the
+    /// vault at settlement: `(sequence, as_of, submitted_at,
+    /// assets_value, report_hash)`.
+    ///
+    /// `None` means no settlement-eligible valuation is available, so
+    /// settlement must fail closed until a full report is accepted.
+    /// Legacy adapters whose only historical NAV updates used
+    /// `set_reported_assets` return `None` until their first full report.
+    pub fn valuation(
+        env: Env,
+        asset: Address,
+    ) -> Result<Option<(u64, u64, u64, i128, Option<BytesN<32>>)>, AdapterError> {
+        extend_instance_ttl(&env);
+        require_asset(&env, &asset)?;
+        match load_valuation_record(&env, &asset) {
+            Some(record) => Ok(Some((
+                record.sequence,
+                record.as_of,
+                record.submitted_at,
+                record.assets_value,
+                record.report_hash,
+            ))),
+            None => Ok(None),
+        }
     }
 
     pub fn admin(env: Env) -> Result<Address, AdapterError> {
@@ -596,6 +762,68 @@ fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
+fn require_report_submission_authority(env: &Env, caller: &Address) -> Result<(), AdapterError> {
+    caller.require_auth();
+    if is_paused(env) {
+        return Err(AdapterError::Paused);
+    }
+    let custodian = get_custodian(env)?;
+    if caller != &custodian {
+        return Err(AdapterError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn load_accepted_sequence(env: &Env, asset: &Address) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::AcceptedSequence(asset.clone()))
+        .unwrap_or(0)
+}
+
+fn store_accepted_sequence(env: &Env, asset: &Address, sequence: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::AcceptedSequence(asset.clone()), &sequence);
+}
+
+fn load_last_valuation_as_of(env: &Env, asset: &Address) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::LastValuationAsOf(asset.clone()))
+        .unwrap_or(0)
+}
+
+fn store_last_valuation_as_of(env: &Env, asset: &Address, as_of: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::LastValuationAsOf(asset.clone()), &as_of);
+}
+
+fn load_valuation_record(env: &Env, asset: &Address) -> Option<ValuationRecord> {
+    env.storage()
+        .instance()
+        .get(&DataKey::ValuationRecord(asset.clone()))
+}
+
+fn store_valuation_record(env: &Env, asset: &Address, record: &ValuationRecord) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ValuationRecord(asset.clone()), record);
+}
+
+/// Drop the settlement-eligible report view for `asset`.
+///
+/// The sequence and valuation-time watermarks intentionally survive:
+/// they exist to reject replays and regressions forever, while the
+/// report view must never be consumed by settlement after custody has
+/// moved. A new full report is required before settlement can proceed.
+fn invalidate_valuation(env: &Env, asset: &Address) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::ValuationRecord(asset.clone()));
 }
 
 #[cfg(kani)]

@@ -31,6 +31,7 @@ use templar_common::{
         GET_SUPPLY_POSITION_GAS, SUPPLY_POSITION_READ_CALLBACK_GAS, WITHDRAW_SETTLE_CALLBACK_GAS,
     },
 };
+use templar_vault_kernel::state::queue::settled_claim;
 
 macro_rules! unwrap_or_return {
     ($expr:expr) => {{
@@ -480,7 +481,7 @@ impl Contract {
         );
 
         // If market overpaid beyond principal drop, use the extra to satisfy this withdrawal
-        let (extra_payout, remaining_next, collected_next) =
+        let (extra_payout, remaining_next, _) =
             determine_payout_delta(remaining_next, collected_next, extra);
 
         let payout_delta = principal_payout.saturating_add(extra_payout);
@@ -503,32 +504,29 @@ impl Contract {
         }
 
         if remaining_next == 0 {
-            return self.pay_or_else(
+            // Settlement-derived payout law: the FIFO head is settled only by
+            // the claim derived from the accepted epoch settlement snapshot,
+            // never an inflow or request-time figure. An impossible
+            // completion - a missing, zero, or below-floor settlement for the
+            // head - must not panic the obligation away and must never pay:
+            // refund full escrow, remove the request, and return to Idle.
+            let payable = self
+                .withdraw_queue
+                .head()
+                .and_then(|(_, head)| {
+                    settled_claim(head, &self.epoch)
+                        .filter(|claim| *claim > 0 && head.min_assets_out <= *claim)
+                });
+            let Some(claim) = payable else {
+                return self.stop_and_exit(Some(&Error::InsufficientLiquidity));
+            };
+            return self.pay(
                 op_id,
                 &ctx.receiver,
-                collected_next,
+                claim,
                 &ctx.owner,
                 ctx.escrow_shares,
                 ctx.escrow_shares,
-                |self_| {
-                    let mut withdrawing =
-                        unwrap_or_return!(or_stop::<WithdrawingSpec>(self_, op_id));
-
-                    // On early completion we still finalise
-                    let self_id = env::current_account_id();
-                    let owner = withdrawing.resolve_account(&ctx.owner);
-                    withdrawing
-                        .transfer(&Nep141Transfer::new(ctx.escrow_shares, &self_id, &owner))
-                        .unwrap_or_else(|e| {
-                            templar_common::panic_with_message(&format!(
-                                "Failed to refund escrowed shares {e}"
-                            ))
-                        });
-                    withdrawing.pop_head();
-                    withdrawing.withdraw_route.clear();
-                    let _idle = withdrawing.into_idle();
-                    PromiseOrValue::Value(())
-                },
             );
         }
 
@@ -775,7 +773,8 @@ impl Contract {
 
     /// Cash flow:
     /// - Runs in Payout context after funds were credited in after_exec_withdraw_read.
-    /// - On success: idle_balance was pre-decremented before transfer; burn a portion of escrow_shares and refund the rest to the owner.
+    /// - On success: verifies the payout equals the immutable epoch-settled claim for the FIFO
+    ///   head (fail-closed), then burns all escrowed shares; idle_balance stays decremented.
     /// - On failure: refund full escrow_shares to the owner and restore idle_balance (funds remain in vault).
     #[private]
     pub fn payment_01_reconcile_idle_or_refund(
@@ -795,7 +794,7 @@ impl Contract {
             return;
         };
 
-        let (owner, escrow_shares, expected_amount, burn_shares) = {
+        let (owner, escrow_shares, expected_amount, request_id) = {
             let state = payout.state();
             let expected_receiver = payout.resolve_account(&state.receiver);
             if expected_receiver != receiver {
@@ -812,36 +811,52 @@ impl Contract {
                 payout.resolve_account(&state.owner),
                 state.escrow_shares,
                 state.amount,
-                state.burn_shares,
+                state.request_id,
             )
         };
 
         if result.is_ok() {
-            let refund = escrow_shares.saturating_sub(burn_shares);
-
-            if burn_shares > 0 {
-                // This must be infallible - panic to prevent orphaned shares in escrow.
-                payout
-                    .burn(&Nep141Burn::new(burn_shares, env::current_account_id()))
-                    .unwrap_or_else(|e| {
-                        templar_common::panic_with_message(&format!(
-                            "Escrow settlement burn failed: {e}"
-                        ))
-                    });
-            }
-
-            if refund > 0 {
-                // This must be infallible - panic to prevent orphaned shares in escrow.
-                Gate::bypass_transfer_with(
-                    &mut payout,
-                    &Nep141Transfer::new(refund, env::current_account_id(), &owner),
-                    |e| {
-                        templar_common::panic_with_message(&format!(
-                            "Escrow settlement refund failed: {e}"
-                        ))
-                    },
+            // Payout success law: the transferred amount must equal the
+            // immutable claim derived from the accepted epoch settlement
+            // snapshot covering the queue head, and success must burn the
+            // full escrowed shares. Verification is fail-closed before any
+            // storage mutation.
+            if amount.0 != expected_amount {
+                panic_with_message(
+                    "Payout callback amount does not match the scheduled payout",
                 );
             }
+            let Some((head_id, head)) = payout.withdraw_queue.head() else {
+                panic_with_message("Payout success without a queued withdrawal head");
+            };
+            if head_id != request_id || head.escrow_shares != escrow_shares {
+                panic_with_message("Payout success does not match the FIFO withdrawal head");
+            }
+            let Some(claim) = settled_claim(head, &payout.epoch) else {
+                panic_with_message(
+                    "Payout claim mismatch: no accepted epoch settlement (code 68)",
+                );
+            };
+            if expected_amount != claim {
+                panic_with_message(
+                    "Payout claim mismatch: amount is not the settled claim (code 68)",
+                );
+            }
+            if claim < head.min_assets_out {
+                panic_with_message(
+                    "Payout claim below withdrawal min_assets_out (code 62)",
+                );
+            }
+
+            // Payout success burns all escrowed shares (code 67 law).
+            // This must be infallible - panic to prevent orphaned shares in escrow.
+            payout
+                .burn(&Nep141Burn::new(escrow_shares, env::current_account_id()))
+                .unwrap_or_else(|e| {
+                    templar_common::panic_with_message(&format!(
+                        "Escrow settlement burn failed: {e}"
+                    ))
+                });
         } else {
             payout.update_idle_balance(IdleBalanceDelta::Increase(expected_amount.into()));
             // On payout failure, refund all escrow shares. Must be infallible.
@@ -1153,9 +1168,34 @@ impl Contract {
     /// refund escrowed shares, clear locks/queue, and transition to Idle.
     fn refund_escrow_and_go_idle(&mut self, owner: AccountId, escrow_shares: u128, context: &str) {
         self.market_execution_lock.clear();
-
+        let request_id = self.stop_and_exit_request_id();
+        if self.is_queue_invariant_violation() {
+            let held = self.balance_of(&env::current_account_id());
+            let refundable = held.min(escrow_shares);
+            if refundable > 0 {
+                Gate::bypass_transfer_with(
+                    self,
+                    &Nep141Transfer::new(refundable, env::current_account_id(), &owner),
+                    |e| {
+                        templar_common::panic_with_message(&format!(
+                            "{context} stop escrow refund failed: {e}"
+                        ))
+                    },
+                );
+            }
+            if let Some(id) = request_id {
+                if self.withdraw_queue.head().is_some_and(|(head, _)| head == id) {
+                    self.pop_head();
+                } else if self.withdraw_queue.get(id).is_some() {
+                    self.withdraw_queue.remove_pending(id);
+                    self.rebuild_live_address_book();
+                }
+            }
+            self.withdraw_route.clear();
+            self.set_op_state(OpState::Idle);
+            return;
+        }
         if escrow_shares > 0 {
-            // Must be infallible - panic to prevent orphaned shares in escrow.
             Gate::bypass_transfer_with(
                 self,
                 &Nep141Transfer::new(escrow_shares, env::current_account_id(), &owner),
@@ -1166,10 +1206,18 @@ impl Contract {
                 },
             );
         }
-
         self.pop_head();
         self.withdraw_route.clear();
         self.set_op_state(OpState::Idle);
+    }
+
+    #[must_use]
+    pub(crate) fn stop_and_exit_request_id(&self) -> Option<u64> {
+        match &self.op_state {
+            OpState::Withdrawing(s) => Some(s.request_id),
+            OpState::Payout(s) => Some(s.request_id),
+            _ => None,
+        }
     }
 
     pub(crate) fn stop_and_exit<T: Display + core::fmt::Debug + ?Sized>(
@@ -1279,6 +1327,10 @@ impl Contract {
     }
 
     fn resync_idle_balance_to(&mut self, actual: u128) {
+        // Assets held for pending deposits are custodied for future depositors
+        // and are excluded from NAV, idle, and supply. They must never be
+        // counted as idle funds in any balance reconciliation.
+        let actual = actual.saturating_sub(self.pending_deposit_assets);
         match actual.cmp(&self.idle_balance) {
             Ordering::Greater => self.update_idle_balance(IdleBalanceDelta::Increase(U128(
                 actual.saturating_sub(self.idle_balance),

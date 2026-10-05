@@ -23,7 +23,8 @@
 //!    | Withdrawing |----------------------------------+
 //!    +-------------+                                  |
 //!          |                                          |
-//!          | (when enough collected)                  |
+//!          | (settled claim, full escrow burn)        |
+//!          |                                          |
 //!          v                                          |
 //!    +--------+                                       |
 //!    | Payout |---------------------------------------+
@@ -78,7 +79,9 @@ pub struct AllocatingState {
 ///
 /// # Transitions
 /// - Advance within queue: `Withdrawing` (index increments) while collecting funds.
-/// - When enough is collected to satisfy the request: `Payout`.
+/// - Only when the queue head's own epoch has an accepted settlement
+///   snapshot and collection is complete at the claim derived from that
+///   snapshot: `Payout`, through `withdrawal_collected`/`withdrawal_settled`.
 /// - If the op is stopped or cannot proceed and needs to refund: `Idle` (escrow_shares refunded).
 #[templar_vault_macros::vault_derive(borsh, borsh_schema, serde)]
 #[derive(Clone, PartialEq, Eq)]
@@ -113,8 +116,10 @@ pub struct RefreshingState {
 ///
 /// # Invariant hooks
 /// - `idle_balance` decreases only on payout success by `amount`.
-/// - On success, `burn_shares` are burned from `escrow_shares`; any remainder is refunded.
-/// - On failure, all `escrow_shares` are refunded.
+/// - On success, the settlement-derived claim is paid in full and the
+///   request's entire `escrow_shares` are burned exactly once; nothing is
+///   refunded and no partial burn exists.
+/// - On failure, all `escrow_shares` are refunded and none are burned.
 #[templar_vault_macros::vault_derive(borsh, borsh_schema, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct PayoutState {
@@ -182,7 +187,10 @@ impl RefreshingState {
 ///
 /// # Invariants
 /// - `idle_balance` increases only when funds are received and decreases only on payout success.
-/// - `escrow_shares` are refunded on stop/failure or partially burned/refunded on payout success.
+/// - Payout is settlement-derived: the claim comes from the queue head's
+///   accepted epoch snapshot, a successful payout burns the request's full
+///   escrow exactly once and refunds nothing, and a failed payout refunds
+///   the full escrow and burns nothing. There is no partial burn.
 #[templar_vault_macros::vault_derive(borsh, borsh_schema, serde)]
 #[derive(Clone, Default, PartialEq, Eq, From, IsVariant)]
 pub enum OpState {
@@ -201,7 +209,9 @@ pub enum OpState {
     ///
     /// # Transitions
     /// - Advance within queue: `Withdrawing` (index increments) while collecting funds.
-    /// - When enough is collected to satisfy the request: `Payout`.
+    /// - Only when the queue head's own epoch has an accepted settlement
+    ///   snapshot and collection is complete at the claim derived from that
+    ///   snapshot: `Payout`, through `withdrawal_collected`/`withdrawal_settled`.
     /// - If the op is stopped or cannot proceed and needs to refund: `Idle` (escrow_shares refunded).
     Withdrawing(WithdrawingState),
 
@@ -215,8 +225,10 @@ pub enum OpState {
     ///
     /// # Invariant hooks
     /// - `idle_balance` decreases only on payout success by `amount`.
-    /// - On success, `burn_shares` are burned from `escrow_shares`; any remainder is refunded.
-    /// - On failure, all `escrow_shares` are refunded.
+    /// - On success, the settlement-derived claim is paid in full and the
+    ///   request's entire `escrow_shares` are burned exactly once; nothing
+    ///   is refunded and no partial burn exists.
+    /// - On failure, all `escrow_shares` are refunded and none are burned.
     Payout(PayoutState),
 }
 

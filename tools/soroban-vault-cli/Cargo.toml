@@ -29,7 +29,7 @@ soroban-client = "0.5.5"
 stellar-strkey.workspace = true
 templar-curator-proxy-soroban = { path = "../../contract/vault/soroban/curator-proxy" }
 templar-soroban-governance = { path = "../../contract/vault/soroban/governance", default-features = false }
-templar-soroban-shared-types = { path = "../../contract/vault/soroban/shared-types" }
+templar-soroban-shared-types = { path = "../../contract/vault/soroban/shared-types", features = ["immediate-commands"] }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
