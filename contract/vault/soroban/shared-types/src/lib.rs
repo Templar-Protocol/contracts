@@ -33,6 +33,8 @@ pub const RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE: u64 = 1 << 4;
 pub const RUNTIME_FEATURE_ACTION_PAUSE: u64 = 1 << 5;
 /// Runtime can authorize upgrades of vault companion contracts such as adapters.
 pub const RUNTIME_FEATURE_COMPANION_UPGRADE: u64 = 1 << 6;
+/// Runtime accepts new queued-withdrawal requests.
+pub const RUNTIME_FEATURE_ASYNC_WITHDRAWALS: u64 = 1 << 7;
 
 /// Package version returned for deployed runtimes without a version entrypoint.
 pub const RUNTIME_V1_VERSION: &str = "1.0.0";
@@ -1145,6 +1147,7 @@ mod tests {
         assert_eq!(RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, 0x10);
         assert_eq!(RUNTIME_FEATURE_ACTION_PAUSE, 0x20);
         assert_eq!(RUNTIME_FEATURE_COMPANION_UPGRADE, 0x40);
+        assert_eq!(RUNTIME_FEATURE_ASYNC_WITHDRAWALS, 0x80);
         assert_eq!(RUNTIME_V1_VERSION, "1.0.0");
         assert_eq!(RUNTIME_V1_FEATURE_FLAGS, 0x3f);
         assert_eq!(RUNTIME_DEFAULT_FEATURE_FLAGS, 0x3f);
@@ -1154,6 +1157,10 @@ mod tests {
         );
         assert_eq!(
             RUNTIME_DEFAULT_FEATURE_FLAGS & RUNTIME_FEATURE_COMPANION_UPGRADE,
+            0
+        );
+        assert_eq!(
+            RUNTIME_DEFAULT_FEATURE_FLAGS & RUNTIME_FEATURE_ASYNC_WITHDRAWALS,
             0
         );
     }

@@ -26,6 +26,9 @@
 //! The callable `version()` entrypoint reports the package version and exact
 //! compiled runtime-capability mask. The reserved companion-upgrade capability
 //! remains unset until the runtime can authorize companion-contract upgrades.
+//! New queued-withdrawal intake is disabled by default and requires the opt-in
+//! `async-withdrawals` feature, advertised by its runtime capability bit.
+//! Existing queued claims still settle; atomic exits work.
 //!
 //! - `std` - Enable std library support (for testing)
 
@@ -39,6 +42,7 @@ use templar_soroban_shared_types::{
     RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_PAUSE,
     RUNTIME_FEATURE_ACTION_RECOVERY, RUNTIME_FEATURE_ACTION_REFRESH_FEES,
     RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
+    RUNTIME_FEATURE_ASYNC_WITHDRAWALS,
 };
 
 /// Package version compiled into this runtime artifact.
@@ -68,7 +72,11 @@ pub const RUNTIME_FEATURE_FLAGS: u64 = feature_flag(
 ) | feature_flag(
     templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED,
     RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
-) | RUNTIME_FEATURE_ACTION_PAUSE;
+) | RUNTIME_FEATURE_ACTION_PAUSE
+    | feature_flag(
+        cfg!(feature = "async-withdrawals"),
+        RUNTIME_FEATURE_ASYNC_WITHDRAWALS,
+    );
 
 pub mod auth;
 pub mod contract;

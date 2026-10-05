@@ -114,6 +114,9 @@ The vault intentionally exposes two withdrawal modes:
   and can be `0` even when the owner has shares backed by market-deployed assets. This is the
   immediate idle-liquidity exit path when sufficient idle liquidity is available.
 - `request_withdraw` is the async path for positions that may require allocator/keeper work.
+  New intake on this path is compiled only into builds that enable the opt-in
+  `async-withdrawals` feature; default builds reject `RequestWithdraw` with `InvalidState`.
+  Requests that already exist in the queue are unaffected and settle normally.
   `execute_withdraw` advances the queue only when the head request is cooled down and fully
   covered by idle assets; otherwise it fails atomically and leaves the request queued.
 
@@ -288,14 +291,22 @@ The build step compiles the runtime, governance, and share-token WASMs and runs 
 optimizer while retaining contractspec metadata. The optimized runtime output is both the deploy
 artifact and the artifact enforced by the size gate.
 
+The default runtime build rejects new `RequestWithdraw` commands with `InvalidState`. This
+also disables new requests through the ERC-4626 proxy's `withdraw`, `redeem`, and
+`request_withdraw` routes. Atomic exits, settlement of already-queued requests, abort, and
+refund paths remain available in the default build. To build an opt-in runtime WASM, run
+`RUSTUP_TOOLCHAIN=1.89.0 stellar contract build --package templar-soroban-runtime --features async-withdrawals --optimize`.
+The `demo-withdraw` request step only succeeds against a vault deployed from such a build; the
+opt-in test suite is exercised with `just -f contract/vault/soroban/justfile test-async-withdrawals`.
+
 ## Runtime Version Discovery
 
 New runtime artifacts expose `version() -> (String, u64)`. The string is the package version
 compiled by Cargo, and the bitmask reports the capabilities compiled into that exact WASM. Stable
 assignments are recovery `0x01`, external sync `0x02`, fee refresh `0x04`, allocation lifecycle
-`0x08`, refresh lifecycle `0x10`, pause `0x20`, and companion-contract upgrade routing `0x40`.
-The default production mask is `0x3f`: the governance pause path is public in every runtime build,
-while companion upgrades remain disabled.
+`0x08`, refresh lifecycle `0x10`, pause `0x20`, companion-contract upgrade routing `0x40`, and
+queued-withdrawal intake `0x80`. The default production mask is `0x3f`. A build with the
+default features plus `async-withdrawals` reports `0xbf`, while companion upgrades remain disabled.
 
 The curator proxy exposes the same information through `vault_version()`. Use its existing
 `initialize(vault, governance)` entrypoint for runtimes that expose `version`. For an approved,

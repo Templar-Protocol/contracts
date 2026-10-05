@@ -330,6 +330,10 @@ where
         now_ns: u64,
     ) -> Result<WithdrawRequestResult, RuntimeError> {
         self.authorize(ActionKind::RequestWithdraw, caller)?;
+        // New queued-withdrawal intake is opt-in; existing queue settlement is unaffected.
+        if !cfg!(feature = "async-withdrawals") {
+            return Err(RuntimeError::InvalidState);
+        }
 
         let state = self.state()?;
         if state.total_shares == 0 {

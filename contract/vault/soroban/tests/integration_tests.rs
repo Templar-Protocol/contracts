@@ -29,11 +29,13 @@ use templar_soroban_shared_types::{
     GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
+#[cfg(feature = "async-withdrawals")]
+use templar_vault_kernel::Restrictions;
 use templar_vault_kernel::{
     apply_action, compute_fee_shares_from_assets, compute_management_fee_shares,
     effects::KernelEffect, total_assets_for_fee_accrual, Address, AllocatingState,
     AllocationPlanEntry, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, Number, OpState,
-    Restrictions, VaultConfig, VaultState, Wad, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    VaultConfig, VaultState, Wad, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 use templar_vault_kernel::{
     state::op_state::RefreshingState,
@@ -1222,6 +1224,7 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
     });
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn soroban_contract_execute_withdraw_decodes_completed_receipt(
     soroban_contract_fixture: SorobanContractFixture,
@@ -1303,6 +1306,7 @@ fn soroban_contract_execute_withdraw_decodes_completed_receipt(
     });
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn soroban_contract_execute_withdraw_decodes_no_payout_receipt(
     soroban_contract_fixture: SorobanContractFixture,
@@ -1813,6 +1817,7 @@ fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
 
 // Withdraw Flow Tests
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_withdraw_request_basic(mut vault: TestVault) {
     let user = user_addr();
@@ -1837,6 +1842,7 @@ fn test_withdraw_request_basic(mut vault: TestVault) {
     assert_eq!(pending.escrow_shares, 1000);
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_withdraw_request_calculates_assets_correctly(mut vault: TestVault) {
     let user = user_addr();
@@ -1856,6 +1862,7 @@ fn test_withdraw_request_calculates_assets_correctly(mut vault: TestVault) {
     assert_eq!(pending.expected_assets, 5000);
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_withdraw_request_slippage_protection(mut vault: TestVault) {
     let user = user_addr();
@@ -1868,6 +1875,7 @@ fn test_withdraw_request_slippage_protection(mut vault: TestVault) {
     assert!(result.is_err());
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_withdraw_request_zero_shares_fails(mut vault: TestVault) {
     let user = user_addr();
@@ -1880,6 +1888,7 @@ fn test_withdraw_request_zero_shares_fails(mut vault: TestVault) {
     assert!(result.is_err());
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_withdraw_request_no_shares_fails(mut vault: TestVault) {
     let user = user_addr();
@@ -1905,6 +1914,7 @@ fn test_execute_withdraw_requires_idle(mut vault: TestVault) {
     assert!(result.is_err());
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_execute_withdraw_in_idle_state(mut vault: TestVault) {
     let user = user_addr();
@@ -1920,6 +1930,7 @@ fn test_execute_withdraw_in_idle_state(mut vault: TestVault) {
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_execute_withdraw_respects_cooldown(mut vault: TestVault) {
     let user = user_addr();
@@ -1937,6 +1948,7 @@ fn test_execute_withdraw_respects_cooldown(mut vault: TestVault) {
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_withdraw_flow_with_allocation(mut vault: TestVault) {
     use templar_soroban_runtime::contract::{AllocationDelta, Delta};
@@ -1962,6 +1974,7 @@ fn test_withdraw_flow_with_allocation(mut vault: TestVault) {
 
 // Full Flow Integration Tests - Deposit, Allocate, Refresh, Withdraw
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
     use templar_soroban_runtime::contract::{AllocationDelta, Delta};
@@ -2001,6 +2014,7 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_happy_path_like_near_sequence(mut vault: TestVault) {
     use templar_soroban_runtime::contract::{AllocationDelta, Delta};
@@ -2059,6 +2073,7 @@ fn test_happy_path_like_near_sequence(mut vault: TestVault) {
     assert_eq!(vault.state().unwrap().total_shares, 9_000);
 }
 
+#[cfg(feature = "async-withdrawals")]
 #[rstest]
 fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
     let user = user_addr();
@@ -2775,4 +2790,168 @@ fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
             )
         );
     });
+}
+
+#[cfg(not(feature = "async-withdrawals"))]
+#[rstest]
+fn soroban_contract_request_withdraw_is_disabled_by_default(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let asset_token = soroban_contract_fixture.asset_token;
+    let share_token = soroban_contract_fixture.share_token;
+    let owner = soroban_sdk::Address::generate(&env);
+    let proxy = VaultProxy::new(&env);
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+    let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as i128;
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 1,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    asset_admin_client.mint(&owner, &deposit_assets);
+
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute(&VaultCommand::DepositWithMin {
+                owner: sdk_wire(&owner),
+                receiver: sdk_wire(&owner),
+                assets: deposit_assets,
+                min_shares_out: 0,
+            })
+            .expect("deposit should succeed with intake disabled");
+
+        let result = proxy.execute(&VaultCommand::RequestWithdraw {
+            owner: sdk_wire(&owner),
+            receiver: sdk_wire(&owner),
+            shares: deposit_assets,
+            min_assets_out: 0,
+        });
+        assert_eq!(
+            result.unwrap_err(),
+            templar_soroban_runtime::ContractError::InvalidState
+        );
+
+        let state = SorobanStorage::new(&env)
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        assert!(state.withdraw_queue.is_empty());
+        assert_eq!(state.total_shares, deposit_assets as u128);
+        assert_eq!(state.total_assets, deposit_assets as u128);
+        assert_eq!(state.idle_assets, deposit_assets as u128);
+        assert_eq!(state.op_state, OpState::Idle);
+    });
+
+    let shares_held = soroban_sdk::token::Client::new(&env, &share_token).balance(&owner);
+    assert_eq!(shares_held, deposit_assets);
+}
+
+#[cfg(not(feature = "async-withdrawals"))]
+#[rstest]
+fn soroban_contract_seeded_withdrawal_escrow_drains_with_intake_disabled(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let curator = soroban_contract_fixture.curator;
+    let asset_token = soroban_contract_fixture.asset_token;
+    let share_token = soroban_contract_fixture.share_token;
+    let owner = soroban_sdk::Address::generate(&env);
+    let proxy = VaultProxy::new(&env);
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+    let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as i128;
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 1,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    asset_admin_client.mint(&owner, &deposit_assets);
+
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute(&VaultCommand::DepositWithMin {
+                owner: sdk_wire(&owner),
+                receiver: sdk_wire(&owner),
+                assets: deposit_assets,
+                min_shares_out: 0,
+            })
+            .expect("deposit should succeed with intake disabled");
+    });
+
+    let escrow_owner = Address([7u8; 32]);
+    let escrow_receiver = Address([8u8; 32]);
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        let mut state = storage
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        state
+            .withdraw_queue
+            .enqueue(
+                escrow_owner,
+                escrow_receiver,
+                deposit_assets as u128,
+                deposit_assets as u128,
+                templar_vault_kernel::TimestampNs(1_000_000_000),
+                u32::try_from(MAX_PENDING).expect("queue limit fits u32"),
+            )
+            .expect("seed the pre-upgrade escrow");
+        storage.save_state(&state).expect("persist seeded state");
+        storage
+            .save_address(&escrow_owner, &owner)
+            .expect("map queued owner");
+        storage
+            .save_address(&escrow_receiver, &owner)
+            .expect("map queued receiver");
+    });
+
+    // The request-phase escrow transfer already moved the shares into the vault.
+    soroban_sdk::token::Client::new(&env, &share_token).transfer(
+        &owner,
+        &contract_id,
+        &deposit_assets,
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS / 1_000_000_000 + 3,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let receipt = env.as_contract(&contract_id, || {
+        proxy
+            .execute_withdraw(&curator)
+            .expect("existing escrow settlement must work with intake disabled")
+    });
+    let ExecuteWithdrawReceipt::Completed {
+        assets_out,
+        shares_burned,
+        ..
+    } = receipt
+    else {
+        panic!("seeded escrow should complete");
+    };
+    assert_eq!(assets_out, deposit_assets as u128);
+    assert_eq!(shares_burned, deposit_assets as u128);
+
+    env.as_contract(&contract_id, || {
+        let state = SorobanStorage::new(&env)
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        assert!(state.withdraw_queue.is_empty());
+        assert_eq!(state.total_shares, 0);
+        assert!(state.op_state.is_idle());
+    });
+
+    assert_eq!(
+        soroban_sdk::token::Client::new(&env, &asset_token).balance(&owner),
+        deposit_assets
+    );
 }

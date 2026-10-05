@@ -442,6 +442,7 @@ proptest! {
     /// Property 17: Withdrawal request generates TransferShares effect
     ///
     /// A withdrawal request should generate a TransferShares effect for escrow.
+    #[cfg(feature = "async-withdrawals")]
     #[test]
     fn prop_withdraw_request_generates_transfer_effect(
         deposit_amount in arb_deposit_amount(),
@@ -585,6 +586,7 @@ proptest! {
     /// Property 22: Withdraw request respects min_assets_out
     ///
     /// If min_assets_out cannot be satisfied, withdraw request should fail.
+    #[cfg(feature = "async-withdrawals")]
     #[test]
     fn prop_withdraw_slippage_protection(
         deposit_amount in arb_deposit_amount(),

@@ -311,6 +311,9 @@ jobs:
       - name: Verify ENG-484 Soroban release ABIs
         run: just -f contract/vault/soroban/justfile verify-release-wasm-abi
 
+      - name: Test Soroban async-withdrawals opt-in
+        run: just -f contract/vault/soroban/justfile test-async-withdrawals
+
       - name: Enforce proxy-oracle Soroban size budgets
         run: just -f contract/proxy-oracle/soroban/justfile size-check
 
