@@ -40,6 +40,13 @@ impl Status {
     pub const fn is_failure(&self) -> bool {
         matches!(self, Self::Failed { .. })
     }
+
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::Passed { detail } | Self::Failed { detail } => detail,
+            Self::Skipped { reason } => reason,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +74,14 @@ pub fn failures(checks: &[Check]) -> usize {
         .count()
 }
 
+fn failed_ids(checks: &[Check]) -> Vec<&str> {
+    checks
+        .iter()
+        .filter(|check| check.status.is_failure())
+        .map(|check| check.id.as_str())
+        .collect()
+}
+
 /// A command's check report, as printed.
 ///
 /// A struct rather than an ad-hoc document so the two commands that emit it
@@ -81,11 +96,36 @@ pub struct Report<'a, T: Serialize> {
 /// The gate every command applies to its checks. `subject` names what was
 /// checked and `consequence` what did not happen; only the caller knows either.
 pub fn gate(checks: &[Check], subject: &str, consequence: &str) -> anyhow::Result<()> {
-    let failed = failures(checks);
+    refuse_failures(
+        checks,
+        subject,
+        consequence,
+        "Fix what the digest reports, or re-run with `--skip-check <id>` for a check that is wrong.",
+    )
+}
+
+/// [`gate`] for a command that takes no `--skip-check`.
+pub fn gate_unskippable(checks: &[Check], subject: &str, consequence: &str) -> anyhow::Result<()> {
+    refuse_failures(
+        checks,
+        subject,
+        consequence,
+        "Fix what the digest reports and re-run.",
+    )
+}
+
+fn refuse_failures(
+    checks: &[Check],
+    subject: &str,
+    consequence: &str,
+    advice: &str,
+) -> anyhow::Result<()> {
+    let failed = failed_ids(checks);
     anyhow::ensure!(
-        failed == 0,
-        "{failed} check(s) failed for {subject}; {consequence}. Fix what the digest \
-         reports, or re-run with `--skip-check <id>` for a check that is wrong."
+        failed.is_empty(),
+        "{} check(s) failed for {subject} ({}); {consequence}. {advice}",
+        failed.len(),
+        failed.join(", "),
     );
     Ok(())
 }

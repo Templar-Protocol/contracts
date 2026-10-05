@@ -17,6 +17,8 @@ pub(crate) mod plan;
 mod preflight;
 mod proposals;
 mod reference;
+mod registry_upgrade;
+mod sandbox_replay;
 mod static_yield;
 mod teardown;
 mod upgrade_preflight;
@@ -133,6 +135,7 @@ async fn registry(ctx: CliContext, ns: RegistryNs) -> anyhow::Result<()> {
         RegistryNs::RemoveVersion(a) => teardown::remove_version(ctx, a).await,
         RegistryNs::Remove(a) => teardown::registry_remove(ctx, a).await,
         RegistryNs::ClearDeployments(a) => teardown::clear_deployments(ctx, a).await,
+        RegistryNs::Upgrade(a) => registry_upgrade::upgrade(ctx, a).await,
     }
 }
 
