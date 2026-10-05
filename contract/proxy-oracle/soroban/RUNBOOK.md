@@ -10,7 +10,7 @@ Examples assume these are exported, and use the `inv` helper for brevity:
 
 ```bash
 export NET=<network> SRC=<identity>                 # network + signing identity
-export RT=<runtime_id> GOV=<governance_id> AD=<adapter_id>
+export RT=<runtime_id> GOV=<governance_id> AD=<adapter_id> LZ=<lazer_source_id> BATCH=<batcher_id>
 JF=contract/proxy-oracle/soroban/justfile
 inv() { stellar contract invoke --network "$NET" --source "$SRC" "$@"; }
 ```
@@ -21,37 +21,77 @@ scripts or logs.
 ## 1. Build and release gates
 
 ```bash
-just -f $JF release-gate   # test + optimize + size-check + budget-check
-just -f $JF release        # write target/proxy-oracle-soroban/release-manifest.json
-just -f $JF dry-run        # validate artifacts (SHA-256 + size), no broadcast
+just -f $JF test
+just -f $JF test-integration
+just -f $JF test-scripts
+just -f $JF size-check       # developer build; invalidates release evidence
+just -f $JF release-gate     # clean tracked tree only
 ```
 
-Size budgets: runtime & governance ≤ 131072 bytes (128 KiB), adapter ≤ 32768
-(32 KiB), enforced by `size-check`. The manifest records git commit, Stellar CLI
-and toolchain versions, SHA-256 checksums, and optimized sizes — cross-check the
-SHA-256 against the on-chain hash after install.
+`release-gate` performs one fresh unoptimized+optimized build of each of the
+five artifacts, publishes the optimized files, writes the schema-4 manifest
+last, and validates the exact files without rebuilding. A failed build or
+validation removes stale manifest/PASS evidence. `validate-release` takes no
+paths: it validates only the canonical manifest and artifacts under
+`target/proxy-oracle-soroban/`.
+
+Size budgets: runtime and governance ≤ 131072 bytes; adapter, Lazer source, and
+batcher ≤ 32768 bytes. The manifest also binds the clean Git commit, Stellar CLI
+and Rust versions, package versions, canonical paths, Wasm SHA-256, reviewed
+contract-spec SHA-256, and size policy for all five artifacts.
+
+## 1b. Live end-to-end rehearsal
+
+The rehearsal is testnet-only. It snapshots a validated clean-source release,
+pins provider code and every behavioral input, and records signed envelopes,
+transaction hashes, independent RPC results, postconditions, and phase outcomes
+under `target/proxy-oracle-soroban/e2e/testnet/`:
+
+```bash
+SRC=<funded-cli-identity> PYTH_LAZER_API_KEY_FILE=<mode-600-file> \
+  contract/proxy-oracle/soroban/scripts/e2e_live.sh all
+```
+
+Phases are `deploy`, `ownership`, `configure`, `push`, and `refresh`; a later phase refuses
+to run before its prerequisites pass, and a phase that already passed is
+skipped. Re-running re-hashes and resumes the same
+checkpoint envelope and refuses administrator, deterministic deployment plan,
+artifact, provider, tool, policy, or endpoint drift. Use `--reinitialize` only
+when a new deployment plan is intentional; reset refuses an unmarked non-empty
+output directory. This tool has no mainnet mode and never tears down contracts.
+
+A submitted transaction is only ever resolved by polling its recorded hash,
+never resent. If a send never reached the network — the operation stays
+unresolved and every run dies on "remains unresolved" — clear it with
+`--abandon-unresolved`, which polls once more and records the operation as
+failed only when its own send failed locally. It refuses an operation whose
+send succeeded, so a transaction that landed late is still found by a resume.
 
 ## 2. Deploy
 
-Install each optimized WASM and record the returned hash:
+Upload each optimized WASM and record the returned hash:
 
 ```bash
-stellar contract install --network $NET --source $SRC \
+stellar contract upload --network $NET --source $SRC \
   --wasm target/proxy-oracle-soroban/wasm/<artifact>.optimized.wasm
 ```
 
-for `templar_proxy_oracle_soroban_contract`, `..._governance_contract`, and
-`..._sep40_adapter_contract`.
+The five artifacts are runtime, governance, SEP-40 adapter, Pyth Lazer source,
+and batcher. For a release deployment, hashes and bytes must match the validated
+schema-4 manifest; do not substitute a developer `build`/`optimize` output.
 
 ## 3. Initialize
 
-Constructors are one-shot (`AlreadyInitialized` on re-call). Initialize the
-runtime, then governance:
+Constructors are one-shot (`AlreadyInitialized` on re-call). The runtime takes
+its owner and governance takes the runtime, so deploy the runtime with a
+bootstrap owner first and hand it to governance once governance exists:
 
 ```bash
-inv --id $RT  -- __constructor --governance $GOV --base '{"Other":"USD"}'
-inv --id $GOV -- __constructor --admin <ADMIN> --proxy_oracle $RT \
-    --initial_uniform_ttl_ns 86400000000000   # 24h, uniform across all OperationKinds
+stellar contract deploy --network $NET --source $SRC --wasm-hash <RUNTIME_HASH> -- \
+  --governance <ADMIN> --base '{"Other":"USD"}'          # bootstrap owner = ADMIN
+stellar contract deploy --network $NET --source $SRC --wasm-hash <GOV_HASH> -- \
+  --admin <ADMIN> --proxy_oracle $RT \
+  --initial_uniform_ttl_ns 86400000000000                # 24h, uniform across all OperationKinds
 ```
 
 - `base` is the source-validation invariant — every source's `base()` must match
@@ -77,6 +117,23 @@ Deploy one adapter per feed (`decimals ≤ 18`, `resolution ≠ 0`):
 stellar contract deploy --network $NET --source $SRC --wasm-hash <ADAPTER_HASH> -- \
   --owner <OWNER> --parent_oracle $RT --asset '{"Other":"BTC"}' \
   --decimals 8 --resolution 1 --base '{"Other":"USD"}'
+```
+
+Deploy the Pyth Lazer source with an explicit bounded feed registry (mainnet
+verifier `CACZ3GBAKUPIAFRILUFO27J5RUH5GJ2VSJ46LP6GJYSKGDRTQ5MS3HCH`, testnet
+`CAYFT5JE3UQTKT4Q6ZOZK4FXVYVT6RE3MFC7STA4UB6WAEGBT65MRU52`) and deploy the
+stateless batcher with no arguments. Admitted feeds are served under
+`{"Other":"<feed id>"}` (XLM 23, USDC 7, EURC 240); the governed proxy
+configuration maps those keys to protocol assets:
+
+```bash
+stellar contract deploy --network $NET --source $SRC --wasm-hash <LAZER_HASH> -- \
+  --owner <OWNER> \
+  --config '{"verifier":"<PYTH_VERIFIER>","base":{"Other":"USD"},"decimals":8,
+             "channel":"FixedRate200ms",
+             "freshness":{"max_age_secs":120,"max_clock_drift_secs":5}}' \
+  --supported_feed_ids '[23]'
+stellar contract deploy --network $NET --source $SRC --wasm-hash <BATCHER_HASH>
 ```
 
 ## 4. Governance proposals
@@ -123,22 +180,49 @@ inv --id $GOV -- cancel_proposal  --caller <ADDR> --id <ID>   # frees a slot
 Wrap each action in `create_proposal` + `execute_proposal` (examples show only
 the `--action` JSON).
 
-**Sources** — `SetProxy` / `RemoveProxy`:
+**Sources** — `SetProxy` / `RemoveProxy` (mainnet ids; on testnet use Reflector
+`CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63`, RedStone
+`CA7MY6TYNL5Z5H5FYGMN7YWSY3JIZG7LFY3DZ26EEGRBQ2UKTFWHD4ZJ` with its XLM SAC
+`CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`):
 
 ```json
-{"SetProxy": [{"Other":"BTC"}, {
-  "sources": [{"oracle":"<SRC1>","asset":{"Other":"BTC"}},
-              {"oracle":"<SRC2>","asset":{"Other":"BTC"}},
-              {"oracle":"<SRC3>","asset":{"Other":"BTC"}},
-              {"oracle":"<SRC4>","asset":{"Other":"BTC"}}],
-  "min_sources": 3, "max_age_secs": 120, "max_clock_drift_secs": 30 }]}
+{"SetProxy": [{"Other":"XLM"}, {
+  "sources": [
+    {"oracle":"CAFJZQWSED6YAWZU3GWRTOCNPPCGBN32L7QV43XX5LZLFTK6JLN34DLN",
+     "asset":{"Other":"XLM"}},
+    {"oracle":"CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF",
+     "asset":{"Stellar":"CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA"}},
+    {"oracle":"<LZ>","asset":{"Other":"23"}}
+  ],
+  "min_sources":3,
+  "max_age_secs":46800,
+  "max_clock_drift_secs":60
+}]}
 ```
 
-3–16 sources; `min_sources ∈ [3, n]`; no duplicate oracle address; both
-freshness bounds are required. `max_age_secs` is capped at 604800 (seven days)
-and `max_clock_drift_secs` at 3600 (one hour). Changing the source set or quorum
-clears the breaker set, history, and cache; configure and add breakers again after
-the source migration. `RemoveProxy` clears all state for the asset.
+Configure 3–16 distinct oracle addresses and `min_sources ∈ [3, n]`.
+`max_age_secs` is capped at seven days, `max_clock_drift_secs` at one hour, and
+both are required. Reflector keys by symbol, RedStone by SAC address, and Lazer
+by feed id. One window filters every source, so it has to clear the slowest:
+Reflector timestamps use 300-second buckets and RedStone updates on 0.2%
+deviation or a 12-hour heartbeat, so a three-source set needs ~13h. With
+`min_sources = 3` one filtered source fails the refresh, so size the window to
+the slowest source and use breakers to constrain the exposure that buys.
+
+**Size every `max_age_secs` above that source's own update cadence plus the
+keeper interval, with margin.** An accepted cache expires when the *earliest*
+contributing source would have aged out, so a source sitting near its window
+edge leaves only the remainder: a Reflector price 580s old under a 600s window
+makes the aggregate readable for 20 seconds, and `aggregated_latest` and the
+adapter's `lastprice` return `None` until the next refresh. That is the
+intended fail-closed response to a source that has effectively stopped
+updating, but a consumer that panics on `None` — Blend's pool does — turns it
+into an outage, so the windows, not the fallback, are what keep reads alive.
+
+Any changed `SetProxy` policy clears accepted history and cache.
+Freshness/cache-only changes retain breaker state; changing the ordered
+`(oracle, asset)` pairs or `min_sources` also clears breakers. `RemoveProxy`
+clears all state.
 
 **Breakers** — configure the set, add a breaker, then enforce it:
 
@@ -174,26 +258,42 @@ storage-only.
 
 ```bash
 inv --id $RT -- refresh --asset '{"Other":"BTC"}'
+# or every asset in one operation:
+inv --id $BATCH -- refresh_many --oracle $RT --assets '[{"Other":"XLM"},{"Other":"USDC"}]'
 ```
 
-Returns `RefreshStatus`: `Accepted` (cache updated), `Blocked` (breaker),
-`ResolveFailed` (aggregation or internal storage state), `SourceUnavailable` (no
-source responded), or `UnknownAsset`. Every candidate is evaluated by breakers
-before its publication time determines whether it advances source-time storage. A
-successful candidate with an equal or predating timestamp leaves
-`aggregated_latest` and `aggregated_history` at their newest source-time
-aggregate; a failed or blocked refresh replaces the cache and fails closed. Use
-`aggregated_latest` for the current aggregate and `aggregated_history` for
-monotonic audit samples. Historical reads are unavailable while the asset is
-manually or automatically blocked, but they do not apply a freshness cutoff.
+A Lazer-backed proxy needs the source fed first: fetch a `leEcdsa`-format update
+covering every feed in use (one subscription, one payload), requesting the
+`price`, `exponent` and `feedUpdateTimestamp` properties — the source skips any
+feed missing one of them — and push it with
+`inv --id $LZ -- update_price_feeds --payload <hex>`; the return value is the
+number of feeds stored (0 means nothing advanced or nothing qualified). A push
+that fails simulation reports `Error(Contract, #6)` when Pyth's verifier refused
+the signature or envelope, `#3` when the verified bytes would not parse, and
+`#7` when the verifier trapped or returned a code the pinned SDK does not map —
+investigate `#7` before retrying, it points at the verifier, not the payload.
+
+Returns `RefreshStatus`: `Accepted`, `Blocked`, `ResolveFailed`,
+`SourceUnavailable`, or `UnknownAsset`. Reads apply `max_age_secs` from the
+asset's current config against the cached entry.
+
+Every candidate is evaluated by breakers before its publication time can
+advance history. A non-advancing candidate still serves the prior aggregate and
+`RefreshEvaluated` records it when it differs. Failed or blocked refreshes
+replace the accepted status.
+`aggregated_history` remains a monotonic source-time audit trail but is hidden
+while a manual or enforced breaker blocks the asset.
 
 ## 7. TTL extension
 
 ```bash
 inv --id $RT  -- extend_ttl --asset '{"Other":"BTC"}'
 inv --id $GOV -- extend_ttl
+# or batched:
+inv --id $BATCH -- extend_ttl_many --oracle $RT --assets '[{"Other":"XLM"},{"Other":"USDC"}]'
+inv --id $BATCH -- extend_ttl_contracts --contracts '["'$GOV'","'$AD'","'$LZ'"]'
 ```
-Governance TTL extension is permissionless: the invoker pays the transaction fee, but no role or authorization is required.
+Every TTL entrypoint is permissionless: the invoker pays the transaction fee, but no role or authorization is required. The batcher also renews each target's (and its own) instance and code entries, so the WASM code cannot be archived out from under live instances.
 
 The runtime accepts only registered assets. Once the proxy exists, it renews every
 surviving per-asset key independently; a missing cache, history, breaker set, or
@@ -218,7 +318,7 @@ Compact typed events. Topics are indexed; alert on anything unexpected.
 | `CircuitBreakerRearmed` | asset, breaker_id | armed_at_secs | breaker rearmed |
 | `CircuitBreakerTripped` | asset, breaker_id | tripped_at_secs, price, expo, publish_timestamp_secs, is_enforced | automatic trip; blocks iff `is_enforced` |
 | `ManualTripSet` | asset | is_manually_tripped, metadata | governed trip/untrip — correlate the operator via the governance proposal |
-| `ProxySet` | asset | source_count, min_sources | source/quorum change clears breaker state, history, and cache; other config changes clear history and cache |
+| `ProxySet` | asset | source_count, min_sources | changed ordered `(oracle, asset)` pairs or `min_sources` clear breaker state, history, and cache; other config changes clear history and cache |
 | `ProxyRemoved` | asset | — | proxy + all state cleared; downstream now reads `None` |
 | `ContractUpgraded` | — | new_wasm_hash | runtime code swapped — high impact, verify |
 | `TtlExtended` | asset | — | runtime `extend_ttl(asset)` ran |
@@ -266,20 +366,29 @@ later accepted refresh.
 
 ## 11. Upgrade
 
-Run the release gate and dry-run on the new code first; cross-check the manifest
+Run the clean-source release gate first and cross-check the validated manifest
 SHA-256 against the installed artifact. Zero WASM hashes are rejected; there is
 no `AdminFunctionCall`.
 
 ```bash
-stellar contract install --network $NET --source $SRC --wasm <new>.optimized.wasm   # returns <HASH>
+stellar contract upload --network $NET --source $SRC --wasm <new>.optimized.wasm   # returns <HASH>
 
 # runtime — direct (governance authorizes) or via the Upgrade proposal action:
 inv --id $RT --source <gov-signer> -- upgrade --new_wasm_hash <HASH> --operator $GOV
 # or: create_proposal {"Upgrade":"<HASH>"} (Admin) → execute_proposal after maturity
 
-# adapter — owner-gated:
+# adapter and Lazer source — owner-gated, same shape:
 inv --id $AD -- upgrade --new_wasm_hash <HASH> --operator <OWNER>
+inv --id $LZ -- upgrade --new_wasm_hash <HASH> --operator <OWNER>
+
+# batcher — stateless and ownerless, so it is replaced rather than upgraded:
+stellar contract deploy --network $NET --source $SRC --wasm-hash <BATCHER_HASH>   # returns new $BATCH
+# then point the keeper at the new address; the old instance simply expires.
 ```
+
+The Lazer source's stored prices survive its upgrade (persistent storage is
+untouched); a new version must keep reading `StoredPrice` as stored. Rolling it
+back is the same call with the previous hash.
 
 ## 12. Rollback
 
