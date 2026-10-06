@@ -449,7 +449,7 @@ where
         receiver: &SdkAddress,
         owner: &SdkAddress,
         operator: &SdkAddress,
-    ) -> Result<(Address, Address, Address, u64, EffectSummary), RuntimeError> {
+    ) -> Result<(Address, Address, Address, u64), RuntimeError> {
         require_signed(operator);
         self.ensure_vault_mapped(env)?;
         let owner_kernel = self.register_sdk_address(env, owner)?;
@@ -457,14 +457,7 @@ where
         let operator_kernel = self.register_sdk_address(env, operator)?;
         let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
 
-
-        Ok((
-            owner_kernel,
-            receiver_kernel,
-            operator_kernel,
-            now_ns,
-            EffectSummary::new(),
-        ))
+        Ok((owner_kernel, receiver_kernel, operator_kernel, now_ns))
     }
 
     fn atomic_withdraw_effects(
@@ -525,17 +518,17 @@ where
             return Err(RuntimeError::invalid_input(""));
         }
 
-        let (owner_kernel, receiver_kernel, operator_kernel, now_ns, mut summary) =
+        let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
             self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        summary.merge(self.atomic_withdraw_effects(
+        let summary = self.atomic_withdraw_effects(
             owner_kernel,
             receiver_kernel,
             operator_kernel,
             to_u128(assets).map_err(|_| RuntimeError::invalid_input(""))?,
             to_u128(max_shares_burned).map_err(|_| RuntimeError::invalid_input(""))?,
             now_ns,
-        )?);
+        )?;
         to_i128(summary.shares_burned).map_err(|_| RuntimeError::invalid_input(""))
     }
 
@@ -553,17 +546,17 @@ where
             return Err(RuntimeError::invalid_input(""));
         }
 
-        let (owner_kernel, receiver_kernel, operator_kernel, now_ns, mut summary) =
+        let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
             self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        summary.merge(self.atomic_redeem_effects(
+        let summary = self.atomic_redeem_effects(
             owner_kernel,
             receiver_kernel,
             operator_kernel,
             to_u128(shares).map_err(|_| RuntimeError::invalid_input(""))?,
             to_u128(min_assets_out).map_err(|_| RuntimeError::invalid_input(""))?,
             now_ns,
-        )?);
+        )?;
         to_i128(summary.assets_transferred).map_err(|_| RuntimeError::invalid_input(""))
     }
 
