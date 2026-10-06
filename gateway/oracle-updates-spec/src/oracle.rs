@@ -1,7 +1,26 @@
+use std::collections::HashMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_common::oracle::{pyth::PriceIdentifier, redstone};
+use templar_common::oracle::{lazer, pyth::PriceIdentifier, redstone};
 use templar_gateway_macros::MethodSpec;
+use templar_gateway_methods_spec::redstone::PriceDataEntry;
+
+/// Preview provider-sourced Lazer feeds verified by the adapter without writing.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "oracle.getLazerUpdate", output = HashMap<u32, Option<lazer::FeedData>>)]
+pub struct GetLazerUpdate {
+    pub oracle_id: near_account_id::AccountId,
+    pub feed_ids: Vec<u32>,
+}
+
+/// Preview provider-sourced RedStone prices verified by the adapter without writing.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "oracle.getRedStoneUpdate", output = Vec<PriceDataEntry>)]
+pub struct GetRedStoneUpdate {
+    pub oracle_id: near_account_id::AccountId,
+    pub feed_ids: Vec<redstone::FeedId>,
+}
 
 /// Submit a Pyth oracle update for one or more feeds.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -13322,6 +13322,7 @@ dependencies = [
  "tokio-tungstenite 0.28.0",
  "tracing",
  "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -13335,6 +13336,7 @@ dependencies = [
  "serde_json",
  "templar-common",
  "templar-gateway-macros",
+ "templar-gateway-methods-spec",
  "templar-gateway-types",
  "templar-universal-account",
 ]
@@ -13361,15 +13363,20 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "byteorder",
  "clap",
  "dirs 6.0.0",
  "dotenvy",
+ "ed25519-dalek",
+ "hex",
+ "hex-literal",
  "jsonrpsee",
  "near-account-id",
  "near-api",
  "near-sandbox",
  "near-sdk",
  "near-token",
+ "pyth-lazer-protocol",
  "reqwest 0.12.28",
  "rstest",
  "serde",

@@ -39,7 +39,42 @@ pub struct GetFeedsDataArgs {
     pub feed_ids: Vec<u32>,
 }
 
+/// Projection policy; unrelated adapter configuration fields remain ignored.
+#[derive(serde::Deserialize)]
+pub struct LazerProjectionConfig {
+    pub max_timestamp_ahead_s: u64,
+}
+
 impl PythLazerOracleClient<'_> {
+    pub async fn get_projection_config_at(
+        &self,
+        block_hash: templar_gateway_types::CryptoHash,
+    ) -> crate::GatewayResult<LazerProjectionConfig> {
+        self.inner
+            .view_function_at(
+                self.contract_id.clone(),
+                "get_config",
+                serde_json::to_vec(&())?,
+                near_api::types::Reference::AtBlockHash(block_hash.0),
+            )
+            .await
+    }
+
+    pub async fn verify_update_at(
+        &self,
+        args: UpdatePriceFeedsArgs,
+        block_hash: templar_gateway_types::CryptoHash,
+    ) -> crate::GatewayResult<templar_common::oracle::lazer::VerifiedUpdateView> {
+        self.inner
+            .view_function_at(
+                self.contract_id.clone(),
+                "verify_update",
+                serde_json::to_vec(&args)?,
+                near_api::types::Reference::AtBlockHash(block_hash.0),
+            )
+            .await
+    }
+
     contract_views! {
         pub fn get_feeds_data(GetFeedsDataArgs) -> FeedDataResponse;
     }

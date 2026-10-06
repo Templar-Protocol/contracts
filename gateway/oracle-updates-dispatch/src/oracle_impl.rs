@@ -1,21 +1,133 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use async_trait::async_trait;
 use near_account_id::AccountId;
-use templar_common::oracle::{pyth::PriceIdentifier, redstone};
+use templar_common::{
+    oracle::{lazer, pyth::PriceIdentifier, redstone},
+    Nanoseconds,
+};
 use templar_gateway_core::{
-    client::{proxy_oracle::UpdatePricesArgs, ContractWriteOptions},
+    client::{
+        proxy_oracle::UpdatePricesArgs, pyth_lazer_oracle::UpdatePriceFeedsArgs,
+        redstone_oracle::WritePricesArgs, ContractWriteOptions,
+    },
     plan_pyth_lazer_update, plan_pyth_update, plan_redstone_write_prices, query_oracle_kind,
-    resolve_price_dependencies, GatewayError, GatewayResult, HasNearClient, OperationPlan,
-    OraclePayloadSource, PlanWrite, PlannedTransaction,
+    resolve_price_dependencies, DispatchRead, GatewayError, GatewayResult, HasNearClient,
+    OperationPlan, OraclePayloadSource, PlanWrite, PlannedTransaction,
 };
 use templar_gateway_oracle_updates_spec::oracle::{
-    UpdateLazer, UpdatePrices, UpdatePyth, UpdateRedStone,
+    GetLazerUpdate, GetRedStoneUpdate, UpdateLazer, UpdatePrices, UpdatePyth, UpdateRedStone,
 };
 use templar_gateway_types::{ManagedAccountId, OracleContractKind};
 use templar_proxy_oracle_near_common::request::{LazerRequest, OracleRequest};
 
 use crate::{Dispatch, ProvidesLazerSource, ProvidesPythSource, ProvidesRedStoneSource};
+
+#[async_trait]
+impl<C: HasNearClient + ProvidesLazerSource> DispatchRead<GetLazerUpdate, C> for Dispatch {
+    async fn dispatch(
+        request: GetLazerUpdate,
+        ctx: C,
+    ) -> GatewayResult<HashMap<u32, Option<lazer::FeedData>>> {
+        if request.feed_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let payload = ctx
+            .lazer_source()
+            .fetch_payload(&request.feed_ids)
+            .await
+            .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
+        let snapshot = ctx.near_client().chain().block(None).await?;
+        let oracle = ctx.near_client().pyth_lazer_oracle(request.oracle_id);
+        let config = oracle.get_projection_config_at(snapshot.hash).await?;
+        let verified = oracle
+            .verify_update_at(
+                UpdatePriceFeedsArgs {
+                    payload: near_sdk::json_types::Base64VecU8(payload),
+                },
+                snapshot.hash,
+            )
+            .await?;
+        let now = Nanoseconds::from_ns(snapshot.timestamp_ns);
+        let mut result: HashMap<u32, Option<lazer::FeedData>> =
+            request.feed_ids.into_iter().map(|id| (id, None)).collect();
+        for parsed in &verified.feeds {
+            let Some(selected) = result.get_mut(&parsed.feed_id) else {
+                continue;
+            };
+            let Some(candidate) = lazer::feed_data_from_parsed(
+                parsed,
+                verified.timestamp_ns,
+                now,
+                config.max_timestamp_ahead_s,
+            ) else {
+                continue;
+            };
+            // Match the adapter's within-bundle monotonic selection, not stored-state replay.
+            if selected
+                .as_ref()
+                .is_none_or(|old| candidate.publish_time_ns > old.publish_time_ns)
+            {
+                *selected = Some(candidate);
+            }
+        }
+        Ok(result)
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient + ProvidesRedStoneSource> DispatchRead<GetRedStoneUpdate, C> for Dispatch {
+    async fn dispatch(
+        request: GetRedStoneUpdate,
+        ctx: C,
+    ) -> GatewayResult<Vec<templar_gateway_methods_spec::redstone::PriceDataEntry>> {
+        if request.feed_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let payload = ctx
+            .redstone_source()
+            .fetch_payload(&request.feed_ids)
+            .await
+            .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
+        let snapshot = ctx.near_client().chain().block(None).await?;
+        // The verifier requires unique IDs; preserve the original request for output ordering.
+        let mut verification_feed_ids = request.feed_ids.clone();
+        verification_feed_ids.sort_unstable();
+        verification_feed_ids.dedup();
+        let verified = ctx
+            .near_client()
+            .redstone_oracle(request.oracle_id)
+            .get_prices_at(
+                WritePricesArgs {
+                    feed_ids: verification_feed_ids,
+                    payload: near_sdk::json_types::Base64VecU8(payload),
+                },
+                snapshot.hash,
+            )
+            .await?;
+        request
+            .feed_ids
+            .into_iter()
+            .map(|feed_id| {
+                // The adapter omits missing feeds rather than rejecting them.
+                // A provider preview must not silently return an incomplete request.
+                let price = verified.prices.get(&feed_id).copied().ok_or_else(|| {
+                    GatewayError::ExternalService(format!(
+                        "verified RedStone payload is missing requested feed {feed_id}"
+                    ))
+                })?;
+                Ok(templar_gateway_methods_spec::redstone::PriceDataEntry {
+                    feed_id,
+                    data: redstone::FeedData {
+                        price,
+                        package_timestamp: verified.timestamp,
+                        write_timestamp: Nanoseconds::from_ns(snapshot.timestamp_ns),
+                    },
+                })
+            })
+            .collect()
+    }
+}
 
 #[async_trait]
 impl<C> PlanWrite<UpdatePyth, C> for Dispatch
@@ -364,7 +476,7 @@ mod tests {
 
     #[derive(Clone)]
     struct FakeRedStoneSource {
-        payload: Vec<u8>,
+        outcome: Result<Vec<u8>, FakeError>,
     }
 
     #[async_trait]
@@ -376,7 +488,7 @@ mod tests {
             &self,
             _feed_ids: &[redstone::FeedId],
         ) -> Result<Vec<u8>, FakeError> {
-            Ok(self.payload.clone())
+            self.outcome.clone()
         }
     }
 
@@ -451,7 +563,7 @@ mod tests {
                 outcome: Ok(Vec::new()),
             },
             redstone_source: FakeRedStoneSource {
-                payload: Vec::new(),
+                outcome: Ok(Vec::new()),
             },
             lazer_source: FakeLazerSource::new(Ok(Vec::new())),
         }
@@ -754,5 +866,334 @@ mod tests {
             Some(price_ids.len()),
             "proxy step must carry every requested price id; got: {args_json}"
         );
+    }
+
+    #[tokio::test]
+    async fn provider_reads_skip_empty_requests_and_propagate_source_errors() {
+        let ctx = TestCtx {
+            lazer_source: FakeLazerSource::new(Err(FakeError)),
+            redstone_source: FakeRedStoneSource {
+                outcome: Err(FakeError),
+            },
+            ..inert_ctx()
+        };
+        let oracle_id = "oracle.near".parse::<AccountId>().unwrap();
+        let empty = <Dispatch as DispatchRead<GetLazerUpdate, TestCtx>>::dispatch(
+            GetLazerUpdate {
+                oracle_id: oracle_id.clone(),
+                feed_ids: vec![],
+            },
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(empty, HashMap::new());
+        let empty = <Dispatch as DispatchRead<GetRedStoneUpdate, TestCtx>>::dispatch(
+            GetRedStoneUpdate {
+                oracle_id: oracle_id.clone(),
+                feed_ids: vec![],
+            },
+            ctx.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(empty, vec![]);
+        let error = <Dispatch as DispatchRead<GetLazerUpdate, TestCtx>>::dispatch(
+            GetLazerUpdate {
+                oracle_id: oracle_id.clone(),
+                feed_ids: vec![1],
+            },
+            ctx.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, GatewayError::ExternalService(msg) if msg == "fake source unavailable")
+        );
+        let error = <Dispatch as DispatchRead<GetRedStoneUpdate, TestCtx>>::dispatch(
+            GetRedStoneUpdate {
+                oracle_id,
+                feed_ids: vec!["ETH".into()],
+            },
+            ctx,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, GatewayError::ExternalService(msg) if msg == "fake source unavailable")
+        );
+    }
+
+    const SNAPSHOT_HASH: &str = "6F3YyM29ajJxENmkyyAYWBQaTtKEJgXjwYVttj74sSSL";
+    const ZERO_HASH: &str = "11111111111111111111111111111111";
+
+    fn block_response(head: bool) -> serde_json::Value {
+        let (hash, height, timestamp) = if head {
+            (ZERO_HASH, 200, 200_000_000_000_u64)
+        } else {
+            (SNAPSHOT_HASH, 100, 100_000_000_000_u64)
+        };
+        serde_json::json!({
+            "author": "test.near", "chunks": [], "header": {
+                "approvals": [], "challenges_result": [], "chunk_mask": [], "validator_proposals": [],
+                "block_merkle_root": ZERO_HASH, "challenges_root": ZERO_HASH,
+                "chunk_headers_root": ZERO_HASH, "chunk_receipts_root": ZERO_HASH,
+                "chunk_tx_root": ZERO_HASH, "epoch_id": ZERO_HASH, "last_ds_final_block": ZERO_HASH,
+                "last_final_block": ZERO_HASH, "next_bp_hash": ZERO_HASH, "next_epoch_id": ZERO_HASH,
+                "outcome_root": ZERO_HASH, "prev_hash": ZERO_HASH, "prev_state_root": ZERO_HASH,
+                "random_value": ZERO_HASH, "chunks_included": 0, "gas_price": "0", "total_supply": "0",
+                "hash": hash, "height": height, "latest_protocol_version": 0,
+                "timestamp": timestamp, "timestamp_nanosec": timestamp.to_string(),
+                "signature": "ed25519:3FPX3BmPTkfBELwhdxP6dx5kxo1AaxsbVB2yM7RPHsgbBMoZtc8MeiFiFoKp419pcRSjpknkt3Hi2nHwFkfX3XYa"
+            }
+        })
+    }
+
+    fn parsed_feed(id: u32, time_s: u64, price: i64) -> lazer::ParsedFeedView {
+        serde_json::from_value(serde_json::json!({
+            "feed_id": id, "price": price.to_string(), "exponent": -8,
+            "confidence": "50", "ema_price": "123000", "ema_confidence": "40",
+            "feed_update_timestamp_ns": (time_s * 1_000_000_000).to_string()
+        }))
+        .unwrap()
+    }
+
+    async fn snapshot_ctx(
+        feeds: Vec<lazer::ParsedFeedView>,
+        failure: Option<&'static str>,
+    ) -> (TestCtx, wiremock::MockServer) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let heads = AtomicUsize::new(0);
+        Mock::given(method("POST"))
+            .respond_with(move |request: &wiremock::Request| {
+                let rpc: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let method = rpc["method"].as_str().unwrap();
+                let pinned = rpc["params"]["block_id"] == SNAPSHOT_HASH;
+                let response = if failure == Some(method) {
+                    serde_json::json!({"error": {
+                        "code": -32000, "message": "fixture view failure",
+                        "data": "UNKNOWN_ACCOUNT"
+                    }})
+                } else if method == "block" {
+                    let head = !pinned && heads.fetch_add(1, Ordering::SeqCst) > 0;
+                    serde_json::json!({"result": block_response(head)})
+                } else {
+                    let value = match rpc["params"]["method_name"].as_str().unwrap() {
+                        "get_config" => serde_json::json!({
+                            "max_timestamp_ahead_s": if pinned { 2 } else { 200 }
+                        }),
+                        "verify_update" => {
+                            let mut selected = feeds.clone();
+                            if !pinned {
+                                for feed in &mut selected {
+                                    if feed.feed_id == 2 {
+                                        feed.price = Some(near_sdk::json_types::I64(999_999));
+                                    }
+                                }
+                            }
+                            serde_json::to_value(lazer::VerifiedUpdateView {
+                                signer: [7; 32],
+                                channel_id: 1,
+                                timestamp_ns: Nanoseconds::from_secs(100),
+                                feeds: selected,
+                            })
+                            .unwrap()
+                        }
+                        "get_prices" => serde_json::json!({
+                            "timestamp": if pinned { "99000000000" } else { "199000000000" },
+                            "prices": {
+                                "ETH": if pinned { "195692129540" } else { "1" },
+                                "BTC": if pinned { "6698556748915" } else { "2" }
+                            }
+                        }),
+                        name => panic!("unexpected view {name}"),
+                    };
+                    serde_json::json!({"result": {
+                        "block_hash": if pinned { SNAPSHOT_HASH } else { ZERO_HASH },
+                        "block_height": if pinned { 100 } else { 200 },
+                        "logs": [], "result": serde_json::to_vec(&value).unwrap()
+                    }})
+                };
+                let mut response = response;
+                response["jsonrpc"] = serde_json::json!("2.0");
+                response["id"] = rpc["id"].clone();
+                ResponseTemplate::new(200).set_body_json(response)
+            })
+            .mount(&server)
+            .await;
+        let mut network = NetworkConfig::from_rpc_url("test", server.uri().parse().unwrap());
+        network.rpc_endpoints[0] =
+            near_api::RPCEndpoint::new(server.uri().parse().unwrap()).with_retries(1);
+        (
+            TestCtx {
+                near_client: NearClient::new(network),
+                ..inert_ctx()
+            },
+            server,
+        )
+    }
+
+    #[tokio::test]
+    async fn lazer_preview_uses_one_snapshot_and_filters_intrinsic_invalid_feeds() {
+        let mut spot_only = parsed_feed(3, 100, 55);
+        spot_only.ema_price = None;
+        let (ctx, _server) = snapshot_ctx(
+            vec![
+                parsed_feed(1, 103, 11),
+                parsed_feed(2, 102, 123_456),
+                spot_only,
+                parsed_feed(9, 100, 99),
+            ],
+            None,
+        )
+        .await;
+        let result = <Dispatch as DispatchRead<GetLazerUpdate, TestCtx>>::dispatch(
+            GetLazerUpdate {
+                oracle_id: "oracle.near".parse().unwrap(),
+                feed_ids: vec![1, 2, 2, 3, 4],
+            },
+            ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result.keys().copied().collect::<BTreeSet<_>>(),
+            BTreeSet::from([1, 2, 3, 4])
+        );
+        assert_eq!(result[&1], None);
+        assert_eq!(result[&3], None);
+        assert_eq!(result[&4], None);
+        assert_eq!(
+            result[&2],
+            Some(lazer::FeedData {
+                price: near_sdk::json_types::I64(123_456),
+                conf: near_sdk::json_types::U64(50),
+                ema: lazer::EmaData {
+                    price: near_sdk::json_types::I64(123_000),
+                    conf: near_sdk::json_types::U64(40)
+                },
+                expo: -8,
+                publish_time_ns: Nanoseconds::from_secs(102),
+            })
+        );
+    }
+
+    #[rstest]
+    #[case::newer_then_older(102, 101, true, 11, 102)]
+    #[case::older_then_newer(101, 102, true, 22, 102)]
+    #[case::valid_then_invalid(101, 102, false, 11, 101)]
+    #[case::equal_first_wins(101, 101, true, 11, 101)]
+    #[tokio::test]
+    async fn lazer_preview_selects_first_valid_then_strictly_newer(
+        #[case] first_time: u64,
+        #[case] second_time: u64,
+        #[case] second_valid: bool,
+        #[case] expected_price: i64,
+        #[case] expected_time: u64,
+    ) {
+        let mut second = parsed_feed(1, second_time, 22);
+        if !second_valid {
+            second.confidence = Some(near_sdk::json_types::I64(0));
+        }
+        let (ctx, _server) = snapshot_ctx(vec![parsed_feed(1, first_time, 11), second], None).await;
+        let result = <Dispatch as DispatchRead<GetLazerUpdate, TestCtx>>::dispatch(
+            GetLazerUpdate {
+                oracle_id: "oracle.near".parse().unwrap(),
+                feed_ids: vec![1],
+            },
+            ctx,
+        )
+        .await
+        .unwrap();
+        let selected = result[&1].as_ref().unwrap();
+        assert_eq!(selected.price.0, expected_price);
+        assert_eq!(
+            selected.publish_time_ns,
+            Nanoseconds::from_secs(expected_time)
+        );
+    }
+
+    #[tokio::test]
+    async fn redstone_preview_preserves_order_duplicates_and_snapshot_clock() {
+        let (ctx, _server) = snapshot_ctx(vec![], None).await;
+        let ids: Vec<redstone::FeedId> = ["BTC", "ETH", "BTC"].map(Into::into).to_vec();
+        let result = <Dispatch as DispatchRead<GetRedStoneUpdate, TestCtx>>::dispatch(
+            GetRedStoneUpdate {
+                oracle_id: "oracle.near".parse().unwrap(),
+                feed_ids: ids.clone(),
+            },
+            ctx,
+        )
+        .await
+        .unwrap();
+        let expected = ids
+            .into_iter()
+            .zip([6_698_556_748_915_u64, 195_692_129_540, 6_698_556_748_915])
+            .map(
+                |(feed_id, price)| templar_gateway_methods_spec::redstone::PriceDataEntry {
+                    feed_id,
+                    data: redstone::FeedData {
+                        price: templar_common::primitive_types::U256::from(price).into(),
+                        package_timestamp: Nanoseconds::from_secs(99),
+                        write_timestamp: Nanoseconds::from_secs(100),
+                    },
+                },
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    #[case("block")]
+    #[case("query")]
+    #[tokio::test]
+    async fn provider_reads_propagate_chain_errors(#[case] failure: &'static str) {
+        let (ctx, _server) = snapshot_ctx(vec![], Some(failure)).await;
+        let oracle_id: AccountId = "oracle.near".parse().unwrap();
+        let lazer = <Dispatch as DispatchRead<GetLazerUpdate, TestCtx>>::dispatch(
+            GetLazerUpdate {
+                oracle_id: oracle_id.clone(),
+                feed_ids: vec![1],
+            },
+            ctx.clone(),
+        )
+        .await
+        .unwrap_err();
+        let redstone = <Dispatch as DispatchRead<GetRedStoneUpdate, TestCtx>>::dispatch(
+            GetRedStoneUpdate {
+                oracle_id: oracle_id.clone(),
+                feed_ids: vec!["ETH".into()],
+            },
+            ctx,
+        )
+        .await
+        .unwrap_err();
+        for error in [lazer, redstone] {
+            if failure == "query" {
+                assert!(matches!(error, GatewayError::AccountNotFound(id) if id == oracle_id));
+            } else {
+                assert!(
+                    matches!(error, GatewayError::NearQuery(message) if message.contains("fixture view failure"))
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn redstone_preview_rejects_incomplete_verified_payload() {
+        let (ctx, _server) = snapshot_ctx(vec![], None).await;
+        let error = <Dispatch as DispatchRead<GetRedStoneUpdate, TestCtx>>::dispatch(
+            GetRedStoneUpdate {
+                oracle_id: "oracle.near".parse().unwrap(),
+                feed_ids: vec!["ETH".into(), "MISSING".into()],
+            },
+            ctx,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, GatewayError::ExternalService(message)
+            if message == "verified RedStone payload is missing requested feed MISSING"));
     }
 }

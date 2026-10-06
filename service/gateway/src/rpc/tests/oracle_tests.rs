@@ -1,4 +1,5 @@
 use super::*;
+use templar_gateway_methods_spec::lazer as lazer_methods;
 
 #[tokio::test]
 async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
@@ -497,5 +498,435 @@ async fn oracle_resolve_rejects_bare_pyth_lazer_adapter_as_standalone_oracle() -
     );
 
     stack.shutdown().await;
+    Ok(())
+}
+
+// Signed ETH/BTC fixture from common::oracle::redstone::adapter::tests::output.
+const REDSTONE_VALID_PAYLOAD: &[u8] = &hex_literal::hex!("45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9030a710019c56f0bec0000000200000015d1cb1a708c63264741b00ce097176e45f708914b8cfdca26b079877a70604e25aa0bcfa3a41df8212eddd51db3496b95c7c3dc4caa9ac9705602af0515db1b31c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9028ed04019c56f0bec000000020000001dcaf484941c0d206f1898185b953c6a92d7fd188b347505c0f5beb2030e06e3e1b2f7dfb45929ac7676136af93fee7f14a614b40fa4dc2d1e625dbece02eaca21c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9028ed04019c56f0bec00000002000000199bd54930138268baad2869e9ceb99b6bc67cd6b8a4cc98e05f0b1cd9b7f07066008208399a728fac3d1dc3ca407cb8199a0209377bceb0c48f2cc3d756078051b4254430000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006179a92ab8c019c56f0bec000000020000001f08af53ed34046f7f64cc02ffb7973252954d7c395e440693c896bffdbc2de1e31cf5675bf66583d3e3438f5002ae9c10870d4dc45de05c560b239aa3a2d50a41b425443000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000617a1187473019c56f0bec0000000200000011b96dc2763a692e3245ce4f1b0c16ea245c240204e99ebd323b340e58bfb14fb5f0465ce11b8dd52ff839547cc949d20e4e8ba0be43dd6417cade2a8ebfd8c9e1c425443000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000617a1187473019c56f0bec00000002000000114a02710892325b13afc74bbd350dd9ec80342b2d6c0c94df7b7a60dbf67a1b91b182fa4555e0e0db91e6258b279f00b7eeb8f5de9930e352d5321a6b8b64a031c00063137373039383531343539383223302e392e30237374656c6c61722d636f6e6e6563746f72000025000002ed57011e0000");
+
+fn fixture_feed(id: u32, full: bool) -> pyth_lazer_protocol::payload::PayloadFeedData {
+    use pyth_lazer_protocol::{payload::PayloadPropertyValue as Property, Price, PriceFeedId};
+    let mut properties = vec![
+        Property::Price(Some(Price::from_mantissa(123_456).unwrap())),
+        Property::Confidence(Some(Price::from_mantissa(50).unwrap())),
+        Property::Exponent(-8),
+    ];
+    if full {
+        properties.extend([
+            Property::EmaPrice(Some(Price::from_mantissa(123_000).unwrap())),
+            Property::EmaConfidence(Some(Price::from_mantissa(40).unwrap())),
+        ]);
+    }
+    pyth_lazer_protocol::payload::PayloadFeedData {
+        feed_id: PriceFeedId(id),
+        properties,
+    }
+}
+
+fn signed_lazer_fixture(
+    seed: u8,
+    timestamp: Nanoseconds,
+    feeds: Vec<pyth_lazer_protocol::payload::PayloadFeedData>,
+    corrupt: bool,
+) -> Result<Vec<u8>> {
+    use ed25519_dalek::{Signer, SigningKey};
+    use pyth_lazer_protocol::{
+        message::SolanaMessage, payload::PayloadData, time::TimestampUs, ChannelId,
+    };
+    let key = SigningKey::from_bytes(&[seed; 32]);
+    let mut payload = Vec::new();
+    PayloadData {
+        timestamp_us: TimestampUs::from_micros(timestamp.as_ns() / 1_000),
+        channel_id: ChannelId::REAL_TIME,
+        feeds,
+    }
+    .serialize::<byteorder::LE>(&mut payload)?;
+    let mut message = SolanaMessage {
+        signature: key.sign(&payload).to_bytes(),
+        public_key: key.verifying_key().to_bytes(),
+        payload,
+    };
+    if corrupt {
+        message.signature[0] ^= 1;
+    }
+    let mut bytes = Vec::new();
+    message.serialize(&mut bytes)?;
+    Ok(bytes)
+}
+
+async fn deploy_fixture_adapters(
+    harness: &SandboxHarness,
+) -> Result<(near_account_id::AccountId, near_account_id::AccountId)> {
+    let lazer_id = harness.deploy_pyth_lazer_adapter("provider-lazer").await?;
+    let redstone_id = harness.deploy_redstone_adapter("provider-redstone").await?;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let setup = harness
+        .call_function_payable(
+            &templar_gateway_types::ManagedAccountId(lazer_id.clone()),
+            &lazer_id,
+            "admin_set_signer",
+            serde_json::json!({
+                "public_key": hex::encode(key.verifying_key().to_bytes()), "expires_at_s": u64::MAX
+            }),
+            near_token::NearToken::from_yoctonear(1),
+        )
+        .await?;
+    assert_eq!(
+        setup.operation.status,
+        templar_gateway_types::OperationStatus::Succeeded
+    );
+    Ok((lazer_id, redstone_id))
+}
+
+#[tokio::test]
+async fn oracle_provider_updates_match_stored_prices() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let (lazer_id, redstone_id) = deploy_fixture_adapters(&harness).await?;
+    let timestamp = harness.chain_timestamp().await?;
+    let payload = signed_lazer_fixture(
+        7,
+        timestamp,
+        vec![
+            fixture_feed(7, true),
+            fixture_feed(8, false),
+            fixture_feed(9, true),
+        ],
+        false,
+    )?;
+    let stack = TestStack::start_with_sources(
+        harness,
+        Url::parse("http://127.0.0.1:1")?,
+        FakeLazerSource::with_payload(payload),
+        TestRedStoneSource::Fixture(Ok(REDSTONE_VALID_PAYLOAD.to_vec())),
+    )
+    .await?;
+    let outcome = async {
+        let lazer_read = lazer_methods::GetFeedsData {
+            oracle_id: lazer_id.clone(),
+            feed_ids: vec![7, 8, 10],
+        };
+        let before = stack
+            .controller
+            .request::<lazer_methods::GetFeedsData>(&lazer_read)
+            .await?;
+        assert_eq!(before, HashMap::from([(7, None), (8, None), (10, None)]));
+        let preview = stack
+            .controller
+            .request::<oracle_updates::GetLazerUpdate>(&oracle_updates::GetLazerUpdate {
+                oracle_id: lazer_id.clone(),
+                feed_ids: lazer_read.feed_ids.clone(),
+            })
+            .await?;
+        assert_eq!(
+            preview,
+            HashMap::from([
+                (
+                    7,
+                    Some(templar_common::oracle::lazer::FeedData {
+                        price: I64(123_456),
+                        conf: U64(50),
+                        ema: templar_common::oracle::lazer::EmaData {
+                            price: I64(123_000),
+                            conf: U64(40)
+                        },
+                        expo: -8,
+                        publish_time_ns: Nanoseconds::from_ns(timestamp.as_ns() / 1_000 * 1_000),
+                    })
+                ),
+                (8, None),
+                (10, None),
+            ])
+        );
+        assert_eq!(
+            stack
+                .controller
+                .request::<lazer_methods::GetFeedsData>(&lazer_read)
+                .await?,
+            before
+        );
+        let written = stack
+            .controller
+            .request::<oracle_updates::UpdateLazer>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                body: oracle_updates::UpdateLazer {
+                    oracle_id: lazer_id,
+                    feed_ids: lazer_read.feed_ids.clone(),
+                },
+            })
+            .await?;
+        assert_eq!(
+            written.operation.status,
+            templar_gateway_types::OperationStatus::Succeeded
+        );
+        assert_eq!(
+            stack
+                .controller
+                .request::<lazer_methods::GetFeedsData>(&lazer_read)
+                .await?,
+            preview
+        );
+        println!("Lazer preview={preview:?}; write={written:?}");
+
+        let redstone_read = redstone::ReadPriceData {
+            oracle_id: redstone_id.clone(),
+            feed_ids: vec!["BTC".into(), "ETH".into(), "BTC".into()],
+        };
+        assert_eq!(
+            stack
+                .controller
+                .request::<redstone::ReadPriceData>(&redstone_read)
+                .await?,
+            vec![]
+        );
+        let lower = stack
+            .context
+            .near_client()
+            .chain()
+            .block(None)
+            .await?
+            .timestamp_ns;
+        let preview = stack
+            .controller
+            .request::<oracle_updates::GetRedStoneUpdate>(&oracle_updates::GetRedStoneUpdate {
+                oracle_id: redstone_id.clone(),
+                feed_ids: redstone_read.feed_ids.clone(),
+            })
+            .await?;
+        let upper = stack
+            .context
+            .near_client()
+            .chain()
+            .block(None)
+            .await?
+            .timestamp_ns;
+        assert_eq!(
+            preview
+                .iter()
+                .map(|entry| (&entry.feed_id, entry.data.price))
+                .collect::<Vec<_>>(),
+            redstone_read
+                .feed_ids
+                .iter()
+                .zip([
+                    U256::from(6_698_556_748_915_u64).into(),
+                    U256::from(195_692_129_540_u64).into(),
+                    U256::from(6_698_556_748_915_u64).into(),
+                ])
+                .collect::<Vec<_>>()
+        );
+        for entry in &preview {
+            assert_eq!(entry.data.write_timestamp, preview[0].data.write_timestamp);
+            assert_eq!(
+                entry.data.package_timestamp,
+                Nanoseconds::from_ms(1_770_985_144_000)
+            );
+            assert!((lower..=upper).contains(&entry.data.write_timestamp.as_ns()));
+        }
+        assert_eq!(
+            stack
+                .controller
+                .request::<redstone::ReadPriceData>(&redstone_read)
+                .await?,
+            vec![]
+        );
+        let written = stack
+            .controller
+            .request::<oracle_updates::UpdateRedStone>(&WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                body: oracle_updates::UpdateRedStone {
+                    oracle_id: redstone_id,
+                    feed_ids: vec!["ETH".into(), "BTC".into()],
+                },
+            })
+            .await?;
+        assert_eq!(
+            written.operation.status,
+            templar_gateway_types::OperationStatus::Succeeded
+        );
+        let stored = stack
+            .controller
+            .request::<redstone::ReadPriceData>(&redstone_read)
+            .await?;
+        let comparable = |entries: Vec<redstone::PriceDataEntry>| {
+            entries
+                .into_iter()
+                .map(|entry| {
+                    (
+                        entry.feed_id,
+                        entry.data.price,
+                        entry.data.package_timestamp,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(comparable(stored), comparable(preview.clone()));
+        println!("RedStone preview={preview:?}; write={written:?}");
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    stack.shutdown().await;
+    outcome
+}
+
+#[tokio::test]
+async fn oracle_provider_updates_reject_invalid_payloads() -> Result<()> {
+    use fake_lazer_source::{FakeLazerError, TestRedStoneError};
+    for row in 0..6 {
+        let harness = SandboxHarness::start().await?;
+        let (lazer_id, redstone_id) = deploy_fixture_adapters(&harness).await?;
+        let timestamp = harness.chain_timestamp().await?;
+        let valid = signed_lazer_fixture(7, timestamp, vec![fixture_feed(7, true)], false)?;
+        let setup = harness
+            .call_function_payable(
+                &templar_gateway_types::ManagedAccountId(lazer_id.clone()),
+                &lazer_id,
+                "update_price_feeds",
+                serde_json::json!({ "payload": near_sdk::json_types::Base64VecU8(valid.clone()) }),
+                near_token::NearToken::from_near(1),
+            )
+            .await?;
+        assert_eq!(
+            setup.operation.status,
+            templar_gateway_types::OperationStatus::Succeeded
+        );
+        let setup = harness.call_function_payable(
+            &templar_gateway_types::ManagedAccountId(redstone_id.clone()), &redstone_id, "write_prices",
+            serde_json::json!({ "feed_ids": ["ETH", "BTC"], "payload": near_sdk::json_types::Base64VecU8(REDSTONE_VALID_PAYLOAD.to_vec()) }),
+            near_token::NearToken::from_yoctonear(0),
+        ).await?;
+        assert_eq!(
+            setup.operation.status,
+            templar_gateway_types::OperationStatus::Succeeded
+        );
+        let lazer_source = match row {
+            0 => FakeLazerSource::with_payload(signed_lazer_fixture(
+                9,
+                timestamp,
+                vec![fixture_feed(7, true)],
+                false,
+            )?),
+            1 => FakeLazerSource::with_payload(signed_lazer_fixture(
+                7,
+                timestamp,
+                vec![fixture_feed(7, true)],
+                true,
+            )?),
+            4 => FakeLazerSource::failing(FakeLazerError::CacheMiss),
+            _ => FakeLazerSource::with_payload(valid),
+        };
+        let redstone_source = TestRedStoneSource::Fixture(match row {
+            2 => Ok(vec![0]),
+            5 => Err(TestRedStoneError("fixture unavailable".into())),
+            _ => Ok(REDSTONE_VALID_PAYLOAD.to_vec()),
+        });
+        let stack = TestStack::start_with_sources(
+            harness,
+            Url::parse("http://127.0.0.1:1")?,
+            lazer_source,
+            redstone_source,
+        )
+        .await?;
+        let outcome = async {
+            let lazer_read = lazer_methods::GetFeedsData {
+                oracle_id: lazer_id.clone(),
+                feed_ids: vec![7],
+            };
+            let redstone_read = redstone::ReadPriceData {
+                oracle_id: redstone_id.clone(),
+                feed_ids: vec!["ETH".into(), "BTC".into()],
+            };
+            let before_lazer = stack
+                .controller
+                .request::<lazer_methods::GetFeedsData>(&lazer_read)
+                .await?;
+            let before_redstone = stack
+                .controller
+                .request::<redstone::ReadPriceData>(&redstone_read)
+                .await?;
+            if matches!(row, 0 | 1 | 4) {
+                let error = stack
+                    .controller
+                    .request::<oracle_updates::GetLazerUpdate>(&oracle_updates::GetLazerUpdate {
+                        oracle_id: lazer_id.clone(),
+                        feed_ids: vec![7],
+                    })
+                    .await
+                    .expect_err(
+                        "invalid/unavailable provider data must not fall back to stored Lazer",
+                    );
+                let expected = match row {
+                    0 => "signer is not trusted or has expired",
+                    1 => "ed25519 signature verification failed",
+                    4 => "Pyth Lazer cache miss",
+                    _ => unreachable!(),
+                };
+                assert!(error.to_string().contains(expected), "{error}");
+                println!("Lazer failure row {row}: {error}");
+            } else {
+                let error = stack
+                    .controller
+                    .request::<oracle_updates::GetRedStoneUpdate>(
+                        &oracle_updates::GetRedStoneUpdate {
+                            oracle_id: redstone_id.clone(),
+                            feed_ids: vec![if row == 3 { "MISSING" } else { "ETH" }.into()],
+                        },
+                    )
+                    .await
+                    .expect_err(
+                        "invalid/unavailable provider data must not fall back to stored RedStone",
+                    );
+                let expected = match row {
+                    2 => "buffer overflow",
+                    3 => "missing requested feed MISSING",
+                    5 => "fixture unavailable",
+                    _ => unreachable!(),
+                };
+                assert!(error.to_string().contains(expected), "{error}");
+                println!("RedStone failure row {row}: {error}");
+            }
+            assert_eq!(
+                stack
+                    .controller
+                    .request::<lazer_methods::GetFeedsData>(&lazer_read)
+                    .await?,
+                before_lazer
+            );
+            assert_eq!(
+                stack
+                    .controller
+                    .request::<redstone::ReadPriceData>(&redstone_read)
+                    .await?,
+                before_redstone
+            );
+            assert_eq!(
+                stack
+                    .controller
+                    .request::<oracle_updates::GetLazerUpdate>(&oracle_updates::GetLazerUpdate {
+                        oracle_id: lazer_id,
+                        feed_ids: vec![]
+                    },)
+                    .await?,
+                HashMap::new()
+            );
+            assert_eq!(
+                stack
+                    .controller
+                    .request::<oracle_updates::GetRedStoneUpdate>(
+                        &oracle_updates::GetRedStoneUpdate {
+                            oracle_id: redstone_id,
+                            feed_ids: vec![]
+                        },
+                    )
+                    .await?,
+                vec![]
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        stack.shutdown().await;
+        outcome?;
+    }
     Ok(())
 }

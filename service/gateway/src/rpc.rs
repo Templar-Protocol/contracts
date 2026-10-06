@@ -104,8 +104,7 @@ where
         + ProvidesLazerSource
         + std::marker::Unpin,
 {
-    // The method lists live in the spec crates (`for_each_read_method!` /
-    // `for_each_write_method!` / `for_each_oracle_update_method!`) and are shared
+    // The canonical read/write method lists live in the spec crates and are shared
     // with the catalog crate, so registration and the generated method reference
     // cannot drift apart. These callbacks supply the dispatcher per kind.
     macro_rules! register_read {
@@ -116,6 +115,11 @@ where
     macro_rules! register_write {
         ($spec:ty) => {
             builder.register_write::<$spec, MethodsDispatch>()?;
+        };
+    }
+    macro_rules! register_oracle_read {
+        ($spec:ty) => {
+            builder.register_read::<$spec, OracleUpdatesDispatch>()?;
         };
     }
     macro_rules! register_oracle_write {
@@ -138,6 +142,7 @@ where
     templar_gateway_methods_spec::for_each_read_method!(register_read);
     templar_gateway_methods_spec::for_each_write_method!(register_write);
     templar_gateway_oracle_updates_spec::for_each_oracle_update_method!(register_oracle_write);
+    templar_gateway_oracle_updates_spec::for_each_oracle_update_read_method!(register_oracle_read);
     templar_gateway_artifacts_spec::for_each_artifact_read_method!(register_artifact_read);
     templar_gateway_artifacts_spec::for_each_artifact_write_method!(register_artifact_write);
 

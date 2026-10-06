@@ -45,6 +45,7 @@ ed25519-dalek.workspace = true
 near-api.workspace = true
 rstest.workspace = true
 templar-pyth-lazer-verifier.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true
