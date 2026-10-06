@@ -34,6 +34,7 @@ templar-proxy-oracle-near-governance-common.workspace = true
 templar-universal-account.workspace = true
 
 [dev-dependencies]
+near-sdk.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 rstest.workspace = true
 

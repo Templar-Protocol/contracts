@@ -955,25 +955,17 @@ fn deploy_target(
 /// A free account is not a free name: `registry.deploy` refuses any id its
 /// deployment map still holds, and `market remove` deletes the account without
 /// removing that entry, so a torn-down name is free and unusable at once.
-///
-/// Against a registry too old to serve `get_registry_entry` this stays blind in
-/// one direction: `get_deployment` reports a reserved entry as absent, so a name
-/// another deploy has claimed but not yet finalized looks free. That costs a
-/// refused final step rather than a bad deployment, since the registry rejects
-/// it either way.
 async fn target_conflicts(
     ctx: &CliContext,
     registry_id: &AccountId,
     targets: &[AccountId],
 ) -> Vec<anyhow::Result<Option<String>>> {
-    let (serves_entry_view, existing) = futures::join!(
-        super::preflight::serves_entry_and_version_views(ctx, registry_id),
-        futures::future::join_all(
-            targets
-                .iter()
-                .map(|account_id| super::preflight::exists(ctx, account_id))
-        ),
-    );
+    let existing = futures::future::join_all(
+        targets
+            .iter()
+            .map(|account_id| super::preflight::exists(ctx, account_id)),
+    )
+    .await;
     futures::future::join_all(
         targets
             .iter()
@@ -982,7 +974,7 @@ async fn target_conflicts(
                 if exists? {
                     return Ok(Some(format!("`{account_id}` already exists")));
                 }
-                target_claim(ctx, registry_id, account_id, serves_entry_view).await
+                target_claim(ctx, registry_id, account_id).await
             }),
     )
     .await
@@ -992,30 +984,15 @@ async fn target_claim(
     ctx: &CliContext,
     registry_id: &AccountId,
     account_id: &AccountId,
-    serves_entry_view: bool,
 ) -> anyhow::Result<Option<String>> {
-    let entry = if serves_entry_view {
-        ctx.client
-            .read(registry::GetRegistryEntry {
-                registry_id: registry_id.clone(),
-                account_id: account_id.clone(),
-            })
-            .await
-            .with_context(|| format!("read `{registry_id}`'s entry for `{account_id}`"))?
-    } else {
-        // The older view reports a reserved name as absent, so the fallback is exactly this
-        // mapping with one state it can never produce.
-        ctx.client
-            .read(registry::GetDeployment {
-                registry_id: registry_id.clone(),
-                account_id: account_id.clone(),
-            })
-            .await
-            .with_context(|| {
-                format!("read `{registry_id}`'s deployment record for `{account_id}`")
-            })?
-            .map(RegistryEntryView::Deployed)
-    };
+    let entry = ctx
+        .client
+        .read(registry::GetRegistryEntry {
+            registry_id: registry_id.clone(),
+            account_id: account_id.clone(),
+        })
+        .await
+        .with_context(|| format!("read `{registry_id}`'s entry for `{account_id}`"))?;
 
     Ok(claimed_reason(registry_id, account_id, entry.as_ref()))
 }
@@ -1302,7 +1279,7 @@ mod tests {
             signer_id: "operator.near".parse().expect("valid account"),
             receiver_id: "templar-alpha.near".parse().expect("valid account"),
             function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
+                method_name: "deploy".to_owned(),
                 args,
                 gas: 300_000_000_000_000,
                 deposit: near_api::types::NearToken::from_near(5),
@@ -1598,31 +1575,6 @@ mod tests {
             "{deployed}"
         );
         assert!(reserved.contains("never finalized"), "{reserved}");
-    }
-
-    /// The legacy fallback maps a deployment record onto the same answer, and structurally cannot
-    /// produce `Reserved` — which is the one state it is blind to.
-    #[test]
-    fn the_legacy_fallback_can_never_report_reserved() {
-        let registry: AccountId = "v1.tmplr.near".parse().unwrap();
-        let account: AccountId = "market.v1.tmplr.near".parse().unwrap();
-        let from_legacy =
-            |deployment: Option<Deployment>| deployment.map(RegistryEntryView::Deployed);
-
-        assert_eq!(
-            super::claimed_reason(&registry, &account, from_legacy(None).as_ref()),
-            None,
-            "an absent record reads as free, reserved or not",
-        );
-        let deployment = Deployment {
-            version_key: "market@1.5.0".to_owned(),
-            code_hash: near_sdk::json_types::Base58CryptoHash::from([1u8; 32]),
-            block_height: 1.into(),
-        };
-        assert!(matches!(
-            from_legacy(Some(deployment)),
-            Some(RegistryEntryView::Deployed(_)),
-        ));
     }
 
     #[rstest]

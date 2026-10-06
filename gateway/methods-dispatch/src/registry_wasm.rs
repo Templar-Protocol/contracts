@@ -7,7 +7,6 @@ use templar_gateway_core::{
     client::registry::{GetVersionArgs, GetVersionCodeChunkArgs},
     GatewayError, GatewayResult, HasNearClient, ReadNear,
 };
-use templar_gateway_types::RegistryVersion;
 
 const CODE_CHUNK_LEN: u32 = 64 * 1024;
 const MAX_STORED_CODE_LEN: u32 = 4 * 1024 * 1024;
@@ -106,14 +105,9 @@ impl StoredCodeAssembler {
 pub(crate) async fn resolve_registry_wasm<C: HasNearClient>(
     ctx: &C,
     registry_id: &AccountId,
-    registry_version: RegistryVersion,
     version_key: &str,
 ) -> GatewayResult<Vec<u8>> {
     let client = ctx.near_client().registry(registry_id.clone());
-
-    if !registry_version.supports_entry_and_version_views() {
-        return resolve_legacy_registry_wasm(ctx, &client, version_key).await;
-    }
 
     let Some(version) = client
         .get_version(GetVersionArgs {
@@ -180,40 +174,6 @@ async fn resolve_available_version<C: HasNearClient>(
     };
 
     verify_code_hash(code, hash)
-}
-
-async fn resolve_legacy_registry_wasm<C: HasNearClient>(
-    ctx: &C,
-    client: &templar_gateway_core::client::registry::RegistryClient<'_>,
-    version_key: &str,
-) -> GatewayResult<Vec<u8>> {
-    let Some(hash) = client
-        .get_version_code_hash(GetVersionArgs {
-            version_key: version_key.to_owned(),
-        })
-        .await?
-    else {
-        return Err(precondition(format!(
-            "registry version {version_key} does not exist"
-        )));
-    };
-    let hash = CryptoHash(hash.into());
-
-    resolve_available_version(
-        ctx,
-        client,
-        version_key,
-        OnchainCodeSource::Global,
-        hash,
-        catalogued_code(hash.0).await,
-    )
-    .await
-    .map_err(|error| match error {
-        GatewayError::GlobalContractCodeNotFound(_) => precondition(format!(
-            "registry version {version_key} is not global and this registry cannot expose stored code; upgrade the registry before deployment"
-        )),
-        other => other,
-    })
 }
 
 async fn catalogued_code(hash: [u8; 32]) -> Option<Vec<u8>> {

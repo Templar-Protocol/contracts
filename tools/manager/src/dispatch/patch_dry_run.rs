@@ -88,11 +88,11 @@ pub(super) async fn dry_run(ctx: CliContext, args: DryRun) -> Result<()> {
     let secret_key = setup_account(
         &local_network,
         &plan.spec.account_id,
-        &plan.public_key,
+        Some(&plan.public_key),
         &built.state,
     )
     .await?;
-    let local_client = build_local_client(&local_network, &plan.spec.account_id, &secret_key)?;
+    let local_client = build_local_client(&local_network, &[(&plan.spec.account_id, &secret_key)])?;
     stage_code(&local_network, &plan, &built.state, &secret_key).await?;
     reset_account_metadata(&local_network, &plan.spec.account_id, &built.state).await?;
     anyhow::ensure!(
@@ -206,7 +206,8 @@ async fn stage_code(
 ) -> Result<()> {
     match plan.restore {
         RestoreCode::Local { .. } => {
-            let client = build_local_client(network, &plan.spec.account_id, target_secret_key)?;
+            let client =
+                build_local_client(network, &[(&plan.spec.account_id, target_secret_key)])?;
             stage_local_code(&client, &plan.spec.account_id, &state.code).await?;
         }
         RestoreCode::GlobalCodeHash { .. } | RestoreCode::GlobalAccount { .. } => {
