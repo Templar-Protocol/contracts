@@ -12,7 +12,10 @@ use near_sdk::{
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     contract::list,
-    registry::{Deployment, RegistryEntryView, VersionAvailability, VersionInfo, VersionSource},
+    registry::{
+        Deployment, RegistryEntryView, RegistryEvent, VersionAvailability, VersionInfo,
+        VersionSource,
+    },
     self_ext,
     upgrade::{UpgradeSource, MIGRATE_METHOD},
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
@@ -58,6 +61,15 @@ pub enum RegistryEntry {
     Deployed(Deployment),
 }
 
+impl RegistryEntry {
+    fn view(&self) -> RegistryEntryView {
+        match self {
+            Self::Reserved => RegistryEntryView::Reserved,
+            Self::Deployed(deployment) => RegistryEntryView::Deployed(deployment.clone()),
+        }
+    }
+}
+
 #[derive(PanicOnDefault, Owner)]
 #[near(contract_state)]
 pub struct Contract {
@@ -87,11 +99,6 @@ impl DerefMut for Contract {
 #[near]
 impl Contract {
     /// Gas reserved for the batched `migrate` in [`Self::upgrade`].
-    ///
-    /// Enough for any migration this method can be asked to run. The expensive one — rewriting
-    /// every stored version blob out of a pre-1.1.0 layout, several MB on the live registries —
-    /// is not among them: those releases have no `upgrade`, so they are migrated by a batch their
-    /// key holder signs, where the gas is on the transaction rather than reserved here.
     pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
 
     /// Most a single [`Self::get_version_code_chunk`] will return.
@@ -112,8 +119,8 @@ impl Contract {
     }
 
     /// Atomically deploy new code and run its `migrate` in one receipt, so a failed migration
-    /// reverts the deploy with it. `migrate_args` selects the `state::Migration` matching the
-    /// layout this registry actually holds.
+    /// reverts the deploy with it. `migrate_args` names the `state::Migration` chain to run, and is
+    /// empty when the stored state version is already the new code's.
     ///
     /// The only way to replace the code of a registry whose full-access keys have been removed.
     #[payable]
@@ -156,10 +163,7 @@ impl Contract {
     /// [`Self::deploy`] refuses any name already present, so a `Reserved` name is as unusable as a
     /// deployed one — a state [`Self::get_deployment`] reports as absent.
     pub fn get_registry_entry(&self, account_id: AccountId) -> Option<RegistryEntryView> {
-        self.registry.get(&account_id).map(|entry| match entry {
-            RegistryEntry::Reserved => RegistryEntryView::Reserved,
-            RegistryEntry::Deployed(deployment) => RegistryEntryView::Deployed(deployment.clone()),
-        })
+        self.registry.get(&account_id).map(RegistryEntry::view)
     }
 
     /// Bytes `[offset, offset + len)` of a version's stored code, or `None` if it has none.
@@ -335,29 +339,34 @@ impl Contract {
         let attached_deposit = env::attached_deposit();
 
         let current_account_id = env::current_account_id();
-        let market_id = format!("{name}.{current_account_id}");
-
-        let market_id: AccountId = market_id.parse().unwrap_or_else(|_| {
-            templar_common::panic_with_message("New market ID is not a valid account ID")
-        });
-
-        require!(
-            market_id.is_sub_account_of(&current_account_id),
-            "Market ID cannot be created",
-        );
+        let account_id: AccountId = format!("{name}.{current_account_id}")
+            .parse()
+            .unwrap_or_else(|_| {
+                templar_common::panic_with_message("Deployment name is not a valid account ID")
+            });
 
         require!(
-            !state.registry.contains_key(&market_id),
-            "Market ID collision",
+            account_id.is_sub_account_of(&current_account_id),
+            "Deployment account cannot be created",
         );
+
+        if let Some(existing) = state.registry.get(&account_id) {
+            RegistryEvent::DeployCollision {
+                account_id: account_id.clone(),
+                existing: existing.view(),
+            }
+            .emit();
+            // templar-backend's relayer matches this text verbatim until ENG-781.
+            templar_common::panic_with_message("Market ID collision");
+        }
 
         state
             .registry
-            .insert(market_id.clone(), RegistryEntry::Reserved);
+            .insert(account_id.clone(), RegistryEntry::Reserved);
 
-        near_sdk::log!("Deploying market to {market_id}");
+        near_sdk::log!("Deploying {version_key} to {account_id}");
 
-        let mut promise = Promise::new(market_id.clone())
+        let mut promise = Promise::new(account_id.clone())
             .create_account()
             .transfer(env::attached_deposit());
 
@@ -381,7 +390,7 @@ impl Contract {
 
         for key in full_access_keys.unwrap_or_default() {
             near_sdk::log!(
-                "WARNING: Deploying market with full-access key {}",
+                "WARNING: Deploying with full-access key {}",
                 String::from(&key),
             );
             promise = promise.add_full_access_key(key);
@@ -400,7 +409,8 @@ impl Contract {
                     .with_unused_gas_weight(1)
                     .with_static_gas(Gas::from_tgas(2))
                     .deploy_01_finalize(
-                        market_id,
+                        Some(account_id),
+                        None,
                         Deployment {
                             version_key,
                             code_hash: version.code_hash().into(),
@@ -413,21 +423,26 @@ impl Contract {
     #[private]
     pub fn deploy_01_finalize(
         &mut self,
-        market_id: AccountId,
+        account_id: Option<AccountId>,
+        // 2.0.0's name for `account_id`, so its callbacks still in flight across the upgrade land.
+        market_id: Option<AccountId>,
         deployment: Deployment,
     ) -> PromiseOrValue<AccountId> {
+        let Some(account_id) = account_id.or(market_id) else {
+            templar_common::panic_with_message("Missing deployment account ID");
+        };
         let successful = env::promise_result_checked(0, 0x1000).is_ok();
 
         if successful {
             self.registry
-                .insert(market_id.clone(), RegistryEntry::Deployed(deployment));
+                .insert(account_id.clone(), RegistryEntry::Deployed(deployment));
 
-            PromiseOrValue::Value(market_id)
+            PromiseOrValue::Value(account_id)
         } else {
-            self.registry.remove(&market_id);
+            self.registry.remove(&account_id);
 
             PromiseOrValue::Promise(
-                Self::ext(env::current_account_id()).fail("Market deployment failed".to_string()),
+                Self::ext(env::current_account_id()).fail("Deployment failed".to_string()),
             )
         }
     }
@@ -524,6 +539,20 @@ mod tests {
         );
     }
 
+    #[test]
+    #[should_panic(expected = "Missing deployment account ID")]
+    fn finalize_needs_the_account_under_either_name() {
+        let _ = contract().deploy_01_finalize(
+            None,
+            None,
+            Deployment {
+                version_key: STORED.to_string(),
+                code_hash: [1u8; 32].into(),
+                block_height: 1.into(),
+            },
+        );
+    }
+
     #[rstest]
     #[case::whole(0, 300, 300)]
     #[case::prefix(0, 10, 10)]
@@ -591,7 +620,7 @@ mod tests {
             .build());
         let mut contract = Contract::new();
         let code = vec![0xde, 0xad, 0xbe, 0xef];
-        let migrate_args = br#"{"from_version":"pre_global_contracts"}"#.to_vec();
+        let migrate_args = br#"[{"from_version":"v1"}]"#.to_vec();
 
         contract
             .upgrade(

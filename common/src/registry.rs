@@ -1,6 +1,6 @@
 use near_sdk::{
     json_types::{Base58CryptoHash, Base64VecU8, U64},
-    near,
+    near, AccountId,
 };
 
 /// Store the wasm or publish it as a global contract — the only open question once the bytes are
@@ -217,4 +217,15 @@ mod tests {
             deployed,
         );
     }
+}
+
+#[near(event_json(standard = "templar-registry"))]
+pub enum RegistryEvent {
+    /// `deploy` refused a name already taken. Logged in the receipt that then fails, so an observer
+    /// can tell a collision from any other refusal without reading the panic text.
+    #[event_version("1.0.0")]
+    DeployCollision {
+        account_id: AccountId,
+        existing: RegistryEntryView,
+    },
 }
