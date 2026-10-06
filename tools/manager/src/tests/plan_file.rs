@@ -53,12 +53,9 @@ fn sample_steps() -> Vec<(String, PlannedTransaction)> {
     vec![
         (
             "deploy governance".to_owned(),
-            transaction("deploy_market", json.clone()),
+            transaction("deploy", json.clone()),
         ),
-        (
-            "deploy market".to_owned(),
-            transaction("deploy_market", json),
-        ),
+        ("deploy market".to_owned(), transaction("deploy", json)),
         (
             "add a version".to_owned(),
             transaction("add_version", borsh_args()),
@@ -222,7 +219,7 @@ fn args_that_would_not_survive_re_encoding_stay_opaque() {
 /// into `apply` exiting zero.
 #[test]
 fn a_failure_tolerating_step_is_refused() {
-    let mut tolerant = transaction("deploy_market", b"{}".to_vec());
+    let mut tolerant = transaction("deploy", b"{}".to_vec());
     tolerant.continue_on_failure = true;
 
     let error = PlanFile::new(
@@ -456,19 +453,19 @@ async fn requires_network_plans_the_deploy_script_in_order() {
         })
         .collect();
 
-    // The three registry deploys share one method (`deploy_market`) and one
+    // The three registry deploys share one method (`deploy`) and one
     // receiver, so the label is what identifies each — asserted for that reason.
     assert_eq!(
         sequence,
         vec![
             (
                 "templar-alpha.near",
-                "deploy_market",
+                "deploy",
                 "deploy governance proxy-gov-iethfxrp-ixlmusdc.templar-alpha.near"
             ),
             (
                 "templar-alpha.near",
-                "deploy_market",
+                "deploy",
                 "deploy proxy oracle proxy-oracle-iethfxrp-ixlmusdc.templar-alpha.near, \
                  owned by governance"
             ),
@@ -494,7 +491,7 @@ async fn requires_network_plans_the_deploy_script_in_order() {
             ),
             (
                 "templar-alpha.near",
-                "deploy_market",
+                "deploy",
                 "deploy market iethfxrp-ixlmusdc.templar-alpha.near"
             ),
         ],
@@ -707,7 +704,7 @@ mod journal {
             signer_id: "operator.near".parse().expect("valid account"),
             receiver_id: "templar-alpha.near".parse().expect("valid account"),
             function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
+                method_name: "deploy".to_owned(),
                 args: PlanArgs::Json(serde_json::json!({
                     "name": name, "version_key": "v1",
                 })),

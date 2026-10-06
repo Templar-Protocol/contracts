@@ -1,5 +1,5 @@
-//! `registry upgrade`: the self-signed deploy-and-`migrate` batch for a pre-2.0.0 registry. It
-//! cannot be rolled back, so every check gates submission and none can be skipped.
+//! `registry upgrade`: replace a registry's code through its owner-only `upgrade`. It cannot be
+//! rolled back, so every check gates submission and none can be skipped.
 
 use std::{collections::HashMap, num::NonZeroU32};
 
@@ -10,19 +10,20 @@ use near_api::types::transaction::actions::{AccessKeyPermission, Action};
 use near_primitives::{account::AccountContract, hash::CryptoHash};
 use near_token::NearToken;
 use serde::Serialize;
+use templar_common::{registry::VersionInfo, upgrade::UpgradeSource};
 use templar_contract_artifacts::{fetch, ArtifactId, ArtifactRelease};
 use templar_gateway_client::{collect_paginated, Client};
 use templar_gateway_core::{GatewayError, OperationPlan};
 use templar_gateway_methods_dispatch::registry_release;
 use templar_gateway_methods_spec::{
-    account, chain,
+    account::{self, AccessKeyPermission as ViewPermission},
+    chain,
     contract::{self, GetStateVersionResult},
-    owner,
-    registry::{self, Migration},
+    owner, registry,
 };
 use templar_gateway_types::{
     common::{Pagination, WriteOperationResult, WriteRequest},
-    ManagedAccountId, NearGas, OperationStatus, ProtocolLimits, RegistryVersion,
+    Base64Bytes, ManagedAccountId, NearGas, OperationStatus, ProtocolLimits, RegistryVersion,
 };
 
 use crate::commands::registry::{Upgrade, STORAGE_AMOUNT_PER_BYTE};
@@ -31,24 +32,15 @@ use crate::context::{check_operation_status, print_json, print_plan, CliContext}
 use crate::dispatch::{
     patch_state::{fetch_state, snapshot_final, StateSnapshot},
     sandbox_replay::{
-        build_local_client, reset_account_metadata, setup_account, stage_local_code, start_sandbox,
+        build_local_client, reset_account_metadata, setup_account, setup_signer, stage_local_code,
+        start_sandbox,
     },
 };
 use crate::report::Reporter;
 use crate::spec::check::{gate_unskippable, Check, Report, Status};
 
-/// Under the 4 MB receipt proof limit with room for mainnet's deeper trie, and about the most whose
-/// migration burns within half of the gas `migrate` attaches.
-const PRE_GLOBAL_CONTRACTS_STATE_BUDGET: u64 = 3_000_000;
-
 /// Balance kept free after staking storage for the new code, for the transaction fee.
 const BALANCE_HEADROOM: NearToken = NearToken::from_near(1);
-
-/// What a 1.1.0+ registry's root sheds with its retired collection.
-const RETIRED_COLLECTION_ALLOWANCE: u64 = 64;
-
-/// What any migration may add for its state version record.
-const VERSION_RECORD_ALLOWANCE: u64 = 256;
 
 #[allow(
     clippy::unwrap_used,
@@ -59,8 +51,7 @@ const PAGE: NonZeroU32 = NonZeroU32::new(100).unwrap();
 const CONCURRENT_READS: usize = 8;
 
 /// near-sdk's `IterableMap` keeps key `i` at `prefix + "v" + i` and its value, first, at
-/// `sha256(prefix + "m" + borsh(key))`; legacy registries use prefixes `v` and `r`.
-const VERSION_KEYS_PREFIX: &[u8] = b"vv";
+/// `sha256(prefix + "m" + borsh(key))`; the registry's deployment map has prefix `r`.
 const REGISTRY_KEYS_PREFIX: &[u8] = b"rv";
 const REGISTRY_VALUES_PREFIX: &[u8] = b"rm";
 
@@ -71,11 +62,11 @@ const RESERVED_TAG: u8 = 0;
 const VERIFY_ATTEMPTS: u32 = 5;
 const VERIFY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Everything a registry holds that a migration must carry over unchanged.
+/// Everything a registry holds that an upgrade must carry over unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RegistryContents {
     owner: Option<AccountId>,
-    versions: Vec<(String, Option<templar_gateway_types::CryptoHash>)>,
+    versions: Vec<(String, Option<VersionInfo>)>,
     deployments: Vec<AccountId>,
 }
 
@@ -89,10 +80,8 @@ struct Subject<'a> {
 /// What an upgraded registry must look like, beyond holding what it held before.
 struct Expected {
     code_hash: CryptoHash,
-    /// Storage with the code swapped and the state untouched; [`storage_status`] bounds the rest.
-    storage_usage: u64,
-    growth: u64,
-    shrink: u64,
+    /// `None` when a migration runs, since only the replay can say what it writes.
+    storage_usage: Option<u64>,
 }
 
 /// Where a run that passes every check ends up.
@@ -107,9 +96,7 @@ impl Expected {
     fn exactly(&self, storage_usage: u64) -> Self {
         Self {
             code_hash: self.code_hash,
-            storage_usage,
-            growth: 0,
-            shrink: 0,
+            storage_usage: Some(storage_usage),
         }
     }
 }
@@ -119,7 +106,9 @@ struct Prepared {
     snapshot: StateSnapshot,
     body: registry::Upgrade,
     expected: Expected,
-    replay_key: near_api::types::PublicKey,
+    /// The registry's owner, which alone may call `upgrade`.
+    signer_id: AccountId,
+    signing_key: near_api::types::PublicKey,
     limits: ProtocolLimits,
 }
 
@@ -128,7 +117,8 @@ pub(super) async fn upgrade(ctx: CliContext, args: Upgrade) -> Result<()> {
     let authorization = Authorization::try_from(&args.signer)?;
     anyhow::ensure!(
         !matches!(authorization.mode(), Mode::Plan(PrintFormat::Sputnik)),
-        "--print sputnik cannot carry this upgrade: it deploys code, which a DAO proposal cannot"
+        "--print sputnik cannot carry this upgrade: a proposal executes after the checks, on \
+         state they never saw"
     );
     let mut reporter = ctx.reporter(&[]);
 
@@ -137,14 +127,11 @@ pub(super) async fn upgrade(ctx: CliContext, args: Upgrade) -> Result<()> {
         "upgrade.network",
         crate::spec::network_status(ctx.network(), &registry_id),
     ));
-    reporter.record(Check::new(
-        "upgrade.signer",
-        signer_status(&authorization.account_id().0, &registry_id),
-    ));
     if reporter.has_failures() {
         return finish(&registry_id, reporter);
     }
 
+    let signer_id = authorization.account_id().0.clone();
     let (sink, signing_key) = match sink(&ctx, authorization).await {
         Ok(resolved) => resolved,
         Err(error) => {
@@ -156,21 +143,14 @@ pub(super) async fn upgrade(ctx: CliContext, args: Upgrade) -> Result<()> {
         }
     };
 
-    let prepared = prepare(
-        &ctx,
-        &registry_id,
-        args.release(),
-        signing_key.as_ref(),
-        &mut reporter,
-    )
-    .await;
+    let prepared = prepare(&ctx, &args, &signer_id, signing_key.as_ref(), &mut reporter).await;
     let prepared = match prepared {
         Some(prepared) if !reporter.has_failures() => prepared,
         _ => return finish(&registry_id, reporter),
     };
 
     let request = WriteRequest {
-        signer_account_id: ManagedAccountId(registry_id.clone()),
+        signer_account_id: ManagedAccountId(prepared.signer_id.clone()),
         idempotency_key: None,
         body: prepared.body.clone(),
     };
@@ -365,27 +345,19 @@ fn finish(registry_id: &AccountId, mut reporter: Reporter) -> Result<()> {
     anyhow::bail!("the preflight for {registry_id} stopped early; the upgrade was not submitted")
 }
 
-/// The checks that need no sandbox. `None` when one failed so early that later ones cannot run.
-async fn prepare(
+/// What the preflight reads of the registry at once.
+struct Reads {
+    snapshot: StateSnapshot,
+    limits: ProtocolLimits,
+    metadata_version: Result<String, GatewayError>,
+    owner: Result<Option<AccountId>, GatewayError>,
+}
+
+async fn read_registry(
     ctx: &CliContext,
     registry_id: &AccountId,
-    release: Option<&str>,
-    signing_key: Option<&near_api::types::PublicKey>,
     reporter: &mut Reporter,
-) -> Option<Prepared> {
-    let (status, target) = target_status(release);
-    reporter.record(Check::new("upgrade.target_release", status));
-    let target = target?;
-    let Some(signing_key) = signing_key else {
-        reporter.record(Check::new(
-            "upgrade.signing_key",
-            Status::failed(
-                "pass --public-key with --print, naming the full-access key that will sign the plan",
-            ),
-        ));
-        return None;
-    };
-
+) -> Option<Reads> {
     let metadata_version = async {
         ctx.client
             .read(contract::GetVersion {
@@ -393,6 +365,13 @@ async fn prepare(
             })
             .await
             .map(|version| version.version_string)
+    };
+    let owner = async {
+        ctx.client
+            .read(owner::GetOwner {
+                contract_id: registry_id.clone(),
+            })
+            .await
     };
     let snapshot = async {
         let limits = match ctx.client.read(chain::GetProtocolLimits).await {
@@ -416,25 +395,103 @@ async fn prepare(
         .ok()?;
         Some((snapshot, limits))
     };
-    let (snapshot, metadata_version) = futures::join!(snapshot, metadata_version);
+    let (snapshot, metadata_version, owner) = futures::join!(snapshot, metadata_version, owner);
     let (snapshot, limits) = snapshot?;
+    Some(Reads {
+        snapshot,
+        limits,
+        metadata_version,
+        owner,
+    })
+}
 
-    let (status, source) = source_status(&snapshot, &metadata_version);
+/// The owner must sign, with a key that can attach `upgrade`'s deposit.
+async fn check_signer(
+    ctx: &CliContext,
+    reads: &Reads,
+    registry_id: &AccountId,
+    signer_id: &AccountId,
+    signing_key: &near_api::types::PublicKey,
+    reporter: &mut Reporter,
+) {
+    reporter.record(Check::new(
+        "upgrade.signer",
+        signer_status(signer_id, registry_id, &reads.owner),
+    ));
+    let full_access = if signer_id == registry_id {
+        Ok(holds_full_access(&reads.snapshot, signing_key))
+    } else {
+        ctx.client
+            .read(account::GetAccessKey {
+                account_id: signer_id.clone(),
+                public_key: (*signing_key).into(),
+            })
+            .await
+            .map(|key| matches!(key.permission, ViewPermission::FullAccess))
+            .map_err(|error| error.to_string())
+    };
+    reporter.record(Check::new(
+        "upgrade.signing_key",
+        signing_key_status(signing_key, signer_id, full_access),
+    ));
+}
+
+/// The checks that need no sandbox. `None` when one failed so early that later ones cannot run.
+async fn prepare(
+    ctx: &CliContext,
+    args: &Upgrade,
+    signer_id: &AccountId,
+    signing_key: Option<&near_api::types::PublicKey>,
+    reporter: &mut Reporter,
+) -> Option<Prepared> {
+    let registry_id = args.registry_id();
+    let migrate_args = match args.migrate_args() {
+        Ok(migrate_args) => migrate_args,
+        Err(error) => {
+            reporter.record(Check::new(
+                "upgrade.migrate_args",
+                Status::failed(format!("{error:#}")),
+            ));
+            return None;
+        }
+    };
+    let release = match catalogued_release(args.release()) {
+        Ok(release) => release,
+        Err(status) => {
+            reporter.record(Check::new("upgrade.target_release", status));
+            return None;
+        }
+    };
+    let Some(signing_key) = signing_key else {
+        reporter.record(Check::new(
+            "upgrade.signing_key",
+            Status::failed(
+                "pass --public-key with --print, naming the full-access key that will sign the plan",
+            ),
+        ));
+        return None;
+    };
+
+    let reads = read_registry(ctx, registry_id, reporter).await?;
+    let (status, source) = source_status(&reads.snapshot, &reads.metadata_version);
     reporter.record(Check::new("upgrade.source_release", status));
     let source = source?;
+    let status = target_status(release, source);
+    let target_fails = status.is_failure();
+    reporter.record(Check::new("upgrade.target_release", status));
+    check_signer(ctx, &reads, registry_id, signer_id, signing_key, reporter).await;
+    if target_fails {
+        return None;
+    }
 
-    let (status, migration) = migration_status(source);
-    reporter.record(Check::new("upgrade.migration", status));
-    let migration = migration?;
-
-    let wasm = match fetch::released_bytes(ArtifactId::Registry, target.version).await {
+    let wasm = match fetch::released_bytes(ArtifactId::Registry, release.version).await {
         Ok(wasm) => {
             reporter.record(Check::new(
                 "upgrade.target_wasm",
                 Status::passed(format!(
                     "{} bytes matching the catalogued sha256 {}",
                     wasm.len(),
-                    target.sha256
+                    release.sha256
                 )),
             ));
             wasm
@@ -447,45 +504,49 @@ async fn prepare(
             return None;
         }
     };
-    let expected = expected_after(&snapshot, migration, &wasm);
-
-    let (status, replay_key) = signing_key_status(&snapshot, signing_key);
-    reporter.record(Check::new("upgrade.signing_key", status));
+    let swapped = code_swapped_storage(&reads.snapshot, &wasm);
     reporter.record(Check::new(
         "upgrade.balance",
-        balance_status(snapshot.amount, &expected),
-    ));
-    reporter.record(Check::new(
-        "upgrade.proof_budget",
-        proof_budget_status(migration, &snapshot),
+        balance_status(reads.snapshot.amount, swapped),
     ));
 
     Some(Prepared {
-        expected,
+        expected: Expected {
+            code_hash: CryptoHash::hash_bytes(&wasm),
+            storage_usage: migrate_args.is_none().then_some(swapped),
+        },
         body: registry::Upgrade {
             registry_id: registry_id.clone(),
-            wasm: templar_gateway_types::Base64Bytes(wasm),
-            migration,
+            code: UpgradeSource::Code(near_sdk::json_types::Base64VecU8(wasm)),
+            migrate_args: migrate_args.map(Base64Bytes),
         },
-        replay_key: replay_key?,
-        snapshot,
-        limits,
+        signer_id: signer_id.clone(),
+        signing_key: *signing_key,
+        snapshot: reads.snapshot,
+        limits: reads.limits,
     })
 }
 
-fn signer_status(signer_id: &AccountId, registry_id: &AccountId) -> Status {
-    if signer_id == registry_id {
-        Status::passed(format!("signed by {registry_id}"))
-    } else {
-        Status::failed(format!(
-            "--signer-id is {signer_id}, but only {registry_id} can deploy its own code and call \
-             its private `migrate`"
-        ))
+/// Only the owner may call `upgrade`.
+fn signer_status(
+    signer_id: &AccountId,
+    registry_id: &AccountId,
+    owner: &Result<Option<AccountId>, GatewayError>,
+) -> Status {
+    match owner {
+        Ok(Some(owner)) if owner == signer_id => {
+            Status::passed(format!("signed by the owner {owner}"))
+        }
+        Ok(Some(owner)) => Status::failed(format!(
+            "--signer-id is {signer_id}, but only {registry_id}'s owner {owner} can call `upgrade`"
+        )),
+        Ok(None) => Status::failed(format!("{registry_id} has no owner to call `upgrade`")),
+        Err(error) => Status::failed(format!("read the owner of {registry_id}: {error}")),
     }
 }
 
 /// The catalogued registry release whose bytes the account runs, which must also be the version
-/// its NEP-330 metadata reports: the migration is chosen from it, so both signals have to agree.
+/// its NEP-330 metadata reports.
 fn source_status(
     snapshot: &StateSnapshot,
     reported: &Result<String, GatewayError>,
@@ -503,8 +564,7 @@ fn source_status(
     let Some(release) = registry_release(&sha256) else {
         return (
             Status::failed(format!(
-                "the account's code (sha256 {}) is not a catalogued registry release, so its \
-                 state layout is unknown",
+                "the account's code (sha256 {}) is not a catalogued registry release",
                 hex::encode(sha256)
             )),
             None,
@@ -519,11 +579,7 @@ fn source_status(
             )
         }
     };
-    if reported
-        .parse::<RegistryVersion>()
-        .map(<(u64, u64, u64)>::from)
-        != Ok(release.into())
-    {
+    if reported.parse::<RegistryVersion>().ok() != Some(release) {
         return (
             Status::failed(format!(
                 "the code is registry {release} but its metadata reports {reported}"
@@ -534,139 +590,74 @@ fn source_status(
     (Status::passed(format!("registry {release}")), Some(release))
 }
 
-fn release_version(release: &ArtifactRelease) -> Result<RegistryVersion, Status> {
-    release
-        .version
-        .parse()
-        .map_err(|error| Status::failed(format!("parse release {}: {error:?}", release.version)))
-}
-
-fn migration_status(source: RegistryVersion) -> (Status, Option<Migration>) {
-    match Migration::for_version(source) {
-        Some(migration) => (Status::passed(format!("{migration:?}")), Some(migration)),
-        None => (
-            Status::failed(format!(
-                "registry {source} keeps a state version and upgrades through its owner-only \
-                 `upgrade`, not this command"
-            )),
-            None,
-        ),
-    }
-}
-
-fn target_status(requested: Option<&str>) -> (Status, Option<&'static ArtifactRelease>) {
+fn catalogued_release(requested: Option<&str>) -> Result<&'static ArtifactRelease, Status> {
     let metadata = ArtifactId::Registry.metadata();
-    let release = match requested {
+    match requested {
         Some(version) => metadata.release(version),
         None => metadata.current(),
-    };
-    let Some(release) = release else {
-        return (
-            Status::failed(format!(
-                "registry {} is not a catalogued release",
-                requested.unwrap_or("(newest)")
-            )),
-            None,
-        );
-    };
-    let version = match release_version(release) {
-        Ok(version) => version,
-        Err(status) => return (status, None),
-    };
-    if !version.supports_upgrade() {
-        return (
-            Status::failed(format!(
-                "registry {version} predates versioned state, so it has no `migrate` to run"
-            )),
-            None,
-        );
     }
-    (Status::passed(format!("registry {version}")), Some(release))
+    .ok_or_else(|| {
+        Status::failed(format!(
+            "registry {} is not a catalogued release",
+            requested.unwrap_or("(newest)")
+        ))
+    })
 }
 
-/// The key that will sign must hold full access, since the batch deploys code.
-fn signing_key_status(
-    snapshot: &StateSnapshot,
-    signing_key: &near_api::types::PublicKey,
-) -> (Status, Option<near_api::types::PublicKey>) {
-    let full_access = snapshot.access_keys.iter().any(|(held, access)| {
+/// Nothing rolls an upgrade back, so it may not downgrade.
+fn target_status(release: &ArtifactRelease, source: RegistryVersion) -> Status {
+    match release.version.parse::<RegistryVersion>() {
+        Ok(target) if target >= source => Status::passed(format!("registry {target}")),
+        Ok(target) => Status::failed(format!(
+            "registry {target} is older than the deployed {source}"
+        )),
+        Err(error) => Status::failed(format!("parse release {}: {error:?}", release.version)),
+    }
+}
+
+fn holds_full_access(snapshot: &StateSnapshot, signing_key: &near_api::types::PublicKey) -> bool {
+    snapshot.access_keys.iter().any(|(held, access)| {
         held == signing_key && matches!(access.permission, AccessKeyPermission::FullAccess)
-    });
-    if full_access {
-        (
-            Status::passed(format!("{signing_key} holds full access")),
-            Some(*signing_key),
-        )
-    } else {
-        (
-            Status::failed(format!(
-                "{signing_key} is not a full-access key on the registry, so it cannot deploy code"
-            )),
-            None,
-        )
+    })
+}
+
+/// `upgrade` takes a deposit, which only a full-access key can attach.
+fn signing_key_status(
+    signing_key: &near_api::types::PublicKey,
+    signer_id: &AccountId,
+    full_access: Result<bool, String>,
+) -> Status {
+    match full_access {
+        Ok(true) => Status::passed(format!("{signing_key} holds full access on {signer_id}")),
+        Ok(false) => Status::failed(format!(
+            "{signing_key} is not a full-access key on {signer_id}, so it cannot attach \
+             `upgrade`'s deposit"
+        )),
+        Err(error) => Status::failed(format!("read {signing_key} on {signer_id}: {error}")),
     }
 }
 
-fn balance_status(amount: NearToken, expected: &Expected) -> Status {
-    let after = expected.storage_usage + expected.growth;
+/// Storage with the code swapped and the state untouched.
+fn code_swapped_storage(snapshot: &StateSnapshot, wasm: &[u8]) -> u64 {
+    snapshot.storage_usage - snapshot.code.len() as u64 + wasm.len() as u64
+}
+
+fn balance_status(amount: NearToken, storage_usage: u64) -> Status {
     let required = STORAGE_AMOUNT_PER_BYTE
-        .saturating_mul(u128::from(after))
+        .saturating_mul(u128::from(storage_usage))
         .saturating_add(BALANCE_HEADROOM);
     if amount >= required {
         Status::passed(format!(
-            "{} covers {after} bytes of storage plus {} headroom",
+            "{} covers {storage_usage} bytes of storage plus {} headroom",
             amount.exact_amount_display(),
             BALANCE_HEADROOM.exact_amount_display(),
         ))
     } else {
         Status::failed(format!(
-            "{} is short of {} for {after} bytes of storage plus headroom",
+            "{} is short of {} for {storage_usage} bytes of storage plus headroom",
             amount.exact_amount_display(),
             required.exact_amount_display(),
         ))
-    }
-}
-
-fn proof_budget_status(migration: Migration, snapshot: &StateSnapshot) -> Status {
-    let bytes: u64 = snapshot
-        .entries
-        .iter()
-        .map(|entry| (entry.key.len() + entry.value.len()) as u64)
-        .sum();
-    match migration {
-        Migration::WithGlobalContracts => Status::passed(format!(
-            "this migration rewrites no stored code; {bytes} bytes of state stay where they are"
-        )),
-        Migration::PreGlobalContracts if bytes <= PRE_GLOBAL_CONTRACTS_STATE_BUDGET => {
-            Status::passed(format!(
-                "{bytes} bytes of state, within {PRE_GLOBAL_CONTRACTS_STATE_BUDGET}"
-            ))
-        }
-        Migration::PreGlobalContracts => Status::failed(format!(
-            "{bytes} bytes of state exceeds {PRE_GLOBAL_CONTRACTS_STATE_BUDGET}: the migration \
-             rewrites every stored code blob in one receipt and would exceed the 4 MB proof \
-             limit. Remove versions with `registry remove-version` first."
-        )),
-    }
-}
-
-fn expected_after(snapshot: &StateSnapshot, migration: Migration, wasm: &[u8]) -> Expected {
-    let (growth, shrink) = match migration {
-        Migration::PreGlobalContracts => {
-            let versions = snapshot
-                .entries
-                .iter()
-                .filter(|entry| is_vector_key(&entry.key, VERSION_KEYS_PREFIX))
-                .count();
-            (versions as u64, 0)
-        }
-        Migration::WithGlobalContracts => (0, RETIRED_COLLECTION_ALLOWANCE),
-    };
-    Expected {
-        code_hash: CryptoHash::hash_bytes(wasm),
-        storage_usage: snapshot.storage_usage - snapshot.code.len() as u64 + wasm.len() as u64,
-        growth: growth + VERSION_RECORD_ALLOWANCE,
-        shrink,
     }
 }
 
@@ -676,7 +667,7 @@ fn is_vector_key(key: &[u8], keys_prefix: &[u8]) -> bool {
 }
 
 /// A name is `Reserved` from a deploy's first receipt until its finalize callback, which then runs
-/// against the new code: pre-1.1.0's callback does not exist there, so it would stay reserved.
+/// against the new code: one it cannot parse leaves the name reserved for good.
 fn reserved_status(snapshot: &StateSnapshot, listed_deployments: usize) -> Status {
     let values: HashMap<&[u8], &[u8]> = snapshot
         .entries
@@ -753,15 +744,25 @@ async fn replay(
     reporter: &mut Reporter,
 ) -> Result<Option<u64>> {
     let registry_id = &prepared.body.registry_id;
+    let signer_id = &prepared.signer_id;
     let (_sandbox, network) = start_sandbox().await?;
-    let secret_key = setup_account(
-        &network,
-        registry_id,
-        &prepared.replay_key,
-        &prepared.snapshot,
-    )
-    .await?;
-    let client = build_local_client(&network, registry_id, &secret_key)?;
+    let client = if signer_id == registry_id {
+        let secret_key = setup_account(
+            &network,
+            registry_id,
+            Some(&prepared.signing_key),
+            &prepared.snapshot,
+        )
+        .await?;
+        build_local_client(&network, &[(registry_id, &secret_key)])?
+    } else {
+        let staging_key = setup_account(&network, registry_id, None, &prepared.snapshot).await?;
+        let signer_key = setup_signer(&network, signer_id).await?;
+        build_local_client(
+            &network,
+            &[(registry_id, &staging_key), (signer_id, &signer_key)],
+        )?
+    };
     stage_local_code(&client, registry_id, &prepared.snapshot.code).await?;
     reset_account_metadata(&network, registry_id, &prepared.snapshot).await?;
 
@@ -796,7 +797,7 @@ async fn replay(
     }
 
     let result = client
-        .execute_as(ManagedAccountId(registry_id.clone()), request.body.clone())
+        .execute_as(request.signer_account_id.clone(), request.body.clone())
         .await;
     reporter.record(Check::new(
         "upgrade.replay.outcome",
@@ -823,7 +824,7 @@ async fn replay(
 fn outcome_status(result: &Result<WriteOperationResult, GatewayError>) -> Status {
     match result {
         Ok(result) if result.operation.status == OperationStatus::Succeeded => {
-            Status::passed("the deploy and `migrate` succeeded")
+            Status::passed("`upgrade` deployed the code and ran `migrate`")
         }
         Ok(result) => Status::failed(format!(
             "{:?}: {}",
@@ -838,7 +839,7 @@ fn outcome_status(result: &Result<WriteOperationResult, GatewayError>) -> Status
 }
 
 /// The replay ran on another protocol version's costs and a shallower trie, so the burn it
-/// measures must leave at least half of what `migrate` attaches.
+/// measures must leave at least half of what `upgrade` attaches.
 fn gas_status(result: &WriteOperationResult, plan: &OperationPlan) -> Status {
     let attached = attached_gas(plan);
     let attached_tgas = attached.as_tgas();
@@ -856,8 +857,7 @@ fn gas_status(result: &WriteOperationResult, plan: &OperationPlan) -> Status {
         ))
     } else {
         Status::failed(format!(
-            "burnt {} Tgas with the deploy, more than half of the {attached_tgas} Tgas attached; \
-             prune versions with `registry remove-version` to shrink the migration",
+            "burnt {} Tgas, more than half of the {attached_tgas} Tgas attached",
             burnt.as_tgas()
         ))
     }
@@ -931,19 +931,15 @@ async fn verify(
     (checks, storage_usage)
 }
 
-/// The views cannot see a stored blob or a reserved name go missing, but storage can: beyond the
-/// code swap, a pre-1.1.0 migration adds a byte per version and any adds a state version record.
+/// The views cannot see a stored blob or a reserved name go missing, but storage can.
 fn storage_status(expected: &Expected, actual: u64) -> Status {
-    let lowest = expected.storage_usage - expected.shrink;
-    let highest = expected.storage_usage + expected.growth;
-    let delta = i128::from(actual) - i128::from(expected.storage_usage);
-    if (lowest..=highest).contains(&actual) {
-        Status::passed(format!("{actual} bytes, {delta:+} beyond the code swap"))
-    } else {
-        Status::failed(format!(
-            "{actual} bytes, {delta:+} beyond the code swap; the migration may only move it within \
-             {lowest}..={highest}, so stored state was lost or duplicated"
-        ))
+    match expected.storage_usage {
+        Some(expected) if actual == expected => Status::passed(format!("{actual} bytes")),
+        Some(expected) => Status::failed(format!(
+            "{actual} bytes, {:+} against {expected}, so stored state was lost or duplicated",
+            i128::from(actual) - i128::from(expected)
+        )),
+        None => Status::passed(format!("{actual} bytes after the migration")),
     }
 }
 
@@ -965,7 +961,7 @@ fn contents_status(before: &RegistryContents, after: &RegistryContents) -> Statu
     }
     if before.versions != after.versions {
         differences.push(format!(
-            "{} version(s) became {}, or a code hash changed",
+            "{} version(s) became {}, or a code hash or availability changed",
             before.versions.len(),
             after.versions.len()
         ));
@@ -979,7 +975,8 @@ fn contents_status(before: &RegistryContents, after: &RegistryContents) -> Statu
     }
     if differences.is_empty() {
         Status::passed(format!(
-            "owner, {} version(s) with their code hashes, and {} deployment(s) unchanged",
+            "owner, {} version(s) with their code hashes and availability, and {} deployment(s) \
+             unchanged",
             before.versions.len(),
             before.deployments.len()
         ))
@@ -1026,7 +1023,6 @@ fn unchanged(mut now: StateSnapshot, snapshot: &StateSnapshot) -> bool {
     now == *snapshot
 }
 
-/// Read through views every registry release serves, so old and new code answer alike.
 async fn read_contents(client: &Client, registry_id: &AccountId) -> Result<RegistryContents> {
     let owner = async {
         client
@@ -1045,8 +1041,8 @@ async fn read_contents(client: &Client, registry_id: &AccountId) -> Result<Regis
         })
         .await
         .with_context(|| format!("list the versions of {registry_id}"))?;
-        let hashes: Vec<_> = futures::stream::iter(keys.iter().map(|key| {
-            client.read(registry::GetVersionCodeHash {
+        let infos: Vec<_> = futures::stream::iter(keys.iter().map(|key| {
+            client.read(registry::GetVersion {
                 registry_id: registry_id.clone(),
                 version_key: key.clone(),
             })
@@ -1054,8 +1050,8 @@ async fn read_contents(client: &Client, registry_id: &AccountId) -> Result<Regis
         .buffered(CONCURRENT_READS)
         .try_collect()
         .await
-        .with_context(|| format!("read the version code hashes of {registry_id}"))?;
-        Ok::<Vec<_>, anyhow::Error>(keys.into_iter().zip(hashes).collect())
+        .with_context(|| format!("read the versions of {registry_id}"))?;
+        Ok::<Vec<_>, anyhow::Error>(keys.into_iter().zip(infos).collect())
     };
     let deployments = async {
         collect_paginated(PAGE, |offset, limit| {
@@ -1069,7 +1065,7 @@ async fn read_contents(client: &Client, registry_id: &AccountId) -> Result<Regis
     };
     let (owner, mut versions, mut deployments) = futures::try_join!(owner, versions, deployments)?;
     // Compared as sets: a migration may rebuild a collection in another iteration order.
-    versions.sort();
+    versions.sort_by(|a, b| a.0.cmp(&b.0));
     deployments.sort();
     Ok(RegistryContents {
         owner,
@@ -1089,6 +1085,7 @@ fn page(offset: u32, limit: u32) -> Pagination {
 mod tests {
     use near_api::types::transaction::actions::{AccessKey, FunctionCallPermission};
     use rstest::rstest;
+    use templar_common::registry::VersionAvailability;
 
     use super::*;
     use crate::dispatch::patch_state::RawStateEntry;
@@ -1149,10 +1146,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_the_registry_can_sign() {
-        assert!(!signer_status(&registry_id(), &registry_id()).is_failure());
-        assert!(signer_status(&"tmplr.near".parse().unwrap(), &registry_id()).is_failure());
+    #[rstest]
+    #[case::self_owned(REGISTRY, Ok(Some(REGISTRY)), false)]
+    #[case::owned_by_another("tmplr.near", Ok(Some("tmplr.near")), false)]
+    #[case::not_the_owner(REGISTRY, Ok(Some("tmplr.near")), true)]
+    #[case::ownerless(REGISTRY, Ok(None), true)]
+    #[case::unreadable(REGISTRY, Err(()), true)]
+    fn only_the_owner_can_sign(
+        #[case] signer: &str,
+        #[case] owner: Result<Option<&str>, ()>,
+        #[case] fails: bool,
+    ) {
+        let owner = owner
+            .map(|owner| owner.map(|owner| owner.parse().unwrap()))
+            .map_err(|()| GatewayError::UnsupportedFeature("offline".to_owned()));
+        let status = signer_status(&signer.parse().unwrap(), &registry_id(), &owner);
+        assert_eq!(status.is_failure(), fails, "{status:?}");
     }
 
     #[test]
@@ -1177,73 +1186,53 @@ mod tests {
     }
 
     #[rstest]
-    #[case::alpha_near((0, 1, 0), Some(Migration::PreGlobalContracts))]
-    #[case::v1_tmplr_near((1, 0, 0), Some(Migration::PreGlobalContracts))]
-    #[case::user0_tmplr_near((1, 1, 0), Some(Migration::WithGlobalContracts))]
-    #[case((1, 2, 4), Some(Migration::WithGlobalContracts))]
-    #[case::already_upgradable((2, 0, 0), None)]
-    fn the_migration_follows_from_the_source_release(
-        #[case] source: (u64, u64, u64),
-        #[case] expected: Option<Migration>,
-    ) {
-        let (status, migration) = migration_status(RegistryVersion::from(source));
-        assert_eq!(migration, expected);
-        assert_eq!(status.is_failure(), expected.is_none(), "{status:?}");
+    #[case::newest(None, true)]
+    #[case::named(Some("2.0.0"), true)]
+    #[case::uncatalogued(Some("9.9.9"), false)]
+    fn the_target_must_be_catalogued(#[case] requested: Option<&str>, #[case] found: bool) {
+        assert_eq!(catalogued_release(requested).is_ok(), found);
     }
 
     #[rstest]
-    #[case::newest(None, false)]
-    #[case::named(Some("2.0.0"), false)]
-    #[case::uncatalogued(Some("9.9.9"), true)]
-    #[case::predates_versioned_state(Some("1.2.4"), true)]
-    fn the_target_must_be_a_release_with_versioned_state(
-        #[case] requested: Option<&str>,
+    #[case::same("2.0.0", (2, 0, 0), false)]
+    #[case::newer("2.0.0", (1, 2, 4), false)]
+    #[case::downgrade("1.2.4", (2, 0, 0), true)]
+    fn the_target_may_not_downgrade(
+        #[case] target: &str,
+        #[case] source: (u64, u64, u64),
         #[case] fails: bool,
     ) {
-        let (status, release) = target_status(requested);
+        let release = catalogued_release(Some(target)).unwrap();
+        let status = target_status(release, RegistryVersion::from(source));
         assert_eq!(status.is_failure(), fails, "{status:?}");
-        assert_eq!(release.is_none(), fails);
     }
 
     #[test]
-    fn the_signing_key_must_hold_full_access() {
+    fn a_self_owned_registry_signs_with_one_of_its_full_access_keys() {
         let state = snapshot(&[]);
+        assert!(holds_full_access(&state, &key("full")));
+        assert!(!holds_full_access(&state, &key("function-call")));
+        assert!(!holds_full_access(&state, &key("stranger")));
+    }
 
-        let (status, replay) = signing_key_status(&state, &key("full"));
-        assert!(!status.is_failure(), "{status:?}");
-        assert_eq!(replay, Some(key("full")));
-
-        for key in [key("function-call"), key("stranger")] {
-            let (status, replay) = signing_key_status(&state, &key);
-            assert!(status.is_failure() && replay.is_none(), "{status:?}");
-        }
+    #[rstest]
+    #[case::full_access(Ok(true), false)]
+    #[case::function_call(Ok(false), true)]
+    #[case::unreadable(Err("no such key".to_owned()), true)]
+    fn the_signing_key_must_hold_full_access(
+        #[case] full_access: Result<bool, String>,
+        #[case] fails: bool,
+    ) {
+        let status = signing_key_status(&key("full"), &registry_id(), full_access);
+        assert_eq!(status.is_failure(), fails, "{status:?}");
     }
 
     #[rstest]
     #[case::ample(NearToken::from_near(10), false)]
     #[case::short(NearToken::from_near(3), true)]
     fn the_balance_must_stake_the_new_code(#[case] amount: NearToken, #[case] fails: bool) {
-        let expected = Expected {
-            code_hash: CryptoHash::default(),
-            storage_usage: 400_000,
-            growth: 3,
-            shrink: 0,
-        };
         // 400 KB stakes 4 NEAR, plus the headroom.
-        let status = balance_status(amount, &expected);
-        assert_eq!(status.is_failure(), fails, "{status:?}");
-    }
-
-    #[rstest]
-    #[case::within(Migration::PreGlobalContracts, &[1_000_000, 1_000_000], false)]
-    #[case::over(Migration::PreGlobalContracts, &[1_600_000, 1_600_000], true)]
-    #[case::rewrites_nothing(Migration::WithGlobalContracts, &[1_600_000, 1_600_000], false)]
-    fn the_proof_budget_binds_only_the_migration_that_rewrites_code(
-        #[case] migration: Migration,
-        #[case] entries: &[usize],
-        #[case] fails: bool,
-    ) {
-        let status = proof_budget_status(migration, &snapshot(entries));
+        let status = balance_status(amount, 400_000);
         assert_eq!(status.is_failure(), fails, "{status:?}");
     }
 
@@ -1265,16 +1254,25 @@ mod tests {
         assert_eq!(status.is_failure(), fails, "{status:?}");
     }
 
-    fn hash(byte: u8) -> templar_gateway_types::CryptoHash {
-        near_api::types::CryptoHash([byte; 32]).into()
+    fn info(byte: u8, availability: VersionAvailability) -> VersionInfo {
+        VersionInfo {
+            code_hash: near_sdk::json_types::Base58CryptoHash::from([byte; 32]),
+            availability,
+        }
     }
 
     fn contents() -> RegistryContents {
         RegistryContents {
             owner: Some(registry_id()),
             versions: vec![
-                ("market@1.0.0".to_owned(), Some(hash(1))),
-                ("market@0.9.0".to_owned(), Some(hash(2))),
+                (
+                    "market@1.0.0".to_owned(),
+                    Some(info(1, VersionAvailability::Global)),
+                ),
+                (
+                    "market@0.9.0".to_owned(),
+                    Some(info(2, VersionAvailability::Removed)),
+                ),
             ],
             deployments: vec!["market.templar-alpha.near".parse().unwrap()],
         }
@@ -1288,6 +1286,10 @@ mod tests {
     #[rstest]
     #[case::owner(|c: &mut RegistryContents| c.owner = None, "owner")]
     #[case::code_hash(|c: &mut RegistryContents| c.versions[0].1 = None, "version")]
+    #[case::availability(
+        |c: &mut RegistryContents| c.versions[1].1 = Some(info(2, VersionAvailability::Global)),
+        "version"
+    )]
     #[case::lost_version(|c: &mut RegistryContents| { c.versions.pop(); }, "version")]
     #[case::lost_deployment(|c: &mut RegistryContents| c.deployments.clear(), "deployment")]
     fn any_change_to_the_contents_fails(
@@ -1302,29 +1304,34 @@ mod tests {
         assert!(detail.contains(named), "{detail}");
     }
 
-    fn expected() -> Expected {
-        Expected {
-            code_hash: CryptoHash::default(),
-            storage_usage: 1_000_000,
-            growth: 356,
-            shrink: 64,
-        }
-    }
-
-    /// A lost blob or reserved name shows only as storage, so the band has to be tight.
     #[rstest]
-    #[case::unchanged(1_000_000, false)]
-    #[case::discriminants_and_version_record(1_000_000 + 356, false)]
-    #[case::retired_collection(1_000_000 - 64, false)]
+    #[case::exact(1_000_000, false)]
     #[case::lost_reserved_name(1_000_000 - 150, true)]
-    #[case::lost_blob(1_000_000 - 300_000, true)]
-    #[case::grew_beyond_the_migration(1_000_000 + 357, true)]
-    fn storage_may_only_move_by_what_the_migration_writes(
+    #[case::grew(1_000_001, true)]
+    fn without_a_migration_storage_may_only_move_by_the_code_swap(
         #[case] actual: u64,
         #[case] fails: bool,
     ) {
-        let status = storage_status(&expected(), actual);
+        let expected = Expected {
+            code_hash: CryptoHash::default(),
+            storage_usage: Some(1_000_000),
+        };
+        let status = storage_status(&expected, actual);
         assert_eq!(status.is_failure(), fails, "{status:?}");
+    }
+
+    /// Only the replay can measure what a migration writes; mainnet is then held to it exactly.
+    #[test]
+    fn a_migration_is_bounded_by_its_replay() {
+        let replayed = Expected {
+            code_hash: CryptoHash::default(),
+            storage_usage: None,
+        };
+        assert!(!storage_status(&replayed, 1_234).is_failure());
+        let mainnet = replayed.exactly(1_234);
+        assert!(!storage_status(&mainnet, 1_234).is_failure());
+        assert!(storage_status(&mainnet, 1_233).is_failure());
+        assert!(storage_status(&mainnet, 1_235).is_failure());
     }
 
     /// A preflight that stops on an error it could not record must still fail, never exit 0.
@@ -1337,7 +1344,7 @@ mod tests {
         assert!(error.to_string().contains("not submitted"), "{error}");
     }
 
-    /// A legacy `registry` map holding `tags`, one name per entry, as near-sdk lays it out.
+    /// A `registry` map holding `tags`, one name per entry, as near-sdk lays it out.
     fn with_names(tags: &[Option<u8>]) -> StateSnapshot {
         let mut state = snapshot(&[10]);
         for (index, tag) in (0u32..).zip(tags) {
@@ -1403,46 +1410,12 @@ mod tests {
         assert!(!unchanged(now, &snapshot(&[10])));
     }
 
-    #[rstest]
-    #[case::pre_global_contracts(Migration::PreGlobalContracts, 3 + VERSION_RECORD_ALLOWANCE, 0)]
-    #[case::with_global_contracts(
-        Migration::WithGlobalContracts,
-        VERSION_RECORD_ALLOWANCE,
-        RETIRED_COLLECTION_ALLOWANCE
-    )]
-    fn the_storage_band_follows_the_migration(
-        #[case] migration: Migration,
-        #[case] growth: u64,
-        #[case] shrink: u64,
-    ) {
-        let mut state = snapshot(&[10]);
-        // Three version keys, and a hashed value key that happens to start with their prefix.
-        for index in 0u32..3 {
-            state.entries.push(RawStateEntry {
-                key: [VERSION_KEYS_PREFIX, &index.to_le_bytes()].concat(),
-                value: vec![0; 8],
-            });
-        }
-        state.entries.push(RawStateEntry {
-            key: [VERSION_KEYS_PREFIX, &[0; 30]].concat(),
-            value: vec![0; 8],
-        });
-        let wasm = vec![0; 250_000];
-
-        let expected = expected_after(&state, migration, &wasm);
-
-        assert_eq!(expected.storage_usage, 300_000 - 200_000 + 250_000);
-        assert_eq!(expected.growth, growth);
-        assert_eq!(expected.shrink, shrink);
-        assert_eq!(expected.code_hash, CryptoHash::hash_bytes(&wasm));
-    }
-
     #[test]
-    fn mainnet_must_land_exactly_on_the_replayed_storage() {
-        let exact = expected().exactly(1_000_123);
-        assert!(!storage_status(&exact, 1_000_123).is_failure());
-        assert!(storage_status(&exact, 1_000_122).is_failure());
-        assert!(storage_status(&exact, 1_000_124).is_failure());
+    fn the_code_swap_replaces_the_old_code_in_storage() {
+        assert_eq!(
+            code_swapped_storage(&snapshot(&[10]), &vec![0; 250_000]),
+            300_000 - 200_000 + 250_000
+        );
     }
 
     fn plan_attaching(tgas: u64) -> OperationPlan {
@@ -1451,7 +1424,7 @@ mod tests {
             registry_id(),
             Action::FunctionCall(Box::new(
                 near_api::types::transaction::actions::FunctionCallAction {
-                    method_name: "migrate".to_owned(),
+                    method_name: "upgrade".to_owned(),
                     args: Vec::new(),
                     gas: NearGas::from_tgas(tgas),
                     deposit: NearToken::from_yoctonear(0),
@@ -1486,11 +1459,11 @@ mod tests {
     }
 
     #[rstest]
-    #[case::well_within(176, false)]
-    #[case::exactly_half(300, false)]
-    #[case::over_half(301, true)]
+    #[case::well_within(100, false)]
+    #[case::exactly_half(250, false)]
+    #[case::over_half(251, true)]
     fn the_replay_must_leave_half_the_attached_gas(#[case] tgas: u64, #[case] fails: bool) {
-        let status = gas_status(&burnt(tgas), &plan_attaching(600));
+        let status = gas_status(&burnt(tgas), &plan_attaching(500));
         assert_eq!(status.is_failure(), fails, "{status:?}");
     }
 }

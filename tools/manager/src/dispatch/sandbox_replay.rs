@@ -24,17 +24,18 @@ pub(super) async fn start_sandbox() -> Result<(near_sandbox::Sandbox, NetworkCon
     Ok((sandbox, network))
 }
 
-/// Write `state` under `account_id` with no code, swapping `signing_key` for a fresh one whose
-/// secret is returned.
+/// Write `state` under `account_id` with no code, holding a fresh full-access key whose secret is
+/// returned: in place of `signing_key`, so the key set is unchanged, or beside the others when the
+/// account does not sign.
 pub(super) async fn setup_account(
     network: &NetworkConfig,
     account_id: &AccountId,
-    signing_key: &near_api::types::PublicKey,
+    signing_key: Option<&near_api::types::PublicKey>,
     state: &StateSnapshot,
 ) -> Result<SecretKey> {
-    let key_type = match signing_key.key_type() {
-        near_api::types::crypto::KeyType::ED25519 => KeyType::ED25519,
-        near_api::types::crypto::KeyType::SECP256K1 => KeyType::SECP256K1,
+    let key_type = match signing_key.map(near_api::types::PublicKey::key_type) {
+        Some(near_api::types::crypto::KeyType::SECP256K1) => KeyType::SECP256K1,
+        Some(near_api::types::crypto::KeyType::ED25519) | None => KeyType::ED25519,
     };
     let secret_key = random_secret_key(key_type)?;
     let replacement_key: near_crypto::PublicKey = secret_key
@@ -42,10 +43,12 @@ pub(super) async fn setup_account(
         .to_string()
         .parse()
         .context("parse the sandbox signing key")?;
-    anyhow::ensure!(
-        state.access_keys.iter().any(|(key, _)| key == signing_key),
-        "the signing key is not one of the snapshotted account's keys"
-    );
+    if let Some(signing_key) = signing_key {
+        anyhow::ensure!(
+            state.access_keys.iter().any(|(key, _)| key == signing_key),
+            "the signing key is not one of the snapshotted account's keys"
+        );
+    }
     let mut records = vec![StateRecord::Account {
         account_id: account_id.clone(),
         account: ChainAccount::new(
@@ -63,7 +66,7 @@ pub(super) async fn setup_account(
     // Keys last: batches land in order, so the replacement key reaching `Final` implies the state
     // before it has.
     for (public_key, access_key) in &state.access_keys {
-        let public_key = if public_key == signing_key {
+        let public_key = if Some(public_key) == signing_key {
             replacement_key.clone()
         } else {
             public_key
@@ -80,8 +83,51 @@ pub(super) async fn setup_account(
             access_key,
         });
     }
+    if signing_key.is_none() {
+        records.push(StateRecord::AccessKey {
+            account_id: account_id.clone(),
+            public_key: replacement_key.clone(),
+            access_key: near_primitives::account::AccessKey::full_access(),
+        });
+    }
     templar_sandbox::patch_records(network, records).await?;
     templar_sandbox::wait_until_final(network, account_id, &replacement_key).await?;
+    Ok(secret_key)
+}
+
+/// Create `account_id` with nothing but a fresh full-access key, to sign as an account whose own
+/// state the replay does not read.
+pub(super) async fn setup_signer(
+    network: &NetworkConfig,
+    account_id: &AccountId,
+) -> Result<SecretKey> {
+    let secret_key = random_secret_key(KeyType::ED25519)?;
+    let public_key: near_crypto::PublicKey = secret_key
+        .public_key()
+        .to_string()
+        .parse()
+        .context("parse the sandbox signing key")?;
+    templar_sandbox::patch_records(
+        network,
+        vec![
+            StateRecord::Account {
+                account_id: account_id.clone(),
+                account: ChainAccount::new(
+                    NearToken::from_near(1_000),
+                    NearToken::from_yoctonear(0),
+                    AccountContract::None,
+                    0,
+                ),
+            },
+            StateRecord::AccessKey {
+                account_id: account_id.clone(),
+                public_key: public_key.clone(),
+                access_key: near_primitives::account::AccessKey::full_access(),
+            },
+        ],
+    )
+    .await?;
+    templar_sandbox::wait_until_final(network, account_id, &public_key).await?;
     Ok(secret_key)
 }
 
@@ -133,11 +179,16 @@ pub(super) async fn reset_account_metadata(
 
 pub(super) fn build_local_client(
     network: &NetworkConfig,
-    account_id: &AccountId,
-    secret_key: &SecretKey,
+    signers: &[(&AccountId, &SecretKey)],
 ) -> Result<templar_gateway_client::Client> {
-    templar_gateway_client::Client::builder(network.clone())
-        .secret_key(account_id.clone(), secret_key.clone())?
+    signers
+        .iter()
+        .try_fold(
+            templar_gateway_client::Client::builder(network.clone()),
+            |builder, (account_id, secret_key)| {
+                builder.secret_key((*account_id).clone(), (*secret_key).clone())
+            },
+        )?
         .build()
         .context("build the sandbox client")
 }
