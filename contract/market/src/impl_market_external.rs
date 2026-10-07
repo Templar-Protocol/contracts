@@ -224,11 +224,15 @@ impl MarketExternalInterface for Contract {
         let block_timestamp_ms = env::block_timestamp_ms();
         let queue_len_start = self.withdrawal_queue.len();
         let mut depth_cleared = BorrowAssetAmount::zero();
+        let mut visited = 0u32;
 
         while let Some((account_id, requested_amount)) = self.withdrawal_queue.peek() {
-            if batch.len() >= batch_limit as usize {
+            // Charged per entry, not per fulfilled request: an entry that joins
+            // no batch still costs a position read and a queue write.
+            if visited >= batch_limit {
                 break;
             }
+            visited += 1;
 
             let withdrawal_attempt = {
                 let Some(mut position_guard) =
@@ -292,8 +296,10 @@ impl MarketExternalInterface for Contract {
 
         PromiseOrValue::Promise(
             transfers.then(
-                self_ext!(Self::GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE)
-                    .execute_next_supply_withdrawal_request_01_finalize(batch, result),
+                self_ext!(
+                    Self::gas_execute_next_supply_withdrawal_request_01_finalize(batch.len())
+                )
+                .execute_next_supply_withdrawal_request_01_finalize(batch, result),
             ),
         )
     }

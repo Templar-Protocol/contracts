@@ -175,8 +175,19 @@ impl Contract {
         );
     }
 
-    // ~5.8 Tgas
-    pub const GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE: Gas = Gas::from_tgas(8);
+    const GAS_FINALIZE_WITHDRAWAL_BASE: Gas = Gas::from_tgas(6);
+    const GAS_FINALIZE_WITHDRAWAL_PER_RESOLUTION: Gas = Gas::from_tgas(3);
+
+    /// A budget too short for the whole batch strands `outgoing` on every
+    /// position in it, so it has to grow with the batch the callback settles.
+    pub(crate) fn gas_execute_next_supply_withdrawal_request_01_finalize(
+        resolutions: usize,
+    ) -> Gas {
+        Self::GAS_FINALIZE_WITHDRAWAL_BASE.saturating_add(
+            Self::GAS_FINALIZE_WITHDRAWAL_PER_RESOLUTION
+                .saturating_mul(u64::try_from(resolutions).unwrap_or(u64::MAX)),
+        )
+    }
 
     #[private]
     pub fn execute_next_supply_withdrawal_request_01_finalize(
