@@ -278,10 +278,11 @@ async fn an_unknown_code_hash_rolls_back_and_frees_the_key(
 }
 
 #[derive(serde::Deserialize)]
-struct EventLog<T> {
+struct EventLog {
     standard: String,
     event: String,
-    data: T,
+    /// Decoded only once the standard and event say what it holds.
+    data: serde_json::Value,
 }
 
 #[derive(serde::Deserialize)]
@@ -326,12 +327,12 @@ async fn a_taken_name_collides_and_says_so(#[future(awt)] harness: SandboxHarnes
         .filter(|receipt| receipt.contract_id == registry.id)
         .flat_map(|receipt| &receipt.logs)
         .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
-        .map(serde_json::from_str::<EventLog<DeployCollision>>)
+        .map(serde_json::from_str::<EventLog>)
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .filter(|log| log.standard == "templar-registry" && log.event == "deploy_collision")
-        .map(|log| log.data)
-        .collect();
+        .map(|log| serde_json::from_value(log.data))
+        .collect::<Result<_, _>>()?;
     let [collision] = collisions.as_slice() else {
         panic!(
             "expected one deploy_collision event, got {}",
