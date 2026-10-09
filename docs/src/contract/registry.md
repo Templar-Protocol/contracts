@@ -81,3 +81,16 @@ Illustrative output:
 ```
 
 `version_key` names the registered version the account was deployed from and `code_hash` is the hash of the bytes deployed. Compare the code hash with the released artifact manifests above, and use [Contract Verification](../addresses.md#contract-verification) to verify the deployed bytes against their source. The record's types are documented in the [API Reference](../api-reference.md).
+
+## Events
+
+The registry logs [NEP-297](https://github.com/near/NEPs/blob/master/neps/nep-0297.md) events under the `templar-registry` standard, version `1.0.0`. Each is logged only once its state change has taken effect, so an indexer never sees a version or deployment that later rolls back.
+
+| Event | Fields | Logged when |
+| --- | --- | --- |
+| `version_added` | `version_key`, `code_hash`, `availability` (`{"Stored":{"code_len":…}}` or `"Global"`) | `add_version` stores code, or its callback confirms a global contract exists |
+| `version_removed` | `version_key`, `code_hash` | `remove_version` clears a version's stored code |
+| `deployed` | `account_id`, `version_key`, `code_hash`, `block_height` | the deployed account is created and initialized and the name resolves to it |
+| `deploy_collision` | `account_id`, `existing` | `deploy` refuses a name already reserved or deployed; logged in the receipt that fails |
+
+Owner changes are logged by `near-sdk-contract-tools` under its own standard.
