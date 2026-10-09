@@ -1,14 +1,19 @@
 //! Deploy markets from a registry version and verify the deployed configuration
 //! and access keys.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use near_api::types::AccountId;
 use near_sdk::json_types::Base58CryptoHash;
 use near_token::NearToken;
 use rstest::rstest;
-use templar_common::{market::MarketConfiguration, market::YieldWeights, registry::VersionSource};
+use templar_common::{
+    market::MarketConfiguration,
+    market::YieldWeights,
+    registry::{RegistryEntryView, VersionSource},
+};
+use templar_gateway_methods_spec::registry;
 use templar_gateway_testing::{harness, publish_deposit_for, SandboxHarness};
-use templar_gateway_types::{primitive::PublicKey, ManagedAccountId};
+use templar_gateway_types::{primitive::PublicKey, Base64Bytes, ManagedAccountId};
 
 const MARKET_VERSION: &str = "market@0.0.0";
 /// A second key for the *same* code, registered by hash instead of by publishing it again.
@@ -272,40 +277,73 @@ async fn an_unknown_code_hash_rolls_back_and_frees_the_key(
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+struct EventLog {
+    standard: String,
+    event: String,
+    /// Decoded only once the standard and event say what it holds.
+    data: serde_json::Value,
+}
+
+#[derive(serde::Deserialize)]
+struct DeployCollision {
+    account_id: AccountId,
+    existing: RegistryEntryView,
+}
+
+/// A collision fails the deploy, and the event it logs first survives in the failed receipt, so an
+/// observer can identify it without the panic text.
 #[rstest]
 #[tokio::test]
-async fn market_id_collision(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+async fn a_taken_name_collides_and_says_so(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let registry = setup_registry(&harness).await?;
     let args = init_args(&registry.configuration)?;
+    let deploy = || registry::Deploy {
+        target: registry::DeployTarget {
+            registry_id: registry.id.clone(),
+            name: "market".to_owned(),
+            version_key: MARKET_VERSION.to_owned(),
+            skip_abi_check: true,
+            full_access_keys: None,
+            deposit: NearToken::from_near(10),
+        },
+        init_args: Base64Bytes(args.clone()),
+    };
 
-    harness
-        .registry_deploy_without_abi_check(
-            &registry.deployer,
-            &registry.id,
-            "market",
-            MARKET_VERSION,
-            args.clone(),
-            None,
-            NearToken::from_near(10),
-        )
-        .await?;
-    // Re-deploying the same name collides.
-    let result = harness
-        .registry_deploy_without_abi_check(
-            &registry.deployer,
-            &registry.id,
-            "market",
-            MARKET_VERSION,
-            args,
-            None,
-            NearToken::from_near(10),
-        )
-        .await;
+    harness.execute(&registry.deployer, deploy()).await?;
+    let result = harness.try_execute(&registry.deployer, deploy()).await?;
+
+    let failure = result.operation.failure_message().unwrap_or_default();
     assert!(
-        result.is_err()
-            && format!("{:#}", result.as_ref().unwrap_err()).contains("Market ID collision"),
-        "expected a Market ID collision error, got: {result:?}",
+        failure.contains("Market ID collision"),
+        "expected the collision panic, got: {failure:?}",
     );
+    let collisions: Vec<DeployCollision> = result
+        .operation
+        .final_outcome()
+        .context("the failed deploy has an outcome")?
+        .receipts
+        .iter()
+        .filter(|receipt| receipt.contract_id == registry.id)
+        .flat_map(|receipt| &receipt.logs)
+        .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
+        .map(serde_json::from_str::<EventLog>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|log| log.standard == "templar-registry" && log.event == "deploy_collision")
+        .map(|log| serde_json::from_value(log.data))
+        .collect::<Result<_, _>>()?;
+    let [collision] = collisions.as_slice() else {
+        panic!(
+            "expected one deploy_collision event, got {}",
+            collisions.len()
+        );
+    };
+    assert_eq!(
+        collision.account_id.as_str(),
+        format!("market.{}", registry.id)
+    );
+    assert!(matches!(collision.existing, RegistryEntryView::Deployed(_)));
 
     Ok(())
 }
