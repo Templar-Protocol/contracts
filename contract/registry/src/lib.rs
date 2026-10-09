@@ -162,17 +162,6 @@ impl Contract {
         self.versions.get(&version_key).map(VersionEntry::info)
     }
 
-    fn emit_version_added(&self, version_key: String) {
-        let Some(entry) = self.versions.get(&version_key) else {
-            templar_common::panic_with_message("Version key does not exist");
-        };
-        RegistryEvent::VersionAdded {
-            info: entry.info(),
-            version_key,
-        }
-        .emit();
-    }
-
     /// Whether a name is taken, and by what.
     ///
     /// [`Self::deploy`] refuses any name already present, so a `Reserved` name is as unusable as a
@@ -266,8 +255,12 @@ impl Contract {
                     hash: env::sha256_array(&code.0),
                     code: Some(code.0),
                 };
-                self.versions.insert(version_key.clone(), version_entry);
-                self.emit_version_added(version_key);
+                RegistryEvent::VersionAdded {
+                    version_key: version_key.clone(),
+                    info: version_entry.info(),
+                }
+                .emit();
+                self.versions.insert(version_key, version_entry);
                 PromiseOrValue::Value(())
             }
             VersionSource::PublishGlobal(code) => {
@@ -309,7 +302,9 @@ impl Contract {
     pub fn add_version_01_finalize(&mut self, version_key: String) -> PromiseOrValue<()> {
         let result = env::promise_result_checked(0, 0x1000);
         if result.is_ok() {
-            self.emit_version_added(version_key);
+            if let Some(info) = self.versions.get(&version_key).map(VersionEntry::info) {
+                RegistryEvent::VersionAdded { version_key, info }.emit();
+            }
             PromiseOrValue::Value(())
         } else {
             self.versions.remove(&version_key);
