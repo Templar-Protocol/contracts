@@ -818,6 +818,13 @@ async fn replay(
     )
     .await;
     reporter.extend(checks);
+    // The replay fails only on an outright shortfall, not on a migration eating the fee headroom.
+    if let Some(storage_usage) = storage_usage {
+        reporter.record(Check::new(
+            "upgrade.replay.balance",
+            balance_status(prepared.snapshot.amount, storage_usage),
+        ));
+    }
     Ok(storage_usage)
 }
 

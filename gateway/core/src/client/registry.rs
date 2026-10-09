@@ -154,25 +154,29 @@ impl RegistryClient<'_> {
 mod tests {
     use near_api::{types::transaction::actions::Action, NetworkConfig};
     use near_sdk::json_types::{Base58CryptoHash, Base64VecU8};
-    use templar_common::registry::VersionSource;
-    use templar_gateway_types::ManagedAccountId;
+    use templar_common::{registry::VersionSource, upgrade::UpgradeSource};
+    use templar_gateway_types::{Base64Bytes, ManagedAccountId};
 
-    use super::{AddVersionArgs, NearClient};
+    use super::{AddVersionArgs, NearClient, UpgradeArgs};
     use crate::client::ContractWriteOptions;
 
     const KEY: &str = "market@1.5.0";
     const CODE: [u8; 3] = [0xde, 0xad, 0xbe];
+    const MIGRATE_ARGS: &[u8] = br#"[{"from_version":"v1"}]"#;
+
+    fn client() -> NearClient {
+        NearClient::new(NetworkConfig::from_rpc_url(
+            "test",
+            "http://127.0.0.1:1".parse().unwrap(),
+        ))
+    }
 
     #[rstest::rstest]
     #[case::stored(VersionSource::Stored(Base64VecU8(CODE.to_vec())))]
     #[case::publish_global(VersionSource::PublishGlobal(Base64VecU8(CODE.to_vec())))]
     #[case::existing_global(VersionSource::ExistingGlobal(Base58CryptoHash::from([7u8; 32])))]
     fn add_version_sends_the_borsh_key_and_source(#[case] source: VersionSource) {
-        let client = NearClient::new(NetworkConfig::from_rpc_url(
-            "test",
-            "http://127.0.0.1:1".parse().unwrap(),
-        ));
-        let planned = client
+        let planned = client()
             .registry("registry.near".parse().unwrap())
             .add_version(
                 ContractWriteOptions::new(ManagedAccountId("owner.near".parse().unwrap()))
@@ -189,5 +193,38 @@ mod tests {
         };
         assert_eq!(action.method_name, "add_version");
         assert_eq!(action.args, borsh::to_vec(&(KEY, &source)).unwrap());
+    }
+
+    /// The bytes the registry's `upgrade(code: UpgradeSource, migrate_args: Base64VecU8)` parses.
+    #[rstest::rstest]
+    #[case::blob(
+        UpgradeSource::Code(Base64VecU8(CODE.to_vec())),
+        r#"{"code":"3q2+","migrate_args":"W3siZnJvbV92ZXJzaW9uIjoidjEifV0="}"#
+    )]
+    #[case::global_hash(
+        UpgradeSource::GlobalHash(Base58CryptoHash::from([7u8; 32])),
+        r#"{"code":{"GlobalHash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"},"migrate_args":"W3siZnJvbV92ZXJzaW9uIjoidjEifV0="}"#
+    )]
+    fn upgrade_sends_the_code_and_base64_migrate_args(
+        #[case] code: UpgradeSource,
+        #[case] expected: &str,
+    ) {
+        let planned = client()
+            .registry("registry.near".parse().unwrap())
+            .upgrade(
+                ContractWriteOptions::new(ManagedAccountId("owner.near".parse().unwrap()))
+                    .one_yocto(),
+                UpgradeArgs {
+                    code,
+                    migrate_args: Base64Bytes(MIGRATE_ARGS.to_vec()),
+                },
+            )
+            .unwrap();
+
+        let [Action::FunctionCall(action)] = &planned.actions[..] else {
+            panic!("expected one function call");
+        };
+        assert_eq!(action.method_name, "upgrade");
+        assert_eq!(std::str::from_utf8(&action.args).unwrap(), expected);
     }
 }
