@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-accumulator-v0.1.8...templar-accumulator-v0.2.0) - 2026-10-10
+
+### Changed
+
+- *(gateway)* [**breaking**] drop single-field read result wrappers (ENG-772) ([#648](https://github.com/Templar-Protocol/contracts/pull/648))
+
 ## [0.1.8](https://github.com/Templar-Protocol/contracts/compare/templar-accumulator-v0.1.7...templar-accumulator-v0.1.8) - 2026-10-01
 
 ### Added

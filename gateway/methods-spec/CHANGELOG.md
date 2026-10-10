@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-spec-v0.5.1...templar-gateway-methods-spec-v0.6.0) - 2026-10-10
+
+### Added
+
+- *(gateway)* registry.upgrade and registry.getVersionCodeHash (ENG-778) ([#652](https://github.com/Templar-Protocol/contracts/pull/652))
+
+### Changed
+
+- *(gateway)* [**breaking**] drop single-field read result wrappers (ENG-772) ([#648](https://github.com/Templar-Protocol/contracts/pull/648))
+- *(gateway)* drop pre-2.0.0 registry support ([#657](https://github.com/Templar-Protocol/contracts/pull/657))
+
 ## [0.5.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-spec-v0.5.0...templar-gateway-methods-spec-v0.5.1) - 2026-10-01
 
 ### Added

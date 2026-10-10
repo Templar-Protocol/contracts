@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-sandbox-v0.1.0...templar-sandbox-v0.1.1) - 2026-10-10
+
+### Fixed
+
+- *(sandbox)* batch large state patches and raise the view_state limit (ENG-779) ([#653](https://github.com/Templar-Protocol/contracts/pull/653))
+
 ## [0.1.0](https://github.com/Templar-Protocol/contracts/releases/tag/templar-sandbox-v0.1.0) - 2026-09-01
 
 ### Fixed

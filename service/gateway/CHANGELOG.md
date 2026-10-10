@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-service-v0.7.0...templar-gateway-service-v0.8.0) - 2026-10-10
+
+### Added
+
+- *(gateway)* add verified provider update reads (ENG-776) ([#655](https://github.com/Templar-Protocol/contracts/pull/655))
+
+### Changed
+
+- *(gateway)* [**breaking**] drop single-field read result wrappers (ENG-772) ([#648](https://github.com/Templar-Protocol/contracts/pull/648))
+
 ## [0.7.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-service-v0.6.0...templar-gateway-service-v0.7.0) - 2026-10-01
 
 ### Added
