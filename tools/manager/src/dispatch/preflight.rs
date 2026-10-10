@@ -12,7 +12,7 @@ use templar_common::price::PricePair;
 use templar_common::registry::VersionInfo;
 use templar_gateway_core::GatewayError;
 use templar_gateway_methods_spec::{account, contract, registry};
-use templar_gateway_types::common::{ContractArgs, Pagination};
+use templar_gateway_types::common::ContractArgs;
 use templar_proxy_oracle_kernel::Price;
 use templar_proxy_oracle_near_common::convert::{
     pyth_price_try_from_kernel, pyth_price_try_to_kernel,
@@ -400,10 +400,6 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
 
 /// Every version key must already be registered *and still deployable*, or the deploy fails
 /// partway.
-///
-/// Against a registry too old to serve `get_version` this falls back to membership, which cannot
-/// see that `remove_version` cleared a version's code — such a key passes here and fails
-/// mid-deploy, after the governance and oracle steps have already run.
 async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     // A direct market deploys only itself, so the proxy versions it never uses
     // need not be registered.
@@ -413,42 +409,21 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
         labeled.push(("governance", governance_version));
     }
 
-    if serves_entry_and_version_views(ctx, &spec.registry).await {
-        return futures::future::join_all(labeled.into_iter().map(|(label, key)| async move {
-            let found = ctx
-                .client
-                .read(registry::GetVersion {
-                    registry_id: spec.registry.clone(),
-                    version_key: key.clone(),
-                })
-                .await
-                .map_err(|error| error.to_string());
-            Check::new(
-                format!("registry.version.{label}"),
-                version_status(key, &spec.registry, found),
-            )
-        }))
-        .await;
-    }
-
-    let registered = ctx
-        .client
-        .read(registry::ListVersions {
-            registry_id: spec.registry.clone(),
-            args: Pagination::default(),
-        })
-        .await
-        .map_err(|error| error.to_string());
-
-    labeled
-        .into_iter()
-        .map(|(label, key)| {
-            Check::new(
-                format!("registry.version.{label}"),
-                membership_status(key, &spec.registry, registered.as_deref()),
-            )
-        })
-        .collect()
+    futures::future::join_all(labeled.into_iter().map(|(label, key)| async move {
+        let found = ctx
+            .client
+            .read(registry::GetVersion {
+                registry_id: spec.registry.clone(),
+                version_key: key.clone(),
+            })
+            .await
+            .map_err(|error| error.to_string());
+        Check::new(
+            format!("registry.version.{label}"),
+            version_status(key, &spec.registry, found),
+        )
+    }))
+    .await
 }
 
 /// What `get_version` says about a key: deployable, present but stripped of its code, or absent.
@@ -466,25 +441,6 @@ fn version_status(
             "`{key}` is not registered in {registry}; the deploy would fail partway"
         )),
         Err(error) => Status::failed(format!("could not read `{key}` in {registry}: {error}")),
-    }
-}
-
-/// The same question against a registry that can only answer membership, which cannot tell a live
-/// version from one `remove_version` emptied.
-fn membership_status(
-    key: &str,
-    registry: &AccountId,
-    registered: Result<&[String], &String>,
-) -> Status {
-    match registered {
-        // One failed read must not swallow the rest of the report.
-        Err(error) => Status::failed(format!("could not list versions in {registry}: {error}")),
-        Ok(registered) if registered.iter().any(|known| known == key) => {
-            Status::passed(key.to_owned())
-        }
-        Ok(_) => Status::failed(format!(
-            "`{key}` is not registered in {registry}; the deploy would fail partway"
-        )),
     }
 }
 
@@ -687,34 +643,9 @@ pub(super) async fn exists(ctx: &CliContext, account_id: &AccountId) -> anyhow::
     }
 }
 
-/// Whether `registry_id` serves the views that make the target and version checks sound.
-///
-/// Unreadable or unparseable counts as "no". Every registry deployed so far predates these
-/// views, so the checks that want them have to degrade to what any registry can answer — failing
-/// closed would refuse to plan against all of them.
-pub(super) async fn serves_entry_and_version_views(
-    ctx: &CliContext,
-    registry_id: &AccountId,
-) -> bool {
-    ctx.client
-        .read(contract::GetVersion {
-            contract_id: registry_id.clone(),
-        })
-        .await
-        .ok()
-        .and_then(|result| result.parsed)
-        .is_some_and(|version| {
-            version
-                .cast::<templar_gateway_types::Registry>()
-                .supports_entry_and_version_views()
-        })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        membership_status, prices_are_usable, underlying_ft, version_status, Leg, Price, Status,
-    };
+    use super::{prices_are_usable, underlying_ft, version_status, Leg, Price, Status};
     use near_sdk::json_types::Base58CryptoHash;
     use templar_common::asset::{CollateralAsset, FungibleAsset};
     use templar_common::registry::{VersionAvailability, VersionInfo};
@@ -840,32 +771,5 @@ mod tests {
             format!("{absent:?}"),
             "an operator needs to know which of the two they are looking at",
         );
-    }
-
-    /// The legacy path cannot see a soft-delete at all: a removed version is still a member, so it
-    /// passes here and fails mid-deploy. Pinned so the blindness is deliberate rather than noticed
-    /// later.
-    #[rstest::rstest]
-    #[case::registered(&["market@1.5.0"], true)]
-    #[case::absent(&["market@1.0.0"], false)]
-    #[case::empty(&[], false)]
-    fn membership_status_can_only_answer_presence(
-        #[case] registered: &[&str],
-        #[case] passes: bool,
-    ) {
-        let registered: Vec<String> = registered.iter().map(|s| (*s).to_owned()).collect();
-        let status = membership_status("market@1.5.0", &registry(), Ok(registered.as_slice()));
-        assert_eq!(
-            matches!(status, Status::Passed { .. }),
-            passes,
-            "{status:?}"
-        );
-    }
-
-    #[test]
-    fn membership_status_reports_a_failed_listing() {
-        let error = "rpc exploded".to_owned();
-        let status = membership_status("market@1.5.0", &registry(), Err(&error));
-        assert!(matches!(status, Status::Failed { .. }), "{status:?}");
     }
 }
