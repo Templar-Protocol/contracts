@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/Templar-Protocol/contracts/compare/templar-pyth-lazer-adapter-contract-v0.1.4...templar-pyth-lazer-adapter-contract-v0.1.5) - 2026-10-10
+
+### Changed
+
+- *(oracle)* share Lazer feed projection (ENG-776) ([#654](https://github.com/Templar-Protocol/contracts/pull/654))
+
 ## [0.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-pyth-lazer-adapter-contract-v0.1.0...templar-pyth-lazer-adapter-contract-v0.1.1) - 2026-08-03
 
 ### Added

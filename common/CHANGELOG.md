@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-common-v2.1.0...templar-common-v2.1.1) - 2026-10-10
+
+### Changed
+
+- *(oracle)* share Lazer feed projection (ENG-776) ([#654](https://github.com/Templar-Protocol/contracts/pull/654))
+- *(registry)* drop pre-2.0.0 migrations and market wording ([#656](https://github.com/Templar-Protocol/contracts/pull/656))
+
 ## [2.1.0](https://github.com/Templar-Protocol/contracts/compare/templar-common-v2.0.0...templar-common-v2.1.0) - 2026-10-01
 
 ### Added
