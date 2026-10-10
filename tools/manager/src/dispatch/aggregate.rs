@@ -1,24 +1,27 @@
-//! Offline aggregation dry-run: query each adapter directly, then apply
-//! [`Proxy::resolve`](templar_proxy_oracle_kernel::proxy::Proxy::resolve) — the
-//! same `no_std` code the contract runs — so the number a market would consume
-//! is visible before the first transaction.
-//!
-//! Absence of a price is reported, not rejected: an adapter carries a feed only
-//! once someone pushes one.
+//! Read-only price preflight: verify provider inputs or read stored inputs, then
+//! apply the same [`Proxy::resolve`] the contract runs. Stored freshness is
+//! reported separately and never substitutes for failed provider verification.
 
 use anyhow::Context as _;
 use templar_common::asset::AssetClass;
 use templar_common::oracle::{pyth, redstone as redstone_types};
 use templar_common::Nanoseconds;
+use templar_gateway_core::{DispatchRead, GatewayContext};
 use templar_gateway_methods_spec::{contract, redstone};
+use templar_gateway_oracle_updates_dispatch::{
+    Dispatch as OracleUpdatesDispatch, WithLazerSource, WithRedStoneSource,
+};
+use templar_gateway_oracle_updates_spec::oracle::{GetLazerUpdate, GetRedStoneUpdate};
 use templar_gateway_types::common::ContractArgs;
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerSet};
+use templar_proxy_oracle_kernel::proxy::freshness_filter::FreshnessFilter;
 use templar_proxy_oracle_kernel::Price;
 use templar_proxy_oracle_near_common::convert::pyth_price_try_to_kernel;
 use templar_proxy_oracle_near_common::price_transformer::Action;
 
 use super::scaled;
-use crate::context::CliContext;
+use crate::commands::spec::{PreflightPriceArgs, PricesFrom};
+use crate::context::{lazer_source, redstone_source, CliContext};
 use crate::spec::{
     check::{Check, Status},
     oracle::{AssetSpec, SourceSpec, DEFAULT_MAX_CLOCK_DRIFT},
@@ -32,6 +35,7 @@ pub(super) async fn checks(
     ctx: &CliContext,
     spec: &MarketSpec,
     deployed_oracle: Option<&near_account_id::AccountId>,
+    args: &PreflightPriceArgs,
 ) -> (Vec<Check>, Option<Price>, Option<Price>) {
     // Nothing to dry-run for a direct market: this reproduces a *proxy's*
     // aggregation, and an oracle we did not configure has none of ours to
@@ -41,7 +45,7 @@ pub(super) async fn checks(
         let skipped = Check::new(
             "oracle.aggregate.all",
             Status::Skipped {
-                reason: "this market reads an existing oracle; there is no \
+                reason: "chain inputs: this market reads an existing oracle; there is no \
                          proxy aggregation to reproduce"
                     .to_owned(),
             },
@@ -49,14 +53,16 @@ pub(super) async fn checks(
         return (vec![skipped], None, None);
     }
 
+    let providers = Providers::new(ctx, spec, args);
+
     // Against the oracle's own breakers when one is deployed. An empty set is
     // right for `market plan` — the oracle does not exist yet — and wrong for
     // `market verify`: a tripped breaker means the live oracle prices nothing,
     // and resolving without it would report the aggregation healthy for a
     // market that is blocked.
     let (collateral, borrow, collateral_breakers, borrow_breakers) = futures::join!(
-        fetch_all(ctx, &spec.collateral),
-        fetch_all(ctx, &spec.borrow),
+        fetch_all(ctx, &spec.collateral, &providers, args.prices_from),
+        fetch_all(ctx, &spec.borrow, &providers, args.prices_from),
         breakers(ctx, deployed_oracle, COLLATERAL_PRICE_ID),
         breakers(ctx, deployed_oracle, BORROW_PRICE_ID),
     );
@@ -66,11 +72,6 @@ pub(super) async fn checks(
     // even requested.
     let now = crate::spec::wall_clock();
 
-    // A deployed oracle means `market verify`, not `market plan`: feeds that
-    // resolve to nothing are a market that cannot price, not one awaiting its
-    // first push.
-    let live_market = deployed_oracle.is_some();
-
     let (collateral_price, mut checks) = leg(
         "collateral",
         &spec.collateral,
@@ -78,7 +79,7 @@ pub(super) async fn checks(
         collateral,
         now,
         collateral_breakers,
-        live_market,
+        args.prices_from,
     );
     let (borrow_price, borrow_checks) = leg(
         "borrow",
@@ -87,10 +88,15 @@ pub(super) async fn checks(
         borrow,
         now,
         borrow_breakers,
-        live_market,
+        args.prices_from,
     );
     checks.extend(borrow_checks);
-    checks.push(pair(collateral_price, borrow_price));
+    checks.push(pair(
+        collateral_price,
+        borrow_price,
+        leg_inputs(&spec.collateral, args.prices_from),
+        leg_inputs(&spec.borrow, args.prices_from),
+    ));
     (checks, collateral_price, borrow_price)
 }
 
@@ -118,12 +124,214 @@ async fn breakers(
     Ok(result.unwrap_or_else(CircuitBreakerSet::empty))
 }
 
-/// Every source's current price, in spec order.
+type PriceResult = anyhow::Result<Option<Price>>;
+
+/// Construction failures are independent: a missing Lazer key must not hide
+/// the RedStone leg, and unused sources must not start a process or need a key.
+struct Providers {
+    lazer: Option<anyhow::Result<WithLazerSource<GatewayContext>>>,
+    redstone: Option<anyhow::Result<WithRedStoneSource<GatewayContext>>>,
+}
+
+impl Providers {
+    fn new(ctx: &CliContext, spec: &MarketSpec, args: &PreflightPriceArgs) -> Self {
+        let mut sources = spec.collateral.sources.iter().chain(&spec.borrow.sources);
+        let provider = args.prices_from == PricesFrom::Provider && !spec.oracle.is_direct();
+        let lazer = provider
+            && sources
+                .clone()
+                .any(|s| matches!(s, SourceSpec::Lazer { .. }));
+        let redstone = provider && sources.any(|s| matches!(s, SourceSpec::RedStone { .. }));
+        Self {
+            lazer: lazer.then(|| {
+                lazer_source(
+                    GatewayContext::new(ctx.network_config().clone())?,
+                    &args.lazer,
+                )
+            }),
+            redstone: redstone.then(|| {
+                redstone_source(
+                    GatewayContext::new(ctx.network_config().clone())?,
+                    &args.redstone,
+                )
+            }),
+        }
+    }
+
+    async fn fetch(&self, source: &SourceSpec) -> PriceResult {
+        let price = match source {
+            SourceSpec::Lazer {
+                oracle, feed_id, ..
+            } => {
+                let context = self
+                    .lazer
+                    .as_ref()
+                    .context("Lazer source not constructed")?
+                    .as_ref()
+                    .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+                OracleUpdatesDispatch::dispatch(
+                    GetLazerUpdate {
+                        oracle_id: oracle.clone(),
+                        feed_ids: vec![*feed_id],
+                    },
+                    context.clone(),
+                )
+                .await?
+                .remove(feed_id)
+                .flatten()
+                .and_then(|feed| feed.to_ema_price())
+            }
+            SourceSpec::RedStone {
+                oracle, price_id, ..
+            } => {
+                let context = self
+                    .redstone
+                    .as_ref()
+                    .context("RedStone source not constructed")?
+                    .as_ref()
+                    .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+                OracleUpdatesDispatch::dispatch(
+                    GetRedStoneUpdate {
+                        oracle_id: oracle.clone(),
+                        feed_ids: vec![price_id.clone().into()],
+                    },
+                    context.clone(),
+                )
+                .await?
+                .first()
+                .and_then(|entry| entry.data.to_pyth_price())
+            }
+            SourceSpec::Pyth { .. } | SourceSpec::Lst { .. } => {
+                anyhow::bail!("this source is chain-only")
+            }
+        };
+        Ok(price.as_ref().and_then(pyth_price_try_to_kernel))
+    }
+}
+
+/// Chain-only paths own one result, borrowed for both selected and diagnostic
+/// checks. Provider paths cannot accidentally substitute their stored result.
+enum SourcePrices {
+    Chain(PriceResult),
+    Provider {
+        selected: PriceResult,
+        stored: PriceResult,
+    },
+}
+
+impl SourcePrices {
+    fn selected(&self) -> &PriceResult {
+        match self {
+            Self::Chain(price) => price,
+            Self::Provider { selected, .. } => selected,
+        }
+    }
+
+    fn stored(&self) -> &PriceResult {
+        match self {
+            Self::Chain(price) => price,
+            Self::Provider { stored, .. } => stored,
+        }
+    }
+}
+
+fn source_inputs(source: &SourceSpec, mode: PricesFrom) -> &'static str {
+    match (mode, source) {
+        (PricesFrom::Provider, SourceSpec::Lazer { .. } | SourceSpec::RedStone { .. }) => {
+            "provider"
+        }
+        _ => "chain",
+    }
+}
+
+fn leg_inputs<A: AssetClass>(asset: &AssetSpec<A>, mode: PricesFrom) -> &'static str {
+    let provider = asset
+        .sources
+        .iter()
+        .any(|s| source_inputs(s, mode) == "provider");
+    let chain = asset
+        .sources
+        .iter()
+        .any(|s| source_inputs(s, mode) == "chain");
+    match (provider, chain) {
+        (true, true) => "provider and chain",
+        (true, false) => "provider",
+        _ => "chain",
+    }
+}
+
 async fn fetch_all<A: AssetClass>(
     ctx: &CliContext,
     asset: &AssetSpec<A>,
-) -> Vec<anyhow::Result<Option<Price>>> {
-    futures::future::join_all(asset.sources.iter().map(|source| fetch(ctx, source))).await
+    providers: &Providers,
+    mode: PricesFrom,
+) -> Vec<SourcePrices> {
+    futures::future::join_all(asset.sources.iter().map(|source| async move {
+        if source_inputs(source, mode) == "provider" {
+            let (selected, stored) = futures::join!(providers.fetch(source), fetch(ctx, source));
+            SourcePrices::Provider { selected, stored }
+        } else {
+            SourcePrices::Chain(fetch(ctx, source).await)
+        }
+    }))
+    .await
+}
+
+fn stored_status(
+    source: &SourceSpec,
+    stored: &PriceResult,
+    freshness: &FreshnessFilter,
+    now: Nanoseconds,
+) -> Status {
+    match stored {
+        Ok(Some(price)) if freshness.accepts(price, now) => Status::passed(format!(
+            "stored chain price: {}",
+            describe_price(source, price, now)
+        )),
+        Ok(Some(price)) => Status::warned(format!(
+            "stored chain price outside freshness bounds (max age {}s, max drift {}s): {}",
+            freshness.max_age_ns.map_or(0, |age| age.as_secs()),
+            freshness
+                .max_clock_drift_ns
+                .map_or(0, |drift| drift.as_secs()),
+            describe_price(source, price, now),
+        )),
+        Ok(None) => Status::warned(format!(
+            "{} has no usable stored chain price",
+            source.describe()
+        )),
+        Err(error) => Status::warned(format!(
+            "{} stored chain price unreadable: {error:#}",
+            source.describe()
+        )),
+    }
+}
+
+fn selected_status(
+    source: &SourceSpec,
+    fetched: &PriceResult,
+    now: Nanoseconds,
+    max_drift: Nanoseconds,
+    drifted: bool,
+    inputs: &str,
+) -> Status {
+    match fetched {
+        Ok(Some(price)) if drifted => Status::failed(format!(
+            "{inputs} input: {} is timestamped {}s in the future, beyond the {}s clock-drift \
+             bound. The deployed oracle would reject it.",
+            source.describe(),
+            Nanoseconds::from_ns(price.publish_time_ns.as_ns().saturating_sub(now.as_ns())).as_secs(),
+            max_drift.as_secs(),
+        )),
+        Ok(Some(price)) => Status::passed(format!("{inputs} input: {}", describe_price(source, price, now))),
+        Ok(None) => Status::Skipped {
+            reason: format!(
+                "{inputs} input: {} carries no price yet, so it contributes nothing to this dry run",
+                source.describe(),
+            ),
+        },
+        Err(error) => Status::failed(format!("{inputs} input: {}: {error:#}", source.describe())),
+    }
 }
 
 /// One side: fetch every source, report each, then aggregate.
@@ -131,10 +339,10 @@ fn leg<A: AssetClass>(
     side: &str,
     asset: &AssetSpec<A>,
     spec: &MarketSpec,
-    fetched_sources: Vec<anyhow::Result<Option<Price>>>,
+    fetched_sources: Vec<SourcePrices>,
     now: Nanoseconds,
     breakers: anyhow::Result<CircuitBreakerSet<CircuitBreaker>>,
-    live_market: bool,
+    mode: PricesFrom,
 ) -> (Option<Price>, Vec<Check>) {
     let mut checks = Vec::new();
     let mut prices = Vec::with_capacity(asset.sources.len());
@@ -146,33 +354,24 @@ fn leg<A: AssetClass>(
     // oracle would not give.
     let max_drift = asset.max_clock_drift.unwrap_or(DEFAULT_MAX_CLOCK_DRIFT);
     let drift_limit = Nanoseconds::from_ns(now.as_ns().saturating_add(max_drift.as_ns()));
+    let freshness = FreshnessFilter::new(
+        Some(asset.max_age.unwrap_or(spec.market.price_maximum_age)),
+        Some(max_drift),
+    );
 
     let mut transport_failed = false;
     for ((index, source), fetched) in asset.sources.iter().enumerate().zip(fetched_sources) {
-        let fetched = &fetched;
+        checks.push(Check::new(
+            format!("oracle.stored.{side}.{index}"),
+            stored_status(source, fetched.stored(), &freshness, now),
+        ));
+        let fetched = fetched.selected();
         let drifted = matches!(&fetched, Ok(Some(price)) if price.publish_time_ns > drift_limit);
+        let inputs = source_inputs(source, mode);
 
         checks.push(Check::new(
             format!("oracle.price.{side}.{index}"),
-            match &fetched {
-                Ok(Some(price)) if drifted => Status::failed(format!(
-                    "{} is timestamped {}s in the future, beyond the {}s clock-drift \
-                     bound. The deployed oracle would reject it.",
-                    source.describe(),
-                    Nanoseconds::from_ns(price.publish_time_ns.as_ns().saturating_sub(now.as_ns()))
-                        .as_secs(),
-                    max_drift.as_secs(),
-                )),
-                Ok(Some(price)) => Status::passed(describe_price(source, price, now)),
-                Ok(None) => Status::Skipped {
-                    reason: format!(
-                        "{} carries no price yet, so it contributes nothing to this \
-                         dry run",
-                        source.describe()
-                    ),
-                },
-                Err(error) => Status::failed(format!("{}: {error:#}", source.describe())),
-            },
+            selected_status(source, fetched, now, max_drift, drifted, inputs),
         ));
 
         if fetched.is_err() {
@@ -192,6 +391,7 @@ fn leg<A: AssetClass>(
     // How many sources actually contributed. Distinguishes "nothing to judge"
     // from "judged and rejected", which decide Skipped vs Failed below.
     let live = prices.iter().flatten().count();
+    let inputs = leg_inputs(asset, mode);
 
     // A breaker set that could not be read is not an empty one. Reported here
     // rather than resolved around, because resolving with an empty set removes
@@ -202,7 +402,7 @@ fn leg<A: AssetClass>(
             checks.push(Check::new(
                 format!("oracle.aggregate.{side}"),
                 Status::failed(format!(
-                    "the deployed oracle's circuit breakers could not be read \
+                    "{inputs} inputs: the deployed oracle's circuit breakers could not be read \
                      ({error:#}), so this aggregation cannot be judged. A tripped \
                      breaker would block every price."
                 )),
@@ -221,11 +421,15 @@ fn leg<A: AssetClass>(
     let (status, price) = match resolved {
         Ok(outcome) => match outcome.value {
             Ok(price) => (
-                Status::passed(format!("{} → {}", aggregator_label(asset), render(&price))),
+                Status::passed(format!(
+                    "{inputs} inputs: {} → {}",
+                    aggregator_label(asset),
+                    render(&price)
+                )),
                 Some(price),
             ),
             Err(reason) => (
-                Status::failed(format!("aggregation blocked: {reason:?}")),
+                Status::failed(format!("{inputs} inputs: aggregation blocked: {reason:?}")),
                 None,
             ),
         },
@@ -236,7 +440,7 @@ fn leg<A: AssetClass>(
         // deployment, since only failures are counted.
         Err(error) if live > 0 || transport_failed => (
             Status::failed(format!(
-                "{} could not aggregate ({error:?}) from {live} live source(s). \
+                "{inputs} inputs: {} could not aggregate ({error:?}) from {live} live source(s). \
                  The deployed proxy would fail on the same inputs — check \
                  `min_sources`, the freshness bounds, and the failed \
                  `oracle.price.{side}.*` above.",
@@ -244,23 +448,11 @@ fn leg<A: AssetClass>(
             )),
             None,
         ),
-        // Nothing to judge is expected before the first push, but this market is
-        // already live: its oracle cannot price the {side} asset right now.
-        Err(error) if live_market => (
-            Status::failed(format!(
-                "{} has no live sources ({error:?}), so the deployed oracle cannot \
-                 price the {side} asset. Every borrow, repay and liquidation on \
-                 this market is blocked until a source publishes.",
-                aggregator_label(asset)
-            )),
-            None,
-        ),
         Err(error) => (
             Status::Skipped {
                 reason: format!(
-                    "{} has no live sources to aggregate ({error:?}). For feeds \
-                     awaiting their first push this is expected; re-run once they \
-                     carry a price, before deploying.",
+                    "{inputs} inputs: {} has no live sources to aggregate ({error:?}); no usable \
+                     selected price was available.",
                     aggregator_label(asset)
                 ),
             },
@@ -275,13 +467,18 @@ fn leg<A: AssetClass>(
 /// The collateral/borrow price ratio. Deliberately not decimals-adjusted:
 /// decimals size a position, not a ratio of two USD prices, and applying them
 /// reports 29.96 for a pair trading at 2.996.
-fn pair(collateral: Option<Price>, borrow: Option<Price>) -> Check {
+fn pair(
+    collateral: Option<Price>,
+    borrow: Option<Price>,
+    collateral_inputs: &str,
+    borrow_inputs: &str,
+) -> Check {
     let id = "oracle.aggregate.pair";
     let (Some(collateral), Some(borrow)) = (collateral, borrow) else {
         return Check::new(
             id,
             Status::Skipped {
-                reason: "both legs must aggregate before a ratio means anything".to_owned(),
+                reason: format!("{collateral_inputs} collateral / {borrow_inputs} borrow inputs: both legs must aggregate before a ratio means anything"),
             },
         );
     };
@@ -290,14 +487,14 @@ fn pair(collateral: Option<Price>, borrow: Option<Price>) -> Check {
     if borrow == 0.0 {
         return Check::new(
             id,
-            Status::failed("the borrow leg aggregated to zero, so no ratio exists".to_owned()),
+            Status::failed(format!("{collateral_inputs} collateral / {borrow_inputs} borrow inputs: the borrow leg aggregated to zero, so no ratio exists")),
         );
     }
 
     Check::new(
         id,
         Status::passed(format!(
-            "{} — sanity-check this against what the pair actually trades at",
+            "{collateral_inputs} collateral / {borrow_inputs} borrow inputs: {} — sanity-check this against what the pair actually trades at",
             scaled(&collateral) / borrow
         )),
     )
@@ -451,3 +648,6 @@ async fn lst(
             )
         })
 }
+
+#[cfg(test)]
+mod tests;

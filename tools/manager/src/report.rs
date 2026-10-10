@@ -106,6 +106,7 @@ impl Reporter {
             let (mark, style) = match check.status {
                 Status::Passed { .. } => ("ok  ", Ansi::Green),
                 Status::Failed { .. } => ("FAIL", Ansi::Red),
+                Status::Warned { .. } => ("warn", Ansi::Yellow),
                 Status::Skipped { .. } => ("skip", Ansi::Yellow),
             };
             let detail = truncate(check.status.detail(), DETAIL_WIDTH);
@@ -132,6 +133,7 @@ impl Reporter {
         let previous = match &check.status {
             Status::Passed { detail } => format!("would have passed: {detail}"),
             Status::Failed { detail } => format!("would have failed: {detail}"),
+            Status::Warned { detail } => format!("would have warned: {detail}"),
             Status::Skipped { reason } => format!("was already skipped: {reason}"),
         };
         Some(format!("--skip-check {id} ({previous})"))
@@ -162,6 +164,11 @@ impl Reporter {
             return;
         }
         let failed = failures(&self.checks);
+        let warned = self
+            .checks
+            .iter()
+            .filter(|check| matches!(check.status, Status::Warned { .. }))
+            .count();
         let skipped = self
             .checks
             .iter()
@@ -170,13 +177,16 @@ impl Reporter {
         let total = self.checks.len();
 
         let headline = format!(
-            "\n{total} check(s): {} passed, {skipped} skipped, {failed} FAILED",
-            total - skipped - failed,
+            "\n{total} check(s): {} passed, {warned} warned, {skipped} skipped, {failed} FAILED",
+            total - skipped - failed - warned,
         );
         self.line(&self.paint(&headline, if failed > 0 { Ansi::Red } else { Ansi::Green }));
 
         self.section("FAILED", Ansi::Red, |status| {
             matches!(status, Status::Failed { .. })
+        });
+        self.section("WARNINGS", Ansi::Yellow, |status| {
+            matches!(status, Status::Warned { .. })
         });
         self.section("SKIPPED — these prove nothing", Ansi::Yellow, |status| {
             matches!(status, Status::Skipped { .. })
@@ -390,31 +400,48 @@ mod tests {
         assert!(error.to_string().contains("names no check"), "{error:#}");
     }
 
-    /// Every check is visible as it lands, and the counts distinguish the three
-    /// verdicts — a skipped check must never be totalled as a passing one.
-    #[test]
-    fn the_digest_leads_with_failures_and_counts_skips_apart() {
+    #[rstest::rstest]
+    #[case::streamed(false)]
+    #[case::quiet(true)]
+    fn warnings_keep_their_own_count_and_diagnostic_category(#[case] quiet: bool) {
         let mut reporter = Reporter::capturing(&[]);
-        reporter.phase("reference prices");
+        if quiet {
+            reporter = reporter.quieted();
+        }
         reporter.extend(checks());
+        reporter.record(Check::new(
+            "oracle.stored.borrow.0",
+            Status::warned("stored feed is stale"),
+        ));
         reporter.digest();
         let output = reporter.captured();
-
-        assert!(output.contains("→ reference prices"), "{output}");
         assert!(
-            output.contains("3 check(s): 1 passed, 1 skipped, 1 FAILED"),
+            output.contains("1 passed")
+                && output.contains("1 warned")
+                && output.contains("1 skipped")
+                && output.contains("1 FAILED"),
             "{output}"
         );
+        let failed = output.find("FAILED\n").unwrap();
+        let warnings = output.find("WARNINGS\n").unwrap();
+        let skipped = output.find("SKIPPED").unwrap();
+        assert!(failed < warnings && warnings < skipped, "{output}");
+        assert!(output[warnings..skipped].contains("oracle.stored.borrow.0"));
+        assert!(output[warnings..skipped].contains("stored feed is stale"));
+    }
 
-        let (failed, skipped) = (
-            output.find("FAILED\n  reference.price.collateral"),
-            output.find("SKIPPED"),
-        );
-        assert!(
-            failed.is_some() && skipped.is_some() && failed < skipped,
-            "failures must be listed, in full, before the skips: {output}"
-        );
-        assert!(output.contains("off by 4%"), "{output}");
+    #[test]
+    fn suppressed_warning_retains_its_diagnostic() {
+        let mut reporter = Reporter::capturing(&["oracle.stored.borrow.0".to_owned()]);
+        reporter.record(Check::new(
+            "oracle.stored.borrow.0",
+            Status::warned("stored feed is stale"),
+        ));
+        let checks = reporter.into_checks();
+        let Status::Skipped { reason } = &checks[0].status else {
+            panic!("suppressed warning")
+        };
+        assert!(reason.contains("would have warned") && reason.contains("stored feed is stale"));
     }
 
     /// The streamed line is cut to fit; the digest is where the whole detail

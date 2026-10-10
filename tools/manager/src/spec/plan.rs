@@ -22,10 +22,9 @@ use super::check::Check;
 /// `apply` hard-refuses a mismatch: every struct here is `deny_unknown_fields`,
 /// and this file authorizes spending real NEAR.
 ///
-/// Still 1, and stays 1 until the tool ships: no plan written by any build has
-/// left a developer's machine, so a bump would distinguish shapes that exist
-/// nowhere. `the_plan_shape_is_pinned_to_its_version` fails when the shape
-/// changes, which is the point at which that stops being true.
+/// Schema 2 pins the nested key shape. Adding a status discriminant such as
+/// `warned` leaves that shape unchanged but requires a binary that understands
+/// it; old binaries reject the new status rather than treating it as success.
 pub const PLAN_SCHEMA_VERSION: u32 = 2;
 
 /// The terminal semantic stage included in a deployment plan.

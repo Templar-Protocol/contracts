@@ -18,6 +18,7 @@ mod oracle;
 mod patch;
 mod plan;
 mod plan_file;
+mod preflight;
 mod proxy_oracle;
 mod redstone;
 mod registry;

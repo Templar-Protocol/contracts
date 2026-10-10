@@ -90,6 +90,29 @@ fn plan_file(steps: Vec<(String, PlannedTransaction)>) -> PlanFile {
     .expect("plan file should build")
 }
 
+#[test]
+fn warned_plan_checks_round_trip_with_schema_two() {
+    let mut file = plan_file(sample_steps());
+    let warning = Check::new(
+        "oracle.stored.borrow.0",
+        Status::warned("stored chain price stale"),
+    );
+    file.checks.push(warning.clone());
+    let json = serde_json::to_value(&file).unwrap();
+    assert_eq!(json["schema"], 2);
+    assert_eq!(
+        json["checks"][1],
+        serde_json::json!({
+            "id": "oracle.stored.borrow.0",
+            "status": "warned",
+            "detail": "stored chain price stale",
+        })
+    );
+    let parsed: PlanFile = serde_json::from_value(json).unwrap();
+    assert_eq!(parsed.checks[1], warning);
+    assert_eq!(parsed, file);
+}
+
 /// The artifact is persisted and read back by a later run, so its shape is a
 /// compatibility surface: every struct in it is `deny_unknown_fields`, and a
 /// field added or removed without a version bump makes an interrupted
