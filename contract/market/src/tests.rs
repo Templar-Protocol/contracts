@@ -1,3 +1,5 @@
+mod withdrawal_queue_bounds;
+
 use near_sdk::serde_json;
 use templar_common::market::MarketConfiguration;
 
