@@ -9,11 +9,13 @@ use rstest::rstest;
 use templar_common::{
     market::MarketConfiguration,
     market::YieldWeights,
-    registry::{RegistryEntryView, VersionSource},
+    registry::{Deployment, RegistryEntryView, VersionAvailability, VersionSource},
 };
 use templar_gateway_methods_spec::registry;
 use templar_gateway_testing::{harness, publish_deposit_for, SandboxHarness};
-use templar_gateway_types::{primitive::PublicKey, Base64Bytes, ManagedAccountId};
+use templar_gateway_types::{
+    common::WriteOperationResult, primitive::PublicKey, Base64Bytes, ManagedAccountId,
+};
 
 const MARKET_VERSION: &str = "market@0.0.0";
 /// A second key for the *same* code, registered by hash instead of by publishing it again.
@@ -122,7 +124,7 @@ async fn deploy_with_access_key(#[future(awt)] harness: SandboxHarness) -> Resul
     let registry = setup_registry(&harness).await?;
     let key = PublicKey::from(TEST_PUBLIC_KEY.parse::<near_api::types::PublicKey>()?);
 
-    harness
+    let result = harness
         .registry_deploy_without_abi_check(
             &registry.deployer,
             &registry.id,
@@ -139,6 +141,17 @@ async fn deploy_with_access_key(#[future(awt)] harness: SandboxHarness) -> Resul
         harness.get_configuration(&market_id).await?,
         registry.configuration,
         "the market should deploy with a full-access key requested",
+    );
+
+    let deployed: Vec<Deployed> = registry_events(&result, &registry.id, "deployed")?;
+    let [deployed] = deployed.as_slice() else {
+        panic!("expected one deployed event, got {}", deployed.len());
+    };
+    assert_eq!(deployed.account_id, market_id);
+    assert_eq!(deployed.deployment.version_key, MARKET_VERSION);
+    assert_eq!(
+        Some(deployed.deployment.code_hash),
+        version_code_hash(&harness, &registry.id, MARKET_VERSION).await?,
     );
 
     // The deployed market must carry exactly the requested full-access key.
@@ -179,7 +192,7 @@ async fn deploy_from_a_version_registered_by_code_hash(
         .await?
         .expect("the published version has a code hash");
 
-    harness
+    let result = harness
         .registry_add_version(
             &registry.deployer,
             &registry.id,
@@ -188,6 +201,14 @@ async fn deploy_from_a_version_registered_by_code_hash(
             PROBE_DEPOSIT,
         )
         .await?;
+
+    let added: Vec<VersionAdded> = registry_events(&result, &registry.id, "version_added")?;
+    let [added] = added.as_slice() else {
+        panic!("expected one version_added event, got {}", added.len());
+    };
+    assert_eq!(added.version_key, BY_HASH_VERSION);
+    assert_eq!(added.code_hash, hash);
+    assert_eq!(added.availability, VersionAvailability::Global);
 
     // Both keys resolve to one global contract — no second copy of the code was staked.
     assert_eq!(
@@ -285,6 +306,46 @@ struct EventLog {
     data: serde_json::Value,
 }
 
+/// The `templar-registry` events named `event` that the registry logged during the operation's
+/// final transaction, including in receipts that failed.
+fn registry_events<T: serde::de::DeserializeOwned>(
+    result: &WriteOperationResult,
+    registry_id: &AccountId,
+    event: &str,
+) -> Result<Vec<T>> {
+    let logs = result
+        .operation
+        .final_outcome()
+        .context("the operation has an outcome")?
+        .receipts
+        .iter()
+        .filter(|receipt| &receipt.contract_id == registry_id)
+        .flat_map(|receipt| &receipt.logs)
+        .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
+        .map(serde_json::from_str::<EventLog>)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(logs
+        .into_iter()
+        .filter(|log| log.standard == "templar-registry" && log.event == event)
+        .map(|log| serde_json::from_value(log.data))
+        .collect::<Result<_, _>>()?)
+}
+
+#[derive(serde::Deserialize)]
+struct VersionAdded {
+    version_key: String,
+    code_hash: Base58CryptoHash,
+    availability: VersionAvailability,
+}
+
+#[derive(serde::Deserialize)]
+struct Deployed {
+    account_id: AccountId,
+    #[serde(flatten)]
+    deployment: Deployment,
+}
+
 #[derive(serde::Deserialize)]
 struct DeployCollision {
     account_id: AccountId,
@@ -318,21 +379,8 @@ async fn a_taken_name_collides_and_says_so(#[future(awt)] harness: SandboxHarnes
         failure.contains("Market ID collision"),
         "expected the collision panic, got: {failure:?}",
     );
-    let collisions: Vec<DeployCollision> = result
-        .operation
-        .final_outcome()
-        .context("the failed deploy has an outcome")?
-        .receipts
-        .iter()
-        .filter(|receipt| receipt.contract_id == registry.id)
-        .flat_map(|receipt| &receipt.logs)
-        .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
-        .map(serde_json::from_str::<EventLog>)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter(|log| log.standard == "templar-registry" && log.event == "deploy_collision")
-        .map(|log| serde_json::from_value(log.data))
-        .collect::<Result<_, _>>()?;
+    let collisions: Vec<DeployCollision> =
+        registry_events(&result, &registry.id, "deploy_collision")?;
     let [collision] = collisions.as_slice() else {
         panic!(
             "expected one deploy_collision event, got {}",

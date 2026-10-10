@@ -52,6 +52,13 @@ impl VersionEntry {
             Self::GlobalHash(_) => VersionAvailability::Global,
         }
     }
+
+    fn info(&self) -> VersionInfo {
+        VersionInfo {
+            code_hash: self.code_hash().into(),
+            availability: self.availability(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -152,10 +159,7 @@ impl Contract {
     /// `get_version_code_hash` keeps answering for it, so membership alone cannot tell a
     /// deployable version from one that will panic partway through a deploy.
     pub fn get_version(&self, version_key: String) -> Option<VersionInfo> {
-        self.versions.get(&version_key).map(|entry| VersionInfo {
-            code_hash: entry.code_hash().into(),
-            availability: entry.availability(),
-        })
+        self.versions.get(&version_key).map(VersionEntry::info)
     }
 
     /// Whether a name is taken, and by what.
@@ -251,6 +255,11 @@ impl Contract {
                     hash: env::sha256_array(&code.0),
                     code: Some(code.0),
                 };
+                RegistryEvent::VersionAdded {
+                    version_key: version_key.clone(),
+                    info: version_entry.info(),
+                }
+                .emit();
                 self.versions.insert(version_key, version_entry);
                 PromiseOrValue::Value(())
             }
@@ -293,6 +302,9 @@ impl Contract {
     pub fn add_version_01_finalize(&mut self, version_key: String) -> PromiseOrValue<()> {
         let result = env::promise_result_checked(0, 0x1000);
         if result.is_ok() {
+            if let Some(info) = self.versions.get(&version_key).map(VersionEntry::info) {
+                RegistryEvent::VersionAdded { version_key, info }.emit();
+            }
             PromiseOrValue::Value(())
         } else {
             self.versions.remove(&version_key);
@@ -307,14 +319,20 @@ impl Contract {
         assert_one_yocto();
         self.assert_owner();
 
-        self.versions.entry(version_key).and_modify(|e| match e {
-            VersionEntry::Code { code, .. } => {
+        match self.versions.get_mut(&version_key) {
+            None | Some(VersionEntry::Code { code: None, .. }) => {}
+            Some(VersionEntry::Code { hash, code }) => {
                 *code = None;
+                RegistryEvent::VersionRemoved {
+                    version_key,
+                    code_hash: (*hash).into(),
+                }
+                .emit();
             }
-            VersionEntry::GlobalHash(_) => {
+            Some(VersionEntry::GlobalHash(_)) => {
                 templar_common::panic_with_message("Global contract cannot be removed")
             }
-        });
+        }
     }
 
     #[payable]
@@ -434,6 +452,11 @@ impl Contract {
         let successful = env::promise_result_checked(0, 0x1000).is_ok();
 
         if successful {
+            RegistryEvent::Deployed {
+                account_id: account_id.clone(),
+                deployment: deployment.clone(),
+            }
+            .emit();
             self.registry
                 .insert(account_id.clone(), RegistryEntry::Deployed(deployment));
 
@@ -457,8 +480,9 @@ impl Contract {
 mod tests {
     use near_sdk::{
         mock::MockAction,
-        test_utils::{get_created_receipts, VMContextBuilder},
-        testing_env,
+        serde_json,
+        test_utils::{get_created_receipts, get_logs, VMContextBuilder},
+        testing_env, PromiseResult,
     };
     use rstest::rstest;
 
@@ -536,6 +560,148 @@ mod tests {
         assert_eq!(
             contract.get_registry_entry("free.registry.near".parse().unwrap()),
             None,
+        );
+    }
+
+    /// A fresh receipt as the owner with one yocto attached, which also clears earlier logs.
+    fn next_receipt(promise_results: Vec<PromiseResult>) {
+        testing_env!(
+            VMContextBuilder::new()
+                .attached_deposit(NearToken::from_yoctonear(1))
+                .build(),
+            near_sdk::test_vm_config(),
+            near_sdk::RuntimeFeesConfig::test(),
+            std::collections::HashMap::default(),
+            promise_results,
+        );
+    }
+
+    fn emitted_events() -> Vec<serde_json::Value> {
+        get_logs()
+            .iter()
+            .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
+            .map(|event| serde_json::from_str(event).unwrap())
+            .collect()
+    }
+
+    fn deployment() -> Deployment {
+        Deployment {
+            version_key: STORED.to_string(),
+            code_hash: [1u8; 32].into(),
+            block_height: 1.into(),
+        }
+    }
+
+    #[test]
+    fn adding_stored_code_emits_version_added() {
+        let mut contract = contract();
+        next_receipt(Vec::new());
+        let code = vec![0xbbu8; 10];
+
+        let _ = contract.add_version(
+            "new@1.0.0".to_string(),
+            VersionSource::Stored(Base64VecU8(code.clone())),
+        );
+
+        let expected = RegistryEvent::VersionAdded {
+            version_key: "new@1.0.0".to_string(),
+            info: VersionInfo {
+                code_hash: env::sha256_array(&code).into(),
+                availability: VersionAvailability::Stored { code_len: 10 },
+            },
+        };
+        assert_eq!(emitted_events(), vec![expected.to_json()]);
+    }
+
+    /// A global version is announced only once the publish or probe receipt succeeded; a failed one
+    /// is rolled back without ever having been visible.
+    #[rstest]
+    #[case::confirmed(PromiseResult::Successful(Vec::new()), true)]
+    #[case::rolled_back(PromiseResult::Failed, false)]
+    fn add_version_finalize_emits_only_on_success(
+        #[case] result: PromiseResult,
+        #[case] added: bool,
+    ) {
+        let mut contract = contract();
+        next_receipt(vec![result]);
+
+        let _ = contract.add_version_01_finalize(GLOBAL.to_string());
+
+        let expected = RegistryEvent::VersionAdded {
+            version_key: GLOBAL.to_string(),
+            info: VersionInfo {
+                code_hash: [3u8; 32].into(),
+                availability: VersionAvailability::Global,
+            },
+        };
+        assert_eq!(
+            emitted_events(),
+            if added {
+                vec![expected.to_json()]
+            } else {
+                Vec::new()
+            },
+        );
+        assert_eq!(contract.get_version(GLOBAL.to_string()).is_some(), added);
+    }
+
+    /// Only a removal that clears code is announced: repeating one, or naming an unknown key,
+    /// changes nothing.
+    #[rstest]
+    #[case::stored(STORED, true)]
+    #[case::already_removed(REMOVED, false)]
+    #[case::unknown("nothing@0.0.0", false)]
+    fn remove_version_emits_only_when_it_clears_code(#[case] key: &str, #[case] removed: bool) {
+        let mut contract = contract();
+        next_receipt(Vec::new());
+
+        contract.remove_version(key.to_string());
+
+        let expected = RegistryEvent::VersionRemoved {
+            version_key: key.to_string(),
+            code_hash: [1u8; 32].into(),
+        };
+        assert_eq!(
+            emitted_events(),
+            if removed {
+                vec![expected.to_json()]
+            } else {
+                Vec::new()
+            },
+        );
+    }
+
+    #[rstest]
+    #[case::initialized(PromiseResult::Successful(Vec::new()), true)]
+    #[case::released(PromiseResult::Failed, false)]
+    fn deploy_finalize_emits_only_on_success(
+        #[case] result: PromiseResult,
+        #[case] deployed: bool,
+    ) {
+        let mut contract = contract();
+        let account_id: AccountId = "one.registry.near".parse().unwrap();
+        contract
+            .registry
+            .insert(account_id.clone(), RegistryEntry::Reserved);
+        next_receipt(vec![result]);
+
+        let _ = contract.deploy_01_finalize(Some(account_id.clone()), None, deployment());
+
+        let expected = RegistryEvent::Deployed {
+            account_id: account_id.clone(),
+            deployment: deployment(),
+        };
+        assert_eq!(
+            emitted_events(),
+            if deployed {
+                vec![expected.to_json()]
+            } else {
+                Vec::new()
+            },
+        );
+        assert_eq!(
+            contract.get_registry_entry(account_id),
+            deployed.then(|| RegistryEntryView::Deployed(deployment())),
         );
     }
 

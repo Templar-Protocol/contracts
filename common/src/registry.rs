@@ -203,6 +203,32 @@ mod tests {
         );
     }
 
+    /// The exact log line an indexer parses. Flattening puts the payload's fields beside
+    /// `version_key`/`account_id`; a nested object would be a different wire format.
+    #[rstest]
+    #[case::version_added(
+        RegistryEvent::VersionAdded {
+            version_key: "market@1.5.0".to_string(),
+            info: VersionInfo {
+                code_hash: Base58CryptoHash::from([7u8; 32]),
+                availability: VersionAvailability::Stored { code_len: 300 },
+            },
+        },
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"version_added","data":{"version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","availability":{"Stored":{"code_len":300}}}}"#
+    )]
+    #[case::deployed(
+        RegistryEvent::Deployed {
+            account_id: "one.registry.near".parse().unwrap(),
+            deployment: deployment(),
+        },
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"deployed","data":{"account_id":"one.registry.near","version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","block_height":"42"}}"#
+    )]
+    fn event_wire_format(#[case] event: RegistryEvent, #[case] expected: &str) {
+        near_sdk::testing_env!(near_sdk::test_utils::VMContextBuilder::new().build());
+        event.emit();
+        assert_eq!(near_sdk::test_utils::get_logs(), [expected]);
+    }
+
     #[test]
     fn reserved_is_distinguishable_from_deployed() {
         let reserved = RegistryEntryView::Reserved;
@@ -227,5 +253,27 @@ pub enum RegistryEvent {
     DeployCollision {
         account_id: AccountId,
         existing: RegistryEntryView,
+    },
+    /// A version became deployable: logged by `add_version` for stored code, and by its finalize
+    /// callback once a global contract is confirmed, so a rolled-back version never appears.
+    #[event_version("1.0.0")]
+    VersionAdded {
+        version_key: String,
+        #[serde(flatten)]
+        info: VersionInfo,
+    },
+    /// `remove_version` cleared a stored version's code. The key stays registered but `deploy`
+    /// refuses it.
+    #[event_version("1.0.0")]
+    VersionRemoved {
+        version_key: String,
+        code_hash: Base58CryptoHash,
+    },
+    /// A deployment's account was created and initialized, and the name now resolves to it.
+    #[event_version("1.0.0")]
+    Deployed {
+        account_id: AccountId,
+        #[serde(flatten)]
+        deployment: Deployment,
     },
 }
