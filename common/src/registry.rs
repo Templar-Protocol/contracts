@@ -203,8 +203,8 @@ mod tests {
         );
     }
 
-    /// Flattening puts the payload's fields beside `version_key`/`account_id`, where an indexer
-    /// reads them; a nested object would be a different wire format.
+    /// The exact log line an indexer parses. Flattening puts the payload's fields beside
+    /// `version_key`/`account_id`; a nested object would be a different wire format.
     #[rstest]
     #[case::version_added(
         RegistryEvent::VersionAdded {
@@ -214,40 +214,19 @@ mod tests {
                 availability: VersionAvailability::Stored { code_len: 300 },
             },
         },
-        "version_added",
-        json!({
-            "version_key": "market@1.5.0",
-            "code_hash": String::from(&Base58CryptoHash::from([7u8; 32])),
-            "availability": { "Stored": { "code_len": 300 } },
-        }),
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"version_added","data":{"version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","availability":{"Stored":{"code_len":300}}}}"#
     )]
     #[case::deployed(
         RegistryEvent::Deployed {
             account_id: "one.registry.near".parse().unwrap(),
             deployment: deployment(),
         },
-        "deployed",
-        json!({
-            "account_id": "one.registry.near",
-            "version_key": "market@1.5.0",
-            "code_hash": String::from(&Base58CryptoHash::from([7u8; 32])),
-            "block_height": "42",
-        }),
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"deployed","data":{"account_id":"one.registry.near","version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","block_height":"42"}}"#
     )]
-    fn event_wire_format(
-        #[case] event: RegistryEvent,
-        #[case] name: &str,
-        #[case] data: serde_json::Value,
-    ) {
-        assert_eq!(
-            event.to_json(),
-            json!({
-                "standard": "templar-registry",
-                "version": "1.0.0",
-                "event": name,
-                "data": data,
-            }),
-        );
+    fn event_wire_format(#[case] event: RegistryEvent, #[case] expected: &str) {
+        near_sdk::testing_env!(near_sdk::test_utils::VMContextBuilder::new().build());
+        event.emit();
+        assert_eq!(near_sdk::test_utils::get_logs(), [expected]);
     }
 
     #[test]
