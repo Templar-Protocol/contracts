@@ -255,7 +255,7 @@ pub enum RegistryEvent {
         existing: RegistryEntryView,
     },
     /// A version became deployable: logged by `add_version` for stored code, and by its finalize
-    /// callback once a global contract is confirmed, so a rolled-back version never appears.
+    /// callback once a global contract is confirmed, never for one that turns out not to exist.
     #[event_version("1.0.0")]
     VersionAdded {
         version_key: String,

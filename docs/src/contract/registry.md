@@ -84,7 +84,7 @@ Illustrative output:
 
 ## Events
 
-The registry logs [NEP-297](https://github.com/near/NEPs/blob/master/neps/nep-0297.md) events under the `templar-registry` standard, version `1.0.0`. Each is logged only once its state change has taken effect, so an indexer never sees a version or deployment that later rolls back.
+The registry logs [NEP-297](https://github.com/near/NEPs/blob/master/neps/nep-0297.md) events under the `templar-registry` standard, version `1.0.0`. Each is logged by the receipt that makes its change, so an asynchronous step that later fails (a global contract that turns out not to exist, a deployment whose account creation fails) logs nothing. As with any NEAR event, count one only if its receipt succeeded: a receipt can still fail after logging, for example when the registry cannot stake the storage a new version needs, and NEAR keeps a failed receipt's logs. `deploy_collision` is the deliberate exception, logged by the receipt that fails.
 
 | Event | Fields | Logged when |
 | --- | --- | --- |
