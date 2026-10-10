@@ -235,29 +235,47 @@ impl SourcePrices {
     }
 }
 
-fn source_inputs(source: &SourceSpec, mode: PricesFrom) -> &'static str {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Inputs {
+    Provider,
+    Chain,
+}
+
+impl Inputs {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Provider => "provider",
+            Self::Chain => "chain",
+        }
+    }
+}
+
+impl std::fmt::Display for Inputs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+fn source_inputs(source: &SourceSpec, mode: PricesFrom) -> Inputs {
     match (mode, source) {
         (PricesFrom::Provider, SourceSpec::Lazer { .. } | SourceSpec::RedStone { .. }) => {
-            "provider"
+            Inputs::Provider
         }
-        _ => "chain",
+        _ => Inputs::Chain,
     }
 }
 
 fn leg_inputs<A: AssetClass>(asset: &AssetSpec<A>, mode: PricesFrom) -> &'static str {
-    let provider = asset
-        .sources
-        .iter()
-        .any(|s| source_inputs(s, mode) == "provider");
-    let chain = asset
-        .sources
-        .iter()
-        .any(|s| source_inputs(s, mode) == "chain");
-    match (provider, chain) {
-        (true, true) => "provider and chain",
-        (true, false) => "provider",
-        _ => "chain",
+    let mut inputs = None;
+    for source in &asset.sources {
+        let selected = source_inputs(source, mode);
+        match inputs {
+            None => inputs = Some(selected),
+            Some(first) if first != selected => return "provider and chain",
+            _ => {}
+        }
     }
+    inputs.unwrap_or(Inputs::Chain).as_str()
 }
 
 async fn fetch_all<A: AssetClass>(
@@ -267,11 +285,13 @@ async fn fetch_all<A: AssetClass>(
     mode: PricesFrom,
 ) -> Vec<SourcePrices> {
     futures::future::join_all(asset.sources.iter().map(|source| async move {
-        if source_inputs(source, mode) == "provider" {
-            let (selected, stored) = futures::join!(providers.fetch(source), fetch(ctx, source));
-            SourcePrices::Provider { selected, stored }
-        } else {
-            SourcePrices::Chain(fetch(ctx, source).await)
+        match source_inputs(source, mode) {
+            Inputs::Provider => {
+                let (selected, stored) =
+                    futures::join!(providers.fetch(source), fetch(ctx, source));
+                SourcePrices::Provider { selected, stored }
+            }
+            Inputs::Chain => SourcePrices::Chain(fetch(ctx, source).await),
         }
     }))
     .await
@@ -313,7 +333,7 @@ fn selected_status(
     now: Nanoseconds,
     max_drift: Nanoseconds,
     drifted: bool,
-    inputs: &str,
+    inputs: Inputs,
 ) -> Status {
     match fetched {
         Ok(Some(price)) if drifted => Status::failed(format!(
