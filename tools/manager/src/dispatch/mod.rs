@@ -14,7 +14,7 @@ mod patch_dry_run;
 mod patch_export;
 mod patch_state;
 pub(crate) mod plan;
-mod preflight;
+pub(crate) mod preflight;
 mod proposals;
 mod reference;
 mod registry_upgrade;

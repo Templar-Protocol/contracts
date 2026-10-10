@@ -1,5 +1,5 @@
-//! On-chain preflight for a deployment spec: read-only checks that run before
-//! any transaction.
+//! Online preflight for a deployment spec: read-only chain and verified-provider
+//! checks that run before any transaction.
 //!
 //! IO lives here rather than in `spec`, which stays offline so its checks and
 //! `market export` can be unit-tested without a network.
@@ -18,7 +18,7 @@ use templar_proxy_oracle_near_common::convert::{
     pyth_price_try_from_kernel, pyth_price_try_to_kernel,
 };
 
-use crate::commands::spec::Check as CheckArgs;
+use crate::commands::spec::{Check as CheckArgs, PreflightPriceArgs};
 use crate::context::{print_json, CliContext};
 use crate::report::Reporter;
 use crate::spec::{
@@ -38,6 +38,7 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
         args.offline,
         args.accept_decimals_mismatch,
         None,
+        &args.prices,
         &mut reporter,
     )
     .await?;
@@ -79,12 +80,13 @@ struct CheckedSpec {
 /// Every check, online then offline, writing resolved decimals back into the
 /// spec. Shared with `market plan`, which would otherwise write plans for specs
 /// `spec check` rejects.
-pub(super) async fn run_all(
+pub(crate) async fn run_all(
     ctx: &CliContext,
     spec: &mut MarketSpec,
     offline: bool,
     accept_decimals_mismatch: bool,
     deployed_oracle: Option<&AccountId>,
+    prices: &PreflightPriceArgs,
     reporter: &mut Reporter,
 ) -> anyhow::Result<()> {
     if offline {
@@ -106,6 +108,7 @@ pub(super) async fn run_all(
             spec,
             accept_decimals_mismatch,
             deployed_oracle,
+            prices,
             reporter,
         )
         .await;
@@ -139,6 +142,7 @@ async fn run(
     spec: &mut MarketSpec,
     accept_mismatch: bool,
     deployed_oracle: Option<&AccountId>,
+    prices: &PreflightPriceArgs,
     reporter: &mut Reporter,
 ) {
     let reference_source = super::reference::CoinGecko::from_env();
@@ -156,7 +160,7 @@ async fn run(
         versions(ctx, spec),
         direct_oracle(ctx, spec),
         accounts(ctx, spec),
-        super::aggregate::checks(ctx, spec, deployed_oracle),
+        super::aggregate::checks(ctx, spec, deployed_oracle, prices),
         async {
             match &reference_source {
                 Ok(source) => Ok(super::reference::fetch(source, spec).await),

@@ -285,3 +285,133 @@ fn update_lazer_collects_repeated_feed_ids() {
     assert_eq!(spec.oracle_id.as_str(), "lazer.testnet");
     assert_eq!(spec.feed_ids, vec![7, 8]);
 }
+
+/// Explicit provider literals override ambient environment without racing other
+/// clap tests by mutating process-wide variables.
+const PREFLIGHT_SOURCE_FLAGS: [&str; 10] = [
+    "--pyth-lazer-api-key",
+    "preflight-token",
+    "--pyth-lazer-ws-url",
+    "wss://example.com/v1/stream",
+    "--pyth-lazer-channel",
+    "fixed_rate@200ms",
+    "--pyth-lazer-max-payload-age-ms",
+    "1234",
+    "--redstone-node-path",
+    "/fixture/node",
+];
+
+const PREFLIGHT_COMMANDS: [&[&str]; 4] = [
+    &["spec", "check", "market.toml"],
+    &[
+        "market",
+        "plan",
+        "market.toml",
+        "--signer-id",
+        "signer.testnet",
+        "--public-key",
+        "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
+    ],
+    &[
+        "market",
+        "apply",
+        "--plan",
+        "plan.json",
+        "--signer-id",
+        "signer.testnet",
+        "--secret-key",
+        super::TEST_SECRET_KEY,
+    ],
+    &[
+        "market",
+        "verify",
+        "market.testnet",
+        "--governance-admin",
+        "admin.testnet",
+    ],
+];
+
+fn preflight_prices(cli: Cli) -> crate::commands::spec::PreflightPriceArgs {
+    use crate::commands::{market::MarketNs, spec::SpecNs};
+
+    match cli.command {
+        Command::Spec {
+            command: SpecNs::Check(cmd),
+        } => cmd.prices,
+        Command::Market {
+            command: MarketNs::Plan(cmd),
+        } => cmd.prices,
+        Command::Market {
+            command: MarketNs::Apply(cmd),
+        } => cmd.prices,
+        Command::Market {
+            command: MarketNs::Verify(cmd),
+        } => cmd.prices,
+        _ => panic!("expected a preflight command"),
+    }
+}
+
+#[rstest]
+#[case::default(&[], crate::commands::spec::PricesFrom::Provider)]
+#[case::provider(&["--prices-from", "provider"], crate::commands::spec::PricesFrom::Provider)]
+#[case::chain(&["--prices-from", "chain"], crate::commands::spec::PricesFrom::Chain)]
+fn preflight_commands_select_price_mode_and_provider_flags(
+    #[case] mode_flags: &[&str],
+    #[case] expected: crate::commands::spec::PricesFrom,
+) {
+    for command in PREFLIGHT_COMMANDS {
+        let prices = preflight_prices(
+            Cli::try_parse_from(
+                ["tmplrmgr"]
+                    .into_iter()
+                    .chain(command.iter().copied())
+                    .chain(mode_flags.iter().copied())
+                    .chain(PREFLIGHT_SOURCE_FLAGS),
+            )
+            .expect("all four preflight commands accept source configuration"),
+        );
+        assert_eq!(prices.prices_from, expected);
+        assert!(prices.lazer.pyth_lazer_api_key.is_some());
+        assert_eq!(
+            prices.lazer.pyth_lazer_ws_url.as_str(),
+            "wss://example.com/v1/stream"
+        );
+        assert_eq!(prices.lazer.pyth_lazer_channel, "fixed_rate@200ms");
+        assert_eq!(prices.lazer.pyth_lazer_max_payload_age_ms, 1234);
+        assert_eq!(
+            prices.redstone.redstone_node_path,
+            std::path::Path::new("/fixture/node")
+        );
+    }
+}
+
+#[test]
+fn preflight_commands_reject_invalid_price_modes() {
+    for command in PREFLIGHT_COMMANDS {
+        let error = Cli::try_parse_from(
+            ["tmplrmgr"]
+                .into_iter()
+                .chain(command.iter().copied())
+                .chain(["--prices-from", "stored"])
+                .chain(PREFLIGHT_SOURCE_FLAGS),
+        )
+        .expect_err("unknown price modes must not silently select provider or chain");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        assert!(error.to_string().contains("--prices-from"));
+    }
+}
+
+#[test]
+fn preflight_commands_reject_pyth_provider_flags() {
+    for command in PREFLIGHT_COMMANDS {
+        let error = Cli::try_parse_from(
+            ["tmplrmgr"]
+                .into_iter()
+                .chain(command.iter().copied())
+                .chain(PREFLIGHT_SOURCE_FLAGS)
+                .chain(["--pyth-hermes-url", "https://example.com"]),
+        )
+        .expect_err("preflight must flatten only Lazer and RedStone source args");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+}

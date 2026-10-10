@@ -1,19 +1,25 @@
 use std::path::PathBuf;
 
-use crate::{commands::signer::SignerArgs, spec::plan::DeploymentStage};
+use crate::{
+    commands::{signer::SignerArgs, spec::PreflightPriceArgs},
+    spec::plan::DeploymentStage,
+};
 use clap::Args;
 use near_account_id::AccountId;
 use near_api::PublicKey as CliPublicKey;
 
-/// Deliberately takes no credential: planning reads the chain and writes a file,
-/// so a mistyped subcommand cannot spend NEAR. The account and public key are
-/// still needed — the account signs each planned transaction and the key is
-/// granted full access on the accounts created — but neither is a secret, which
-/// is why this is not [`SignerArgs`].
+/// Planning reads provider/chain prices and writes a file without a signing
+/// credential, so a mistyped subcommand cannot spend NEAR. Provider credentials
+/// only authorize read access. The account and public key are still needed —
+/// the account signs each planned transaction and the key is granted full access
+/// on the accounts created — but neither is a secret.
 #[derive(Args, Debug)]
 pub struct Plan {
     /// Path to the market spec.
     pub(crate) path: PathBuf,
+
+    #[command(flatten)]
+    pub(crate) prices: PreflightPriceArgs,
 
     /// Where to write the plan. Omit to print it.
     #[arg(long, value_name = "PATH")]
@@ -56,6 +62,9 @@ pub struct Apply {
     /// Path to a plan written by `market plan`.
     #[arg(long, value_name = "PATH")]
     pub(crate) plan: PathBuf,
+
+    #[command(flatten)]
+    pub(crate) prices: PreflightPriceArgs,
 
     /// Skip the confirmation prompt.
     #[arg(long)]
