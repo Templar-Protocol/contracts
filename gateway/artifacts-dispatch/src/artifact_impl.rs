@@ -94,19 +94,12 @@ impl<C: HasNearClient> PlanWrite<AddArtifactVersion, C> for Dispatch {
         let body = request.body;
         let artifact = load_artifact(body.artifact).await?;
 
-        let registry_version = ctx
-            .near_client()
-            .contract(body.registry_id.clone())
-            .cached_version()
-            .await?;
-
         ctx.near_client()
             .registry(body.registry_id)
             .add_version(
                 ContractWriteOptions::new(request.signer_account_id)
                     .tgas(300)
                     .deposit(body.deposit),
-                registry_version,
                 AddVersionArgs {
                     version_key: artifact.version_key,
                     // The catalog resolved these bytes itself, so a code hash is not one of the
