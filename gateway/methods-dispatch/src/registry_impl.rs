@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use near_account_id::AccountId;
+use near_api::types::account::ContractState;
 use templar_common::upgrade::UpgradeSource;
 use templar_gateway_core::{
     client::registry::{
@@ -221,6 +222,15 @@ pub fn registry_release(sha256: &[u8; 32]) -> Option<RegistryVersion> {
     }
 }
 
+/// A global contract is keyed by its code's sha256, so either kind of deployed code names a release;
+/// one linked by account names no fixed code.
+fn code_sha256(state: &ContractState) -> Option<[u8; 32]> {
+    match state {
+        ContractState::LocalHash(hash) | ContractState::GlobalHash(hash) => Some(hash.0),
+        ContractState::GlobalAccountId(_) | ContractState::None => None,
+    }
+}
+
 /// The release the registry runs: its code must be catalogued and its metadata must name it.
 fn deployed_release(
     registry_id: &AccountId,
@@ -288,13 +298,9 @@ impl<C: HasNearClient> PlanWrite<registry::Upgrade, C> for Dispatch {
                 request.signer_account_id.0
             )));
         }
-        let deployed_sha256 = match account.contract_state {
-            near_api::types::account::ContractState::LocalHash(hash) => Some(hash.0),
-            _ => None,
-        };
         require_no_downgrade(
             target,
-            deployed_release(&registry_id, deployed_sha256, version)?,
+            deployed_release(&registry_id, code_sha256(&account.contract_state), version)?,
         )?;
 
         client
@@ -399,6 +405,18 @@ mod tests {
             RegistryVersion::from(reported),
         );
         assert_eq!(result.is_ok(), accepted, "{result:?}");
+    }
+
+    #[rstest]
+    #[case::local(ContractState::LocalHash(near_api::types::CryptoHash([1; 32])), Some([1; 32]))]
+    #[case::global_hash(ContractState::GlobalHash(near_api::types::CryptoHash([2; 32])), Some([2; 32]))]
+    #[case::global_account(ContractState::GlobalAccountId(REGISTRY.parse().unwrap()), None)]
+    #[case::no_code(ContractState::None, None)]
+    fn local_and_global_code_both_name_a_release(
+        #[case] state: ContractState,
+        #[case] expected: Option<[u8; 32]>,
+    ) {
+        assert_eq!(code_sha256(&state), expected);
     }
 
     #[rstest]
