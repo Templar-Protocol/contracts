@@ -66,6 +66,28 @@ pub trait ReadNear: Send + Sync {
     ) -> GatewayResult<ExecutionFinalResult>;
 }
 
+impl NearClient {
+    pub(crate) async fn view_function_at<T>(
+        &self,
+        contract_id: near_account_id::AccountId,
+        method_name: &str,
+        args: Vec<u8>,
+        reference: near_api::types::Reference,
+    ) -> GatewayResult<T>
+    where
+        T: DeserializeOwned + Send + Sync + 'static,
+    {
+        Contract(contract_id.clone())
+            .call_function_raw(method_name, args)
+            .read_only()
+            .at(reference)
+            .fetch_from(self.network())
+            .await
+            .map(|response| response.data)
+            .map_err(|error| account_query_error(contract_id, &error))
+    }
+}
+
 #[async_trait]
 impl ReadNear for NearClient {
     async fn view_function<T>(
@@ -77,14 +99,13 @@ impl ReadNear for NearClient {
     where
         T: DeserializeOwned + Send + Sync + 'static,
     {
-        Contract(contract_id.clone())
-            .call_function_raw(method_name, args)
-            .read_only()
-            .at(self.finality_policy().query_reference())
-            .fetch_from(self.network())
-            .await
-            .map(|response| response.data)
-            .map_err(|error| account_query_error(contract_id, &error))
+        self.view_function_at(
+            contract_id,
+            method_name,
+            args,
+            self.finality_policy().query_reference(),
+        )
+        .await
     }
 
     async fn view_function_borsh<T>(

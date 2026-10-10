@@ -48,7 +48,7 @@ use templar_gateway_methods_spec::{
     universal_account, vault,
 };
 use templar_gateway_oracle_updates_dispatch::{
-    GatewayContextBuilderOracleExt, WithPythSource, WithRedStoneSource,
+    GatewayContextBuilderOracleExt, RedStoneBridgeClient, WithPythSource,
 };
 use templar_gateway_oracle_updates_spec::oracle as oracle_updates;
 use templar_gateway_store::MemoryStore;
@@ -72,9 +72,11 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-use fake_lazer_source::{FakeLazerSource, WithFakeLazerSource};
+use fake_lazer_source::{
+    FakeLazerSource, TestRedStoneSource, WithFakeLazerSource, WithTestRedStoneSource,
+};
 
-type TestContext = WithFakeLazerSource<WithRedStoneSource<WithPythSource<GatewayContext>>>;
+type TestContext = WithFakeLazerSource<WithTestRedStoneSource<WithPythSource<GatewayContext>>>;
 
 struct TestStack {
     harness: SandboxHarness,
@@ -106,10 +108,21 @@ impl TestStack {
     /// the network.
     async fn start_with_lazer(pyth_hermes_url: Url, lazer_source: FakeLazerSource) -> Result<Self> {
         let harness = SandboxHarness::start().await?;
+        let redstone_source =
+            TestRedStoneSource::Live(RedStoneBridgeClient::new(std::path::Path::new("node"))?);
+        Self::start_with_sources(harness, pyth_hermes_url, lazer_source, redstone_source).await
+    }
+
+    async fn start_with_sources(
+        harness: SandboxHarness,
+        pyth_hermes_url: Url,
+        lazer_source: FakeLazerSource,
+        redstone_source: TestRedStoneSource,
+    ) -> Result<Self> {
         let context = GatewayContext::builder(harness.network.clone())
             .finality_policy(TEST_FINALITY_POLICY)
             .with_pyth_source(pyth_hermes_url)
-            .with_redstone_source(std::path::Path::new("node"))?
+            .map(|inner| WithTestRedStoneSource::new(inner, redstone_source))
             .map(|inner| WithFakeLazerSource::new(inner, lazer_source))
             .build();
         let gateway = GatewayService::spawn(

@@ -27,6 +27,14 @@ Give a read's output its own struct only when it has two or more fields. This go
 
 `read_outputs_are_not_single_field_wrappers` in `templar-gateway-catalog` is a tripwire for the common case, a single-field struct returned directly, across the shared read lists (`op.get` is registered outside them). It does not look inside `Option` or `Vec`; review covers the rest.
 
+## Provider-Backed Oracle Previews
+
+`oracle.getLazerUpdate { oracle_id, feed_ids }` and `oracle.getRedStoneUpdate { oracle_id, feed_ids }` fetch signed data through the configured provider source, then verify it using the deployed adapter's stateless view. They return the same bare price shapes as `lazer.getFeedsData` and `redstone.readPriceData`, without writing or merging stored prices. Rust clients use `Client::via::<OracleUpdatesDispatch>()` and `read`.
+
+Verification, Lazer projection configuration, and the projection clock share one block snapshot selected after the provider fetch. Lazer returns `None` for absent or intrinsically invalid requested feeds (including spot-only feeds without EMA); duplicate request IDs collapse, and repeated signed feeds select the first valid candidate unless a strictly newer valid candidate follows. RedStone preserves request order and duplicates, and rejects a verified payload missing any requested feed. Its `write_timestamp` is a preview at the verification block, not evidence of a write.
+
+Empty requests return empty collections without provider or RPC access. Provider, block, and adapter-view failures propagate; they never fall back to stored prices. Previews do not simulate write authorization, fees, storage charges, write-only limits, or replay checks against stored state. A later write can observe different state and fail.
+
 ## Write Methods
 
 Write methods should use imperative verbs.
