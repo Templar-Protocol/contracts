@@ -584,7 +584,7 @@ fn progress_withdrawal_wrong_caller_rejected() {
 }
 
 #[test]
-fn set_paused_wrong_caller_rejected_and_vault_rejected() {
+fn set_paused_wrong_caller_rejected_admin_and_vault_accepted() {
     let env = Env::default();
     let fx = CarryFixture::new(&env);
     let ctx = Ctx::new(&fx);
@@ -599,16 +599,27 @@ fn set_paused_wrong_caller_rejected_and_vault_rejected() {
     assert_unauthorized!(res);
     assert!(!ctx.client.paused(), "pause flag unchanged");
 
-    // set_paused is admin-only (plan A7): the vault is rejected too.
-    fx.env.mock_auths(&[auth!(
-        &fx.env,
-        &ctx.admin,
-        &ctx.client.address,
-        "set_paused",
-        (&ctx.admin, false)
-    )]);
-    ctx.client.set_paused(&ctx.admin, &false);
-    assert!(!ctx.client.paused());
+    // Admin or vault may pause (blend-adapter policy).
+    for caller in [&ctx.admin, &ctx.vault] {
+        fx.env.mock_auths(&[auth!(
+            &fx.env,
+            caller,
+            &ctx.client.address,
+            "set_paused",
+            (caller, true)
+        )]);
+        ctx.client.set_paused(caller, &true);
+        assert!(ctx.client.paused());
+        fx.env.mock_auths(&[auth!(
+            &fx.env,
+            caller,
+            &ctx.client.address,
+            "set_paused",
+            (caller, false)
+        )]);
+        ctx.client.set_paused(caller, &false);
+        assert!(!ctx.client.paused());
+    }
 }
 
 #[test]

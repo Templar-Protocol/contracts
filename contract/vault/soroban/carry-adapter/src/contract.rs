@@ -13,8 +13,9 @@ use soroban_sdk::{
 use stellar_contract_utils::upgradeable::Upgradeable;
 use templar_soroban_adapter_common::{
     accept_admin as common_accept_admin, admin as common_admin, extend_instance_ttl,
-    init_admin_vault, is_paused, propose_admin, require_admin, require_contract_address,
-    require_not_paused, require_vault, set_paused_flag, upgrade_as_admin, CommonError,
+    init_admin_vault, is_paused, propose_admin, require_admin, require_admin_or_vault,
+    require_contract_address, require_not_paused, require_vault, set_paused_flag, upgrade_as_admin,
+    CommonError,
 };
 
 use crate::math::{self, ConvCtx};
@@ -480,11 +481,11 @@ impl CarryAdapterContract {
     // ------------------------------------------------------------------
     // Admin surface
     // ------------------------------------------------------------------
-    /// Pause or unpause (admin-only). Pause blocks `supply` only.
+    /// Pause or unpause (admin or vault, as blend-adapter). Pause blocks `supply` only.
     #[allow(deprecated)]
     pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), CarryError> {
         extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
+        require_admin_or_vault(&env, &caller)?;
         set_paused_flag(&env, &caller, paused);
         Ok(())
     }

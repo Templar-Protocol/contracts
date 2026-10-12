@@ -78,7 +78,16 @@ pub fn require_vault(env: &Env, caller: &Address) -> Result<(), CommonError> {
     Ok(())
 }
 
-/// Admin-only: set the pause flag and publish the `paused` event.
+/// Caller must be the admin or the vault (blend-adapter's pause policy).
+pub fn require_admin_or_vault(env: &Env, caller: &Address) -> Result<(), CommonError> {
+    caller.require_auth();
+    if caller != &admin(env)? && caller != &vault(env)? {
+        return Err(CommonError::Unauthorized);
+    }
+    Ok(())
+}
+
+/// Set the pause flag and publish the `paused` event (caller already authorized).
 #[allow(deprecated)]
 pub fn set_paused_flag(env: &Env, caller: &Address, paused: bool) {
     env.storage().instance().set(&CommonKey::Paused, &paused);
@@ -115,17 +124,19 @@ pub fn propose_admin(env: &Env, caller: &Address, new_admin: &Address) -> Result
 }
 
 /// Pending admin accepts: becomes admin and the pending slot is cleared.
+/// Emits `(admin_acc, old_admin)` with the new admin as data, like blend-adapter.
 #[allow(deprecated)]
 pub fn accept_admin(env: &Env, caller: &Address) -> Result<(), CommonError> {
     caller.require_auth();
     if caller != &pending_admin(env)? {
         return Err(CommonError::Unauthorized);
     }
+    let old_admin = admin(env)?;
     let storage = env.storage().instance();
     storage.set(&CommonKey::Admin, caller);
     storage.remove(&CommonKey::PendingAdmin);
     env.events()
-        .publish((symbol_short!("admin_acc"), caller.clone()), ());
+        .publish((symbol_short!("admin_acc"), old_admin), caller.clone());
     Ok(())
 }
 

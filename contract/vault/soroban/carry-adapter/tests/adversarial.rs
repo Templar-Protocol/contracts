@@ -1163,7 +1163,7 @@ fn pause_blocks_supply_allows_unwind_and_deleverage() {
     ctx.supply(10_0000000);
     let p0 = ctx.client.position();
 
-    fx.env.mock_all_auths(); // set_paused is admin-gated
+    fx.env.mock_all_auths(); // set_paused needs admin or vault auth
     ctx.client.set_paused(&ctx.admin, &true);
     assert!(ctx.client.paused());
 
