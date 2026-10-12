@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(soroban)* adapter-common: shared admin/pause/TTL/upgrade helpers crate;
+  carry-adapter now uses it instead of its private copies
 - *(soroban)* carry-adapter: leveraged yield-carry market route (collateral on the pool,
   borrow-side yield leg on the yield pool, oracle-banded NAV with fail-closed surplus
   realisation), with build/deploy/verify/size-check justfile recipes, release-ABI spec checks,

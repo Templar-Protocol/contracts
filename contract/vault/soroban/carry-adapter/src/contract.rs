@@ -10,7 +10,12 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
     BytesN, Env, Vec,
 };
-use stellar_contract_utils::upgradeable::{self, Upgradeable};
+use stellar_contract_utils::upgradeable::Upgradeable;
+use templar_soroban_adapter_common::{
+    accept_admin as common_accept_admin, admin as common_admin, extend_instance_ttl,
+    init_admin_vault, is_paused, propose_admin, require_admin, require_contract_address,
+    require_not_paused, require_vault, set_paused_flag, upgrade_as_admin, CommonError,
+};
 
 use crate::math::{self, ConvCtx};
 use crate::oracle_client::{Asset, PriceData, PriceFeedClient};
@@ -20,11 +25,6 @@ use crate::pool_ops::{
     REQUEST_DELETE_LIQ_AUCTION, REQUEST_REPAY, REQUEST_SUPPLY, REQUEST_SUPPLY_COLLATERAL,
     REQUEST_WITHDRAW, REQUEST_WITHDRAW_COLLATERAL,
 };
-
-/// Re-extend instance storage TTL when remaining TTL drops below ~30 days.
-const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
-/// Extend instance storage TTL to the Soroban maximum (~6 months).
-const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
 
 #[contracttype]
 #[derive(Clone, Copy)]
@@ -40,15 +40,11 @@ pub struct Params {
 #[contracttype]
 #[derive(Clone, Copy)]
 pub enum DataKey {
-    Admin,
-    PendingAdmin,
-    Vault,
     Pool,
     YieldPool,
     CollateralAsset,
     BorrowAsset,
     SurplusRecipient,
-    Paused,
     Params,
     RealisationPending,
 }
@@ -97,6 +93,19 @@ impl From<math::MathError> for CarryError {
     }
 }
 
+impl From<CommonError> for CarryError {
+    fn from(err: CommonError) -> CarryError {
+        match err {
+            CommonError::Unauthorized => CarryError::Unauthorized,
+            CommonError::MissingConfig => CarryError::MissingConfig,
+            CommonError::Paused => CarryError::Paused,
+            // There is no NotContract variant; constructor validation mapped
+            // non-contract addresses to InvalidInput.
+            CommonError::NotContract => CarryError::InvalidInput,
+        }
+    }
+}
+
 #[contract]
 pub struct CarryAdapterContract;
 
@@ -137,9 +146,8 @@ impl CarryAdapterContract {
         };
         params.validate()?;
 
+        init_admin_vault(&env, &admin, &vault);
         let storage = env.storage().instance();
-        storage.set(&DataKey::Admin, &admin);
-        storage.set(&DataKey::Vault, &vault);
         storage.set(&DataKey::Pool, &pool);
         storage.set(&DataKey::YieldPool, &yield_pool);
         storage.set(&DataKey::CollateralAsset, &collateral_asset);
@@ -165,9 +173,7 @@ impl CarryAdapterContract {
     ) -> Result<(), CarryError> {
         extend_instance_ttl(&env);
         require_vault(&env, &caller)?;
-        if is_paused(&env) {
-            return Err(CarryError::Paused);
-        }
+        require_not_paused(&env)?;
         if is_realisation_pending(&env) {
             return Err(CarryError::RealisationPending);
         }
@@ -276,7 +282,7 @@ impl CarryAdapterContract {
 
         // Snapshot the adapter's collateral balance BEFORE the pool batch
         // credits x_pool, so the delivered delta can be measured exactly.
-        let vault = get_vault(&env)?;
+        let vault = templar_soroban_adapter_common::vault(&env)?;
         let c_token = soroban_sdk::token::Client::new(&env, &asset);
         let c_before = c_token.balance(&adapter);
 
@@ -474,15 +480,12 @@ impl CarryAdapterContract {
     // ------------------------------------------------------------------
     // Admin surface
     // ------------------------------------------------------------------
-
     /// Pause or unpause (admin-only). Pause blocks `supply` only.
     #[allow(deprecated)]
     pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), CarryError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
-        env.storage().instance().set(&DataKey::Paused, &paused);
-        env.events()
-            .publish((symbol_short!("paused"), caller), paused);
+        set_paused_flag(&env, &caller, paused);
         Ok(())
     }
 
@@ -631,36 +634,19 @@ impl CarryAdapterContract {
     #[allow(deprecated)]
     pub fn set_admin(env: Env, caller: Address, admin: Address) -> Result<(), CarryError> {
         extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        env.storage().instance().set(&DataKey::PendingAdmin, &admin);
-        env.events()
-            .publish((symbol_short!("admin_set"), caller), admin);
-        Ok(())
+        propose_admin(&env, &caller, &admin).map_err(Into::into)
     }
 
     #[allow(deprecated)]
     pub fn accept_admin(env: Env, caller: Address) -> Result<(), CarryError> {
         extend_instance_ttl(&env);
-        caller.require_auth();
-        let pending: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingAdmin)
-            .ok_or(CarryError::MissingConfig)?;
-        if caller != pending {
-            return Err(CarryError::Unauthorized);
-        }
-        env.storage().instance().set(&DataKey::Admin, &caller);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.events()
-            .publish((symbol_short!("admin_acc"), caller), ());
-        Ok(())
+        common_accept_admin(&env, &caller).map_err(Into::into)
     }
 
     /// The current admin.
     pub fn admin(env: Env) -> Result<Address, CarryError> {
         extend_instance_ttl(&env);
-        get_admin(&env)
+        common_admin(&env).map_err(Into::into)
     }
 }
 
@@ -669,10 +655,8 @@ impl Upgradeable for CarryAdapterContract {
     #[allow(deprecated)]
     fn upgrade(e: &Env, new_wasm_hash: BytesN<32>, operator: Address) {
         extend_instance_ttl(e);
-        require_admin(e, &operator).unwrap_or_else(|err| panic_with_error!(e, err));
-        upgradeable::upgrade(e, &new_wasm_hash);
-        e.events()
-            .publish((symbol_short!("upgrade"), operator), new_wasm_hash);
+        upgrade_as_admin(e, &new_wasm_hash, &operator)
+            .unwrap_or_else(|err| panic_with_error!(e, CarryError::from(err)));
     }
 }
 
@@ -693,12 +677,6 @@ impl Params {
 // Free helpers
 // ---------------------------------------------------------------------------
 
-fn extend_instance_ttl(env: &Env) {
-    env.storage()
-        .instance()
-        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-}
-
 fn get_address(env: &Env, key: DataKey) -> Result<Address, CarryError> {
     env.storage()
         .instance()
@@ -708,14 +686,6 @@ fn get_address(env: &Env, key: DataKey) -> Result<Address, CarryError> {
 
 fn get_oracle(env: &Env, pool: &Address) -> Result<Address, CarryError> {
     Ok(env.pool_config(pool).oracle)
-}
-
-fn get_admin(env: &Env) -> Result<Address, CarryError> {
-    get_address(env, DataKey::Admin)
-}
-
-fn get_vault(env: &Env) -> Result<Address, CarryError> {
-    get_address(env, DataKey::Vault)
 }
 
 fn get_pool(env: &Env) -> Result<Address, CarryError> {
@@ -745,42 +715,11 @@ fn get_params(env: &Env) -> Result<Params, CarryError> {
         .ok_or(CarryError::MissingConfig)
 }
 
-fn is_paused(env: &Env) -> bool {
-    env.storage()
-        .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false)
-}
-
 fn is_realisation_pending(env: &Env) -> bool {
     env.storage()
         .instance()
         .get(&DataKey::RealisationPending)
         .unwrap_or(false)
-}
-
-fn require_contract_address(addr: &Address) -> Result<(), CarryError> {
-    use soroban_sdk::address_payload::AddressPayload;
-    match AddressPayload::from_address(addr) {
-        Some(AddressPayload::ContractIdHash(_)) => Ok(()),
-        _ => Err(CarryError::InvalidInput),
-    }
-}
-
-fn require_admin(env: &Env, caller: &Address) -> Result<(), CarryError> {
-    caller.require_auth();
-    if caller != &get_admin(env)? {
-        return Err(CarryError::Unauthorized);
-    }
-    Ok(())
-}
-
-fn require_vault(env: &Env, caller: &Address) -> Result<(), CarryError> {
-    caller.require_auth();
-    if caller != &get_vault(env)? {
-        return Err(CarryError::Unauthorized);
-    }
-    Ok(())
 }
 
 /// Position snapshot in underlying units, with the reserves it was read from

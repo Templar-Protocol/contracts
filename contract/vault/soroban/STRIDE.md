@@ -263,6 +263,10 @@ sentinel as soon as operational key infrastructure is ready. |
 Scoped to `contract/vault/soroban/carry-adapter`. Threats below are specific to the carry route;
 the general vault rows above still apply.
 
+The adapter's admin/pause/TTL/upgrade helpers live in the shared
+`templar-soroban-adapter-common` crate; their trust posture is identical to the
+Blend adapter's (same code, same two-step admin, same upgrade gate).
+
 | Threat | Issues |
 |---|---|
 | **Spoofing** | **Carry.Spoof.1** — The vault-facing ABI is pinned to `supply`/`progress_withdrawal`/`total_assets` and verified at release; any caller claiming to be the vault fails `require_auth` against the stored vault address. The release ABI check (`verify-carry-adapter-release-abi`) also rejects `rescue`/`invoke`/`call`/`execute`/`multicall` exports so no generic-call surface exists to spoof. |

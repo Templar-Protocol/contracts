@@ -535,6 +535,9 @@ and are observable through the `withdraw` and deleverage (`dlevg`) events.
 
 See [carry-adapter/RUNBOOK.md](./carry-adapter/RUNBOOK.md) for the operational protocol.
 
+The adapter's admin/pause/TTL/upgrade helpers are shared code from the
+`templar-soroban-adapter-common` crate (`contract/vault/soroban/adapter-common`).
+
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-carry-adapter`
