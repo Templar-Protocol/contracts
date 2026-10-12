@@ -46,5 +46,6 @@ soroban-sdk = { version = "25.3.0", features = ["testutils", "alloc", "experimen
 rstest.workspace = true
 blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }
 templar-soroban-blend-adapter = { path = "./blend-adapter" }
+templar-soroban-carry-adapter = { path = "./carry-adapter", features = ["testutils"] }
 templar-soroban-runtime = { path = ".", default-features = false, features = ["testutils"] }
 templar-soroban-governance = { path = "./governance" }

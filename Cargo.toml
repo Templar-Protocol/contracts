@@ -32,6 +32,7 @@ members = [
     "contract/vault/soroban",
     "contract/vault/soroban/shared-types",
     "contract/vault/soroban/blend-adapter",
+    "contract/vault/soroban/carry-adapter",
     "contract/vault/soroban/custodial-adapter",
     "contract/vault/soroban/governance",
     "contract/vault/soroban/proxy-4626",

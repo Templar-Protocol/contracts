@@ -512,6 +512,59 @@ After deployment, allow-list the adapter and configure the vault supply queue th
 before allocation. Treat the custodian and its offchain operating process as part of the vault's
 trust boundary.
 
+## Carry Adapter
+
+The carry adapter lives in `contract/vault/soroban/carry-adapter` and implements a leveraged
+yield-carry market route. It supplies collateral to the collateral-side `pool` and borrows the
+yield-pool asset against it; the `yield_pool` leg (`Supply`) earns the borrow-side yield. The
+adapter's NAV is `C + conv(Y − D)`, where `C` is collateral held, `D` is borrow debt, `Y` is the
+yield-asset position, and `conv()` converts through the pool oracle. Conversions inside
+`oracle_free_band_bps` of `D` skip the oracle call entirely; outside the band the oracle is
+checked for age (`oracle_max_age_secs`) and surplus is haircut by `surplus_haircut_bps`.
+
+Surplus realisation is fail-closed: `sweep_surplus()` withdraws the surplus, hands the leg to the
+immutable `surplus_recipient` converter, and sets `realisation_pending`. While the flag is set,
+`supply()` and `total_assets()` revert, and `clear_realisation_pending()` re-opens them once the
+converter has donated the proceeds back to the adapter. The curator runs `refresh_markets` then
+`allocate_supply` in adjacent transactions and retries on observation bounds errors. Withdrawals
+keep working at the stored principal throughout. The curator caps any withdraw `amount` at the
+stored principal — the adapter never releases more than that.
+
+The adapter emits no `repay` event of its own; repayments ride inside the unwind/deleverage batch
+and are observable through the `withdraw` and deleverage (`dlevg`) events.
+
+See [carry-adapter/RUNBOOK.md](./carry-adapter/RUNBOOK.md) for the operational protocol.
+
+Use recipes in [contract/vault/soroban/justfile](./justfile):
+
+- `just build-carry-adapter`
+- `just carry-adapter-size-check` (128 KiB ceiling, same as the runtime)
+- `just verify-carry-adapter-release-abi` (asserts the exact vault-facing ABI and the absence of
+  `rescue`/`invoke`/`call`/`execute`/`multicall`; spec in
+  [scripts/carry_adapter_abi_spec.json](./scripts/carry_adapter_abi_spec.json))
+- `SOROBAN_ADAPTER_ADMIN=... CARRY_POOL_ADDRESS=... CARRY_YIELD_POOL_ADDRESS=... CARRY_COLLATERAL_ASSET=... CARRY_BORROW_ASSET=... CARRY_SURPLUS_RECIPIENT=... CARRY_BORROW_UTILIZATION_BPS=... CARRY_SURPLUS_BUFFER_BPS=... CARRY_SURPLUS_HAIRCUT_BPS=... CARRY_ORACLE_FREE_BAND_BPS=... CARRY_ORACLE_MAX_AGE_SECS=... CARRY_MIN_RESIDUAL_COLLATERAL=... just deploy-carry-adapter`
+- `cargo test -p templar-soroban-carry-adapter --features testutils` (harness tests; the fork-pool
+  harness and mock oracle live behind the `testutils` feature)
+
+### Carry Adapter Manifest
+
+[contract/vault/deployments/carry-adapter/manifest.template.json](../deployments/carry-adapter/manifest.template.json)
+documents a carry deployment. The pinned fork block (`fork_pin`) is fixed data: `blend-contracts-v2`
+@ `54afdae01bb8e484514940229e06460aa3fa6a1f` with SHA-256-pinned pool and pool-factory WASM (the
+harness backstop is an in-crate mock, so no backstop wasm is pinned). The `null` fields are filled
+in by the operator at deploy time, mirroring the
+`deploy-carry-adapter` recipe inputs:
+
+| Manifest field | Filled by |
+|---|---|
+| `adapter.contract_id`, `adapter.wasm_sha256` | `deploy-carry-adapter` writes `contract_id` (state dir `carry_adapter_id`); `wasm_sha256` is the hash of the deployed `templar_soroban_carry_adapter.wasm` |
+| `markets.pool` / `markets.yield_pool` | `CARRY_POOL_ADDRESS` / `CARRY_YIELD_POOL_ADDRESS` |
+| `markets.collateral_asset` / `markets.borrow_asset` | `CARRY_COLLATERAL_ASSET` / `CARRY_BORROW_ASSET` |
+| `parameters.*` | the corresponding `CARRY_*_BPS` / `CARRY_ORACLE_MAX_AGE_SECS` / `CARRY_MIN_RESIDUAL_COLLATERAL` / `CARRY_SURPLUS_RECIPIENT`; `parameters.shortfall_funder` is recorded by the operator |
+
+A deployment is only valid once every `null` above is populated and the adapter WASM has passed
+`verify-carry-adapter-release-abi` and `carry-adapter-size-check`.
+
 ## Deployment Artifact
 
 The Soroban justfile deploys the optimized runtime artifact directly:

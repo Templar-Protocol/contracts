@@ -30,6 +30,7 @@ _site/
 # fuzz artifacts
 **/artifacts
 !contract/artifacts/
+!contract/vault/soroban/carry-adapter/tests/support/artifacts/
 **/corpus
 **/fuzz*.log
 **/coverage
