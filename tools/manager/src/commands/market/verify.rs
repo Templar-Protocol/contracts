@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use clap::Args;
 use near_account_id::AccountId;
 
+use crate::commands::spec::PreflightPriceArgs;
+
 /// Re-run the preflight against deployed state.
 ///
 /// Takes no signer: it only reads. Exits non-zero when any check fails, so it
@@ -11,6 +13,9 @@ use near_account_id::AccountId;
 pub struct Verify {
     /// The deployed market to check.
     pub(crate) market_id: AccountId,
+
+    #[command(flatten)]
+    pub(crate) prices: PreflightPriceArgs,
 
     /// The account holding the governance Admin role.
     ///

@@ -64,7 +64,7 @@ async fn keyed_account(harness: &SandboxHarness, account_id: &AccountId) -> Resu
 
 /// A `.near` registry running released `release`, owning itself and signed for by the fixed test
 /// key — the shape of `templar-alpha.near` and `user0.tmplr.near`.
-async fn live_registry(
+pub(super) async fn live_registry(
     harness: &SandboxHarness,
     registry_id: &AccountId,
     release: &str,
@@ -92,7 +92,7 @@ async fn live_registry(
     Ok(client)
 }
 
-async fn add_version(
+pub(super) async fn add_version(
     client: &Client,
     registry_id: &AccountId,
     version_key: &str,

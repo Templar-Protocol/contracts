@@ -19,8 +19,9 @@ The signer is not a personal account: `registry.deploy` asserts the registry's
 owner, and a proxy spec additionally requires it to equal `governance.admin`,
 which the mainnet profiles set to the registry itself.
 
-`plan` reads the chain and writes a file; it sends nothing and takes no
-credential. `apply` sends what the file says.
+`plan` reads prices and chain configuration and writes a file; it sends nothing
+and takes no signing credential. Provider reads may need API credentials.
+`apply` sends what the file says.
 
 ## Why two steps
 
@@ -108,19 +109,58 @@ governance call that configures a price feed is dispatched detached: it reports
 success even when the oracle rejected the proxy, so deployed state is the only
 witness that a market can price anything.
 
+### Price inputs
+
+`spec check`, `market plan`, `market apply` and `market verify` default to
+`--prices-from provider`. For Lazer and RedStone sources, the gateway fetches
+signed provider data and asks the deployed adapter to verify it without writing.
+The preflight judges whether those selected inputs would produce usable prices
+on an on-demand push. Success is **not** proof that the prices currently stored
+on chain are usable, and neither planning nor applying a deployment pushes prices.
+
+Only source kinds used by the spec are constructed:
+
+- Lazer needs `--pyth-lazer-api-key` or `PYTH_LAZER_API_KEY`. Its websocket,
+  channel and payload-age options are available on these four commands.
+- RedStone needs Node.js on `PATH`, or an executable selected with
+  `--redstone-node-path` / `REDSTONE_NODE_PATH`. A RedStone-only spec needs no
+  Lazer key.
+- Pyth and LST sources always read chain state. Direct markets keep their
+  existing chain-only oracle checks. `spec check --offline` constructs no providers.
+
+Use `--prices-from chain` to judge stored adapter prices instead. Provider
+construction, fetch or verification failures are failed checks; they never
+fall back to stored values. `oracle.price.*` and `oracle.aggregate.*` retain
+their IDs and name provider, chain or mixed inputs in their details.
+
+Both modes additionally report `oracle.stored.{side}.{i}` for every configured
+source. A stored price within the asset's `max_age` (or the market's
+`price_maximum_age`) and clock-drift bound passes; stale, missing, unprojectable,
+future-drifted or unreadable storage warns. These diagnostics never gate the
+command. Chain mode can still fail independently when its selected stored
+prices cannot aggregate.
+
+`apply` uses this invocation's mode and provider configuration when rerunning
+preflight, not the plan's historical inputs. Its default remains provider even
+for a plan written with chain mode. Source options and credentials are not
+persisted in specs, plans or journals.
+
+Market plan schema remains 2, but plans containing `"status": "warned"` require
+a binary that understands that status; older binaries reject them.
+
 ### Reading the report
 
 Checks are printed to stderr as they run, grouped by what is being read, then
-summarized. The summary leads with the failures, in full, and lists what was
-skipped separately — a check that did not run proves nothing, and must never be
-counted as one that passed.
+summarized. The summary leads with FAILED checks, then WARNINGS, then SKIPPED.
+Warnings are non-gating diagnostics, not proofs of success. Warnings and skips
+are counted separately from passes; a skipped check proves nothing.
 
 ```
 → registry versions
   ok   registry.version.market          v1.3.0
   FAIL registry.version.oracle          `0.5.9` is not registered in v1.tmplr.near; the depl…
 
-5 check(s): 3 passed, 1 skipped, 1 FAILED
+5 check(s): 3 passed, 0 warned, 1 skipped, 1 FAILED
 
 FAILED
   registry.version.oracle
@@ -128,9 +168,9 @@ FAILED
 ```
 
 Colour is used only on a terminal, and `NO_COLOR` turns it off. `-q` silences
-the report. stdout stays the machine-readable channel throughout, so
-`spec check … >/dev/null` leaves the report alone and `… 2>/dev/null | jq`
-leaves the JSON alone.
+the per-check stream but retains the digest. stdout stays the machine-readable
+channel throughout, so `spec check … >/dev/null` leaves the report alone and
+`… 2>/dev/null | jq` leaves the JSON alone.
 
 `--skip-check <id>` suppresses one verdict — every other check still runs, and
 the report records what the skip suppressed, so an override stays reviewable
@@ -189,8 +229,8 @@ transaction, target code hash, every before/after view result, JSON diff, and
 check verdict. Reporter output, progress, diagnostics, and the digest go to
 stderr. Keep stdout dedicated to the report when piping it to review tooling.
 The completed replay is stamped into the same plan when no replay check fails.
-An apply-valid stamp requires every replay check to be non-skipped and passed;
-apply rejects stamps with skipped checks. The stamp binds the plan digest,
+An apply-valid stamp requires every replay check to have passed; apply rejects
+failed, warned or skipped proof checks. The stamp binds the plan digest,
 semantic complete-state digest, target code hash, and verdicts; it records the
 sandbox chain ID for review context.
 

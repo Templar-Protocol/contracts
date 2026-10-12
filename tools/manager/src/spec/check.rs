@@ -11,8 +11,8 @@ use super::MarketSpec;
 #[cfg(test)]
 pub use super::oracle::AggregatorSpec;
 
-/// A check's verdict. `Skipped` is distinct from `Passed` so a report can never
-/// present "not run" as "fine".
+/// A check's verdict. `Warned` is non-gating diagnostic information, not proof
+/// of success. `Skipped` means not run; neither is a `Passed` check.
 ///
 /// `Deserialize` because the plan artifact (ENG-544) embeds these and is read
 /// back on apply.
@@ -21,6 +21,7 @@ pub use super::oracle::AggregatorSpec;
 pub enum Status {
     Passed { detail: String },
     Failed { detail: String },
+    Warned { detail: String },
     Skipped { reason: String },
 }
 
@@ -37,13 +38,19 @@ impl Status {
         }
     }
 
+    pub fn warned(detail: impl Into<String>) -> Self {
+        Self::Warned {
+            detail: detail.into(),
+        }
+    }
+
     pub const fn is_failure(&self) -> bool {
         matches!(self, Self::Failed { .. })
     }
 
     pub fn detail(&self) -> &str {
         match self {
-            Self::Passed { detail } | Self::Failed { detail } => detail,
+            Self::Passed { detail } | Self::Failed { detail } | Self::Warned { detail } => detail,
             Self::Skipped { reason } => reason,
         }
     }
@@ -465,5 +472,56 @@ fn validate_configuration(spec: &MarketSpec) -> Check {
             Ok(()) => Check::new(id, Status::passed("MarketConfiguration::validate")),
             Err(error) => Check::new(id, Status::failed(error.to_string())),
         },
+    }
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use super::*;
+
+    #[test]
+    fn warnings_do_not_gate_but_failures_still_do() {
+        let mut checks = vec![Check::new(
+            "oracle.stored.borrow.0",
+            Status::warned("stale"),
+        )];
+        assert_eq!(failures(&checks), 0);
+        assert!(gate(&checks, "market", "refused").is_ok());
+        assert!(gate_unskippable(&checks, "market", "refused").is_ok());
+        checks.push(Check::new(
+            "oracle.price.borrow.0",
+            Status::failed("provider failed"),
+        ));
+        assert_eq!(failures(&checks), 1);
+        for error in [
+            gate(&checks, "market", "refused").unwrap_err(),
+            gate_unskippable(&checks, "market", "refused").unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("oracle.price.borrow.0"));
+            assert!(!error.to_string().contains("oracle.stored.borrow.0"));
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::passed(r#"{"status":"passed","detail":"healthy"}"#, Status::passed("healthy"))]
+    #[case::failed(
+        r#"{"status":"failed","detail":"unusable"}"#,
+        Status::failed("unusable")
+    )]
+    #[case::warned(r#"{"status":"warned","detail":"stale"}"#, Status::warned("stale"))]
+    #[case::skipped(r#"{"status":"skipped","reason":"offline"}"#, Status::Skipped { reason: "offline".to_owned() })]
+    fn status_wire_contract(#[case] json: &str, #[case] status: Status) {
+        assert_eq!(serde_json::from_str::<Status>(json).unwrap(), status);
+        assert_eq!(
+            serde_json::to_value(&status).unwrap(),
+            serde_json::from_str::<serde_json::Value>(json).unwrap()
+        );
+    }
+
+    #[test]
+    fn unknown_status_is_not_a_success() {
+        assert!(
+            serde_json::from_str::<Status>(r#"{"status":"unknown","detail":"healthy"}"#).is_err()
+        );
     }
 }

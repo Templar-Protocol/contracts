@@ -248,6 +248,18 @@ fn validate_dry_run_stamp(
     if stamp.checks.iter().any(|check| check.status.is_failure()) {
         return Ok(Status::failed("dry-run stamp contains a failed check"));
     }
+    let warned = stamp
+        .checks
+        .iter()
+        .filter(|check| matches!(check.status, Status::Warned { .. }))
+        .map(|check| check.id.as_str())
+        .collect::<Vec<_>>();
+    if !warned.is_empty() {
+        return Ok(Status::failed(format!(
+            "dry-run stamp contains warned checks: {}; every proof check must pass",
+            warned.join(", "),
+        )));
+    }
     let skipped = stamp
         .checks
         .iter()
@@ -1033,8 +1045,10 @@ mod tests {
             .is_failure());
     }
 
-    #[test]
-    fn dry_run_stamp_rejects_skipped_view_checks() {
+    #[rstest::rstest]
+    #[case::skipped(Status::Skipped { reason: "operator skipped view".to_owned() })]
+    #[case::warned(Status::warned("view proof incomplete"))]
+    fn dry_run_stamp_rejects_non_passed_view_checks(#[case] view_status: Status) {
         let mut plan = stamp_plan();
         plan.spec.checks.push(PatchCheck::View(PatchViewCheck {
             method_name: "view".to_owned().into(),
@@ -1052,12 +1066,7 @@ mod tests {
             state_digest: plan.state_digest,
             checks: vec![
                 preflight[0].clone(),
-                Check::new(
-                    "patch.view.0",
-                    Status::Skipped {
-                        reason: "operator skipped view".to_owned(),
-                    },
-                ),
+                Check::new("patch.view.0", view_status),
                 Check::new("patch.dry_run", Status::passed("sandbox batch succeeded")),
             ],
         });
