@@ -218,8 +218,17 @@ impl MarketExternalInterface for Contract {
         &mut self,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<WithdrawalQueueExecutionResult> {
-        let batch_limit = batch_limit.unwrap_or(1);
-        let mut batch = Vec::with_capacity(batch_limit.min(self.withdrawal_queue.len()) as usize);
+        let batch_limit = batch_limit.unwrap_or(1).min(self.withdrawal_queue.len());
+        require!(
+            batch_limit <= Self::MAX_SUPPLY_WITHDRAWAL_BATCH_SIZE,
+            "Withdrawal batch exceeds maximum size",
+        );
+        require!(
+            env::prepaid_gas()
+                >= Self::GAS_SUPPLY_WITHDRAWAL_QUEUE_ENTRY.saturating_mul(u64::from(batch_limit)),
+            "Insufficient prepaid gas for withdrawal batch",
+        );
+        let mut batch = Vec::with_capacity(batch_limit as usize);
         let snapshot_proof = self.snapshot();
         let block_timestamp_ms = env::block_timestamp_ms();
         let queue_len_start = self.withdrawal_queue.len();

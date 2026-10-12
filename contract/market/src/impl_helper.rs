@@ -178,6 +178,11 @@ impl Contract {
     const GAS_FINALIZE_WITHDRAWAL_BASE: Gas = Gas::from_tgas(6);
     const GAS_FINALIZE_WITHDRAWAL_PER_RESOLUTION: Gas = Gas::from_tgas(3);
 
+    /// Largest batch covered by the executor's per-entry gas budget.
+    pub(crate) const MAX_SUPPLY_WITHDRAWAL_BATCH_SIZE: u32 = 15;
+    /// Prepaid gas required for each queue entry the executor may visit.
+    pub(crate) const GAS_SUPPLY_WITHDRAWAL_QUEUE_ENTRY: Gas = Gas::from_tgas(20);
+
     /// A budget too short for the whole batch strands `outgoing` on every
     /// position in it, so it has to grow with the batch the callback settles.
     pub(crate) fn gas_execute_next_supply_withdrawal_request_01_finalize(

@@ -149,8 +149,8 @@ fn continuation_gas() -> Option<Gas> {
     })
 }
 
-/// Total gas the call commits to the receipts it schedules. A batch is only
-/// executable if this stays under the 300 TGas a transaction can prepay.
+/// Total gas the call commits to the receipts it schedules. Keep this below
+/// the gateway's 300 TGas prepaid budget.
 fn committed_gas() -> Gas {
     get_created_receipts()
         .into_iter()
@@ -250,7 +250,7 @@ fn continuation_gas_scales_with_the_batch() {
 }
 
 #[test]
-fn a_full_batch_stays_within_the_transaction_gas_limit() {
+fn a_full_batch_stays_within_the_gateway_gas_budget() {
     const BATCH: u32 = 12;
 
     let mut harness = Harness::new();
@@ -264,7 +264,7 @@ fn a_full_batch_stays_within_the_transaction_gas_limit() {
 
     assert!(
         committed_gas() < Gas::from_tgas(300),
-        "a {BATCH}-entry batch commits {:?}, which no transaction could prepay",
+        "a {BATCH}-entry batch exceeds the gateway's 300 TGas budget: {:?}",
         committed_gas(),
     );
 }
@@ -341,6 +341,34 @@ fn a_zero_batch_limit_visits_nothing() {
     harness.execute(0);
 
     assert_eq!(harness.queue_len(), WALL);
+}
+
+#[test]
+#[should_panic(expected = "Withdrawal batch exceeds maximum size")]
+fn a_batch_larger_than_the_supported_maximum_is_rejected() {
+    let mut harness = Harness::new();
+    let batch_limit = Contract::MAX_SUPPLY_WITHDRAWAL_BATCH_SIZE + 1;
+    for i in 0..batch_limit {
+        harness.enqueue(&account(i), SUPPLY);
+    }
+
+    harness.execute(batch_limit);
+}
+
+#[test]
+#[should_panic(expected = "Insufficient prepaid gas for withdrawal batch")]
+fn a_batch_requires_its_per_entry_prepaid_gas_budget() {
+    const BATCH: u32 = 2;
+
+    let mut harness = Harness::new();
+    for i in 0..BATCH {
+        harness.enqueue(&account(i), SUPPLY);
+    }
+    harness.context.prepaid_gas = Contract::GAS_SUPPLY_WITHDRAWAL_QUEUE_ENTRY
+        .saturating_mul(u64::from(BATCH))
+        .saturating_sub(Gas::from_gas(1));
+
+    harness.execute(BATCH);
 }
 
 #[test]
