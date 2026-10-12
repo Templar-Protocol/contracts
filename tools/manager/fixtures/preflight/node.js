@@ -23,75 +23,54 @@ fs.appendFileSync(path.join(directory, 'pids.jsonl'), JSON.stringify({
 }) + '\n');
 
 // All waits are bounded even if the production bridge or test goes away.
-const deadline = Date.now() + 10000;
 const lifetime = setTimeout(() => process.exit(1), 600000);
-let connection;
-let retry;
-let connected = false;
+const connection = net.createConnection(socketPath);
 const startup = setTimeout(() => stop(1), 10000);
 let requestDeadline;
 function stop(code) {
     clearTimeout(lifetime);
-    clearTimeout(retry);
     clearTimeout(startup);
     clearTimeout(requestDeadline);
-    if (connection) connection.destroy();
+    connection.destroy();
     process.exit(code);
 }
 process.on('SIGTERM', () => stop(0));
 process.on('SIGINT', () => stop(0));
-function connect() {
-    connection = net.createConnection(socketPath);
-    const attempt = connection;
-    connection.setTimeout(60000, () => stop(1));
-    let input = '';
-    connection.on('connect', () => {
-        connected = true;
-        clearTimeout(startup);
-    });
-    connection.on('error', (error) => {
-        if (!connected && Date.now() < deadline &&
-            (error.code === 'ENOENT' || error.code === 'ECONNREFUSED')) {
-            retry = setTimeout(connect, 25);
-        } else {
+connection.setTimeout(60000, () => stop(1));
+let input = '';
+connection.on('connect', () => clearTimeout(startup));
+connection.on('error', () => stop(1));
+connection.on('end', () => stop(0));
+connection.on('close', () => stop(0));
+connection.on('data', (chunk) => {
+    input += chunk.toString('utf8');
+    if (!requestDeadline) requestDeadline = setTimeout(() => stop(1), 10000);
+    if (input.length > 1048576) stop(1);
+    let newline;
+    while ((newline = input.indexOf('\n')) !== -1) {
+        const line = input.slice(0, newline);
+        input = input.slice(newline + 1);
+        try {
+            const request = JSON.parse(line);
+            if (!Number.isInteger(request.id) || request.id < 0 ||
+                request.id > 0xffffffff) throw new Error('invalid request id');
+            fs.appendFileSync(path.join(directory, 'requests.jsonl'), line + '\n');
+            const config = JSON.parse(fs.readFileSync(path.join(directory, 'config.json'), 'utf8'));
+            const response = config.failure
+                ? { id: request.id, status: 'failure', message: 'controlled preflight fixture failure' }
+                : { id: request.id, status: 'success', data: fs.readFileSync(path.join(directory, 'new.hex'), 'utf8').trim() };
+            const writeDeadline = setTimeout(() => stop(1), 10000);
+            connection.write(JSON.stringify(response) + '\n', (error) => {
+                clearTimeout(writeDeadline);
+                if (error) stop(1);
+            });
+        } catch (error) {
+            console.error(error);
             stop(1);
         }
-    });
-    connection.on('end', () => stop(0));
-    connection.on('close', () => {
-        if (connection === attempt && connected) stop(0);
-    });
-    connection.on('data', (chunk) => {
-        input += chunk.toString('utf8');
-        if (!requestDeadline) requestDeadline = setTimeout(() => stop(1), 10000);
-        if (input.length > 1048576) stop(1);
-        let newline;
-        while ((newline = input.indexOf('\n')) !== -1) {
-            const line = input.slice(0, newline);
-            input = input.slice(newline + 1);
-            try {
-                const request = JSON.parse(line);
-                if (!Number.isInteger(request.id) || request.id < 0 ||
-                    request.id > 0xffffffff) throw new Error('invalid request id');
-                fs.appendFileSync(path.join(directory, 'requests.jsonl'), line + '\n');
-                const config = JSON.parse(fs.readFileSync(path.join(directory, 'config.json'), 'utf8'));
-                const response = config.failure
-                    ? { id: request.id, status: 'failure', message: 'controlled preflight fixture failure' }
-                    : { id: request.id, status: 'success', data: fs.readFileSync(path.join(directory, 'new.hex'), 'utf8').trim() };
-                const writeDeadline = setTimeout(() => stop(1), 10000);
-                connection.write(JSON.stringify(response) + '\n', (error) => {
-                    clearTimeout(writeDeadline);
-                    if (error) stop(1);
-                });
-            } catch (error) {
-                console.error(error);
-                stop(1);
-            }
-        }
-        if (!input.length) {
-            clearTimeout(requestDeadline);
-            requestDeadline = undefined;
-        }
-    });
-}
-connect();
+    }
+    if (!input.length) {
+        clearTimeout(requestDeadline);
+        requestDeadline = undefined;
+    }
+});
