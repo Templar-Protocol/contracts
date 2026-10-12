@@ -142,7 +142,12 @@ pub trait MarketExternalInterface {
     /// Removes a supply position from the withdrawal queue.
     fn cancel_supply_withdrawal_request(&mut self);
 
-    /// Attempts to fulfill the first withdrawal request in the queue.
+    /// Attempts to fulfill the first withdrawal requests in the queue.
+    ///
+    /// `batch_limit` (default 1) caps the queue entries *visited*, not the
+    /// requests fulfilled: an entry that is skipped still costs a position read
+    /// and a queue write, so it is charged too. A batch of entries that all
+    /// turn out to be empty therefore pays out nothing.
     fn execute_next_supply_withdrawal_request(
         &mut self,
         batch_limit: Option<u32>,
