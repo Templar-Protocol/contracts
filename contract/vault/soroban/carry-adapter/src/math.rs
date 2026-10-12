@@ -1,7 +1,8 @@
 //! Pure fixed-point math for the carry adapter.
 //!
-//! Everything here is plain integer arithmetic on `i128` (with `u128`
-//! intermediates and checked operations). There is no Soroban SDK dependency,
+//! Everything here is plain integer arithmetic on `i128` with checked
+//! operations; the multiply-divide primitive is the vault kernel's
+//! `Number::mul_div_floor/ceil`. There is no Soroban SDK dependency,
 //! no storage and no oracle access: the contract reads balances, prices and
 //! pool state, feeds them in, and executes whatever these helpers decide.
 //!
@@ -16,6 +17,8 @@
 //!
 //! Every function is total: overflow, negative inputs, zero divisors and bad
 //! prices are reported as [`MathError`]; nothing panics.
+
+use templar_vault_kernel::Number;
 
 /// Fixed-point scale of Blend `b_rate` / `d_rate` (12 decimals).
 pub const RATE_SCALE: i128 = 1_000_000_000_000;
@@ -96,24 +99,25 @@ fn pow10(exp: u32) -> Result<i128, MathError> {
     10i128.checked_pow(exp).ok_or(MathError::Overflow)
 }
 
-/// `a * b * c / den` on non-negative values with a `u128` intermediate.
+/// `a * b * c / den` on non-negative values. `a * b` must fit `u128`; the
+/// remaining multiply-divide runs on the vault kernel's audited, wide
+/// (`U512` intermediate) `Number::mul_div_*`, which never overflows for `u128`
+/// operands. The kernel returns 0 for a zero divisor and truncates silently, so
+/// both are rejected here.
 fn mul_div3(a: i128, b: i128, c: i128, den: i128, round: Round) -> Result<i128, MathError> {
-    let c_u = nn(c)?;
-    let prod = nn(a)?
-        .checked_mul(nn(b)?)
-        .and_then(|p| p.checked_mul(c_u))
-        .ok_or(MathError::Overflow)?;
-    let den = nn(den)?;
+    let ab = nn(a)?.checked_mul(nn(b)?).ok_or(MathError::Overflow)?;
+    let (c, den) = (nn(c)?, nn(den)?);
     if den == 0 {
         return Err(MathError::DivisionByZero);
     }
-    let q = prod / den;
-    let q = if round == Round::Ceil && prod % den != 0 {
-        q.checked_add(1).ok_or(MathError::Overflow)?
-    } else {
-        q
+    let (ab, c, den) = (Number::from(ab), Number::from(c), Number::from(den));
+    let q = match round {
+        Round::Floor => Number::mul_div_floor(ab, c, den),
+        Round::Ceil => Number::mul_div_ceil(ab, c, den),
     };
-    i128::try_from(q).map_err(|_| MathError::Overflow)
+    // `as_u128_saturating` yields u128::MAX on a result above u128, which is
+    // above i128::MAX and so fails the conversion below.
+    i128::try_from(q.as_u128_saturating()).map_err(|_| MathError::Overflow)
 }
 
 /// `a * b / den` on non-negative values.

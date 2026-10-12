@@ -36,9 +36,10 @@ default = []
 testutils = ["soroban-sdk/testutils", "blend-contract-sdk/testutils"]
 
 [dependencies]
-soroban-sdk = { version = "25.3.0", features = ["experimental_spec_shaking_v2", "hazmat-address"] }
+soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2", "hazmat-address"] }
 blend-contract-sdk = { version = "2.25.0", optional = true }
 stellar-contract-utils.workspace = true
+templar-vault-kernel = { path = "../../kernel", default-features = false }
 
 [dev-dependencies]
 proptest = "1.4"
