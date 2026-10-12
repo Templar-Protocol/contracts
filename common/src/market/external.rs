@@ -148,6 +148,9 @@ pub trait MarketExternalInterface {
     /// requests fulfilled: an entry that is skipped still costs a position read
     /// and a queue write, so it is charged too. A batch of entries that all
     /// turn out to be empty therefore pays out nothing.
+    ///
+    /// Calls that could visit more than 15 entries are rejected. Execution
+    /// requires 20 TGas of prepaid gas per entry it may visit.
     fn execute_next_supply_withdrawal_request(
         &mut self,
         batch_limit: Option<u32>,
