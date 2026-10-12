@@ -368,15 +368,11 @@ impl Contract {
             "Deployment account cannot be created",
         );
 
-        if let Some(existing) = state.registry.get(&account_id) {
-            RegistryEvent::DeployCollision {
-                account_id: account_id.clone(),
-                existing: existing.view(),
-            }
-            .emit();
+        require!(
+            !state.registry.contains_key(&account_id),
             // templar-backend's relayer matches this text verbatim until ENG-781.
-            templar_common::panic_with_message("Market ID collision");
-        }
+            "Market ID collision",
+        );
 
         state
             .registry

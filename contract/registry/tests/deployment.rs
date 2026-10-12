@@ -9,12 +9,13 @@ use rstest::rstest;
 use templar_common::{
     market::MarketConfiguration,
     market::YieldWeights,
-    registry::{Deployment, RegistryEntryView, VersionAvailability, VersionSource},
+    registry::{Deployment, VersionAvailability, VersionSource},
 };
 use templar_gateway_methods_spec::registry;
 use templar_gateway_testing::{harness, publish_deposit_for, SandboxHarness};
 use templar_gateway_types::{
-    common::WriteOperationResult, primitive::PublicKey, Base64Bytes, ManagedAccountId,
+    common::WriteOperationResult, operation::ReceiptStatus, primitive::PublicKey, Base64Bytes,
+    ManagedAccountId,
 };
 
 const MARKET_VERSION: &str = "market@0.0.0";
@@ -306,8 +307,8 @@ struct EventLog {
     data: serde_json::Value,
 }
 
-/// The `templar-registry` events named `event` that the registry logged during the operation's
-/// final transaction, including in receipts that failed.
+/// The `templar-registry` events named `event` that the registry's successful receipts logged
+/// during the operation's final transaction.
 fn registry_events<T: serde::de::DeserializeOwned>(
     result: &WriteOperationResult,
     registry_id: &AccountId,
@@ -319,7 +320,9 @@ fn registry_events<T: serde::de::DeserializeOwned>(
         .context("the operation has an outcome")?
         .receipts
         .iter()
-        .filter(|receipt| &receipt.contract_id == registry_id)
+        .filter(|receipt| {
+            &receipt.contract_id == registry_id && receipt.status == ReceiptStatus::Succeeded
+        })
         .flat_map(|receipt| &receipt.logs)
         .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
         .map(serde_json::from_str::<EventLog>)
@@ -346,17 +349,9 @@ struct Deployed {
     deployment: Deployment,
 }
 
-#[derive(serde::Deserialize)]
-struct DeployCollision {
-    account_id: AccountId,
-    existing: RegistryEntryView,
-}
-
-/// A collision fails the deploy, and the event it logs first survives in the failed receipt, so an
-/// observer can identify it without the panic text.
 #[rstest]
 #[tokio::test]
-async fn a_taken_name_collides_and_says_so(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+async fn a_taken_name_collides(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let registry = setup_registry(&harness).await?;
     let args = init_args(&registry.configuration)?;
     let deploy = || registry::Deploy {
@@ -379,19 +374,6 @@ async fn a_taken_name_collides_and_says_so(#[future(awt)] harness: SandboxHarnes
         failure.contains("Market ID collision"),
         "expected the collision panic, got: {failure:?}",
     );
-    let collisions: Vec<DeployCollision> =
-        registry_events(&result, &registry.id, "deploy_collision")?;
-    let [collision] = collisions.as_slice() else {
-        panic!(
-            "expected one deploy_collision event, got {}",
-            collisions.len()
-        );
-    };
-    assert_eq!(
-        collision.account_id.as_str(),
-        format!("market.{}", registry.id)
-    );
-    assert!(matches!(collision.existing, RegistryEntryView::Deployed(_)));
 
     Ok(())
 }

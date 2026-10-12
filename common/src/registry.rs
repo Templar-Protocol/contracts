@@ -247,13 +247,6 @@ mod tests {
 
 #[near(event_json(standard = "templar-registry"))]
 pub enum RegistryEvent {
-    /// `deploy` refused a name already taken. Logged in the receipt that then fails, so an observer
-    /// can tell a collision from any other refusal without reading the panic text.
-    #[event_version("1.0.0")]
-    DeployCollision {
-        account_id: AccountId,
-        existing: RegistryEntryView,
-    },
     /// A version became deployable: logged by `add_version` for stored code, and by its finalize
     /// callback once a global contract is confirmed, never for one that turns out not to exist.
     #[event_version("1.0.0")]

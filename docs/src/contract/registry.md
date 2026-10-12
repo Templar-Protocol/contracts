@@ -84,13 +84,12 @@ Illustrative output:
 
 ## Events
 
-The registry logs [NEP-297](https://github.com/near/NEPs/blob/master/neps/nep-0297.md) events under the `templar-registry` standard, version `1.0.0`. Each is logged by the receipt that makes its change, so an asynchronous step that later fails (a global contract that turns out not to exist, a deployment whose account creation fails) logs nothing. As with any NEAR event, count one only if its receipt succeeded: a receipt can still fail after logging, for example when the registry cannot stake the storage a new version needs, and NEAR keeps a failed receipt's logs. `deploy_collision` is the deliberate exception, logged by the receipt that fails.
+The registry logs [NEP-297](https://github.com/near/NEPs/blob/master/neps/nep-0297.md) events under the `templar-registry` standard, version `1.0.0`. Each is logged by the receipt that makes its change, so an asynchronous step that later fails (a global contract that turns out not to exist, a deployment whose account creation fails) logs nothing. As with any NEAR event, count one only if its receipt succeeded: a receipt can still fail after logging, for example when the registry cannot stake the storage a new version needs, and NEAR keeps a failed receipt's logs.
 
 | Event | Fields | Logged when |
 | --- | --- | --- |
 | `version_added` | `version_key`, `code_hash`, `availability` (`{"Stored":{"code_len":…}}` or `"Global"`) | `add_version` stores code, or its callback confirms a global contract exists |
 | `version_removed` | `version_key`, `code_hash` | `remove_version` clears a version's stored code |
 | `deployed` | `account_id`, `version_key`, `code_hash`, `block_height` | the deployed account is created and initialized and the name resolves to it |
-| `deploy_collision` | `account_id`, `existing` | `deploy` refuses a name already reserved or deployed; logged in the receipt that fails |
 
 Owner changes are logged by `near-sdk-contract-tools` under its own standard.
