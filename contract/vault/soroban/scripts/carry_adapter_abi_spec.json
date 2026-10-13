@@ -1,0 +1,32 @@
+{
+  "label": "carry-adapter",
+  "expected": [
+    {
+      "name": "supply",
+      "unwrap_result": true,
+      "inputs": [
+        {"name": "caller", "type_": "address"},
+        {"name": "asset", "type_": "address"},
+        {"name": "amount", "type_": "i128"}
+      ],
+      "outputs": []
+    },
+    {
+      "name": "progress_withdrawal",
+      "unwrap_result": true,
+      "inputs": [
+        {"name": "caller", "type_": "address"},
+        {"name": "asset", "type_": "address"},
+        {"name": "amount", "type_": "i128"}
+      ],
+      "outputs": ["i128"]
+    },
+    {
+      "name": "total_assets",
+      "unwrap_result": true,
+      "inputs": [{"name": "asset", "type_": "address"}],
+      "outputs": ["i128"]
+    }
+  ],
+  "forbidden_exports": ["rescue", "invoke", "call", "execute", "multicall"]
+}

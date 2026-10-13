@@ -13,6 +13,11 @@ The check measures:
 
 - `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm`
 
+The carry adapter deploy artifact is held to the same `128 KiB` (`131072` bytes) ceiling:
+
+- `just -f contract/vault/soroban/justfile carry-adapter-size-check` measures
+  `target/wasm32-unknown-unknown/release-soroban/templar_soroban_carry_adapter.wasm`
+
 The deploy artifact keeps contractspec metadata so the Stellar CLI can invoke public entrypoints
 directly and explorer build-info/source-attestation tooling can inspect the deployed WASM.
 

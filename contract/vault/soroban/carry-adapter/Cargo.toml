@@ -1,0 +1,48 @@
+[package]
+name = "templar-soroban-carry-adapter"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+description = "Soroban carry-trade market adapter for the Templar vault (Blend v2 fork pools)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+doctest = false
+
+[[test]]
+name = "adapter_integration"
+path = "tests/adapter_integration.rs"
+required-features = ["testutils"]
+
+[[test]]
+name = "auth_tree"
+path = "tests/auth_tree.rs"
+required-features = ["testutils"]
+
+[[test]]
+name = "harness_smoke"
+path = "tests/harness_smoke.rs"
+required-features = ["testutils"]
+
+[[test]]
+name = "adversarial"
+path = "tests/adversarial.rs"
+required-features = ["testutils"]
+
+[features]
+default = []
+testutils = ["soroban-sdk/testutils", "blend-contract-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2", "hazmat-address"] }
+blend-contract-sdk = { version = "2.25.0", optional = true }
+stellar-contract-utils.workspace = true
+templar-soroban-adapter-common = { path = "../adapter-common", default-features = false }
+templar-vault-kernel = { path = "../../kernel", default-features = false }
+
+[dev-dependencies]
+proptest = "1.4"
+soroban-sdk = { version = "25.3.0", features = ["testutils", "experimental_spec_shaking_v2"] }
+blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }

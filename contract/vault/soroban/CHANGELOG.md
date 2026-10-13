@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(soroban)* adapter-common: shared admin/pause/TTL/upgrade helpers crate;
+  carry-adapter now uses it instead of its private copies
+- *(soroban)* carry-adapter: leveraged yield-carry market route (collateral on the pool,
+  borrow-side yield leg on the yield pool, oracle-banded NAV with fail-closed surplus
+  realisation), with build/deploy/verify/size-check justfile recipes, release-ABI spec checks,
+  and an operational runbook
+- *(soroban)* carry-adapter: repayments are observable via the `withdraw` and deleverage
+  (`dlevg`) events; no dedicated `repay` event is emitted
+
 ## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-10-01
 
 ### Fixed

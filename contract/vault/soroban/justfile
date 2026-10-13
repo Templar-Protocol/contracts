@@ -52,11 +52,13 @@ soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
 default_wasm := optimized_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.wasm"
 custodial_adapter_wasm := wasm_dir + "/templar_soroban_custodial_adapter.wasm"
+carry_adapter_wasm := wasm_dir + "/templar_soroban_carry_adapter.wasm"
 curator_proxy_wasm := wasm_dir + "/templar_curator_proxy_soroban.wasm"
 governance_wasm := wasm_dir + "/templar_soroban_governance.wasm"
 share_token_wasm := wasm_dir + "/templar_soroban_share_token.wasm"
 payload_script := justfile_directory() + "/scripts/vault_payload.py"
 custodial_adapter_abi_script := justfile_directory() + "/scripts/check_custodial_adapter_release_abi.py"
+carry_adapter_abi_spec := justfile_directory() + "/scripts/carry_adapter_abi_spec.json"
 release_abi_script := justfile_directory() + "/scripts/check_release_abi.py"
 runtime_feature_script := justfile_directory() + "/scripts/require_runtime_feature.py"
 default_friendbot := "https://friendbot.stellar.org"
@@ -164,6 +166,23 @@ verify-custodial-adapter-release-abi: build-custodial-adapter
 		--test artifact_reported_at \
 		-- --nocapture
 	@echo "✓ Custodial adapter release ABI and behavior verified"
+
+# Build and optimize the carry adapter WASM.
+build-carry-adapter:
+	@echo "Building carry adapter WASM..."
+	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-carry-adapter "{{wasm_dir}}/templar_soroban_carry_adapter.wasm"
+	@echo "✓ Built: {{carry_adapter_wasm}}"
+
+# Enforce the carry adapter WASM size budget (same 128 KiB ceiling as the runtime).
+carry-adapter-size-check max_bytes="131072": build-carry-adapter
+	@python3 "{{shared_scripts_dir}}/check_wasm_budget.py" \
+		--wasm "{{carry_adapter_wasm}}" \
+		--max-bytes "{{max_bytes}}"
+
+# Verify the optimized carry adapter exports the vault-facing ABI exactly.
+verify-carry-adapter-release-abi: build-carry-adapter
+	@stellar contract info interface --wasm "{{carry_adapter_wasm}}" --output json | python3 "{{custodial_adapter_abi_script}}" --spec "{{carry_adapter_abi_spec}}"
+	@echo "✓ Carry adapter release ABI verified"
 
 # Build and optimize the curator proxy WASM.
 build-curator-proxy:
@@ -771,6 +790,68 @@ deploy-custodial-adapter custodian:
 	mkdir -p "{{state_dir}}"; \
 	echo "$adapter_id" > "{{state_dir}}/custodial_adapter_id"; \
 	echo "{{custodian}}" > "{{state_dir}}/custodial_address"
+
+# Deploy the carry adapter contract.
+# Requires: vault must be deployed first and SOROBAN_ADAPTER_ADMIN must be an explicit address or
+# capability-gated "vault". Market/parameter values come from the deployment manifest.
+deploy-carry-adapter:
+	@wasm="${CARRY_ADAPTER_WASM:-{{carry_adapter_wasm}}}"; \
+	if [ ! -f "$wasm" ]; then \
+		echo "Error: carry adapter WASM not found at $wasm"; \
+		echo "Run: just build-carry-adapter"; \
+		exit 1; \
+	fi; \
+	vault_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	if [ -z "$vault_id" ]; then \
+		echo "Error: Vault not deployed. Run 'just deploy' first."; \
+		exit 1; \
+	fi; \
+	if ! admin=$(SOROBAN_ADAPTER_VAULT_ID="$vault_id" just -f "{{justfile_directory()}}/justfile" _resolve-adapter-admin); then \
+		exit 1; \
+	fi; \
+	pool="${CARRY_POOL_ADDRESS:?CARRY_POOL_ADDRESS is required}"; \
+	yield_pool="${CARRY_YIELD_POOL_ADDRESS:?CARRY_YIELD_POOL_ADDRESS is required}"; \
+	collateral_asset="${CARRY_COLLATERAL_ASSET:?CARRY_COLLATERAL_ASSET is required}"; \
+	borrow_asset="${CARRY_BORROW_ASSET:?CARRY_BORROW_ASSET is required}"; \
+	surplus_recipient="${CARRY_SURPLUS_RECIPIENT:?CARRY_SURPLUS_RECIPIENT is required}"; \
+	borrow_utilization_bps="${CARRY_BORROW_UTILIZATION_BPS:?CARRY_BORROW_UTILIZATION_BPS is required}"; \
+	surplus_buffer_bps="${CARRY_SURPLUS_BUFFER_BPS:?CARRY_SURPLUS_BUFFER_BPS is required}"; \
+	surplus_haircut_bps="${CARRY_SURPLUS_HAIRCUT_BPS:?CARRY_SURPLUS_HAIRCUT_BPS is required}"; \
+	oracle_free_band_bps="${CARRY_ORACLE_FREE_BAND_BPS:?CARRY_ORACLE_FREE_BAND_BPS is required}"; \
+	oracle_max_age_secs="${CARRY_ORACLE_MAX_AGE_SECS:?CARRY_ORACLE_MAX_AGE_SECS is required}"; \
+	min_residual_collateral="${CARRY_MIN_RESIDUAL_COLLATERAL:?CARRY_MIN_RESIDUAL_COLLATERAL is required}"; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	echo "Deploying carry adapter..."; \
+	echo "  Admin:     $admin"; \
+	echo "  Vault:     $vault_id"; \
+	echo "  Pool:      $pool"; \
+	echo "  YieldPool: $yield_pool"; \
+	adapter_id=$(stellar contract deploy \
+		--wasm "$wasm" \
+		--network "$network" \
+		--source-account "$source" \
+		-- \
+		--admin "$admin" \
+		--vault "$vault_id" \
+		--pool "$pool" \
+		--yield-pool "$yield_pool" \
+		--collateral-asset "$collateral_asset" \
+		--borrow-asset "$borrow_asset" \
+		--surplus-recipient "$surplus_recipient" \
+		--borrow-utilization-bps "$borrow_utilization_bps" \
+		--surplus-buffer-bps "$surplus_buffer_bps" \
+		--surplus-haircut-bps "$surplus_haircut_bps" \
+		--oracle-free-band-bps "$oracle_free_band_bps" \
+		--oracle-max-age-secs "$oracle_max_age_secs" \
+		--min-residual-collateral "$min_residual_collateral"); \
+	if [ -z "$adapter_id" ]; then \
+		echo "Error: deploy failed — no adapter ID returned"; \
+		exit 1; \
+	fi; \
+	echo "✓ Carry adapter deployed: $adapter_id"; \
+	mkdir -p "{{state_dir}}"; \
+	echo "$adapter_id" > "{{state_dir}}/carry_adapter_id"
 
 # Invoke a function on the custodial adapter contract.
 custodial-invoke *args:
@@ -1479,6 +1560,9 @@ help:
 	@echo "  just build-blend-adapter      Build Blend adapter WASM"
 	@echo "  just build-custodial-adapter  Build custodial adapter WASM"
 	@echo "  just verify-custodial-adapter-release-abi  Verify optimized custodial adapter ABI"
+	@echo "  just build-carry-adapter      Build carry adapter WASM"
+	@echo "  just carry-adapter-size-check Enforce carry adapter 128 KiB WASM budget"
+	@echo "  just verify-carry-adapter-release-abi  Verify optimized carry adapter ABI"
 	@echo "  just build-curator-proxy      Build curator proxy WASM"
 	@echo "  just verify-runtime-feature-matrix  Verify runtime capability masks"
 	@echo "  just verify-release-wasm-abi  Verify ENG-484 release ABIs and artifact behavior"

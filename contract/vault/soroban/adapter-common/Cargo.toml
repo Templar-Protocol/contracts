@@ -1,0 +1,17 @@
+[package]
+name = "templar-soroban-adapter-common"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+description = "Shared admin/pause/TTL/upgrade helpers for Templar Soroban vault adapters"
+
+[lib]
+doctest = false
+
+[dependencies]
+soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2", "hazmat-address"] }
+stellar-contract-utils.workspace = true
+
+[dev-dependencies]
+soroban-sdk = { version = "25.3.0", features = ["testutils", "experimental_spec_shaking_v2", "hazmat-address"] }

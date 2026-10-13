@@ -1,0 +1,31 @@
+{
+  "$schema": "templar-carry-adapter-deployment-manifest-v1",
+  "adapter": {
+    "package": "templar-soroban-carry-adapter",
+    "wasm_sha256": null,
+    "contract_id": null,
+    "size_budget_bytes": 131072
+  },
+  "markets": {
+    "pool": null,
+    "yield_pool": null,
+    "collateral_asset": null,
+    "borrow_asset": null
+  },
+  "parameters": {
+    "borrow_utilization_bps": null,
+    "surplus_buffer_bps": null,
+    "surplus_haircut_bps": null,
+    "oracle_free_band_bps": null,
+    "oracle_max_age_secs": null,
+    "min_residual_collateral": null,
+    "shortfall_funder": null,
+    "surplus_recipient": null
+  },
+  "fork_pin": {
+    "repo": "blend-contracts-v2",
+    "commit": "54afdae01bb8e484514940229e06460aa3fa6a1f",
+    "pool_wasm_sha256": "2db04d55fa91246f263c7cd98ba9b436a97e5f32218d67a86ea7beca057939fa",
+    "pool_factory_wasm_sha256": "80abaf3c68fd15adade9f82165baa9b50d85800e497c99b45809e1fbd7397de2"
+  }
+}

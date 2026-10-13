@@ -257,6 +257,29 @@ sentinel as soon as operational key infrastructure is ready. |
 
 ---
 
+
+## Carry Adapter Threat Model
+
+Scoped to `contract/vault/soroban/carry-adapter`. Threats below are specific to the carry route;
+the general vault rows above still apply.
+
+The adapter's admin/pause/TTL/upgrade helpers live in the shared
+`templar-soroban-adapter-common` crate; their trust posture is identical to the
+Blend adapter's (same code, same two-step admin, same upgrade gate).
+
+| Threat | Issues |
+|---|---|
+| **Spoofing** | **Carry.Spoof.1** — The vault-facing ABI is pinned to `supply`/`progress_withdrawal`/`total_assets` and verified at release; any caller claiming to be the vault fails `require_auth` against the stored vault address. The release ABI check (`verify-carry-adapter-release-abi`) also rejects `rescue`/`invoke`/`call`/`execute`/`multicall` exports so no generic-call surface exists to spoof. |
+| | **Carry.Spoof.2** — The adapter reads the pool's configured oracle at price time and checks decimals==7 and age <= oracle_max_age_secs, so a spoofed/stale price feed cannot shift NAV outside the oracle-free band without detection. |
+| **Tampering** | **Carry.Tamper.1** — The adapter admin can `upgrade` the adapter WASM; admin compromise rewrites all carry accounting logic. Two-step `set_admin`/`accept_admin` rotation and monitoring of upgrade events are the mitigations (same posture as the Blend adapter admin trust boundary). |
+| | **Carry.Tamper.2** — The `surplus_recipient` converter is immutable but off-contract: between `sweep_surplus` and the donation of converted collateral, custody of the leg sits with the recipient. `realisation_pending` makes the window fail closed — `supply`/`total_assets` revert while set — so tampering with or delaying the conversion cannot corrupt vault NAV; the window is bounded by the runbook (hours, not days). |
+| | **Carry.Tamper.3** — During `realisation_pending` the vault books deposits/redeems against the stored (stale) principal, hiding real moves of `Y − D`. The stale-principal window ends deterministically on `clear_realisation_pending` + `refresh_markets`; monitoring `realisation_pending()` duration bounds exposure. |
+| **Information Disclosure** | **Carry.Info.1** — Position state (`ltv()`, `position()`, `idle_balances()`) is public on-chain data; carry positions leak strategy intent. Accepted: on-chain transparency, standard for market routes. |
+| **Denial of Service** | **Carry.DoS.1** — Pool-side conditions (health factor below threshold, auction in progress, pool status blocking borrow, 100% collateral-pool utilization, `min_residual_collateral`) can block unwind/supply paths. `deleverage` (with delete-auction when applicable) is the admin recovery path; the runbook documents each blocker and its recovery. |
+| | **Carry.DoS.2** — While `realisation_pending` is set, `supply` reverts, so allocator retries loop until `clear_realisation_pending`. This is intentional fail-closed behavior; the converter/donation step is the liveness dependency and is monitored. |
+| **Elevation of Privilege** | **Carry.Elev.1** — `set_params`, `deleverage`, `sweep_surplus`, and `clear_realisation_pending` are admin-gated on one domain; `set_paused` accepts the admin or the vault (as in the Blend adapter), so the vault can halt new carry in an emergency. A compromised admin cannot redirect principal to arbitrary addresses (no `rescue`, no generic call), but can pause the route and stall realisation. Admin keys are the elevation boundary and must be multisig-held. |
+| | **Carry.Elev.2** — The immutable `surplus_recipient` is chosen at construction; a deployer who sets it to an attacker address converts every future surplus sweep into a directed donation. Manifest review of `CARRY_SURPLUS_RECIPIENT` at deploy time is the control. |
+
 ## Soroban-Specific Notes
 
 - **Reentrancy model**: Soroban does not expose the traditional EVM reentrancy model. Cross-contract calls are still synchronous within a transaction, so the main review focus is adapter behavior, authorization, and atomic rollback semantics.
