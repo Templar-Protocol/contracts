@@ -2,6 +2,9 @@
 //!
 //! Free functions only: each adapter keeps its own `#[contractimpl]` surface
 //! and error enum, and maps [`CommonError`] into it.
+//! Items marked `AUDITED BY HALBORN` were extracted from `blend-adapter`, which is in the scope of
+//! Halborn's curated vaults audit; items marked "Adapted" differ in shape from the audited code.
+//! The audited revision of `blend-adapter` was not verified when these markers were written.
 #![no_std]
 
 use soroban_sdk::{
@@ -9,8 +12,12 @@ use soroban_sdk::{
 };
 use stellar_contract_utils::upgradeable;
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `INSTANCE_TTL_THRESHOLD`.
 /// Re-extend instance storage TTL when remaining TTL drops below ~30 days.
 pub const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `INSTANCE_TTL_EXTEND_TO`.
 /// Extend instance storage TTL to the Soroban maximum (~6 months).
 pub const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
 
@@ -31,18 +38,23 @@ pub enum CommonKey {
     Paused,
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `extend_instance_ttl`.
 pub fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 }
 
+/// Adapted from the `blend-adapter` constructor's admin/vault storage writes; not itself audited code.
 pub fn init_admin_vault(env: &Env, admin: &Address, vault: &Address) {
     let storage = env.storage().instance();
     storage.set(&CommonKey::Admin, admin);
     storage.set(&CommonKey::Vault, vault);
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `get_address`.
 fn get_address(env: &Env, key: CommonKey) -> Result<Address, CommonError> {
     env.storage()
         .instance()
@@ -50,18 +62,26 @@ fn get_address(env: &Env, key: CommonKey) -> Result<Address, CommonError> {
         .ok_or(CommonError::MissingConfig)
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `get_admin`.
 pub fn admin(env: &Env) -> Result<Address, CommonError> {
     get_address(env, CommonKey::Admin)
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `get_vault`.
 pub fn vault(env: &Env) -> Result<Address, CommonError> {
     get_address(env, CommonKey::Vault)
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `get_pending_admin`.
 pub fn pending_admin(env: &Env) -> Result<Address, CommonError> {
     get_address(env, CommonKey::PendingAdmin)
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `require_admin`.
 pub fn require_admin(env: &Env, caller: &Address) -> Result<(), CommonError> {
     caller.require_auth();
     if caller != &admin(env)? {
@@ -70,6 +90,8 @@ pub fn require_admin(env: &Env, caller: &Address) -> Result<(), CommonError> {
     Ok(())
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `require_vault`.
 pub fn require_vault(env: &Env, caller: &Address) -> Result<(), CommonError> {
     caller.require_auth();
     if caller != &vault(env)? {
@@ -78,6 +100,8 @@ pub fn require_vault(env: &Env, caller: &Address) -> Result<(), CommonError> {
     Ok(())
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `require_admin_or_vault`.
 /// Caller must be the admin or the vault (blend-adapter's pause policy).
 pub fn require_admin_or_vault(env: &Env, caller: &Address) -> Result<(), CommonError> {
     caller.require_auth();
@@ -87,6 +111,10 @@ pub fn require_admin_or_vault(env: &Env, caller: &Address) -> Result<(), CommonE
     Ok(())
 }
 
+/// Adapted from the inline pause-flag write in `blend-adapter` `set_paused` (not a verbatim copy; the
+/// storage write and `paused` event are factored out). AUDITED BY HALBORN at
+/// https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing (curated vaults
+/// audit, June 2026) as part of `set_paused`.
 /// Set the pause flag and publish the `paused` event (caller already authorized).
 #[allow(deprecated)]
 pub fn set_paused_flag(env: &Env, caller: &Address, paused: bool) {
@@ -95,6 +123,8 @@ pub fn set_paused_flag(env: &Env, caller: &Address, paused: bool) {
         .publish((symbol_short!("paused"), caller.clone()), paused);
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `is_paused`.
 pub fn is_paused(env: &Env) -> bool {
     env.storage()
         .instance()
@@ -102,6 +132,8 @@ pub fn is_paused(env: &Env) -> bool {
         .unwrap_or(false)
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `require_not_paused`.
 pub fn require_not_paused(env: &Env) -> Result<(), CommonError> {
     if is_paused(env) {
         return Err(CommonError::Paused);
@@ -109,6 +141,8 @@ pub fn require_not_paused(env: &Env) -> Result<(), CommonError> {
     Ok(())
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `set_admin` (two-step propose).
 /// Admin-only: stage `new_admin` as pending (two-step handover).
 #[allow(deprecated)]
 pub fn propose_admin(env: &Env, caller: &Address, new_admin: &Address) -> Result<(), CommonError> {
@@ -123,6 +157,8 @@ pub fn propose_admin(env: &Env, caller: &Address, new_admin: &Address) -> Result
     Ok(())
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `accept_admin`.
 /// Pending admin accepts: becomes admin and the pending slot is cleared.
 /// Emits `(admin_acc, old_admin)` with the new admin as data, like blend-adapter.
 #[allow(deprecated)]
@@ -140,6 +176,8 @@ pub fn accept_admin(env: &Env, caller: &Address) -> Result<(), CommonError> {
     Ok(())
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `upgrade` (`Upgradeable`).
 /// Admin-only wasm upgrade; emits `upgrade`.
 #[allow(deprecated)]
 pub fn upgrade_as_admin(
@@ -156,6 +194,8 @@ pub fn upgrade_as_admin(
     Ok(())
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `is_contract_address`.
 pub fn is_contract_address(addr: &Address) -> bool {
     matches!(
         AddressPayload::from_address(addr),
@@ -163,6 +203,8 @@ pub fn is_contract_address(addr: &Address) -> bool {
     )
 }
 
+/// AUDITED BY HALBORN at https://drive.google.com/file/d/1fV46zN9bd7ZozAsDLZyc71Zvi240yeAY/view?usp=sharing
+/// (curated vaults audit, June 2026); source: `blend-adapter/src/lib.rs` `require_contract_address`.
 pub fn require_contract_address(addr: &Address) -> Result<(), CommonError> {
     if is_contract_address(addr) {
         Ok(())
