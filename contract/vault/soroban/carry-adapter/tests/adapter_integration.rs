@@ -219,3 +219,292 @@ fn stale_oracle_errors_only_outside_band() {
         "stale outside band"
     );
 }
+
+// -------------------------------------------------------------------------
+// Round-up rounding / zero-mint regression tests (review findings #1207,
+// #1219, #1216, constructor same-asset). Scenarios mirror the reviewers'
+// harness repros: third-party borrow drives accrual, then the adapter acts.
+// -------------------------------------------------------------------------
+
+const E12: i128 = 1_000_000_000_000;
+const E7: i128 = 10_000_000;
+
+/// Ceiling division on positive values.
+fn ceil_div(a: i128, b: i128) -> i128 {
+    (a + b - 1) / b
+}
+
+/// Fresh adapter client for `fx` (vault = fixture whale).
+fn adapter_client<'a>(fx: &'a CarryFixture<'a>) -> CarryAdapterContractClient<'a> {
+    let id = fx.env.register(
+        CarryAdapterContract,
+        (
+            fx.admin.clone(),
+            fx.whale.clone(), // vault
+            fx.pool.address.clone(),
+            fx.yield_pool.address.clone(),
+            fx.collateral_token.clone(),
+            fx.borrow_token.clone(),
+            fx.whale.clone(), // surplus recipient
+            8_000u32,
+            10u32,
+            500u32,
+            50u32,
+            86_400u64,
+            0i128,
+        ),
+    );
+    CarryAdapterContractClient::new(&fx.env, &id)
+}
+
+#[test]
+fn supply_at_tight_max_util_headroom_after_accrual_succeeds() {
+    // #1207: third-party borrow accrues the borrow reserve past 1e12 and the
+    // raw max_util headroom (444_080_136_984 for this fixture) books
+    // liab' = liab + headroom + 1 > allowed, so the pool reverted the whole
+    // supply (InvalidUtilRate). The fixed headroom formula subtracts
+    // `min_repay(d_rate) + 1`, so the supply proceeds and the pool's own
+    // utilization check holds afterwards.
+    let env = Env::default();
+    let fx = CarryFixture::new(&env);
+    let a = adapter_client(&fx);
+    env.mock_all_auths();
+    CarryFixture::mint(&env, &fx.collateral_token, &fx.third_party, 100_0000000);
+    fx.third_party_supply(
+        &fx.pool,
+        &fx.third_party,
+        &fx.collateral_token,
+        100_0000000,
+        true,
+    );
+    fx.third_party_borrow(
+        &fx.pool,
+        &fx.third_party,
+        &fx.third_party,
+        &fx.borrow_token,
+        4_300_000_000_000,
+    );
+    fx.advance_time(30 * 24 * 3600);
+
+    let r = fx.reserve(&fx.pool, &fx.borrow_token);
+    assert!(r.data.d_rate > E12, "borrow reserve must accrue");
+
+    CarryFixture::mint(&env, &fx.collateral_token, &a.address, 10_0000000);
+    let res = a.try_supply(&fx.whale, &fx.collateral_token, &10_0000000);
+    assert_eq!(
+        res,
+        Ok(Ok(())),
+        "supply at accrued headroom must succeed: {res:?}"
+    );
+
+    // The pool's own utilization check holds after the adapter's borrow.
+    let r2 = fx.reserve(&fx.pool, &fx.borrow_token);
+    let supply2 = r2.data.b_supply * r2.data.b_rate / E12;
+    let liab2 = ceil_div(r2.data.d_supply * r2.data.d_rate, E12);
+    let util2 = ceil_div(liab2 * E7, supply2);
+    assert!(
+        util2 <= i128::from(r2.config.max_util),
+        "util2={util2} > max_util"
+    );
+
+    // A deleverage of the (now clamped) debt is funded and must not panic.
+    assert!(
+        a.try_deleverage(&fx.admin).is_ok(),
+        "deleverage must not panic"
+    );
+}
+
+#[test]
+fn progress_withdrawal_dust_repay_succeeds_after_accrual() {
+    // #1219: FXRP-like cheap collateral (D/C < 1) makes `r = ceil(D*1/C) == 1`
+    // a dust repay burning zero d-tokens; pre-fix the pool panicked
+    // (InvalidDTokenBurnAmount). Post-fix the repay is raised to the smallest
+    // burnable amount and the 1-unit withdrawal proceeds.
+    let env = Env::default();
+    let fx = CarryFixture::new(&env);
+    let a = adapter_client(&fx);
+    env.mock_all_auths();
+    fx.set_oracle_price(&fx.collateral_token, 5_000_000);
+    fx.third_party_supply(
+        &fx.pool,
+        &fx.third_party,
+        &fx.borrow_token,
+        50_0000000,
+        true,
+    );
+    fx.third_party_borrow(
+        &fx.pool,
+        &fx.third_party,
+        &fx.third_party,
+        &fx.borrow_token,
+        10_0000000,
+    );
+    CarryFixture::mint(&env, &fx.collateral_token, &a.address, 1000_0000000);
+    a.supply(&fx.whale, &fx.collateral_token, &1000_0000000);
+    fx.advance_time(365 * 24 * 3600);
+    fx.refresh_prices();
+    fx.set_oracle_price(&fx.collateral_token, 5_000_000);
+
+    let p = a.position();
+    let d_rate = fx.reserve(&fx.pool, &fx.borrow_token).data.d_rate;
+    let r_units = ceil_div(p.d, p.c);
+    let burn = r_units * E12 / d_rate;
+    assert!(
+        d_rate > E12 && r_units == 1 && burn == 0,
+        "dust-repay precondition (r=1, burn=0): d_rate={} C={} D={}",
+        d_rate,
+        p.c,
+        p.d
+    );
+
+    let res = a.try_progress_withdrawal(&fx.whale, &fx.collateral_token, &1);
+    assert!(res.is_ok(), "dust repay must not panic the pool: {res:?}");
+    assert_eq!(res.unwrap().unwrap(), 1, "dust collateral delivered");
+    assert!(
+        a.try_deleverage(&fx.admin).is_ok(),
+        "deleverage after dust withdrawal"
+    );
+}
+
+#[test]
+fn supply_skips_zero_btoken_borrow_leg() {
+    // #1216: yield pool accrued (b_rate > 1e12); borrow reserve unaccrued
+    // (d_rate == 1e12) with exactly 1 unit of max_util headroom. The raw
+    // headroom borrow (b=1) would deploy 1 unit into a yield pool minting 0
+    // b-tokens (pool panic). Post-fix the borrow leg is skipped and the
+    // collateral leg stands on its own.
+    let env = Env::default();
+    let fx = CarryFixture::new(&env);
+    let a = adapter_client(&fx);
+    env.mock_all_auths();
+    // Accrue the yield pool: borrow-token collateral + borrow there.
+    CarryFixture::mint(&env, &fx.borrow_token, &fx.third_party, 20_000_000_000_000);
+    fx.third_party_supply(
+        &fx.yield_pool,
+        &fx.third_party,
+        &fx.borrow_token,
+        20_000_000_000_000,
+        true,
+    );
+    fx.third_party_borrow(
+        &fx.yield_pool,
+        &fx.third_party,
+        &fx.third_party,
+        &fx.borrow_token,
+        10_000_000_000_000,
+    );
+    fx.advance_time(365 * 24 * 3600);
+    let ry = fx.reserve(&fx.yield_pool, &fx.borrow_token);
+    assert!(ry.data.b_rate > E12, "yield pool must accrue b_rate > 1e12");
+
+    // Leave exactly 1 unit of max_util headroom on the borrow pool.
+    let r = fx.reserve(&fx.pool, &fx.borrow_token);
+    assert_eq!(r.data.d_rate, E12, "borrow pool must stay unaccrued");
+    let supply = r.data.b_supply * r.data.b_rate / E12;
+    let allowed = supply * i128::from(r.config.max_util) / E7;
+    CarryFixture::mint(&env, &fx.collateral_token, &fx.third_party, 100_0000000);
+    fx.third_party_supply(
+        &fx.pool,
+        &fx.third_party,
+        &fx.collateral_token,
+        100_0000000,
+        true,
+    );
+    fx.third_party_borrow(
+        &fx.pool,
+        &fx.third_party,
+        &fx.third_party,
+        &fx.borrow_token,
+        allowed - 1,
+    );
+
+    CarryFixture::mint(&env, &fx.collateral_token, &a.address, 10_0000000);
+    let res = a.try_supply(&fx.whale, &fx.collateral_token, &10_0000000);
+    assert_eq!(
+        res,
+        Ok(Ok(())),
+        "zero-mint borrow leg must be skipped: {res:?}"
+    );
+    let pos = a.position();
+    assert_eq!(pos.d, 0, "no borrow leg opened");
+    assert_eq!(pos.y_pool, 0, "no yield leg deployed");
+}
+
+#[test]
+fn supply_rejects_dust_collateral_before_submit() {
+    // Dust `SupplyCollateral` whose b-token mint rounds to zero is rejected
+    // with InvalidInput before any pool submit (pool panic #1216 pre-fix).
+    let env = Env::default();
+    let fx = CarryFixture::new(&env);
+    let a = adapter_client(&fx);
+    env.mock_all_auths();
+    // Accrue the collateral reserve: third-party collateral + collateral
+    // borrow, then a year of time.
+    CarryFixture::mint(&env, &fx.collateral_token, &fx.third_party, 100_0000000);
+    fx.third_party_supply(
+        &fx.pool,
+        &fx.third_party,
+        &fx.collateral_token,
+        100_0000000,
+        true,
+    );
+    fx.third_party_borrow(
+        &fx.pool,
+        &fx.third_party,
+        &fx.third_party,
+        &fx.collateral_token,
+        50_0000000,
+    );
+    fx.advance_time(365 * 24 * 3600);
+    let rc = fx.reserve(&fx.pool, &fx.collateral_token);
+    assert!(
+        rc.data.b_rate > E12,
+        "collateral reserve must accrue b_rate > 1e12"
+    );
+
+    CarryFixture::mint(&env, &fx.collateral_token, &a.address, 10_0000000);
+    let res = a.try_supply(&fx.whale, &fx.collateral_token, &1);
+    // InvalidInput pre-submit, not a pool panic.
+    assert!(
+        matches!(res, Err(Ok(CarryError::InvalidInput))),
+        "dust collateral must be rejected with InvalidInput: {res:?}"
+    );
+    // Nothing executed: the adapter still holds all collateral, pool empty.
+    let pos = a.position();
+    assert_eq!(pos.c_pool, 0, "no collateral was supplied");
+    assert_eq!(
+        TokenClient::new(&env, &fx.collateral_token).balance(&a.address),
+        10_0000000,
+        "collateral stays with the adapter"
+    );
+}
+
+#[test]
+fn constructor_rejects_collateral_equal_borrow_asset() {
+    let env = Env::default();
+    let fx = CarryFixture::new(&env);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register(
+            CarryAdapterContract,
+            (
+                fx.admin.clone(),
+                fx.whale.clone(),
+                fx.pool.address.clone(),
+                fx.yield_pool.address.clone(),
+                fx.borrow_token.clone(),
+                fx.borrow_token.clone(),
+                fx.whale.clone(),
+                8_000u32,
+                10u32,
+                500u32,
+                50u32,
+                86_400u64,
+                0i128,
+            ),
+        )
+    }));
+    assert!(
+        outcome.is_err(),
+        "collateral_asset == borrow_asset must be rejected"
+    );
+}

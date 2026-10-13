@@ -244,19 +244,36 @@ pub fn borrow_target_b(
 }
 
 /// Largest extra borrow the borrow reserve accepts before its own utilization
-/// exceeds `max_util` (7 decimals): `max(0, floor(supply * max_util / 1e7) - liab)`.
+/// exceeds `max_util` (7 decimals), accounting for the pool's d-token round
+/// trip: `max(0, floor(supply * max_util / 1e7) - liab - ceil(d_rate / 1e12) - 1)`.
 ///
-/// This is exact for the pool's `ceil(liab' * 1e7 / supply) <= max_util` check
-/// on the underlying amount; the d-token mint rounds the booked debt up, so
-/// the caller should treat the result as the clamp, not as slack.
+/// The pool books `Borrow(b)` as `ceil(b * 1e12 / d_rate)` d-tokens and then
+/// re-derives `liab' = ceil(d_supply' * d_rate / 1e12)` before checking
+/// `ceil(liab' * 1e7 / supply) <= max_util`, so `liab'` can exceed `liab + b`
+/// by up to `ceil(d_rate / 1e12)`; one more unit is held back as margin.
 pub fn max_util_headroom(
     reserve_supply: i128,
     reserve_liab: i128,
     max_util: u32,
+    d_rate: i128,
 ) -> Result<i128, MathError> {
     nn(reserve_liab)?;
     let allowed = mul_div(reserve_supply, i128::from(max_util), SCALAR_7, Round::Floor)?;
-    Ok(sub(allowed, reserve_liab)?.max(0))
+    let rounding = add(min_repay(d_rate)?, 1)?;
+    Ok(sub(sub(allowed, reserve_liab)?, rounding)?.max(0))
+}
+
+/// Smallest underlying repay that burns at least one d-token:
+/// `ceil(d_rate / 1e12)` (the pool burns `floor(r * 1e12 / d_rate)`, and a zero
+/// burn panics). Also the d-token rounding slack of a borrow.
+pub fn min_repay(d_rate: i128) -> Result<i128, MathError> {
+    mul_div(d_rate, 1, RATE_SCALE, Round::Ceil)
+}
+
+/// Whether depositing `amount` underlying mints at least one b-token at
+/// `b_rate` (the pool mints `floor(amount * 1e12 / b_rate)`; zero panics).
+pub fn mints_b_tokens(amount: i128, b_rate: i128) -> Result<bool, MathError> {
+    Ok(mul_div(amount, RATE_SCALE, b_rate, Round::Floor)? > 0)
 }
 
 /// Amount to borrow now: `clamp(b_target - D, 0, headroom)`.
@@ -351,6 +368,10 @@ pub struct UnwindIn {
     /// Residual collateral the pool needs to keep the position valid
     /// (heuristic; the pool's `min_collateral` check has the last word).
     pub min_residual: i128,
+    /// Smallest underlying repay that burns at least one d-token
+    /// (`ceil(d_rate / 1e12)`); a smaller `Repay` makes the pool panic
+    /// (#1219). `0` disables the dust guard.
+    pub min_repay: i128,
 }
 
 /// Result of [`unwind_split`].
@@ -387,6 +408,7 @@ pub fn unwind_split(i: &UnwindIn) -> Result<UnwindOut, MathError> {
         i.yield_withdrawable,
         i.pool_cap,
         i.min_residual,
+        i.min_repay,
     ] {
         nn(v)?;
     }
@@ -407,6 +429,19 @@ pub fn unwind_split(i: &UnwindIn) -> Result<UnwindOut, MathError> {
     } else {
         mul_div(i.d, x_req, i.c, Round::Ceil)?
     };
+    // The pool's `Repay` burns `floor(r * 1e12 / d_rate)` d-tokens and panics
+    // on zero (#1219). Raise `r` to the smallest burnable amount when it is
+    // fundable; otherwise release nothing at all — delivering collateral
+    // without a repay would worsen health, and the caller maps the empty plan
+    // to `ZeroWithdrawal`.
+    if r > 0 && i.min_repay > 0 && r < i.min_repay {
+        let funds = add(i.idle_b, i.yield_withdrawable)?;
+        if i.d >= i.min_repay && funds >= i.min_repay {
+            r = i.min_repay;
+        } else {
+            return Ok(zero);
+        }
+    }
     let funded = r.min(add(i.idle_b, i.yield_withdrawable)?);
     let mut x = x_req;
     if funded < r {
@@ -677,14 +712,38 @@ mod tests {
 
     #[test]
     fn max_util_headroom_cases() {
-        assert_eq!(max_util_headroom(1_000, 100, 9_000_000), Ok(800));
-        assert_eq!(max_util_headroom(1_000, 900, 9_000_000), Ok(0));
-        assert_eq!(max_util_headroom(1_000, 950, 9_000_000), Ok(0));
-        assert_eq!(max_util_headroom(0, 0, 9_000_000), Ok(0));
         assert_eq!(
-            max_util_headroom(1_000, -1, 9_000_000),
+            max_util_headroom(1_000, 100, 9_000_000, RATE_SCALE),
+            Ok(798)
+        );
+        assert_eq!(max_util_headroom(1_000, 900, 9_000_000, RATE_SCALE), Ok(0));
+        assert_eq!(max_util_headroom(1_000, 950, 9_000_000, RATE_SCALE), Ok(0));
+        assert_eq!(max_util_headroom(0, 0, 9_000_000, RATE_SCALE), Ok(0));
+        assert_eq!(
+            max_util_headroom(1_000, -1, 9_000_000, RATE_SCALE),
             Err(MathError::Negative)
         );
+        // d_rate > RATE_SCALE costs `ceil(d_rate/1e12)` units of clamp, plus
+        // the unit of margin.
+        assert_eq!(
+            max_util_headroom(1_000, 100, 9_000_000, 2 * RATE_SCALE),
+            Ok(797)
+        );
+        assert_eq!(
+            max_util_headroom(1_000, 100, 9_000_000, RATE_SCALE / 2),
+            Ok(798)
+        );
+    }
+
+    #[test]
+    fn min_repay_and_b_token_check() {
+        assert_eq!(min_repay(RATE_SCALE), Ok(1));
+        assert_eq!(min_repay(RATE_SCALE + 1), Ok(2));
+        assert_eq!(min_repay(1), Ok(1));
+        assert_eq!(mints_b_tokens(1, RATE_SCALE), Ok(true));
+        assert_eq!(mints_b_tokens(1, 2 * RATE_SCALE), Ok(false));
+        assert_eq!(mints_b_tokens(2, 2 * RATE_SCALE), Ok(true));
+        assert_eq!(mints_b_tokens(0, RATE_SCALE), Ok(false));
     }
 
     // ----- liquidity cap -----------------------------------------------------
@@ -774,6 +833,7 @@ mod tests {
             yield_withdrawable: 1_000,
             pool_cap: 800,
             min_residual: 0,
+            min_repay: 1,
         }
     }
 
@@ -890,6 +950,7 @@ mod tests {
             idle_b: i128::MAX / 2,
             yield_withdrawable: i128::MAX / 2,
             min_residual: 0,
+            min_repay: 1,
         };
         assert_eq!(unwind_split(&i), Err(MathError::Overflow));
     }
@@ -1030,18 +1091,29 @@ mod tests {
 
         #[test]
         fn max_util_headroom_respects_pool_check(
-            supply in 1..=E18, liab_pct in 0u32..=100, max_util in 1u32..=9_900_000,
+            b_supply in 1..=1_000_000_000_000_000_000_000i128,
+            b_rate in E12..=6 * E12,
+            d_rate in E12..=8 * E12,
+            ratio_ppm in prop_oneof![0..=1_000_000i128, 999_000..=1_000_000i128, 999_990..=1_000_000i128],
+            max_util in 1u32..=9_900_000,
         ) {
-            let liab = supply * i128::from(liab_pct) / 100;
-            let h = max_util_headroom(supply, liab, max_util).unwrap();
+            let supply = b_supply * b_rate / E12;
+            let d_supply = (supply * ratio_ppm / 1_000_000) * E12 / d_rate;
+            let m = PoolModel { b_supply, b_rate, d_supply, d_rate };
+            let (liab, util_before) = (m.liab(), m.utilization());
+            let h = max_util_headroom(supply, liab, max_util, d_rate).unwrap();
             prop_assert!(h >= 0);
-            if liab <= supply {
-                // borrowing exactly `h` keeps utilization <= max_util, one more breaks it
-                let util = |l: i128| if l == 0 { 0 } else if l >= supply { SCALAR_7 } else { (l * SCALAR_7 + supply - 1) / supply };
-                if h > 0 { prop_assert!(util(liab + h) <= i128::from(max_util)); }
-                if h > 0 || liab * SCALAR_7 <= supply * i128::from(max_util) {
-                    prop_assert!(util(liab + h + 1) > i128::from(max_util) || liab + h + 1 >= supply);
-                }
+            if util_before <= i128::from(max_util) {
+                // Borrowing exactly `h` goes through the pool's d-token round
+                // trip: `Borrow(h)` mints `ceil(h*1e12/d_rate)` d-tokens and
+                // the reserve re-derives debt as `ceil(d_supply'*d_rate/1e12)`.
+                // The booked debt must still pass `util <= max_util` (#1207).
+                let d_mint = (h * E12 + d_rate - 1) / d_rate;
+                let after = PoolModel { d_supply: d_supply + d_mint, ..m };
+                prop_assert!(
+                    after.utilization() <= i128::from(max_util),
+                    "borrowing headroom {h} trips max_util: {m:?} -> {after:?}"
+                );
             }
         }
 
@@ -1073,7 +1145,7 @@ mod tests {
             amount in 0..=2 * E18,
         ) {
             let c = c_pool + idle_c;
-            let i = UnwindIn { amount, c, c_pool, idle_c, d, idle_b, yield_withdrawable: yield_w, pool_cap, min_residual };
+            let i = UnwindIn { amount, c, c_pool, idle_c, d, idle_b, yield_withdrawable: yield_w, pool_cap, min_residual, min_repay: 1 };
             let o = unwind_split(&i).unwrap();
             let x = o.x_idle + o.x_pool;
             prop_assert!(o.x_idle >= 0 && o.x_pool >= 0 && o.r >= 0);
@@ -1099,7 +1171,7 @@ mod tests {
             c_pool in 1..=E18, idle_c in amt(E18), d in 1..=E18, amount in 1..=E18,
         ) {
             let c = c_pool + idle_c;
-            let i = UnwindIn { amount, c, c_pool, idle_c, d, idle_b: d, yield_withdrawable: d, pool_cap: c_pool, min_residual: 0 };
+            let i = UnwindIn { amount, c, c_pool, idle_c, d, idle_b: d, yield_withdrawable: d, pool_cap: c_pool, min_residual: 0, min_repay: 1 };
             let o = unwind_split(&i).unwrap();
             let x = amount.min(c);
             prop_assert_eq!(o.x_idle + o.x_pool, x);

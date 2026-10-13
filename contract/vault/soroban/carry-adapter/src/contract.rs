@@ -134,7 +134,7 @@ impl CarryAdapterContract {
         require_contract_address(&vault)?;
         require_contract_address(&pool)?;
         require_contract_address(&yield_pool)?;
-        if pool == yield_pool {
+        if pool == yield_pool || collateral_asset == borrow_asset {
             return Err(CarryError::InvalidInput);
         }
         let params = Params {
@@ -189,6 +189,14 @@ impl CarryAdapterContract {
         let adapter = env.current_contract_address();
         let params = get_params(&env)?;
 
+        // A collateral `amount` whose b-token mint rounds to zero is invalid
+        // input: the pool would panic on `SupplyCollateral` (#1216). Check
+        // this before any submit so nothing executes on a doomed call.
+        let c_b_rate = env.reserve(&pool, &asset).data.b_rate;
+        if !math::mints_b_tokens(amount, c_b_rate)? {
+            return Err(CarryError::InvalidInput);
+        }
+
         // 1. Supply collateral.
         let mut requests = Vec::new(&env);
         requests.push_back(Request {
@@ -216,9 +224,12 @@ impl CarryAdapterContract {
             reserve_supply(&s.b_reserve),
             reserve_liabilities(&s.b_reserve),
             s.b_reserve.config.max_util,
+            s.b_reserve.data.d_rate,
         )?;
         let b = math::borrow_amount(b_target, s.d, headroom)?;
-        if b <= 0 {
+        // `b <= 0` or a zero b-token mint on the yield pool both mean the
+        // borrow leg is skipped (#1216); the collateral leg stands on its own.
+        if b <= 0 || !math::mints_b_tokens(b, s.y_reserve.data.b_rate)? {
             env.events()
                 .publish((symbol_short!("borrow"), symbol_short!("skip")), amount);
             return Ok(());
@@ -300,6 +311,7 @@ impl CarryAdapterContract {
             yield_withdrawable: yield_cap,
             pool_cap,
             min_residual: params.min_residual_collateral,
+            min_repay: math::min_repay(s.b_reserve.data.d_rate)?,
         })?;
         if plan.x_pool + plan.x_idle == 0 {
             return Err(CarryError::ZeroWithdrawal);
@@ -507,6 +519,19 @@ impl CarryAdapterContract {
         }
         let yield_cap = withdrawable(&s.y_reserve, s.y_pool)?;
         let r = d.min(idle_b + yield_cap);
+        // `Repay(r)` burns `floor(r * 1e12 / d_rate)` d-tokens and the pool
+        // panics on zero (#1219). Raise `r` to the smallest burnable amount
+        // when the debt covers it and it is fundable; otherwise deleverage
+        // nothing (sub-d-token debt cannot be burned at all).
+        let min_repay = math::min_repay(s.b_reserve.data.d_rate)?;
+        let mut r = r;
+        if r > 0 && r < min_repay {
+            if min_repay <= d && idle_b + yield_cap >= min_repay {
+                r = min_repay;
+            } else {
+                return Err(CarryError::ZeroWithdrawal);
+            }
+        }
         if r <= 0 {
             // No funding source at all: refuse rather than submit Repay(0).
             return Err(CarryError::ZeroWithdrawal);
