@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ResyncIdleBalance` and `RefreshFees` are rejected with `EnforcedPause` while the vault is
   paused; a rejected resync does not consume the resync cooldown (Halborn FIND-007).
+- A full withdrawal from a market whose realized value exceeds its recorded
+  principal no longer underflows; the excess is left in the idle token balance
+  and booked by the next idle-balance reconciliation (Halborn FIND-020).
 
 ## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-10-01
 

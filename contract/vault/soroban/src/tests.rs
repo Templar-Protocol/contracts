@@ -1337,6 +1337,40 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_full_withdraw_from_yielding_market_does_not_underflow() {
+        // FIND-020: a full exit's realized amount includes accrued yield that is
+        // not yet reflected in principal. Recognizing only the principal-backed
+        // part must let the exit succeed; the yield surplus is left for the next
+        // idle-balance reconciliation and must not move through this call.
+        let mut vault = create_test_vault();
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+        vault
+            .deposit(owner, receiver, 10_000, 0, 100)
+            .expect("deposit should seed shares");
+        vault
+            .policy_state_mut()
+            .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+            .unwrap();
+        vault.policy_state_mut().set_principal(0, 10_000).unwrap();
+        set_test_assets(&mut vault, 0, 10_000);
+
+        let op_id = vault
+            .begin_allocation_withdraw_internal(caller(), 0, 1_000)
+            .unwrap();
+        // Realized value includes 500 of accrued yield on top of the 10_000 principal.
+        vault
+            .complete_withdraw_allocation(caller(), 0, 10_500, op_id, 1_000)
+            .expect("a full exit carrying surplus yield must not underflow");
+
+        let state = vault.state().unwrap();
+        assert_eq!(vault.policy_state().principal_for(0), Some(0));
+        assert_eq!(state.external_assets, 0);
+        assert_eq!(state.idle_assets, 10_000);
+        assert_eq!(state.total_assets, 10_000);
+    }
+
+    #[test]
     fn test_begin_refreshing() {
         let mut vault = create_test_vault();
         let caller = templar_vault_kernel::Address([3u8; 32]); // allocator
