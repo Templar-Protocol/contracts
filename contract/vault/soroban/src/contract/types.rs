@@ -189,6 +189,7 @@ impl VaultDataKey {
     pub const VirtualOffsetsLocked: Symbol = soroban_sdk::symbol_short!("vofflock");
     pub const IdleResyncLastNs: Symbol = soroban_sdk::symbol_short!("idlrsync");
     pub const IdleResyncCooldownNs: Symbol = soroban_sdk::symbol_short!("irscd");
+    pub const MaxNavAgeNs: Symbol = soroban_sdk::symbol_short!("maxnav");
     pub const WithdrawalCooldownNs: Symbol = soroban_sdk::symbol_short!("wdcooldn");
     /// Ledger time (ns) of the last refresh that observed every market holding principal.
     pub const NavRefreshedNs: Symbol = soroban_sdk::symbol_short!("navrfsh");

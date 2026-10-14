@@ -19,7 +19,7 @@ use templar_soroban_runtime::{
 use templar_soroban_shared_types::{
     DepositReceipt, GovernanceCommand, I128Receipt, VaultCommand,
     GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
 fn address_wire(address: &Address) -> AllocString {
@@ -373,6 +373,48 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
     let stale = env.as_contract(&vault, || execute_command(&env, &deposit));
     assert_eq!(
         stale.unwrap_err(),
+        templar_soroban_runtime::ContractError::InvalidState
+    );
+
+    // the window is governance-configurable: kind 10 (MaxNavAge), u64::MAX disables the gate
+    env.as_contract(&vault, || {
+        execute_governance_command(
+            &env,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+                primary: None,
+                many: None,
+                value_a: Some(i128::from(u64::MAX)),
+                value_b: None,
+            },
+        )
+    })
+    .unwrap();
+    assert!(
+        env.as_contract(&vault, || execute_command(&env, &deposit))
+            .unwrap()
+            > 0
+    );
+    asset_admin.mint(&user, &1_000);
+    // reset to the default window and the deposit reverts again until the refresh
+    env.as_contract(&vault, || {
+        execute_governance_command(
+            &env,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+                primary: None,
+                many: None,
+                value_a: Some(86_400_000_000_000i128),
+                value_b: None,
+            },
+        )
+    })
+    .unwrap();
+    let stale_again = env.as_contract(&vault, || execute_command(&env, &deposit));
+    assert_eq!(
+        stale_again.unwrap_err(),
         templar_soroban_runtime::ContractError::InvalidState
     );
 

@@ -369,11 +369,11 @@ mod contract_tests {
         DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus,
         GovernanceCommand, I128Receipt, ReceiptAddress, RequestWithdrawReceipt,
         RuntimeVersionResponse, VaultCommand, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
-        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
-        RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_PAUSE,
-        RUNTIME_FEATURE_ACTION_RECOVERY, RUNTIME_FEATURE_ACTION_REFRESH_FEES,
-        RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
-        RUNTIME_FEATURE_COMPANION_UPGRADE,
+        GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+        GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE,
+        RUNTIME_FEATURE_ACTION_PAUSE, RUNTIME_FEATURE_ACTION_RECOVERY,
+        RUNTIME_FEATURE_ACTION_REFRESH_FEES, RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
+        RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL, RUNTIME_FEATURE_COMPANION_UPGRADE,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::fee::FeeSlot;
@@ -2622,6 +2622,93 @@ mod contract_tests {
                     .instance()
                     .get(&VaultDataKey::IdleResyncCooldownNs),
                 Some(SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS)
+            );
+        });
+    }
+
+    #[test]
+    fn test_set_max_nav_age_updates_contract_storage() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+                    primary: None,
+                    many: None,
+                    value_a: Some(5_000),
+                    value_b: None,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                env.storage().instance().get(&VaultDataKey::MaxNavAgeNs),
+                Some(5_000u64)
+            );
+        });
+    }
+
+    #[test]
+    fn test_set_max_nav_age_rejects_negative_value() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            let err = execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+                    primary: None,
+                    many: None,
+                    value_a: Some(-1),
+                    value_b: None,
+                },
+            )
+            .expect_err("negative max nav age must be rejected");
+
+            assert_eq!(err, crate::error::ContractError::InvalidInput);
+            assert_eq!(
+                crate::contract::helpers::load_max_nav_age_ns(&env),
+                SOROBAN_DEFAULT_MAX_NAV_AGE_NS
             );
         });
     }
