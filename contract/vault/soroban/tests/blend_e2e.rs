@@ -376,22 +376,8 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         templar_soroban_runtime::ContractError::InvalidState
     );
 
-    // touch the Blend reserve so the adapter's 300 s staleness check passes, then refresh
-    let poker = Address::generate(&env);
-    asset_admin.mint(&poker, &1_000);
-    pool_client.submit(
-        &poker,
-        &poker,
-        &poker,
-        &soroban_sdk::vec![
-            &env,
-            pool::Request {
-                request_type: 0,
-                address: asset_admin.address.clone(),
-                amount: 1_000,
-            },
-        ],
-    );
+    // no pool activity since the jump: Blend's get_reserve accrues to the current ledger, so
+    // the adapter's reserve staleness check does not block the refresh
     env.as_contract(&vault, || {
         execute_command(
             &env,
