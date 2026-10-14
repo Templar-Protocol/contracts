@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A governance fee change now settles fees accrued under the previous spec to the previous
+  recipients and re-anchors, so the new rate and recipients apply only going forward. The
+  change requires an idle vault (Halborn FIND-008).
+
 ## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-10-01
 
 ### Fixed
