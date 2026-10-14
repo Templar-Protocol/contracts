@@ -370,10 +370,10 @@ mod contract_tests {
         GovernanceCommand, I128Receipt, ReceiptAddress, RequestWithdrawReceipt,
         RuntimeVersionResponse, VaultCommand, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
         GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
-        RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_PAUSE,
-        RUNTIME_FEATURE_ACTION_RECOVERY, RUNTIME_FEATURE_ACTION_REFRESH_FEES,
-        RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
-        RUNTIME_FEATURE_COMPANION_UPGRADE,
+        GOVERNANCE_POLICY_KIND_FEES, RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE,
+        RUNTIME_FEATURE_ACTION_PAUSE, RUNTIME_FEATURE_ACTION_RECOVERY,
+        RUNTIME_FEATURE_ACTION_REFRESH_FEES, RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
+        RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL, RUNTIME_FEATURE_COMPANION_UPGRADE,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::fee::FeeSlot;
@@ -2673,6 +2673,108 @@ mod contract_tests {
                 ..Default::default()
             });
             execute_command(&env, &VaultCommand::ResyncIdleBalance).unwrap();
+        });
+    }
+
+    /// FIND-008: a fee change settles the window accrued under the old spec to the old
+    /// recipient and re-anchors, so the new rate and recipient only apply going forward.
+    #[test]
+    fn test_fee_change_settles_accrued_fees_under_old_spec() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let old_perf = soroban_sdk::Address::generate(&env);
+        let old_mgmt = soroban_sdk::Address::generate(&env);
+        let new_perf = soroban_sdk::Address::generate(&env);
+        let new_mgmt = soroban_sdk::Address::generate(&env);
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+        let fees_policy = |perf_wad: i128, perf: &SdkAddress, mgmt: &SdkAddress| {
+            GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_FEES,
+                target_ids: None,
+                mode: None,
+                accounts: Some(alloc::vec![sdk_text(perf), sdk_text(mgmt)]),
+                market_id: None,
+                cap_group_id: None,
+                value: Some(perf_wad),
+                value_b: Some(0),
+                value_c: None,
+            }
+        };
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize_with_full_config(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share.clone(),
+                0,
+                0,
+                SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+                10,
+            )
+            .unwrap();
+            // 10% performance fee to old_perf
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy(100_000_000_000_000_000, &old_perf, &old_mgmt),
+            )
+            .unwrap();
+            // a 500 gain accrued since the anchor, not yet crystallized
+            SorobanStorage::new(&env)
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_000,
+                    idle_assets: 1_500,
+                    fee_anchor: FeeAccrualAnchor::new(1_000, TimestampNs(1_000_000_000)),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+        env.ledger().with_mut(|li| li.timestamp = 2);
+
+        env.as_contract(&contract_id, || {
+            // switch to 50% performance fee and new recipients
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy(500_000_000_000_000_000, &new_perf, &new_mgmt),
+            )
+            .unwrap();
+
+            // 10% of the 500 gain: fee_assets 50, shares = 50 * 1000 / 1450 = 34, to old_perf
+            assert_eq!(share_client.balance(&old_perf), 34);
+            assert_eq!(share_client.balance(&new_perf), 0);
+            let state = SorobanStorage::new(&env).load_state().unwrap().unwrap();
+            assert_eq!(state.total_shares, 1_034);
+            assert_eq!(
+                state.fee_anchor,
+                FeeAccrualAnchor::new(1_500, TimestampNs(2_000_000_000))
+            );
+
+            // the new spec starts from a clean window: nothing more is due
+            execute_command(&env, &VaultCommand::RefreshFees).unwrap();
+            assert_eq!(share_client.balance(&new_perf), 0);
+            assert_eq!(
+                SorobanStorage::new(&env)
+                    .load_state()
+                    .unwrap()
+                    .unwrap()
+                    .total_shares,
+                1_034
+            );
         });
     }
 
