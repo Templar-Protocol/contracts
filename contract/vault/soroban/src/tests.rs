@@ -2713,6 +2713,62 @@ mod contract_tests {
         });
     }
 
+    /// A vault holding external assets that has never been fully refreshed must reject
+    /// deposits under a finite NAV-age limit even at a small ledger time, and accept them
+    /// when the limit is `u64::MAX`.
+    #[test]
+    fn test_deposit_rejects_never_refreshed_nav() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let depositor = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        soroban_sdk::token::StellarAssetClient::new(&env, &asset).mint(&depositor, &1_000);
+        let deposit = VaultCommand::DepositWithMin {
+            owner: sdk_text(&depositor),
+            receiver: sdk_text(&depositor),
+            assets: 1_000,
+            min_shares_out: 0,
+        };
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            SorobanStorage::new(&env)
+                .save_state(&VaultState {
+                    total_assets: 1_000,
+                    total_shares: 1_000,
+                    external_assets: 1_000,
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!(!env.storage().instance().has(&VaultDataKey::NavRefreshedNs));
+
+            let err = execute_command(&env, &deposit).expect_err("never-refreshed NAV is stale");
+            assert_eq!(err, crate::error::ContractError::InvalidState);
+
+            crate::contract::helpers::store_max_nav_age_ns(&env, u64::MAX);
+            execute_command(&env, &deposit).unwrap();
+        });
+    }
+
     #[test]
     fn test_resync_idle_balance_uses_configured_cooldown() {
         use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};

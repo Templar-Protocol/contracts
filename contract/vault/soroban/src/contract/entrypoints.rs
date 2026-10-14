@@ -586,12 +586,16 @@ fn deposit_with_min_impl(
         // FIND-001: shares must not be priced against a stale external NAV, or a deposit
         // just before a refresh captures yield that accrued before it.
         if vault.state()?.external_assets > 0 {
-            let refreshed_ns: u64 = env
-                .storage()
-                .instance()
-                .get(&VaultDataKey::NavRefreshedNs)
-                .unwrap_or(0);
-            if now_ns.saturating_sub(refreshed_ns) > load_max_nav_age_ns(env) {
+            let max_age_ns = load_max_nav_age_ns(env);
+            let refreshed_ns: Option<u64> =
+                env.storage().instance().get(&VaultDataKey::NavRefreshedNs);
+            // u64::MAX disables the gate; otherwise a never-refreshed NAV is stale.
+            let stale = match refreshed_ns {
+                _ if max_age_ns == u64::MAX => false,
+                None => true,
+                Some(refreshed_ns) => now_ns.saturating_sub(refreshed_ns) > max_age_ns,
+            };
+            if stale {
                 return Err(RuntimeError::invalid_state("stale nav"));
             }
         }
