@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ResyncIdleBalance` and `RefreshFees` are rejected with `EnforcedPause` while the vault is
   paused; a rejected resync does not consume the resync cooldown (Halborn FIND-007).
+- A negative adapter valuation is written down to zero on refresh and supply observation
+  instead of aborting the call with `InvalidInput` (Halborn FIND-013).
 
 ## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-10-01
 

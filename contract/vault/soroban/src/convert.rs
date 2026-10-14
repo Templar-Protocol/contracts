@@ -28,3 +28,9 @@ pub(crate) fn to_i128(v: u128) -> Result<i128, ContractError> {
 pub(crate) fn to_u128(v: i128) -> Result<u128, ContractError> {
     nonnegative_i128_to_u128(v).ok_or(ContractError::InvalidInput)
 }
+
+/// Adapter valuation → u128. An underwater adapter position (negative
+/// valuation) is written down to zero rather than aborting the batch.
+pub(crate) fn valuation_to_u128(v: i128) -> u128 {
+    nonnegative_i128_to_u128(v).unwrap_or(0)
+}
