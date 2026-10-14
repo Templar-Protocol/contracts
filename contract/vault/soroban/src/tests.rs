@@ -2778,6 +2778,198 @@ mod contract_tests {
         });
     }
 
+    fn fees_policy_cmd(
+        perf_wad: i128,
+        perf: &SdkAddress,
+        mgmt: &SdkAddress,
+        max_growth_rate_wad: Option<i128>,
+    ) -> GovernanceCommand {
+        GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_FEES,
+            target_ids: None,
+            mode: None,
+            accounts: Some(alloc::vec![sdk_text(perf), sdk_text(mgmt)]),
+            market_id: None,
+            cap_group_id: None,
+            value: Some(perf_wad),
+            value_b: Some(0),
+            value_c: max_growth_rate_wad,
+        }
+    }
+
+    /// A fee change is rejected while the vault is not idle and leaves the stored spec intact.
+    #[test]
+    fn test_fee_change_rejected_when_not_idle() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let perf = soroban_sdk::Address::generate(&env);
+        let mgmt = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            let before = load_fees_spec(&env).unwrap();
+            let mut storage = SorobanStorage::new(&env);
+            let mut state = storage.load_state().unwrap().unwrap();
+            state.op_state = OpState::Refreshing(templar_vault_kernel::RefreshingState {
+                op_id: 1,
+                plan: alloc::vec![0],
+                index: 0,
+            });
+            storage.save_state(&state).unwrap();
+
+            let err = execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy_cmd(100_000_000_000_000_000, &perf, &mgmt, None),
+            )
+            .expect_err("fee change must wait for an idle vault");
+            assert_eq!(err, crate::error::ContractError::InvalidState);
+            assert_eq!(load_fees_spec(&env).unwrap(), before);
+        });
+    }
+
+    /// With no fee due (zero old fees), the change still re-anchors once the ledger has
+    /// moved, so the window elapsed before the change is never charged at the new rate.
+    #[test]
+    fn test_fee_change_reanchors_when_no_fee_due() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let perf = soroban_sdk::Address::generate(&env);
+        let mgmt = soroban_sdk::Address::generate(&env);
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+            // zero fees; a 500 gain sits above a stale anchor
+            SorobanStorage::new(&env)
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_000,
+                    idle_assets: 1_500,
+                    fee_anchor: FeeAccrualAnchor::new(1_000, TimestampNs(1_000_000_000)),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+        env.ledger().with_mut(|li| li.timestamp = 2);
+        env.as_contract(&contract_id, || {
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy_cmd(500_000_000_000_000_000, &perf, &mgmt, None),
+            )
+            .unwrap();
+            let state = SorobanStorage::new(&env).load_state().unwrap().unwrap();
+            assert_eq!(state.total_shares, 1_000);
+            assert_eq!(
+                state.fee_anchor,
+                FeeAccrualAnchor::new(1_500, TimestampNs(2_000_000_000))
+            );
+            // the pre-change gain is not charged at the new 50% rate
+            execute_command(&env, &VaultCommand::RefreshFees).unwrap();
+            assert_eq!(share_client.balance(&perf), 0);
+        });
+    }
+
+    /// A capped gain booked at the anchor's own ledger accrues no fee yet; a same-ledger fee
+    /// change must keep the anchor so the gain stays in the capped accrual base.
+    #[test]
+    fn test_fee_change_preserves_capped_same_ledger_gain() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let perf = soroban_sdk::Address::generate(&env);
+        let mgmt = soroban_sdk::Address::generate(&env);
+        let cap = Some(100_000_000_000_000_000);
+        let anchor = FeeAccrualAnchor::new(1_000, TimestampNs(1_000_000_000));
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy_cmd(100_000_000_000_000_000, &perf, &mgmt, cap),
+            )
+            .unwrap();
+            SorobanStorage::new(&env)
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_000,
+                    idle_assets: 1_500,
+                    fee_anchor: anchor,
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+        // the test host allows one authorization per contract frame
+        env.as_contract(&contract_id, || {
+            // same ledger as the anchor: change the rate, keep the cap
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy_cmd(200_000_000_000_000_000, &perf, &mgmt, cap),
+            )
+            .unwrap();
+            let state = SorobanStorage::new(&env).load_state().unwrap().unwrap();
+            assert_eq!(state.total_shares, 1_000);
+            assert_eq!(
+                state.fee_anchor, anchor,
+                "capped same-ledger gain must stay anchored"
+            );
+        });
+    }
+
     #[test]
     fn test_resync_idle_balance_rejected_while_paused() {
         use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};

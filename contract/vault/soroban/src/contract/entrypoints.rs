@@ -533,7 +533,11 @@ fn apply_fees_policy(
             vault.refresh_fees(now_ns)?;
         }
         let state = vault.state_mut()?;
-        state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(now_ns));
+        // At the anchor's own ledger the anchor is already current; a capped same-ledger
+        // gain accrues no fee yet and must stay on it rather than be erased by a reset.
+        if now_ns > state.fee_anchor.timestamp_ns.as_u64() {
+            state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(now_ns));
+        }
         vault.save_state()
     };
     with_contract_vault_contract_error(env, &mut settle)?;
