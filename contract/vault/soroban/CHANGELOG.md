@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ResyncIdleBalance` and `RefreshFees` are rejected with `EnforcedPause` while the vault is
   paused; a rejected resync does not consume the resync cooldown (Halborn FIND-007).
+- A queued withdrawal whose receiver cannot accept the asset (no or deauthorized trustline)
+  now settles as a failed payout: escrow is refunded, nothing is burned, the head is
+  dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out`. Previously the
+  SAC transfer trapped and the queue was wedged behind that head. The token adapter uses
+  `try_transfer` and reports failures as `EffectFailed` (Halborn FIND-015).
 
 ## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-10-01
 
