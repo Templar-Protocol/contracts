@@ -2970,6 +2970,16 @@ fn refresh_recognized_gain_is_charged_performance_fee() {
         },
     );
     // same economics as refresh_fees_mints_performance_fee_shares: 10% of 500 gain
+    let mint_effects: Vec<_> = result
+        .effects
+        .iter()
+        .filter(|e| matches!(e, KernelEffect::MintShares { .. }))
+        .collect();
+    assert_eq!(mint_effects.len(), 1);
+    assert!(matches!(
+        mint_effects[0],
+        KernelEffect::MintShares { owner, shares: 34 } if *owner == perf_recipient
+    ));
     assert_eq!(result.state.total_shares, 1_000 + 34);
 }
 #[test]
