@@ -10,8 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Deposits are rejected (`InvalidState`) while the vault holds external assets and no
-  `RefreshMarkets` covering every market with principal ran in the last day, so shares are
-  not priced against a stale NAV (Halborn FIND-001).
+  `RefreshMarkets` covering every market with principal ran within the governance-configurable
+  `MaxNavAge` window (default 24 h; kind 10), so shares are not priced against a stale NAV
+  (Halborn FIND-001).
 
 ## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-10-01
 
