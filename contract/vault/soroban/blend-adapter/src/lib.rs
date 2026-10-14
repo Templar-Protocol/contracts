@@ -43,6 +43,9 @@ pub enum AdapterError {
     ArithmeticUnderflow = 6,
     /// Withdrawal returned zero assets.
     ZeroWithdrawal = 7,
+    // 8 was `StaleReserve`, retired: Blend's `get_reserve` always returns the reserve
+    // updated to the current ledger, so the staleness check it guarded could never fire.
+    // Left unassigned so existing error-code consumers are unaffected.
     /// Emergency pause is active.
     Paused = 9,
 }
