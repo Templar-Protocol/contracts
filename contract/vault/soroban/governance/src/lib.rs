@@ -36,6 +36,7 @@ const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
 const MIN_TIMELOCK_NS: u64 = 0;
 const DAY_NS: u64 = 86_400_000_000_000;
 const MAX_TIMELOCK_NS: u64 = 30 * DAY_NS;
+const PROPOSAL_EXECUTION_WINDOW_NS: u64 = 7 * DAY_NS;
 const OTHER_APPROVAL_TTL_NS: u64 = 30 * DAY_NS;
 const MAX_PENDING_PROPOSALS: usize = 64;
 const PENDING_PAGE_SIZE: u64 = 16;
@@ -566,6 +567,14 @@ impl SorobanVaultGovernanceContract {
 
         let now_ns = ledger_timestamp_ns(&env)?;
         let mut queue = load_queue(&env);
+        let expired = queue.iter().any(|entry| {
+            entry.value.id == proposal_id
+                && now_ns.0.saturating_sub(entry.ready_at_ns.0) > PROPOSAL_EXECUTION_WINDOW_NS
+        });
+        if expired {
+            // Returning an error reverts storage, so the entry stays queued; `revoke` clears it.
+            return Err(GovernanceError::ProposalExpired);
+        }
         let proposal = match queue.take_by_key(
             now_ns,
             &ProposalKey::ProposalId(proposal_id),
@@ -602,6 +611,15 @@ impl SorobanVaultGovernanceContract {
         }
         if matching > 1 {
             return Err(GovernanceError::DuplicatePending);
+        }
+
+        let expired = queue.iter().any(|entry| {
+            action_kind(&entry.value.action) == kind
+                && now_ns.0.saturating_sub(entry.ready_at_ns.0) > PROPOSAL_EXECUTION_WINDOW_NS
+        });
+        if expired {
+            // Returning an error reverts storage, so the entry stays queued; `revoke` clears it.
+            return Err(GovernanceError::ProposalExpired);
         }
 
         let proposal = match queue.take_by_key(now_ns, &kind, queued_proposal_kind) {
@@ -721,7 +739,14 @@ impl SorobanVaultGovernanceContract {
 
         let decision = decide_submission(&env, &action)?;
         let now_ns = ledger_timestamp_ns(&env)?;
-        let timelock_ns = DurationNs(load_timelocks(&env).get(timelock_kind_for_action(&action)));
+        let timelocks = load_timelocks(&env);
+        let mut timelock_ns = timelocks.get(timelock_kind_for_action(&action));
+        if let GovernanceAction::SetTimelock(kind, _) = &action {
+            // A decrease must wait for the longer of the changed kind's own
+            // delay and the timelock-config delay (Halborn FIND-022).
+            timelock_ns = timelock_ns.max(load_timelocks(&env).get(*kind));
+        }
+        let timelock_ns = DurationNs(timelock_ns);
         let pending_key = action.pending_key();
         let mut queue = load_queue(&env);
         let replaces_existing = queue.has_pending_key(&pending_key, QueuedProposal::action_key);

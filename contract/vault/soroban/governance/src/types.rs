@@ -308,4 +308,5 @@ pub enum GovernanceError {
     TimelockOutOfBounds = 9,
     OtherNotApproved = 10,
     Abdicated = 11,
+    ProposalExpired = 12,
 }

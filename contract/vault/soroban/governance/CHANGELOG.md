@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `revoke_other_pending`. Storage moves to `ApprovedOtherUntil(key, hash) -> u64`; legacy
   `ApprovedOther` entries are no longer read (Halborn FIND-024).
 
+### Fixed
+
+- Matured proposals expire 7 days after their ready time; `accept`/`accept_kind` return `ProposalExpired` and drop them (Halborn FIND-026).
+- Lowering a per-kind timelock now waits for the longer of that kind's current delay and the timelock-config delay, instead of only the shared config delay (Halborn FIND-022).
+
 ## [1.0.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-governance-v1.0.0...templar-soroban-governance-v1.0.1) - 2026-08-03
 
 ### Added

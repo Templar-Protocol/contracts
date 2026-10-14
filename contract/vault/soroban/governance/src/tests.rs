@@ -1232,6 +1232,62 @@ fn timelock_config_increase_immediate_decrease_timelocked() {
 }
 
 #[test]
+fn timelock_decrease_waits_for_the_changed_kinds_own_delay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    // Increases apply immediately.
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_timelock(
+            env.clone(),
+            admin.clone(),
+            TimelockKind::TimelockConfig,
+            86_400_000_000_000,
+        )
+        .unwrap();
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_timelock(
+            env.clone(),
+            admin.clone(),
+            TimelockKind::Curator,
+            10 * 86_400_000_000_000,
+        )
+        .unwrap();
+    });
+
+    // Decrease waits max(Curator delay, TimelockConfig delay) = 10 days.
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_timelock(
+            env.clone(),
+            admin.clone(),
+            TimelockKind::Curator,
+            5 * 86_400_000_000_000,
+        )
+        .unwrap()
+    });
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending(env.clone(), proposal_id).unwrap()
+    });
+    assert_eq!(
+        pending.valid_after_ns,
+        100_000_000_000 + 10 * 86_400_000_000_000
+    );
+}
+
+#[test]
 fn timelock_config_rejects_u64_max_without_mutating_state() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1874,6 +1930,65 @@ fn cap_action_is_timelocked_and_accepts_after_maturity() {
     env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
     });
+}
+
+#[test]
+fn matured_proposal_expires_after_execution_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_cap(env.clone(), admin.clone(), 3, 10).unwrap()
+    });
+
+    // Accepting at maturity + 7 days is still inside the execution window.
+    env.ledger().set(LedgerInfo {
+        timestamp: 105 + 7 * 86_400,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap();
+    });
+
+    // Fresh proposal; expire it just past the window edge.
+    let expired_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_cap(env.clone(), admin.clone(), 3, 20).unwrap()
+    });
+    env.ledger().set(LedgerInfo {
+        timestamp: (105 + 7 * 86_400 + 5) + 7 * 86_400 + 1,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    let result = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), expired_id)
+    });
+    assert_eq!(result, Err(GovernanceError::ProposalExpired));
+    // an error reverts storage, so the expired entry remains until revoked
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 1);
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke(env.clone(), admin.clone(), expired_id).unwrap();
+    });
+    assert!(env
+        .as_contract(&governance, || SorobanVaultGovernanceContract::pending_ids(
+            env.clone()
+        ))
+        .is_empty());
 }
 
 #[test]
