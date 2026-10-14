@@ -2722,6 +2722,46 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_refresh_fees_rejected_while_paused() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize_with_full_config(
+                env.clone(),
+                curator,
+                governance,
+                asset,
+                share,
+                0,
+                0,
+                SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+                10,
+            )
+            .unwrap();
+
+            SorobanStorage::new(&env).set_paused(true);
+            let err = execute_command(&env, &VaultCommand::RefreshFees)
+                .expect_err("refresh fees must be halted while paused");
+            assert_eq!(err, crate::error::ContractError::EnforcedPause);
+
+            SorobanStorage::new(&env).set_paused(false);
+            execute_command(&env, &VaultCommand::RefreshFees).unwrap();
+        });
+    }
+
+    #[test]
     fn test_rejects_virtual_offset_updates_after_capitalization() {
         use soroban_sdk::testutils::Address as _;
 

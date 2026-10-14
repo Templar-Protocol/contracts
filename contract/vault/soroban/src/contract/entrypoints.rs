@@ -623,7 +623,12 @@ fn request_withdraw_impl(
     })
 }
 
+/// Permissionless: crystallizes due fees and reconciles the observed idle balance.
+/// Halted while paused, matching `ResyncIdleBalance`.
 fn refresh_fees_impl(env: &Env) -> Result<(), ContractError> {
+    if SorobanStorage::new(env).is_paused() {
+        return Err(ContractError::EnforcedPause);
+    }
     let now_ns = ledger_timestamp_ns(env)?;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         let (idle_changed, fees_refreshed) =
