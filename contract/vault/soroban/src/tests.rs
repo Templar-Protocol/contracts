@@ -2366,6 +2366,73 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_fee_change_rejects_vault_and_token_recipients() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance,
+                asset.clone(),
+                share.clone(),
+                17,
+                29,
+            )
+            .unwrap();
+
+            let vault = env.current_contract_address();
+            let other = SdkAddress::generate(&env);
+
+            // Halborn FIND-009: the vault escrow pool and token contracts cannot
+            // hold fee recipients.
+            let invalid = [
+                (vault.clone(), other.clone()),
+                (other.clone(), vault.clone()),
+                (share.clone(), other.clone()),
+                (other.clone(), asset.clone()),
+            ];
+            for (perf_recipient, mgmt_recipient) in invalid {
+                assert_eq!(
+                    apply_fee_change(&env, 0, perf_recipient, 0, mgmt_recipient, None),
+                    Err(crate::error::ContractError::InvalidInput)
+                );
+            }
+
+            let perf_recipient = SdkAddress::generate(&env);
+            let mgmt_recipient = SdkAddress::generate(&env);
+            assert_eq!(
+                apply_fee_change(
+                    &env,
+                    0,
+                    perf_recipient.clone(),
+                    0,
+                    mgmt_recipient.clone(),
+                    None,
+                ),
+                Ok(())
+            );
+
+            let fees = load_fees_spec(&env).unwrap();
+            assert_eq!(
+                fees.performance.recipient,
+                kernel_address_from_sdk(&env, &perf_recipient)
+            );
+            assert_eq!(
+                fees.management.recipient,
+                kernel_address_from_sdk(&env, &mgmt_recipient)
+            );
+        });
+    }
+
+    #[test]
     fn test_loads_virtual_offsets_from_storage() {
         use soroban_sdk::testutils::Address as _;
 

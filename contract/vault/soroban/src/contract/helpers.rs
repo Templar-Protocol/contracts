@@ -293,6 +293,16 @@ pub(crate) fn apply_fee_change(
         require_non_negative_bounded_wad(management_fee_wad, MAX_MANAGEMENT_FEE_WAD)?;
     let max_rate = optional_wad(max_growth_rate_wad)?;
 
+    // Halborn FIND-009: fee shares must not accrue to the vault escrow pool or token contracts.
+    let vault_address = env.current_contract_address();
+    let asset_token = get_config_address(env, &VaultDataKey::AssetToken)?;
+    let share_token = get_config_address(env, &VaultDataKey::ShareToken)?;
+    for recipient in [&performance_recipient, &management_recipient] {
+        if *recipient == vault_address || *recipient == asset_token || *recipient == share_token {
+            return Err(ContractError::InvalidInput);
+        }
+    }
+
     let performance_kernel = kernel_address_from_sdk(env, &performance_recipient);
     let management_kernel = kernel_address_from_sdk(env, &management_recipient);
     let fees = FeesSpec::new(
