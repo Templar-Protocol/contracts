@@ -217,6 +217,29 @@ impl BlendAdapterContract {
         Ok(())
     }
 
+    /// Claim BLND emissions accrued to the adapter's Blend position and send them to `to`.
+    ///
+    /// `reserve_token_ids` are Blend reserve token ids: `index * 2` for liabilities,
+    /// `index * 2 + 1` for supply. Returns the amount of BLND claimed.
+    #[allow(deprecated)]
+    pub fn claim_emissions(
+        env: Env,
+        caller: Address,
+        reserve_token_ids: Vec<u32>,
+        to: Address,
+    ) -> Result<i128, AdapterError> {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        let adapter = env.current_contract_address();
+        if reserve_token_ids.is_empty() || to == adapter {
+            return Err(AdapterError::InvalidInput);
+        }
+        let client = PoolClient::new(&env, &get_pool(&env)?);
+        let claimed = client.claim(&adapter, &reserve_token_ids, &to);
+        env.events().publish((symbol_short!("claim"), to), claimed);
+        Ok(claimed)
+    }
+
     /// Query total assets for `asset` from the Blend pool.
     pub fn total_assets(env: Env, asset: Address) -> Result<i128, AdapterError> {
         extend_instance_ttl(&env);
