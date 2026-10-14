@@ -1111,7 +1111,13 @@ fn skim_impl(
     Ok(())
 }
 
+/// Permissionless by design: it only records the vault's own observed token balance, so
+/// liveness does not depend on a curator or allocator. The cooldown bounds call frequency
+/// and fees are crystallized before the balance is reconciled. Halted while paused.
 fn resync_idle_balance_impl(env: &Env) -> Result<(), ContractError> {
+    if SorobanStorage::new(env).is_paused() {
+        return Err(ContractError::EnforcedPause);
+    }
     let now_ns = ledger_timestamp_ns(env)?;
     let cooldown_ns = load_idle_resync_cooldown_ns(env);
     let last_key = VaultDataKey::IdleResyncLastNs;
