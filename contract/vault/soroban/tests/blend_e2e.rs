@@ -4,7 +4,7 @@ use blend_contract_sdk::{
 };
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, BytesN as _},
+    testutils::{Address as _, BytesN as _, Ledger as _},
     token::StellarAssetClient,
     Address, Bytes, BytesN, Env, String,
 };
@@ -360,6 +360,53 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
     let b_tokens_after_withdraw = positions_after_withdraw.supply.get(0).unwrap_or(0);
     assert!(b_tokens_after_withdraw > 0);
     assert!(b_tokens_after_withdraw < b_tokens_after_supply);
+
+    // FIND-001: with external assets held, deposits need a full refresh within the NAV window.
+    env.ledger().with_mut(|li| li.timestamp += 3_601);
+    asset_admin.mint(&user, &1_000);
+    let deposit = VaultCommand::DepositWithMin {
+        owner: address_wire(&user),
+        receiver: address_wire(&user),
+        assets: 1_000,
+        min_shares_out: 0,
+    };
+    let stale = env.as_contract(&vault, || execute_command(&env, &deposit));
+    assert_eq!(
+        stale.unwrap_err(),
+        templar_soroban_runtime::ContractError::InvalidState
+    );
+
+    // touch the Blend reserve so the adapter's 300 s staleness check passes, then refresh
+    let poker = Address::generate(&env);
+    asset_admin.mint(&poker, &1_000);
+    pool_client.submit(
+        &poker,
+        &poker,
+        &poker,
+        &soroban_sdk::vec![
+            &env,
+            pool::Request {
+                request_type: 0,
+                address: asset_admin.address.clone(),
+                amount: 1_000,
+            },
+        ],
+    );
+    env.as_contract(&vault, || {
+        execute_command(
+            &env,
+            &VaultCommand::RefreshMarkets {
+                caller: address_wire(&allocator),
+                markets: vec![0u32],
+            },
+        )
+    })
+    .unwrap();
+    assert!(
+        env.as_contract(&vault, || execute_command(&env, &deposit))
+            .unwrap()
+            > 0
+    );
 }
 
 #[test]
