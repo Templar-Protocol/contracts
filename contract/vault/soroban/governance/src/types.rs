@@ -13,7 +13,7 @@ pub(crate) enum DataKey {
     NextProposalId,
     PendingPageIndex,
     PendingPage(u64),
-    ApprovedOther(Symbol, BytesN<32>),
+    ApprovedOtherUntil(Symbol, BytesN<32>),
     CurrentPaused,
     CurrentFees,
     CurrentRestrictionMode,

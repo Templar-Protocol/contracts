@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Accepted `Other` approvals expire 30 days after acceptance (`check_other`, `consume_other`
+  and the duplicate-submission check all honor the expiry) and can be revoked before then via
+  the new `revoke_other_approved(caller, key, payload_hash)` entrypoint, admin-gated like
+  `revoke_other_pending`. Storage moves to `ApprovedOtherUntil(key, hash) -> u64`; legacy
+  `ApprovedOther` entries are no longer read (Halborn FIND-024).
+
 ## [1.0.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-governance-v1.0.0...templar-soroban-governance-v1.0.1) - 2026-08-03
 
 ### Added

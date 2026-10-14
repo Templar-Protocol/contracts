@@ -1340,6 +1340,159 @@ fn other_action_approval_and_consume() {
     assert!(!approved_after);
 }
 
+#[test]
+fn other_approval_expires() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let key = Symbol::new(&env, "market_remove");
+    let payload_hash = BytesN::from_array(&env, &[7u8; 32]);
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_other(
+            env.clone(),
+            admin.clone(),
+            key.clone(),
+            payload_hash.clone(),
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let approved = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::check_other(env.clone(), key.clone(), payload_hash.clone())
+    });
+    assert!(approved);
+
+    // Advance past the 30-day approval TTL (2_592_000 seconds).
+    env.ledger().set(LedgerInfo {
+        timestamp: 106 + 2_592_001,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let expired = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::check_other(env.clone(), key.clone(), payload_hash.clone())
+    });
+    assert!(!expired);
+
+    let consume = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::consume_other(
+            env.clone(),
+            vault.clone(),
+            key.clone(),
+            payload_hash.clone(),
+        )
+    });
+    assert_eq!(consume, Err(GovernanceError::OtherNotApproved));
+
+    // The expired approval no longer blocks resubmission of the same pair.
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_other(env.clone(), admin, key, payload_hash)
+            .unwrap();
+    });
+}
+
+#[test]
+fn admin_can_revoke_approved_other() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let sentinel = Address::generate(&env);
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+        .unwrap();
+    });
+
+    let key = Symbol::new(&env, "other_key");
+    let payload_hash = BytesN::from_array(&env, &[9u8; 32]);
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_other(
+            env.clone(),
+            admin.clone(),
+            key.clone(),
+            payload_hash.clone(),
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let unauthorized = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke_other_approved(
+            env.clone(),
+            sentinel.clone(),
+            key.clone(),
+            payload_hash.clone(),
+        )
+    });
+    assert_eq!(unauthorized, Err(GovernanceError::Unauthorized));
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke_other_approved(
+            env.clone(),
+            admin.clone(),
+            key.clone(),
+            payload_hash.clone(),
+        )
+        .unwrap();
+    });
+
+    let approved = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::check_other(env.clone(), key.clone(), payload_hash.clone())
+    });
+    assert!(!approved);
+
+    let again = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke_other_approved(env.clone(), admin, key, payload_hash)
+    });
+    assert_eq!(again, Err(GovernanceError::OtherNotApproved));
+}
+
 const TEST_MAX_PENDING_PROPOSALS: u32 = 64;
 
 fn fill_pending_other_queue(
