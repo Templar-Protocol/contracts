@@ -17,8 +17,6 @@ const SCALAR_12: i128 = 1_000_000_000_000;
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
 /// Extend instance TTL to the Soroban maximum (~6 months).
 const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
-/// Maximum allowed staleness for reserve data in seconds.
-const RESERVE_STALE_WINDOW_SECS: u64 = 300;
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -45,8 +43,6 @@ pub enum AdapterError {
     ArithmeticUnderflow = 6,
     /// Withdrawal returned zero assets.
     ZeroWithdrawal = 7,
-    /// Reserve data is stale.
-    StaleReserve = 8,
     /// Emergency pause is active.
     Paused = 9,
 }
@@ -246,11 +242,6 @@ impl BlendAdapterContract {
         let pool = get_pool(&env)?;
         let client = PoolClient::new(&env, &pool);
         let reserve = client.get_reserve(&asset);
-        let now = env.ledger().timestamp();
-        let last_update = reserve.data.last_time as u64;
-        if now.saturating_sub(last_update) > RESERVE_STALE_WINDOW_SECS {
-            return Err(AdapterError::StaleReserve);
-        }
         let positions = client.get_positions(&env.current_contract_address());
         let index = reserve.config.index;
         // Blend omits zero-valued positions from its sparse supply map.

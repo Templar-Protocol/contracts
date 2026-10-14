@@ -163,6 +163,24 @@ fn total_assets_returns_correct_value_after_supply() {
     );
 }
 
+/// Valuation must not depend on recent pool activity: Blend's `get_reserve` accrues the
+/// reserve to the current ledger, so a quiet pool still reports a current position.
+#[test]
+fn total_assets_works_after_long_quiet_period() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (pool, _pool_client, asset, asset_admin, _deployer) = setup_blend_pool(&env);
+    let vault = register_dummy_contract(&env);
+    let (adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
+    let supply_amount: i128 = 10_000_000_000;
+    asset_admin.mint(&adapter, &supply_amount);
+    client.supply(&vault, &asset, &supply_amount);
+
+    jump(&env, 30 * 24 * 60 * 60);
+
+    assert!(client.total_assets(&asset) >= supply_amount - 1);
+}
+
 #[test]
 fn total_assets_without_position_returns_zero() {
     let env = Env::default();
