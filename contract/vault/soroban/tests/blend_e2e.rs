@@ -362,7 +362,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
     assert!(b_tokens_after_withdraw < b_tokens_after_supply);
 
     // FIND-001: with external assets held, deposits need a full refresh within the NAV window.
-    env.ledger().with_mut(|li| li.timestamp += 3_601);
+    env.ledger().with_mut(|li| li.timestamp += 86_401);
     asset_admin.mint(&user, &1_000);
     let deposit = VaultCommand::DepositWithMin {
         owner: address_wire(&user),

@@ -35,7 +35,7 @@ use templar_vault_kernel::{FeeAccrualAnchor, TimestampNs};
 
 /// Deposits are rejected while the vault holds external assets and no full refresh
 /// (every market with principal observed) happened within this window.
-const MAX_NAV_AGE_NS: u64 = 3_600_000_000_000;
+const MAX_NAV_AGE_NS: u64 = 86_400_000_000_000;
 
 fn required_address(
     value: Option<soroban_sdk::Address>,
