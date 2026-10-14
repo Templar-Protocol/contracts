@@ -33,6 +33,10 @@ use templar_soroban_shared_types::{
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::{FeeAccrualAnchor, TimestampNs};
 
+/// Deposits are rejected while the vault holds external assets and no full refresh
+/// (every market with principal observed) happened within this window.
+const MAX_NAV_AGE_NS: u64 = 3_600_000_000_000;
+
 fn required_address(
     value: Option<soroban_sdk::Address>,
 ) -> Result<soroban_sdk::Address, ContractError> {
@@ -574,6 +578,18 @@ fn deposit_with_min_impl(
     let mut is_capitalized = false;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
         reconcile_fees_and_current_idle_balance(env, vault, now_ns)?;
+        // FIND-001: shares must not be priced against a stale external NAV, or a deposit
+        // just before a refresh captures yield that accrued before it.
+        if vault.state()?.external_assets > 0 {
+            let refreshed_ns: u64 = env
+                .storage()
+                .instance()
+                .get(&VaultDataKey::NavRefreshedNs)
+                .unwrap_or(0);
+            if now_ns.saturating_sub(refreshed_ns) > MAX_NAV_AGE_NS {
+                return Err(RuntimeError::invalid_state("stale nav"));
+            }
+        }
         let (caller_k, receiver_k) = vault.map_pair(env, &owner, &receiver)?;
         let result = vault.deposit(caller_k, receiver_k, assets_u128, min_shares_u128, now_ns)?;
         shares_minted = result.shares_minted;
@@ -888,6 +904,11 @@ fn refresh_markets_impl(
         let markets = markets_vec
             .take()
             .ok_or_else(|| RuntimeError::invalid_state(""))?;
+        let covers_all_principal = vault
+            .policy_state()
+            .principals()
+            .iter()
+            .all(|(market, principal)| *principal == 0 || markets.contains(market));
         let op_id = vault.begin_refreshing(caller_kernel, markets, now_ns)?;
         let result = vault.complete_refresh_with_positions(
             caller_kernel,
@@ -896,6 +917,11 @@ fn refresh_markets_impl(
             now_ns,
         )?;
         new_external = result.new_external_assets;
+        if covers_all_principal {
+            env.storage()
+                .instance()
+                .set(&VaultDataKey::NavRefreshedNs, &now_ns);
+        }
         Ok(())
     };
     with_contract_vault_contract_error(env, &mut call)?;

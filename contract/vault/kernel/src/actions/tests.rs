@@ -2916,6 +2916,62 @@ fn refresh_fees_mints_performance_fee_shares() {
     ));
     assert_eq!(result.state.total_shares, 1_000 + 34);
 }
+
+/// A gain recognized by a refresh (Begin → SyncExternal → Finish) must not move the
+/// fee anchor, so the next accrual charges the full performance fee on it.
+#[test]
+fn refresh_recognized_gain_is_charged_performance_fee() {
+    use crate::math::wad::YEAR_NS;
+    let mut state = idle_state(1_000, 1_000);
+    let anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0));
+    state.fee_anchor = anchor;
+    let perf_recipient = addr(0xAA);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, perf_recipient),
+        FeeSlot::zero(),
+        None,
+    );
+    let apply = |state, action| apply_action(state, &config, None, &addr(0xFF), action).unwrap();
+
+    let state = apply(
+        state,
+        KernelAction::BeginRefreshing {
+            op_id: 1,
+            plan: vec![1],
+            now_ns: TimestampNs(1),
+        },
+    )
+    .state;
+    let state = apply(
+        state,
+        KernelAction::SyncExternalAssets {
+            new_external_assets: 500,
+            op_id: 1,
+            now_ns: TimestampNs(1),
+        },
+    )
+    .state;
+    let state = apply(
+        state,
+        KernelAction::FinishRefreshing {
+            op_id: 1,
+            now_ns: TimestampNs(1),
+        },
+    )
+    .state;
+    assert_eq!(state.total_assets, 1_500);
+    assert_eq!(state.fee_anchor, anchor, "refresh must not re-anchor fees");
+
+    let result = apply(
+        state,
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(YEAR_NS),
+        },
+    );
+    // same economics as refresh_fees_mints_performance_fee_shares: 10% of 500 gain
+    assert_eq!(result.state.total_shares, 1_000 + 34);
+}
 #[test]
 fn refresh_fees_nonzero_anchor_at_one_nanosecond_mints_performance_shares() {
     let mut state = idle_state(100, 100);
