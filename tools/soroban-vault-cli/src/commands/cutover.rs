@@ -350,7 +350,9 @@ fn confirm_governance_cutover<E: CommandExecutor>(
     );
     // The manifest may only be promoted once the on-chain SetGovernance has
     // executed: the vault itself must report the pending governance.
-    match crate::commands::upgrade::read_governance_binding(context.stellar(), &vault) {
+    match crate::commands::upgrade::read_vault_view(context.stellar(), &vault)
+        .and_then(|facts| facts.governance_view)
+    {
         Some(bound) if bound == pending_id => {}
         Some(bound) => anyhow::bail!(
             "vault {vault} is still bound to governance {bound}, not {pending_id}; accept the \

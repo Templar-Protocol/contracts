@@ -37,18 +37,23 @@ pub(super) fn run_governance<E: CommandExecutor>(
 ) -> anyhow::Result<Response> {
     let stellar = context.stellar();
     let governance = required_contract(manifest, "governance")?;
-    if !context.cli().dry_run && command.is_write() {
+    let vault_view = if !context.cli().dry_run && command.is_write() {
         let vault = required_contract(manifest, "vault")?;
-        let binding = crate::commands::upgrade::read_governance_binding(stellar, vault);
+        let vault_view = crate::commands::upgrade::read_vault_view(stellar, vault);
         let manifest_governance = manifest
             .contracts
             .get("governance")
             .map(|record| record.contract_id.as_str());
         crate::commands::upgrade::governance_binding_matches(
             manifest_governance,
-            binding.as_deref(),
+            vault_view
+                .as_ref()
+                .and_then(|facts| facts.governance_view.as_deref()),
         )?;
-    }
+        vault_view
+    } else {
+        None
+    };
     match command {
         GovernanceCommand::PlanAccept { admin, proposal_id } => {
             Ok(Response::Plan(governance_plan(
@@ -377,11 +382,33 @@ pub(super) fn run_governance<E: CommandExecutor>(
                 ]),
             )?)
         }
-        GovernanceCommand::SubmitSkim { admin, token } => invoke_response(stellar.invoke(
-            governance,
-            "submit_skim",
-            args([("--caller", admin.as_str()), ("--token", token.as_str())]),
-        )?),
+        GovernanceCommand::SubmitSkim { admin, token } => {
+            // Prefer the vault's on-chain token ids; fall back to the manifest.
+            let facts = vault_view.as_ref();
+            let manifest_id = |key: &str| {
+                manifest
+                    .contracts
+                    .get(key)
+                    .map(|record| record.contract_id.clone())
+            };
+            let asset = facts
+                .and_then(|f| f.asset_token_id.clone())
+                .or_else(|| manifest_id("asset_token"));
+            let share = facts
+                .and_then(|f| f.share_token_id.clone())
+                .or_else(|| manifest_id("share_token"));
+            anyhow::ensure!(
+                context.cli().dry_run || (asset.is_some() && share.is_some()),
+                "cannot determine the vault's asset and share token ids (proxy_view or manifest); \
+                 refusing to submit a skim (fail closed)"
+            );
+            reject_vault_token_skim(token.as_str(), asset.as_deref(), share.as_deref())?;
+            invoke_response(stellar.invoke(
+                governance,
+                "submit_skim",
+                args([("--caller", admin.as_str()), ("--token", token.as_str())]),
+            )?)
+        }
         GovernanceCommand::SubmitSetWithdrawalCooldown { admin, cooldown_ns } => {
             invoke_response(stellar.invoke(
                 governance,
@@ -446,6 +473,25 @@ pub(super) fn run_governance<E: CommandExecutor>(
             args([("--caller", admin.as_str()), ("--kind", &kind.to_string())]),
         )?),
     }
+}
+
+/// The vault rejects skimming its own asset or share token (`InvalidInput`):
+/// such a proposal could never execute and would hold a pending slot until
+/// revoked, so refuse it before submitting.
+pub(super) fn reject_vault_token_skim(
+    token: &str,
+    asset_token: Option<&str>,
+    share_token: Option<&str>,
+) -> anyhow::Result<()> {
+    for (role, id) in [("asset", asset_token), ("share", share_token)] {
+        anyhow::ensure!(
+            id != Some(token),
+            "refusing to submit a skim of the vault's {role} token {token}: the vault rejects \
+             skimming its own {role} token (InvalidInput), so the proposal could never execute; \
+             skim only recovers foreign tokens sent to the vault"
+        );
+    }
+    Ok(())
 }
 
 /// SHA-256 of the pinned release runtime WASM; the default upgrade target.
