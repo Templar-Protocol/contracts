@@ -224,6 +224,7 @@ fn preflight_finding_classification_is_pure() {
         pending_proposals: Some(Vec::new()),
         stale_proposals: Some(0),
         attest_empty_withdrawal_queue: false,
+        ..Default::default()
     };
     let report = crate::commands::upgrade::evaluate_vault_preflight(&facts);
     assert!(report.ok, "clean vault must pass: {report:?}");
@@ -241,6 +242,7 @@ fn preflight_flags_fee_recipient_and_duplicate_adapters() {
         paused: Some(false),
         virtual_assets: Some(5),
         external_assets_present: Some(true),
+        nav_refresh: crate::commands::upgrade::NavRefresh::Never,
         max_deposit_allowed: Some(0),
         migration_flag: Some(false),
         fee_recipients: Some([(1u128, kernel_hex(CONTRACT)), (0u128, kernel_hex("GADMIN"))]),
@@ -251,6 +253,7 @@ fn preflight_flags_fee_recipient_and_duplicate_adapters() {
         pending_proposals: Some(Vec::new()),
         stale_proposals: Some(0),
         attest_empty_withdrawal_queue: true,
+        ..Default::default()
     };
     let report = crate::commands::upgrade::evaluate_vault_preflight(&facts);
     let status = |name: &str| {
@@ -266,6 +269,58 @@ fn preflight_flags_fee_recipient_and_duplicate_adapters() {
     assert_eq!(status("external_assets"), Some(PreflightStatus::Warn));
     assert_eq!(status("withdrawal_queue"), Some(PreflightStatus::Warn));
     assert!(!report.ok);
+}
+
+#[test]
+fn external_assets_warning_tracks_the_runtime_stale_nav_gate() {
+    use crate::commands::upgrade::NavRefresh;
+    const HOUR_NS: u64 = 3_600_000_000_000;
+    let now = 100 * HOUR_NS;
+    let status_of = |nav_refresh: NavRefresh, max_age: Option<u64>| {
+        let facts = crate::commands::upgrade::VaultFacts {
+            external_assets_present: Some(true),
+            nav_refresh,
+            max_nav_age_ns: max_age,
+            now_ns: now,
+            ..Default::default()
+        };
+        crate::commands::upgrade::evaluate_vault_preflight(&facts)
+            .findings
+            .into_iter()
+            .find(|f| f.check == "external_assets")
+            .map(|f| f.status)
+    };
+    let at = |ago: u64| NavRefresh::At(now - ago);
+    // Never refreshed (every vault right after an upgrade): deposits are blocked.
+    assert_eq!(
+        status_of(NavRefresh::Never, None),
+        Some(PreflightStatus::Warn)
+    );
+    // Refreshed within the default 24 h, and exactly at the limit (the runtime uses `>`).
+    assert_eq!(status_of(at(HOUR_NS), None), Some(PreflightStatus::Pass));
+    assert_eq!(
+        status_of(at(24 * HOUR_NS), None),
+        Some(PreflightStatus::Pass)
+    );
+    // Older than MaxNavAge, default or configured.
+    assert_eq!(
+        status_of(at(25 * HOUR_NS), None),
+        Some(PreflightStatus::Warn)
+    );
+    assert_eq!(
+        status_of(at(2 * HOUR_NS), Some(HOUR_NS)),
+        Some(PreflightStatus::Warn)
+    );
+    // u64::MAX disables the gate, even when never refreshed.
+    assert_eq!(
+        status_of(NavRefresh::Never, Some(u64::MAX)),
+        Some(PreflightStatus::Pass)
+    );
+    // Unreadable storage proves nothing either way: unverifiable, never a stale-NAV claim.
+    assert_eq!(
+        status_of(NavRefresh::Unread, None),
+        Some(PreflightStatus::Unverifiable)
+    );
 }
 
 #[test]
@@ -430,6 +485,7 @@ fn attested_queue_and_paused_vault_warn_instead_of_blocking() {
         pending_proposals: Some(Vec::new()),
         stale_proposals: Some(0),
         attest_empty_withdrawal_queue: true,
+        ..Default::default()
     };
     let report = crate::commands::upgrade::evaluate_vault_preflight(&facts);
     assert!(
@@ -463,6 +519,7 @@ fn zero_fee_slot_with_banned_recipient_blocks() {
         pending_proposals: Some(Vec::new()),
         stale_proposals: Some(0),
         attest_empty_withdrawal_queue: false,
+        ..Default::default()
     };
     let report = crate::commands::upgrade::evaluate_vault_preflight(&facts);
     let fee = report
