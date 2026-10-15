@@ -366,6 +366,17 @@ pub(super) fn run_governance<E: CommandExecutor>(
                 ]),
             )?)
         }
+        GovernanceCommand::SubmitSetMaxNavAge {
+            admin,
+            max_nav_age_ns,
+        } => invoke_response(stellar.invoke(
+            governance,
+            "submit_set_max_nav_age",
+            args([
+                ("--caller", admin.as_str()),
+                ("--max_nav_age_ns", &max_nav_age_ns.to_string()),
+            ]),
+        )?),
         GovernanceCommand::SubmitUpgrade { admin, wasm_hash } => invoke_response(stellar.invoke(
             governance,
             "submit_upgrade",
@@ -625,7 +636,7 @@ fn governance_action_kind(action: &str) -> Option<GovernanceActionKind> {
         .find_map(|(candidate, kind)| (*candidate == action).then_some(*kind))
 }
 
-const GOVERNANCE_ACTION_KINDS: [(&str, GovernanceActionKind); 24] = [
+const GOVERNANCE_ACTION_KINDS: [(&str, GovernanceActionKind); 25] = [
     ("SetAdmin", GovernanceActionKind::Admin),
     ("SetCurator", GovernanceActionKind::Curator),
     ("SetGovernance", GovernanceActionKind::Governance),
@@ -655,6 +666,7 @@ const GOVERNANCE_ACTION_KINDS: [(&str, GovernanceActionKind); 24] = [
         "SetIdleResyncCooldown",
         GovernanceActionKind::IdleResyncCooldown,
     ),
+    ("SetMaxNavAge", GovernanceActionKind::MaxNavAge),
     ("Other", GovernanceActionKind::Other),
 ];
 

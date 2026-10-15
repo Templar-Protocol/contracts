@@ -14,11 +14,11 @@ use templar_soroban_shared_types::{
     EmptyReceipt, GovernanceCommand, VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
     GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
-    GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, GOVERNANCE_POLICY_KIND_CAP,
-    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
 #[contract]
@@ -36,6 +36,7 @@ enum MockVaultKey {
     SkimRecipient,
     WithdrawalCooldownNs,
     IdleResyncCooldownNs,
+    MaxNavAgeNs,
     SupplyQueue,
     SupplyQueueAdapters,
     LastFeeAccounts,
@@ -334,6 +335,10 @@ impl MockVault {
             .get(&MockVaultKey::IdleResyncCooldownNs)
     }
 
+    pub fn max_nav_age_ns(env: Env) -> Option<i128> {
+        env.storage().instance().get(&MockVaultKey::MaxNavAgeNs)
+    }
+
     pub fn supply_queue(env: Env) -> Vec<u32> {
         env.storage()
             .instance()
@@ -503,6 +508,13 @@ impl MockVault {
                         &MockVaultKey::IdleResyncCooldownNs,
                         &idle_resync_cooldown_ns,
                     );
+                }
+            }
+            GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE => {
+                if let Some(max_nav_age_ns) = value_a {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::MaxNavAgeNs, &max_nav_age_ns);
                 }
             }
             _ => {}
@@ -921,6 +933,76 @@ fn idle_resync_cooldown_change_is_timelocked_and_forwarded() {
             admin.clone(),
             10_000,
         )
+    });
+    assert_eq!(no_change, Err(GovernanceError::NoChange));
+}
+
+#[test]
+fn max_nav_age_change_is_timelocked_and_forwarded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let no_change = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_max_nav_age(
+            env.clone(),
+            admin.clone(),
+            DEFAULT_MAX_NAV_AGE_NS,
+        )
+    });
+    assert_eq!(no_change, Err(GovernanceError::NoChange));
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_max_nav_age(env.clone(), admin.clone(), 10_000)
+            .unwrap()
+    });
+    assert_eq!(proposal_id, 1);
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+    assert_eq!(
+        env.as_contract(&vault, || MockVault::max_nav_age_ns(env.clone())),
+        None
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&vault, || MockVault::max_nav_age_ns(env.clone())),
+        Some(10_000)
+    );
+    assert_eq!(
+        env.as_contract(&governance, || {
+            env.storage()
+                .instance()
+                .get::<_, u64>(&DataKey::CurrentMaxNavAgeNs)
+        }),
+        Some(10_000)
+    );
+
+    let no_change = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_max_nav_age(env.clone(), admin.clone(), 10_000)
     });
     assert_eq!(no_change, Err(GovernanceError::NoChange));
 }

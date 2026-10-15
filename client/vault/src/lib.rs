@@ -1047,6 +1047,7 @@ pub struct VaultConfiguration {
     pub withdrawal_cooldown_ns: Option<u64>,
     pub refresh_cooldown_ns: Option<u64>,
     pub idle_resync_cooldown_ns: Option<u64>,
+    pub max_nav_age_ns: Option<u64>,
 }
 
 impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
@@ -1082,6 +1083,7 @@ impl From<templar_common::vault::VaultConfiguration> for VaultConfiguration {
             withdrawal_cooldown_ns: value.withdrawal_cooldown_ns.map(|u| u.0),
             refresh_cooldown_ns: value.refresh_cooldown_ns.map(|u| u.0),
             idle_resync_cooldown_ns: value.idle_resync_cooldown_ns.map(|u| u.0),
+            max_nav_age_ns: value.max_nav_age_ns.map(|u| u.0),
         }
     }
 }
