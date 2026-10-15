@@ -65,7 +65,7 @@ fn governance_kind_filter_uses_outer_opaque_action_variant() {
 fn governance_timelock_uses_typed_kind_and_direct_contract_method() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");
-    manifest_with_governance(&state);
+    manifest_with_governance_and_vault(&state);
     let cli = Cli {
         yes: true,
         ..base_cli(
@@ -100,7 +100,7 @@ fn governance_timelock_uses_typed_kind_and_direct_contract_method() {
 fn governance_restrictions_use_typed_mode_and_address_list() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");
-    manifest_with_governance(&state);
+    manifest_with_governance_and_vault(&state);
     let cli = base_cli(
         state,
         Commands::Governance(GovernanceArgs {
@@ -115,7 +115,8 @@ fn governance_restrictions_use_typed_mode_and_address_list() {
 
     run(&cli, &executor).expect("run governance restrictions");
 
-    let calls = executor.calls();
+    let calls = submitted_calls(&executor.calls());
+    assert_eq!(calls.len(), 1);
     assert!(calls[0]
         .1
         .iter()
@@ -131,7 +132,7 @@ fn governance_restrictions_use_typed_mode_and_address_list() {
 fn governance_accept_ready_accepts_only_ready_decoded_proposals() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");
-    manifest_with_governance(&state);
+    manifest_with_governance_and_vault(&state);
     let cli = base_cli(
         state,
         Commands::Governance(GovernanceArgs {
@@ -194,7 +195,7 @@ fn governance_read_only_commands_use_view_invocation() {
 fn governance_submit_and_wait_submits_then_accepts_ready_proposal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");
-    manifest_with_governance(&state);
+    manifest_with_governance_and_vault(&state);
     let cli = base_cli(
         state,
         Commands::Governance(GovernanceArgs {

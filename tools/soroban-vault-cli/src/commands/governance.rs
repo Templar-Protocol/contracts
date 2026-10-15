@@ -37,6 +37,19 @@ pub(super) fn run_governance<E: CommandExecutor>(
 ) -> anyhow::Result<Response> {
     let stellar = context.stellar();
     let governance = required_contract(manifest, "governance")?;
+
+    if !context.cli().dry_run && is_governance_write(command) {
+        let vault = required_contract(manifest, "vault")?;
+        let binding = crate::commands::upgrade::read_governance_binding(stellar, vault);
+        let manifest_governance = manifest
+            .contracts
+            .get("governance")
+            .map(|record| record.contract_id.as_str());
+        crate::commands::upgrade::governance_binding_matches(
+            manifest_governance,
+            binding.as_deref(),
+        )?;
+    }
     match command {
         GovernanceCommand::PlanAccept { admin, proposal_id } => {
             Ok(Response::Plan(governance_plan(
@@ -434,6 +447,21 @@ pub(super) fn run_governance<E: CommandExecutor>(
             args([("--caller", admin.as_str()), ("--kind", &kind.to_string())]),
         )?),
     }
+}
+
+/// Commands that mutate governance state or accept/revoke proposals.
+/// Read-only, explain, pending, and plan commands never touch the chain here.
+fn is_governance_write(command: &GovernanceCommand) -> bool {
+    !matches!(
+        command,
+        GovernanceCommand::Queue { .. }
+            | GovernanceCommand::Explain { .. }
+            | GovernanceCommand::Pending { .. }
+            | GovernanceCommand::Timelocks
+            | GovernanceCommand::PlanAccept { .. }
+            | GovernanceCommand::PlanSubmitSetSupplyQueue { .. }
+            | GovernanceCommand::PlanSubmitSetTimelock { .. }
+    )
 }
 
 /// SHA-256 of the pinned release runtime WASM; the default upgrade target.
