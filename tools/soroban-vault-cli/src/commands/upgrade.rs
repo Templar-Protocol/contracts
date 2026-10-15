@@ -232,20 +232,18 @@ pub(super) fn duplicate_adapters(bindings: &[(u32, String)]) -> Vec<String> {
 
 fn external_assets_finding(facts: &VaultFacts) -> PreflightFinding {
     match facts.external_assets_present {
-        Some(false) => pass(
-            "external_assets",
-            "no external assets are marked present",
-        ),
+        Some(false) => pass("external_assets", "no external assets are marked present"),
         Some(true) => PreflightFinding {
             check: "external_assets".to_string(),
             status: PreflightStatus::Warn,
-            detail: "external assets are present: deposits stay blocked until a full RefreshMarkets \
-                     covers every market after the upgrade"
+            detail: "external assets are present: after an upgrade, deposits stay blocked until \
+                     a RefreshMarkets covers every market with principal"
                 .to_string(),
         },
         None => unverifiable(
             "external_assets",
-            "proxy_view external-asset slot unavailable; manual check: proxy_view position 3 element 5",
+            "proxy_view external-asset slot unavailable; manual check: proxy_view [0][2][2] \
+             (external assets) is non-zero",
         ),
     }
 }
