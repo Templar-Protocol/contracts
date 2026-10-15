@@ -288,22 +288,10 @@ pub(super) struct GovernanceAcceptReadyResponse {
     pub(super) skipped: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub(super) struct UpgradePreflightResponse {
     pub(super) vault: String,
     pub(super) report: PreflightReport,
-    pub(super) allow_unverifiable: bool,
-}
-
-impl serde::Serialize for UpgradePreflightResponse {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("UpgradePreflightResponse", 3)?;
-        state.serialize_field("vault", &self.vault)?;
-        state.serialize_field("allow_unverifiable", &self.allow_unverifiable)?;
-        state.serialize_field("report", &self.report)?;
-        state.end()
-    }
 }
 
 #[derive(Debug, Serialize)]

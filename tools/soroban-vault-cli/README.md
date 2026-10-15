@@ -61,15 +61,11 @@ fallback. The cache root is `<platform-cache>/templar/soroban-vault-cli/artifact
 the non-empty `TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE` value to use another writable root. In the
 published image the configured root is
 `/home/templar/.cache/templar/soroban-vault-cli/artifacts`.
-`doctor` remains offline. It verifies existing cached/workspace bytes and performs a temporary
-create/sync/remove probe to prove first-run cache writability; the probe tree is removed completely
-and the real cache root is not created when it was previously absent.
+`doctor` remains offline. It verifies existing cached/workspace bytes and probes cache and
+manifest directory writability (a non-existent cache root is reported as a warning).
 
-The pinned tag and all seven asset pins live in exactly one place,
-`src/release_pin.rs`. Swapping the pinned release is a pure data change to
-that file: replace the tag and the seven (asset name, byte length, SHA-256)
-rows. Deploy, plan, doctor, `governance submit-upgrade`, the live release
-test, and the container smoke test all read that table.
+All release pins live in one place: `src/release_pin.rs`. Swapping the pinned release is a pure
+data change to that file.
 
 `governance submit-upgrade` defaults `--wasm-hash` to the pinned release
 runtime SHA-256. A different hash is refused unless `--allow-unpinned-wasm`

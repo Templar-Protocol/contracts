@@ -227,7 +227,7 @@ fn governance_submit_and_wait_submits_then_accepts_ready_proposal() {
 fn pinned_runtime_wasm_hash_matches_release_table() {
     assert_eq!(
         pinned_runtime_wasm_hash(),
-        crate::artifacts::ReleaseArtifact::Runtime.pin().sha256
+        crate::artifacts::ArtifactName::Vault.pin().sha256
     );
     assert_eq!(pinned_runtime_wasm_hash().len(), 64);
 }

@@ -39,12 +39,12 @@ pub(super) struct CutoverParams {
     pub(super) vault: String,
     pub(super) current_governance: String,
     pub(super) new_governance: String,
-    pub(super) expected_admin: Option<String>,
-    pub(super) expected_wasm_hash: Option<String>,
-    /// The admin that submits the proposal; becomes the expected admin when
-    /// no `expected_admin` override is supplied.
+    /// The admin the target governance must report. The CLI callers resolve
+    /// it from the current governance's `admin()` view (confirm) or the
+    /// submitting admin (submit-set-governance) before constructing the
+    /// params, so the guard always compares against a concrete value.
     pub(super) submitting_admin: String,
-    pub(super) allow_unverified: bool,
+    pub(super) expected_wasm_hash: String,
 }
 
 /// Pure decision logic for the cutover guard. Returns the problems that block
@@ -65,11 +65,9 @@ pub(super) fn cutover_problems(params: &CutoverParams, facts: &CutoverFacts) -> 
     }
     check_fact(
         &mut problems,
-        params.allow_unverified,
         "vault",
         facts.target_vault.as_deref(),
-        Some(params.vault.as_str()),
-        |observed| observed == params.vault,
+        &params.vault,
         || "run `governance pending` against the target contract first".to_string(),
     );
 
@@ -79,11 +77,9 @@ pub(super) fn cutover_problems(params: &CutoverParams, facts: &CutoverFacts) -> 
     // can act on.
     check_fact(
         &mut problems,
-        params.allow_unverified,
         "current-governance vault binding",
         facts.current_vault.as_deref(),
-        Some(params.vault.as_str()),
-        |observed| observed == params.vault,
+        &params.vault,
         || {
             format!(
                 "read `vault()` on the current governance {} first",
@@ -92,17 +88,11 @@ pub(super) fn cutover_problems(params: &CutoverParams, facts: &CutoverFacts) -> 
         },
     );
 
-    let expected_admin = params
-        .expected_admin
-        .as_deref()
-        .or(Some(params.submitting_admin.as_str()));
     check_fact(
         &mut problems,
-        params.allow_unverified,
         "admin",
         facts.target_admin.as_deref(),
-        expected_admin,
-        |observed| Some(observed) == expected_admin,
+        &params.submitting_admin,
         || {
             format!(
                 "deploy governance with --admin <expected admin> for {}",
@@ -112,11 +102,9 @@ pub(super) fn cutover_problems(params: &CutoverParams, facts: &CutoverFacts) -> 
     );
     check_fact(
         &mut problems,
-        params.allow_unverified,
         "wasm hash",
         facts.target_wasm_hash.as_deref(),
-        params.expected_wasm_hash.as_deref(),
-        |observed| params.expected_wasm_hash.as_deref() == Some(observed),
+        &params.expected_wasm_hash,
         || "re-deploy the governance contract from the pinned release WASM".to_string(),
     );
     problems
@@ -124,37 +112,22 @@ pub(super) fn cutover_problems(params: &CutoverParams, facts: &CutoverFacts) -> 
 
 fn check_fact(
     problems: &mut Vec<String>,
-    allow_unverified: bool,
     label: &str,
     observed: Option<&str>,
-    expected: Option<&str>,
-    matches: impl Fn(&str) -> bool,
+    expected: &str,
     manual_check: impl FnOnce() -> String,
 ) {
     let Some(observed) = observed else {
-        if !allow_unverified {
-            problems.push(format!(
-                "could not read the target governance {label} on-chain; manual check: {}",
-                manual_check()
-            ));
-        }
+        problems.push(format!(
+            "could not read the target governance {label} on-chain; manual check: {}",
+            manual_check()
+        ));
         return;
     };
-    match expected {
-        Some(expected) if !matches(observed) => {
-            problems.push(format!(
-                "target governance {label} mismatch: observed {observed}, expected {expected}"
-            ));
-        }
-        None => {
-            if !allow_unverified {
-                problems.push(format!(
-                    "target governance {label} is {observed} but no expected value was provided; \
-                     pass the expected value or use --allow-unverified-governance"
-                ));
-            }
-        }
-        _ => {}
+    if observed != expected {
+        problems.push(format!(
+            "target governance {label} mismatch: observed {observed}, expected {expected}"
+        ));
     }
 }
 
@@ -217,7 +190,7 @@ pub(super) fn resolve_expected_wasm_hash(
     expected: Option<&WasmHash>,
     new_governance: &str,
 ) -> String {
-    let pin = crate::artifacts::ReleaseArtifact::Governance.pin().sha256;
+    let pin = crate::artifacts::ArtifactName::Governance.pin().sha256;
     if let Some(hash) = expected {
         if hash.as_str() != pin {
             eprintln!(
@@ -251,8 +224,9 @@ pub(super) fn resolve_expected_wasm_hash(
 pub(super) fn guard_set_governance<E: CommandExecutor>(
     stellar: &Stellar<'_, E>,
     params: &CutoverParams,
+    allow_unverified: bool,
 ) -> anyhow::Result<()> {
-    if params.allow_unverified {
+    if allow_unverified {
         eprintln!(
             "warning: submitting governance cutover without on-chain verification of {}",
             params.new_governance
@@ -333,26 +307,23 @@ fn confirm_governance_cutover<E: CommandExecutor>(
     // reports (never the governance contract id). When it cannot be
     // queried (e.g. an imported manifest), fall back to the pending
     // record's constructor admin.
-    let expected_admin =
-        view_address(context.stellar(), &current_governance, "admin").or_else(|| {
+    let expected_admin = view_address(context.stellar(), &current_governance, "admin")
+        .or_else(|| {
             manifest
                 .contracts
                 .get(GOVERNANCE_PENDING_KEY)
                 .and_then(|record| record.constructor_args.get("admin").cloned())
-        });
-    anyhow::ensure!(
-        expected_admin.is_some(),
-        "cannot determine the expected governance admin; read the current governance `admin()` \
-         view or record constructor_args.admin for the pending governance"
-    );
+        })
+        .with_context(|| {
+            "cannot determine the expected governance admin; read the current governance \
+             `admin()` view or record constructor_args.admin for the pending governance"
+        })?;
     let params = CutoverParams {
         vault: vault.clone(),
         current_governance,
         new_governance: pending_id.clone(),
-        submitting_admin: expected_admin.clone().unwrap_or_default(),
-        expected_admin,
-        expected_wasm_hash: Some(resolve_expected_wasm_hash(manifest, None, &pending_id)),
-        allow_unverified: false,
+        submitting_admin: expected_admin,
+        expected_wasm_hash: resolve_expected_wasm_hash(manifest, None, &pending_id),
     };
     let facts = cutover_facts(context.stellar(), &params.current_governance, &pending_id);
     let problems = cutover_problems(&params, &facts);
@@ -384,15 +355,13 @@ fn confirm_governance_cutover<E: CommandExecutor>(
 mod tests {
     use super::*;
 
-    fn params(allow_unverified: bool) -> CutoverParams {
+    fn params() -> CutoverParams {
         CutoverParams {
             vault: "CVAULT".to_string(),
             current_governance: "COLD".to_string(),
             new_governance: "CNEW".to_string(),
-            expected_admin: Some("GADMIN".to_string()),
-            expected_wasm_hash: Some("ab".repeat(32)),
             submitting_admin: "GADMIN".to_string(),
-            allow_unverified,
+            expected_wasm_hash: "ab".repeat(32),
         }
     }
 
@@ -407,13 +376,13 @@ mod tests {
 
     #[test]
     fn verified_target_passes_the_guard() {
-        assert!(cutover_problems(&params(false), &facts()).is_empty());
+        assert!(cutover_problems(&params(), &facts()).is_empty());
     }
 
     #[test]
     fn unreadable_facts_fail_closed() {
         let problems = cutover_problems(
-            &params(false),
+            &params(),
             &CutoverFacts {
                 target_vault: None,
                 target_admin: None,
@@ -426,23 +395,9 @@ mod tests {
     }
 
     #[test]
-    fn override_flag_downgrades_missing_facts() {
-        let problems = cutover_problems(
-            &params(true),
-            &CutoverFacts {
-                target_vault: None,
-                target_admin: None,
-                target_wasm_hash: None,
-                current_vault: None,
-            },
-        );
-        assert!(problems.is_empty());
-    }
-
-    #[test]
     fn mismatched_facts_are_rejected() {
         let problems = cutover_problems(
-            &params(false),
+            &params(),
             &CutoverFacts {
                 target_vault: Some("COTHER".to_string()),
                 target_admin: Some("GOTHER".to_string()),
@@ -458,30 +413,18 @@ mod tests {
     fn targeting_the_current_governance_or_the_vault_is_rejected() {
         let guard = CutoverParams {
             new_governance: "COLD".to_string(),
-            ..params(false)
+            ..params()
         };
         assert!(cutover_problems(&guard, &facts())
             .iter()
             .any(|p| p.contains("already the vault's active governance")));
         let guard = CutoverParams {
             new_governance: "CVAULT".to_string(),
-            ..params(false)
+            ..params()
         };
         assert!(cutover_problems(&guard, &facts())
             .iter()
             .any(|p| p.contains("vault contract itself")));
-    }
-
-    #[test]
-    fn missing_expected_hash_fails_closed() {
-        let guard = CutoverParams {
-            expected_wasm_hash: None,
-            ..params(false)
-        };
-        let problems = cutover_problems(&guard, &facts());
-        assert!(problems
-            .iter()
-            .any(|p| p.contains("no expected value was provided")));
     }
 
     #[test]
@@ -498,7 +441,7 @@ mod tests {
                 initialized: true,
             },
         );
-        let pin = crate::artifacts::ReleaseArtifact::Governance
+        let pin = crate::artifacts::ArtifactName::Governance
             .pin()
             .sha256
             .to_string();

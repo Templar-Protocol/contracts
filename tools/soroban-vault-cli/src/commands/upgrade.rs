@@ -20,18 +20,19 @@ use crate::{
 
 use super::{
     context::CommandContext,
+    governance::{governance_queue, system_now_ns},
     inventory::args,
     output::{
         PreflightFinding, PreflightReport, PreflightStatus, Response, UpgradePreflightResponse,
     },
 };
 
-pub(super) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
+const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 /// Governance's `PROPOSAL_EXECUTION_WINDOW_NS`: a proposal older than this
 /// past its ready time is ProposalExpired on governance that enforces it.
-pub(super) const PROPOSAL_EXECUTION_WINDOW_NS: u128 = 7 * 24 * 60 * 60 * 1_000_000_000;
+const PROPOSAL_EXECUTION_WINDOW_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
 /// Base64 XDR of `ScVal::LedgerKeyContractInstance`.
-pub(super) const INSTANCE_KEY_XDR: &str = "AAAAFA==";
+const INSTANCE_KEY_XDR: &str = "AAAAFA==";
 
 /// The on-chain facts the preflight decision needs. `None` always means
 /// "could not verify", never "checked and clean".
@@ -219,14 +220,11 @@ fn adapter_binding_finding(facts: &VaultFacts) -> PreflightFinding {
 }
 
 pub(super) fn duplicate_adapters(bindings: &[(u32, String)]) -> Vec<String> {
-    let mut seen: std::collections::BTreeMap<&String, u32> = std::collections::BTreeMap::new();
+    let mut seen = std::collections::BTreeSet::new();
     let mut duplicates = Vec::new();
-    for (market, adapter) in bindings {
-        if let Some(previous) = seen.insert(adapter, *market) {
-            let _ = previous;
-            if !duplicates.contains(adapter) {
-                duplicates.push(adapter.clone());
-            }
+    for (_, adapter) in bindings {
+        if !seen.insert(adapter) && !duplicates.contains(adapter) {
+            duplicates.push(adapter.clone());
         }
     }
     duplicates
@@ -377,39 +375,24 @@ pub(super) fn collect_vault_facts<E: CommandExecutor>(
     }
 
     if let Some(governance) = facts.governance_view.clone() {
-        if let Ok(pending) = stellar.invoke_view(&governance, "pending_ids", Vec::new()) {
-            let ids = parse_pending_ids(&pending.stdout);
-            facts.stale_proposals =
-                ids.iter()
-                    .map(|id| {
-                        stellar
-                            .invoke_view(
-                                &governance,
-                                "pending",
-                                args([("--proposal_id", &id.to_string())]),
-                            )
-                            .ok()
-                            .and_then(|out| {
-                                serde_json::from_str::<Value>(&out.stdout).ok().and_then(
-                                    |proposal| proposal.get("valid_after_ns").and_then(json_u128),
-                                )
+        if let Ok(queue) = governance_queue(stellar, &governance, None) {
+            facts.pending_proposals = Some(queue.proposals.iter().map(|p| p.proposal_id).collect());
+            if queue.warnings.is_empty() {
+                facts.stale_proposals = queue
+                    .proposals
+                    .iter()
+                    .map(|p| p.valid_after_ns)
+                    .collect::<Option<Vec<u64>>>()
+                    .map(|readys| {
+                        let now = system_now_ns();
+                        readys
+                            .iter()
+                            .filter(|ready| {
+                                now.saturating_sub(**ready) > PROPOSAL_EXECUTION_WINDOW_NS
                             })
-                    })
-                    .collect::<Option<Vec<u128>>>()
-                    .map(|valid_after| {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos();
-                        u64::try_from(
-                            valid_after
-                                .into_iter()
-                                .filter(|ready| now > *ready + PROPOSAL_EXECUTION_WINDOW_NS)
-                                .count(),
-                        )
-                        .unwrap_or(u64::MAX)
+                            .count() as u64
                     });
-            facts.pending_proposals = Some(ids);
+            }
         }
     }
     facts
@@ -562,12 +545,12 @@ pub(super) fn parse_proxy_view(stdout: &str, facts: &mut VaultFacts) {
     if let Some(share) = text_at(&[0, 0, 3]) {
         facts.share_token_id = Some(share);
     }
-    facts.virtual_assets = node_at(&[0, 1, 1]).and_then(json_i128);
+    facts.virtual_assets = node_at(&[0, 1, 1]).and_then(json_num);
     facts.paused = node_at(&[0, 1, 2]).and_then(Value::as_bool);
     facts.external_assets_present = node_at(&[0, 2, 2])
-        .and_then(json_i128)
-        .map(|external| external != 0);
-    facts.max_deposit_allowed = node_at(&[2, 2]).and_then(json_i128);
+        .and_then(json_num)
+        .map(|external: i128| external != 0);
+    facts.max_deposit_allowed = node_at(&[2, 2]).and_then(json_num);
 }
 
 /// Parses the tagged ScVal map `{"map":[{"key":{"u32":n},"val":{"address":"C…"}}]}`.
@@ -581,37 +564,12 @@ pub(super) fn parse_adapter_map(value: &Value) -> Option<Vec<(u32, String)>> {
     Some(bindings)
 }
 
-pub(super) fn parse_pending_ids(stdout: &str) -> Vec<u64> {
-    match serde_json::from_str::<Value>(stdout) {
-        Ok(value) if value.is_array() => value
-            .as_array()
-            .map(|values| values.iter().filter_map(json_u64).collect())
-            .unwrap_or_default(),
-        _ => stdout
-            .split_whitespace()
-            .filter_map(|token| token.parse().ok())
-            .collect(),
-    }
-}
-
-fn json_i128(value: &Value) -> Option<i128> {
+fn json_num<T: std::str::FromStr>(value: &Value) -> Option<T> {
     match value {
         Value::String(text) => text.replace('_', "").parse().ok(),
         Value::Number(number) => number.to_string().parse().ok(),
         _ => None,
     }
-}
-
-fn json_u128(value: &Value) -> Option<u128> {
-    match value {
-        Value::String(text) => text.replace('_', "").parse().ok(),
-        Value::Number(number) => number.to_string().parse().ok(),
-        _ => None,
-    }
-}
-
-fn json_u64(value: &Value) -> Option<u64> {
-    json_u128(value).and_then(|value| u64::try_from(value).ok())
 }
 
 pub(super) fn run_preflight<E: CommandExecutor>(
@@ -640,12 +598,8 @@ pub(super) fn run_preflight<E: CommandExecutor>(
         args.attest_empty_withdrawal_queue,
     );
     let report = evaluate_vault_preflight(&facts);
-    let response = UpgradePreflightResponse {
-        vault,
-        report,
-        allow_unverifiable: args.allow_unverifiable,
-    };
-    if response.report.ok || args.allow_unverifiable {
+    let response = UpgradePreflightResponse { vault, report };
+    if response.report.ok {
         return Ok(Response::UpgradePreflight(response));
     }
     anyhow::bail!(

@@ -204,14 +204,7 @@ pub(in crate::commands) fn print_response(response: &Response, cli: &Cli) -> any
                     finding.detail
                 );
             }
-            println!(
-                "Result: {}",
-                if result.report.ok || result.allow_unverifiable {
-                    "ok"
-                } else {
-                    "blocked"
-                }
-            );
+            println!("Result: ok");
         }
         Response::GovernanceAcceptReady(result) => {
             if result.accepted.is_empty() {
