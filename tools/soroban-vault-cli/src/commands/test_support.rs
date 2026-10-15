@@ -146,6 +146,14 @@ impl CommandExecutor for RecordingExecutor {
                 stderr: String::new(),
             });
         }
+        if args.iter().any(|arg| arg == "proxy_view") {
+            return Ok(CommandOutput {
+                stdout: format!(
+                    "[[[null,\"{CONTRACT}\",null,null],[null,null,null],[null,null,null,null],null],null,[null,null,null]]"
+                ),
+                stderr: String::new(),
+            });
+        }
         if args.iter().any(|arg| arg == "pending_ids") {
             return Ok(CommandOutput {
                 stdout: "[1, 2]".to_string(),
