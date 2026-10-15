@@ -638,6 +638,21 @@ impl SorobanCuratorProxyContract {
         )
     }
 
+    /// Revokes an already-accepted opaque approval (Halborn FIND-024).
+    pub fn revoke_other_approved(
+        env: Env,
+        admin: Address,
+        key: Symbol,
+        payload_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        invoke_governance(
+            &env,
+            "revoke_other_approved",
+            (admin, key, payload_hash).into_val(&env),
+        )
+    }
+
     pub fn abdicate(
         env: Env,
         admin: Address,
