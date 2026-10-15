@@ -6712,6 +6712,83 @@ mod storage_tests {
     }
 
     #[test]
+    fn test_governance_supply_queue_rejects_adapter_bound_to_another_market() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let adapter_for_market_one = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = policy_state_with_supply_queue(&[1]);
+            policy_state
+                .set_market_config(2, MarketConfig::new(true, 100, None))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_allowed_adapters(&env, &[adapter_for_market_one.clone()]);
+            store_test_adapter_bindings(&env, &[(1, adapter_for_market_one.clone())]);
+
+            let duplicate_payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1, 2]),
+                    mode: None,
+                    accounts: Some(alloc::vec![
+                        sdk_text(&adapter_for_market_one),
+                        sdk_text(&adapter_for_market_one),
+                    ]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+            assert_eq!(
+                SorobanVaultContract::execute_governance(
+                    env.clone(),
+                    governance.clone(),
+                    duplicate_payload,
+                ),
+                Err(ContractError::InvalidInput)
+            );
+            assert_eq!(
+                adapter_for_market(&env, 2),
+                Err(ContractError::InvalidInput)
+            );
+        });
+
+        env.as_contract(&contract_id, || {
+            let idempotent_payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1]),
+                    mode: None,
+                    accounts: Some(alloc::vec![sdk_text(&adapter_for_market_one)]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+            SorobanVaultContract::execute_governance(
+                env.clone(),
+                governance.clone(),
+                idempotent_payload,
+            )
+            .unwrap();
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), adapter_for_market_one);
+        });
+    }
+
+    #[test]
     fn test_governance_rejects_new_supply_queue_market_without_adapter() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
