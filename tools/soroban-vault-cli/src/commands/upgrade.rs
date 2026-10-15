@@ -267,6 +267,50 @@ fn governance_wiring_finding(facts: &VaultFacts) -> PreflightFinding {
     }
 }
 
+/// Pure decision for the governance-write guard: writes against the manifest
+/// governance are only safe while it matches the vault's on-chain binding.
+/// Unreadable bindings fail closed — a stale manifest record must never let
+/// governance writes land on a contract the vault no longer consults.
+pub(super) fn governance_binding_matches(
+    manifest_governance: Option<&str>,
+    on_chain: Option<&str>,
+) -> anyhow::Result<()> {
+    match (manifest_governance, on_chain) {
+        (Some(manifest), Some(on_chain)) if manifest == on_chain => Ok(()),
+        (Some(manifest), Some(on_chain)) => anyhow::bail!(
+            "manifest governance {manifest} does not match the vault's on-chain governance \
+             {on_chain}; refusing governance writes — if this is a cutover that already \
+             executed, run `upgrade confirm-governance-cutover`; otherwise remove the stale \
+             governance record"
+        ),
+        (Some(manifest), None) => anyhow::bail!(
+            "cannot read the vault's governance binding (proxy_view); refusing governance \
+             writes for manifest governance {manifest} (fail closed)"
+        ),
+        (None, _) => anyhow::bail!(
+            "manifest records no governance; refusing governance writes (fail closed)"
+        ),
+    }
+}
+
+/// Reads the vault's governance binding via `proxy_view` (`[0][0][1]`).
+/// `None` means the binding could not be read.
+pub(super) fn read_governance_binding<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    vault: &str,
+) -> Option<String> {
+    let view = stellar
+        .invoke_view(
+            vault,
+            "proxy_view",
+            args([("--owner", vault), ("--assets", "0"), ("--shares", "0")]),
+        )
+        .ok()?;
+    let mut facts = VaultFacts::default();
+    parse_proxy_view(&view.stdout, &mut facts);
+    facts.governance_view
+}
+
 fn governance_queue_finding(facts: &VaultFacts) -> PreflightFinding {
     match (&facts.pending_proposals, facts.stale_proposals) {
         (Some(pending), _) if pending.is_empty() => pass(
@@ -614,4 +658,20 @@ pub(super) fn run_preflight<E: CommandExecutor>(
             .collect::<Vec<_>>()
             .join("; ")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::governance_binding_matches;
+
+    #[test]
+    fn governance_write_guard_fails_closed_on_mismatch_or_unreadable_binding() {
+        assert!(governance_binding_matches(Some("CNEW"), Some("CNEW")).is_ok());
+        let mismatch = governance_binding_matches(Some("COLD"), Some("CNEW")).unwrap_err();
+        assert!(mismatch
+            .to_string()
+            .contains("upgrade confirm-governance-cutover"));
+        assert!(governance_binding_matches(Some("COLD"), None).is_err());
+        assert!(governance_binding_matches(None, Some("CNEW")).is_err());
+    }
 }
