@@ -45,7 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ResyncIdleBalance` and `RefreshFees` are rejected with `EnforcedPause` while the vault is
   paused; a rejected resync does not consume the resync cooldown (Halborn FIND-007).
 - Fee recipients may no longer be the vault itself or its asset/share token contracts; such a
-  change is rejected with `InvalidInput` (Halborn FIND-009).
+  change is rejected with `InvalidInput`, and `migrate` rejects a previously stored conflicting
+  recipient the same way before clearing the migration flag (Halborn FIND-009).
 - A queued withdrawal whose receiver cannot accept the asset (no or deauthorized trustline)
   now settles as a failed payout: escrow is refunded, nothing is burned, the head is
   dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out`. Previously the

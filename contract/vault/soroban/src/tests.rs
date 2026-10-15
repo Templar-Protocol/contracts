@@ -2518,6 +2518,55 @@ mod contract_tests {
         });
     }
 
+    /// A recipient stored before the FIND-009 guard existed blocks `migrate`, which keeps the
+    /// migration flag set until governance stores a valid recipient pair.
+    #[test]
+    fn test_migrate_rejects_stored_vault_fee_recipient() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                17,
+                29,
+            )
+            .unwrap();
+            let vault_kernel = kernel_address_from_sdk(&env, &env.current_contract_address());
+            let legacy = FeesSpec::new(
+                FeeSlot::new(Wad::one() / 8, templar_vault_kernel::Address([8u8; 32])),
+                FeeSlot::new(Wad::one() / 16, vault_kernel),
+                None,
+            );
+            store_fees_spec(&env, &legacy).unwrap();
+            set_migration_in_progress(&env, true);
+
+            assert_eq!(
+                SorobanVaultContract::migrate(env.clone(), governance.clone()),
+                Err(crate::error::ContractError::InvalidInput)
+            );
+            assert!(migration_in_progress(&env));
+        });
+        // the test host allows one authorization per contract frame
+        env.as_contract(&contract_id, || {
+            let perf = SdkAddress::generate(&env);
+            let mgmt = SdkAddress::generate(&env);
+            apply_fee_change(&env, 0, perf, 0, mgmt, None).unwrap();
+            SorobanVaultContract::migrate(env.clone(), governance).unwrap();
+            assert!(!migration_in_progress(&env));
+        });
+    }
+
     #[test]
     fn test_loads_virtual_offsets_from_storage() {
         use soroban_sdk::testutils::Address as _;

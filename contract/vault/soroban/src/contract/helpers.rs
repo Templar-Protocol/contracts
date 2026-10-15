@@ -293,16 +293,6 @@ pub(crate) fn apply_fee_change(
         require_non_negative_bounded_wad(management_fee_wad, MAX_MANAGEMENT_FEE_WAD)?;
     let max_rate = optional_wad(max_growth_rate_wad)?;
 
-    // Halborn FIND-009: fee shares must not accrue to the vault escrow pool or token contracts.
-    let vault_address = env.current_contract_address();
-    let asset_token = get_config_address(env, &VaultDataKey::AssetToken)?;
-    let share_token = get_config_address(env, &VaultDataKey::ShareToken)?;
-    for recipient in [&performance_recipient, &management_recipient] {
-        if *recipient == vault_address || *recipient == asset_token || *recipient == share_token {
-            return Err(ContractError::InvalidInput);
-        }
-    }
-
     let performance_kernel = kernel_address_from_sdk(env, &performance_recipient);
     let management_kernel = kernel_address_from_sdk(env, &management_recipient);
     let fees = FeesSpec::new(
@@ -311,10 +301,29 @@ pub(crate) fn apply_fee_change(
         max_rate,
     );
 
+    require_allowed_fee_recipients(env, &fees)?;
     runtime_to_contract(store_fees_spec(env, &fees))?;
     let storage = SorobanStorage::new(env);
     runtime_to_contract(storage.save_address(&performance_kernel, &performance_recipient))?;
     runtime_to_contract(storage.save_address(&management_kernel, &management_recipient))?;
+    Ok(())
+}
+
+/// Halborn FIND-009: fee shares must not accrue to the vault escrow pool or token contracts.
+pub(crate) fn require_allowed_fee_recipients(
+    env: &Env,
+    fees: &FeesSpec,
+) -> Result<(), ContractError> {
+    for address in [
+        env.current_contract_address(),
+        get_config_address(env, &VaultDataKey::AssetToken)?,
+        get_config_address(env, &VaultDataKey::ShareToken)?,
+    ] {
+        let kernel = kernel_address_from_sdk(env, &address);
+        if fees.performance.recipient == kernel || fees.management.recipient == kernel {
+            return Err(ContractError::InvalidInput);
+        }
+    }
     Ok(())
 }
 
