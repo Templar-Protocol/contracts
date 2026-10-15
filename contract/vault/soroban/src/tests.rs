@@ -5040,6 +5040,21 @@ mod storage_tests {
         env.register(SorobanVaultContract, ())
     }
 
+    // Adapter whose valuation is permanently negative (underwater position).
+    mod negative_valuation {
+        use soroban_sdk::{contract, contractimpl, Address, Env};
+
+        #[contract]
+        pub struct NegativeAdapter;
+
+        #[contractimpl]
+        impl NegativeAdapter {
+            pub fn total_assets(_env: Env, _asset: Address) -> i128 {
+                -1
+            }
+        }
+    }
+
     fn account_address(env: &Env) -> SdkAddress {
         SdkAddress::from_str(
             env,
@@ -6199,6 +6214,89 @@ mod storage_tests {
                 .unwrap();
             assert_eq!(adapter_for_market(&env, 1).unwrap(), adapter_for_market_one);
             assert_eq!(adapter_for_market(&env, 2).unwrap(), adapter_for_market_two);
+        });
+    }
+
+    #[test]
+    fn test_refresh_writes_down_negative_adapter_valuation_to_zero() {
+        use templar_soroban_shared_types::{I128Receipt, VaultCommand};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let allocator = SdkAddress::generate(&env);
+        let negative_adapter = env.register(negative_valuation::NegativeAdapter, ());
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            store_allowed_adapters(&env, &[negative_adapter.clone()]);
+            store_test_adapter_bindings(&env, &[(1, negative_adapter.clone())]);
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = PolicyState::default();
+            policy_state
+                .set_market_config(1, MarketConfig::new(true, 1_000, None))
+                .unwrap();
+            policy_state.set_principal(1, 1_000).unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            let mut state = storage.load_state().unwrap().unwrap();
+            state.idle_assets = 0;
+            state.external_assets = 1_000;
+            state.total_assets = 1_000;
+            state.total_shares = 1_000;
+            storage.save_state(&state).unwrap();
+        });
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+                primary: None,
+                many: Some(alloc::vec![sdk_text(&allocator)]),
+                value_a: None,
+                value_b: None,
+            },
+        );
+
+        let payload = Bytes::from_slice(
+            &env,
+            &VaultCommand::RefreshMarkets {
+                caller: sdk_text(&allocator),
+                markets: alloc::vec![1u32],
+            }
+            .encode(),
+        );
+        let receipt = env
+            .as_contract(&contract_id, || {
+                SorobanVaultContract::execute(env.clone(), payload)
+            })
+            .unwrap();
+        assert_eq!(
+            I128Receipt::decode(&receipt.to_alloc_vec())
+                .expect("decode i128 receipt")
+                .value,
+            0
+        );
+
+        env.as_contract(&contract_id, || {
+            let storage = SorobanStorage::new(&env);
+            let state = storage.load_state().unwrap().unwrap();
+            assert_eq!(state.external_assets, 0);
+            assert_eq!(state.total_assets, 0);
+            let reloaded = Storage::load_policy_state(&storage).unwrap().unwrap();
+            assert_eq!(reloaded.principal_for(1), Some(0));
         });
     }
 

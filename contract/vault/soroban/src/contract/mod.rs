@@ -20,7 +20,9 @@ pub use entrypoints::SorobanVaultContract;
 pub use types::*;
 
 use crate::auth::{ActionKind, AuthAdapter};
-use crate::convert::{ledger_timestamp_ns, runtime_to_contract, to_i128, to_u128};
+use crate::convert::{
+    ledger_timestamp_ns, runtime_to_contract, to_i128, to_u128, valuation_to_u128,
+};
 use crate::effects::{
     AddressRegistrar, EffectContext, EffectInterpreter, EffectSummary, SdkTokenAdapter,
     ShareTokenAdapter, SorobanEffectInterpreter,
