@@ -410,8 +410,9 @@ pub(super) fn collect_vault_facts<E: CommandExecutor>(
 
     if let Some(governance) = facts.governance_view.clone() {
         if let Ok(queue) = governance_queue(stellar, &governance, None) {
-            facts.pending_proposals = Some(queue.proposals.iter().map(|p| p.proposal_id).collect());
             if queue.warnings.is_empty() {
+                facts.pending_proposals =
+                    Some(queue.proposals.iter().map(|p| p.proposal_id).collect());
                 facts.stale_proposals = queue
                     .proposals
                     .iter()
@@ -633,7 +634,12 @@ pub(super) fn run_preflight<E: CommandExecutor>(
     );
     let report = evaluate_vault_preflight(&facts);
     let response = UpgradePreflightResponse { vault, report };
-    if response.report.ok {
+    let blocking = response
+        .report
+        .findings
+        .iter()
+        .any(|f| f.status == PreflightStatus::Blocking);
+    if response.report.ok || (args.allow_unverifiable && !blocking) {
         return Ok(Response::UpgradePreflight(response));
     }
     anyhow::bail!(

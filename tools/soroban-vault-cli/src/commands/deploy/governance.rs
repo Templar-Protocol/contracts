@@ -7,6 +7,7 @@ use anyhow::Context;
 use crate::{
     artifacts::{ensure_uploaded, ArtifactSpec},
     cli::{ArtifactName, DeployGovernanceArgs},
+    manifest::Manifest,
     stellar::CommandExecutor,
 };
 
@@ -22,6 +23,37 @@ use super::{
     },
 };
 
+/// Cheap input checks both the real deployment and the dry-run plan
+/// share, so a dry-run never promises a plan the real path would reject.
+pub(in crate::commands) fn validate_governance_dry_run(
+    cli: &crate::cli::Cli,
+    manifest: &Manifest,
+    args: &DeployGovernanceArgs,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.timelock_ns != 0 || cli.allow_zero_timelock,
+        "zero governance timelock requires --allow-zero-timelock"
+    );
+    let vault = args
+        .vault
+        .as_ref()
+        .map(ToString::to_string)
+        .or_else(|| {
+            manifest
+                .contracts
+                .get("vault")
+                .map(|record| record.contract_id.clone())
+        })
+        .context("deploy governance requires an existing vault (manifest record or --vault)")?;
+    if let Some(admin) = &args.admin {
+        anyhow::ensure!(
+            admin.as_str() != vault,
+            "governance admin must not be the vault itself"
+        );
+    }
+    Ok(())
+}
+
 pub(in crate::commands) fn deploy_governance<E: CommandExecutor>(
     deployment: &mut DeploymentContext<'_, '_, '_, E>,
     args: &DeployGovernanceArgs,
@@ -29,9 +61,7 @@ pub(in crate::commands) fn deploy_governance<E: CommandExecutor>(
     let (context, manifest) = deployment.parts();
     let cli = context.cli();
     let stellar = context.stellar();
-    if args.timelock_ns == 0 && !cli.allow_zero_timelock {
-        anyhow::bail!("zero governance timelock requires --allow-zero-timelock");
-    }
+    validate_governance_dry_run(cli, manifest, args)?;
     record_imported_contract_if_provided(context, manifest, "vault", args.vault.as_ref())?;
     let vault = required_contract(manifest, "vault")?.to_string();
     let admin = if let Some(admin) = &args.admin {

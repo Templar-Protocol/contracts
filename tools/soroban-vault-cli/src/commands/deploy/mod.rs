@@ -22,7 +22,7 @@ use super::{
 
 use adapters::deploy_adapters;
 use curator_proxy::deploy_curator_proxy;
-use governance::deploy_governance;
+use governance::{deploy_governance, validate_governance_dry_run};
 use plan::run_deploy_plan;
 pub(in crate::commands) use plan::stellar_command_shape;
 pub(in crate::commands) use reconcile::run_reconcile;
@@ -150,6 +150,7 @@ fn run_dry_plan<E: CommandExecutor>(
             Ok(Response::Plan(response))
         }
         DeployCommand::Governance(args) => {
+            validate_governance_dry_run(context.cli(), manifest, args)?;
             let spec = ArtifactSpec::from_name(crate::cli::ArtifactName::Governance);
             let mut response = PlanResponse::new("deploy governance", &context.cli().network);
             response

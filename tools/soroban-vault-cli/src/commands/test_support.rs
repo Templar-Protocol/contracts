@@ -52,8 +52,11 @@ impl CacheEnvGuard {
     fn set(path: &std::path::Path) -> Self {
         let lock = CACHE_ENV_LOCK.lock().expect("cache env lock");
         let previous = std::env::var_os(crate::artifacts::CACHE_ENV);
-        // SAFETY: every in-process mutation of this variable is serialized by
-        // CACHE_ENV_LOCK and restored before the guard releases the lock.
+        // SAFETY: every in-process mutation of this variable is serialized
+        // by CACHE_ENV_LOCK and restored before the guard releases the
+        // lock. Concurrent reads outside the guard (e.g. build=true tests
+        // reaching `release_cache_root`) cannot race into UB on this
+        // edition; the guard only orders mutations against each other.
         unsafe { std::env::set_var(crate::artifacts::CACHE_ENV, path) };
         Self {
             _lock: lock,

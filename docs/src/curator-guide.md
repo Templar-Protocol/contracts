@@ -159,6 +159,7 @@ contract/vault/soroban/.deploy-state/manifest.json
 It records contract IDs, constructor arguments, artifact hashes, initialization
 state, and successful transaction audit records. Treat it as operational state,
 back it up, and pass `--state` explicitly when operating more than one vault.
+
 ### Artifact source and cache policy
 
 Normal deployment uses the fixed reviewed `soroban-v1.3.0-rc.1` catalog. Resolution is strict and

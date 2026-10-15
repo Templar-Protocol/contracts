@@ -364,3 +364,53 @@ fn fresh_plan_rejects_existing_manifest_without_writing() {
         .contains("fresh deployment requires an unused --state path"));
     assert!(executor.calls().is_empty());
 }
+
+#[test]
+fn governance_dry_run_applies_real_deployment_input_checks() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    Manifest::new("testnet", None)
+        .save(&state)
+        .expect("save manifest");
+    let executor = RecordingExecutor::new();
+    // Zero timelock without --allow-zero-timelock must fail in dry-run,
+    // exactly as the real deployment path rejects it.
+    let cli = Cli {
+        dry_run: true,
+        workspace_path: dir.path().into(),
+        command: Commands::Deploy(DeployArgs {
+            command: DeployCommand::Governance(crate::cli::DeployGovernanceArgs {
+                vault: Some(CONTRACT.parse().expect("vault")),
+                admin: None,
+                timelock_ns: 0,
+                wasm_hash: None,
+                build: false,
+                force_new: false,
+            }),
+        }),
+        ..base_cli(state.clone(), Commands::Status)
+    };
+    let error = run(&cli, &executor).expect_err("zero timelock must be rejected in dry-run");
+    assert!(
+        error.to_string().contains("--allow-zero-timelock"),
+        "{error:#}"
+    );
+    // Missing vault (no arg, no manifest record) must fail too.
+    let cli = Cli {
+        dry_run: true,
+        command: Commands::Deploy(DeployArgs {
+            command: DeployCommand::Governance(crate::cli::DeployGovernanceArgs {
+                vault: None,
+                admin: None,
+                timelock_ns: 1_000,
+                wasm_hash: None,
+                build: false,
+                force_new: false,
+            }),
+        }),
+        ..base_cli(state.clone(), Commands::Status)
+    };
+    let error = run(&cli, &executor).expect_err("missing vault must be rejected in dry-run");
+    assert!(error.to_string().contains("existing vault"), "{error:#}");
+    assert!(executor.calls().is_empty());
+}

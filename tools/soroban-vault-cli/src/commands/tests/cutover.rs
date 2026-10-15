@@ -113,6 +113,7 @@ fn confirm_governance_cutover_uses_constructor_admin_never_governance_id() {
     pending
         .constructor_args
         .insert("admin".to_string(), ACCOUNT.to_string());
+    pending.wasm_hash = "ab".repeat(32);
     manifest.contracts.insert(
         crate::commands::cutover::GOVERNANCE_PENDING_KEY.to_string(),
         pending,
@@ -126,8 +127,8 @@ fn confirm_governance_cutover_uses_constructor_admin_never_governance_id() {
         }),
         ..base_cli(state.clone(), Commands::Status)
     };
-    // The current governance's admin() is unreadable, so the expected
-    // admin falls back to the pending record's constructor admin.
+    // The expected admin comes from the pending record's constructor
+    // admin, never from the current governance's identity.
     let executor = UnreadableAdminExecutor(RecordingExecutor::new());
     let err = run(&cli, &executor).expect_err("unverifiable wasm hash must fail closed");
     let message = format!("{err:#}");
@@ -170,14 +171,13 @@ fn confirm_governance_cutover_fails_closed_without_readable_admin() {
         }),
         ..base_cli(state.clone(), Commands::Status)
     };
-    // The current governance's admin() is unreadable and the pending
-    // record carries no constructor admin, so the confirmation must fail
-    // closed rather than promote.
+    // The pending record carries no constructor admin, so the
+    // confirmation must fail closed rather than promote.
     let executor = UnreadableAdminExecutor(RecordingExecutor::new());
     let err = run(&cli, &executor).expect_err("missing admin fact must fail closed");
     let message = format!("{err:#}");
     assert!(
-        message.contains("cannot determine the expected governance admin"),
+        message.contains("cannot be confirmed") && message.contains("no valid constructor admin"),
         "{message}"
     );
     let after = Manifest::load_or_new(&state, "testnet", None).expect("reload");
@@ -187,7 +187,7 @@ fn confirm_governance_cutover_fails_closed_without_readable_admin() {
 }
 
 #[test]
-fn confirm_governance_cutover_falls_back_to_constructor_admin() {
+fn confirm_governance_cutover_takes_expected_admin_from_pending_record() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");
     let mut manifest = Manifest::new("testnet", None);
@@ -200,6 +200,7 @@ fn confirm_governance_cutover_falls_back_to_constructor_admin() {
     pending
         .constructor_args
         .insert("admin".to_string(), ACCOUNT.to_string());
+    pending.wasm_hash = "ab".repeat(32);
     manifest.contracts.insert(
         crate::commands::cutover::GOVERNANCE_PENDING_KEY.to_string(),
         pending,
@@ -213,10 +214,9 @@ fn confirm_governance_cutover_falls_back_to_constructor_admin() {
         }),
         ..base_cli(state.clone(), Commands::Status)
     };
-    // The admin view is unreadable, so the expected admin comes from the
-    // pending record's constructor args. The confirmation must report the
-    // wasm-hash fact problem, never an admin determination failure, and
-    // never promote.
+    // The guard compares the target's admin() against the pending record's
+    // constructor admin and reports the wasm-hash fact (the executor never
+    // serves the wasm fetch), never an admin determination failure.
     let executor = UnreadableAdminExecutor(RecordingExecutor::new());
     let err = run(&cli, &executor).expect_err("unfetched wasm hash must fail closed");
     let message = format!("{err:#}");
@@ -229,6 +229,199 @@ fn confirm_governance_cutover_falls_back_to_constructor_admin() {
     assert!(after
         .contracts
         .contains_key(crate::commands::cutover::GOVERNANCE_PENDING_KEY));
+}
+
+/// Executor that serves the full cutover view set for `target`: the
+/// target's `vault()`/`admin()` views, a WASM fetch returning
+/// `governance_wasm`, and a vault `proxy_view` whose governance binding is
+/// `bound_governance` (`None` = unreadable).
+struct CutoverChainExecutor {
+    target: &'static str,
+    governance_wasm: &'static [u8],
+    bound_governance: Option<String>,
+    inner: RecordingExecutor,
+}
+
+impl CutoverChainExecutor {
+    fn bound_to(target: &'static str, bound_governance: Option<String>) -> Self {
+        Self {
+            target,
+            governance_wasm: b"fake governance wasm",
+            bound_governance,
+            inner: RecordingExecutor::new(),
+        }
+    }
+}
+
+impl crate::stellar::CommandExecutor for CutoverChainExecutor {
+    fn run(
+        &self,
+        program: &str,
+        args: &[String],
+        redacted: &[usize],
+        env: &[crate::stellar::CommandEnv],
+    ) -> anyhow::Result<crate::stellar::CommandOutput> {
+        let for_target = args
+            .windows(2)
+            .any(|pair| pair[0] == "--id" && pair[1] == self.target);
+        if for_target && args.iter().any(|arg| arg == "admin") {
+            return Ok(crate::stellar::CommandOutput {
+                stdout: ACCOUNT.to_string(),
+                stderr: String::new(),
+            });
+        }
+        if for_target && args.windows(2).any(|pair| pair[0] == "--out-file") {
+            let path = args
+                .windows(2)
+                .find_map(|pair| (pair[0] == "--out-file").then_some(&pair[1]))
+                .expect("out-file");
+            std::fs::write(path, self.governance_wasm).expect("write fetched wasm");
+            return Ok(crate::stellar::CommandOutput {
+                stdout: self.target.to_string(),
+                stderr: String::new(),
+            });
+        }
+        if args.iter().any(|arg| arg == "proxy_view") {
+            return match &self.bound_governance {
+                Some(governance) => Ok(crate::stellar::CommandOutput {
+                    stdout: format!(
+                        "[[[null,\"{governance}\",null,null],[null,null,null],[null,null,null,null],null],null,[null,null,null]]"
+                    ),
+                    stderr: String::new(),
+                }),
+                None => Err(anyhow::anyhow!("proxy_view unavailable")),
+            };
+        }
+        if for_target && args.iter().any(|arg| arg == "vault") {
+            return Ok(crate::stellar::CommandOutput {
+                stdout: CONTRACT.to_string(),
+                stderr: String::new(),
+            });
+        }
+        self.inner.run(program, args, redacted, env)
+    }
+}
+
+/// Manifest with vault+governance CONTRACT and a pending OTHER_CONTRACT
+/// whose constructor admin differs from the current governance's.
+fn cutover_manifest(dir: &std::path::Path) -> std::path::PathBuf {
+    let state = dir.join("manifest.json");
+    let mut manifest = Manifest::new("testnet", None);
+    for key in ["vault", "governance"] {
+        manifest
+            .contracts
+            .insert(key.to_string(), imported_record(CONTRACT));
+    }
+    let mut pending = imported_record(OTHER_CONTRACT);
+    pending
+        .constructor_args
+        .insert("admin".to_string(), ACCOUNT.to_string());
+    pending.wasm_hash = format!("{:x}", Sha256::digest(b"fake governance wasm"));
+    manifest.contracts.insert(
+        crate::commands::cutover::GOVERNANCE_PENDING_KEY.to_string(),
+        pending,
+    );
+    manifest.save(&state).expect("save manifest");
+    state
+}
+
+fn confirm_cli(dir: &std::path::Path, state: std::path::PathBuf) -> Cli {
+    Cli {
+        yes: true,
+        workspace_path: dir.to_path_buf(),
+        command: Commands::Upgrade(UpgradeArgs {
+            command: UpgradeCommand::ConfirmGovernanceCutover,
+        }),
+        ..base_cli(state, Commands::Status)
+    }
+}
+
+#[test]
+fn confirm_refuses_while_vault_is_still_bound_to_old_governance() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = cutover_manifest(dir.path());
+    let executor = CutoverChainExecutor::bound_to(OTHER_CONTRACT, Some(CONTRACT.to_string()));
+    let err = run(&confirm_cli(dir.path(), state.clone()), &executor)
+        .expect_err("promotion must wait for the on-chain binding");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("still bound to governance") && message.contains(OTHER_CONTRACT),
+        "{message}"
+    );
+    let after = Manifest::load_or_new(&state, "testnet", None).expect("reload");
+    assert!(after
+        .contracts
+        .contains_key(crate::commands::cutover::GOVERNANCE_PENDING_KEY));
+}
+
+#[test]
+fn confirm_fails_closed_when_governance_binding_is_unreadable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = cutover_manifest(dir.path());
+    let executor = CutoverChainExecutor::bound_to(OTHER_CONTRACT, None);
+    let err = run(&confirm_cli(dir.path(), state.clone()), &executor)
+        .expect_err("unreadable binding must fail closed");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("cannot read the governance binding"),
+        "{message}"
+    );
+    let after = Manifest::load_or_new(&state, "testnet", None).expect("reload");
+    assert!(after
+        .contracts
+        .contains_key(crate::commands::cutover::GOVERNANCE_PENDING_KEY));
+}
+
+#[test]
+fn confirm_promotes_after_vault_is_bound_to_pending_governance() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = cutover_manifest(dir.path());
+    let executor = CutoverChainExecutor::bound_to(OTHER_CONTRACT, Some(OTHER_CONTRACT.to_string()));
+    run(&confirm_cli(dir.path(), state.clone()), &executor).expect("cutover confirms");
+    let after = Manifest::load_or_new(&state, "testnet", None).expect("reload");
+    assert!(!after
+        .contracts
+        .contains_key(crate::commands::cutover::GOVERNANCE_PENDING_KEY));
+    assert_eq!(
+        after.contracts["governance"].contract_id, OTHER_CONTRACT,
+        "active governance must be the promoted pending one"
+    );
+    assert_eq!(
+        after.contracts[crate::commands::cutover::GOVERNANCE_PREVIOUS_KEY].contract_id,
+        CONTRACT,
+        "previous governance must be preserved for audit"
+    );
+}
+
+#[test]
+fn confirm_matches_explicit_admin_and_wasm_hash_from_pending_record() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    let mut manifest = Manifest::new("testnet", None);
+    for key in ["vault", "governance"] {
+        manifest
+            .contracts
+            .insert(key.to_string(), imported_record(CONTRACT));
+    }
+    let mut pending = imported_record(OTHER_CONTRACT);
+    pending
+        .constructor_args
+        .insert("admin".to_string(), ACCOUNT.to_string());
+    pending.wasm_hash = format!("{:x}", Sha256::digest(b"fake governance wasm"));
+    manifest.contracts.insert(
+        crate::commands::cutover::GOVERNANCE_PENDING_KEY.to_string(),
+        pending,
+    );
+    manifest.save(&state).expect("save manifest");
+    // The current governance reports the default (unrelated) address as its
+    // admin: an admin rotated during the cutover must not block
+    // confirmation, because the expected values come from the pending
+    // record, not from the old governance.
+    let executor = CutoverChainExecutor::bound_to(OTHER_CONTRACT, Some(OTHER_CONTRACT.to_string()));
+    run(&confirm_cli(dir.path(), state.clone()), &executor)
+        .expect("cutover confirms despite rotated admin");
+    let after = Manifest::load_or_new(&state, "testnet", None).expect("reload");
+    assert_eq!(after.contracts["governance"].contract_id, OTHER_CONTRACT);
 }
 
 /// Executor whose `admin` views are unreadable (RPC hiccup / wrong

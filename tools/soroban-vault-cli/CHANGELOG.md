@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closed instead of compiling implicitly
 - *(soroban-cli)* persist the verified artifact cache in the operator image while retaining source,
   Rust toolchains, and `target` for explicit `--build`
+- *(soroban-cli)* `upgrade confirm-governance-cutover` now requires the vault's on-chain governance
+  binding to equal the pending governance before promoting (unreadable bindings fail closed), and
+  validates the target against the pending record's recorded admin and WASM hash instead of
+  re-deriving them from the current governance or the manifest pin
+- *(soroban-cli)* `upgrade preflight` keeps the governance-queue check unverifiable when proposals
+  cannot be decoded, honors `--allow-unverifiable` (Blocking findings still fail), and `deploy
+  governance` dry-runs run the same input validation as real deployments
 
 ### Migration
 

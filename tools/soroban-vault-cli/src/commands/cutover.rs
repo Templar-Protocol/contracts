@@ -40,9 +40,9 @@ pub(super) struct CutoverParams {
     pub(super) current_governance: String,
     pub(super) new_governance: String,
     /// The admin the target governance must report. The CLI callers resolve
-    /// it from the current governance's `admin()` view (confirm) or the
-    /// submitting admin (submit-set-governance) before constructing the
-    /// params, so the guard always compares against a concrete value.
+    /// it from the pending record's constructor admin (confirm) or the
+    /// submitting/expected admin (submit-set-governance) before constructing
+    /// the params, so the guard always compares against a concrete value.
     pub(super) submitting_admin: String,
     pub(super) expected_wasm_hash: String,
 }
@@ -287,11 +287,12 @@ fn confirm_governance_cutover<E: CommandExecutor>(
     context: &CommandContext<'_, E>,
     manifest: &mut Manifest,
 ) -> anyhow::Result<Response> {
-    let pending_id = manifest
+    let pending = manifest
         .contracts
         .get(GOVERNANCE_PENDING_KEY)
-        .map(|record| record.contract_id.clone())
+        .cloned()
         .context("no pending governance recorded; run `deploy governance` first")?;
+    let pending_id = pending.contract_id.clone();
     let vault = required_contract(manifest, "vault")?.to_string();
     if context.cli().dry_run {
         return Ok(Response::message(format!(
@@ -303,27 +304,38 @@ fn confirm_governance_cutover<E: CommandExecutor>(
         .get("governance")
         .map(|record| record.contract_id.clone())
         .unwrap_or_default();
-    // The expected admin is the authority the current governance itself
-    // reports (never the governance contract id). When it cannot be
-    // queried (e.g. an imported manifest), fall back to the pending
-    // record's constructor admin.
-    let expected_admin = view_address(context.stellar(), &current_governance, "admin")
-        .or_else(|| {
-            manifest
-                .contracts
-                .get(GOVERNANCE_PENDING_KEY)
-                .and_then(|record| record.constructor_args.get("admin").cloned())
-        })
+    // Expected values come from the pending record `deploy governance`
+    // wrote (admin it constructed, WASM hash it deployed), never from the
+    // current governance: an admin rotated during the cutover or a
+    // deliberately different `--admin`/`--wasm-hash` must still confirm.
+    // The guard then proves the on-chain contract matches that record.
+    let expected_admin = pending
+        .constructor_args
+        .get("admin")
+        .cloned()
+        .filter(|admin| !admin.is_empty())
         .with_context(|| {
-            "cannot determine the expected governance admin; read the current governance \
-             `admin()` view or record constructor_args.admin for the pending governance"
+            format!(
+                "governance cutover cannot be confirmed: {GOVERNANCE_PENDING_KEY} records no valid constructor admin"
+            )
         })?;
+    anyhow::ensure!(
+        pending.wasm_hash.len() == 64 && pending.wasm_hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "{GOVERNANCE_PENDING_KEY} records no valid wasm hash; cannot verify the deployed governance"
+    );
+    let expected_wasm_hash = pending.wasm_hash.to_ascii_lowercase();
+    if expected_wasm_hash != crate::artifacts::ArtifactName::Governance.pin().sha256 {
+        eprintln!(
+            "warning: pending governance {pending_id} carries non-pinned WASM hash \
+             {expected_wasm_hash}; confirming against the recorded hash"
+        );
+    }
     let params = CutoverParams {
         vault: vault.clone(),
         current_governance,
         new_governance: pending_id.clone(),
         submitting_admin: expected_admin,
-        expected_wasm_hash: resolve_expected_wasm_hash(manifest, None, &pending_id),
+        expected_wasm_hash,
     };
     let facts = cutover_facts(context.stellar(), &params.current_governance, &pending_id);
     let problems = cutover_problems(&params, &facts);
@@ -336,6 +348,19 @@ fn confirm_governance_cutover<E: CommandExecutor>(
             .collect::<Vec<_>>()
             .join("\n")
     );
+    // The manifest may only be promoted once the on-chain SetGovernance has
+    // executed: the vault itself must report the pending governance.
+    match crate::commands::upgrade::read_governance_binding(context.stellar(), &vault) {
+        Some(bound) if bound == pending_id => {}
+        Some(bound) => anyhow::bail!(
+            "vault {vault} is still bound to governance {bound}, not {pending_id}; accept the \
+             set_governance proposal on the current governance before confirming the cutover"
+        ),
+        None => anyhow::bail!(
+            "cannot read the governance binding of vault {vault} (proxy_view); refusing to \
+             confirm the cutover (fail closed)"
+        ),
+    }
     anyhow::ensure!(
         manifest
             .contracts

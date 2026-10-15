@@ -204,7 +204,14 @@ pub(in crate::commands) fn print_response(response: &Response, cli: &Cli) -> any
                     finding.detail
                 );
             }
-            println!("Result: ok");
+            println!(
+                "Result: {}",
+                if result.report.ok {
+                    "ok"
+                } else {
+                    "ok (unverifiable checks allowed)"
+                }
+            );
         }
         Response::GovernanceAcceptReady(result) => {
             if result.accepted.is_empty() {
