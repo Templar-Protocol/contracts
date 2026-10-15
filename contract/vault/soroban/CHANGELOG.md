@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RefreshMarkets` covering every market with principal ran within the governance-configurable
   `MaxNavAge` window (default 24 h; kind 10), so shares are not priced against a stale NAV
   (Halborn FIND-001).
+- A queued withdrawal whose receiver cannot accept the asset (no or deauthorized trustline)
+  now settles as a failed payout: escrow is refunded, nothing is burned, the head is
+  dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out`. Previously the
+  SAC transfer trapped and the queue was wedged behind that head. The token adapter uses
+  `try_transfer` and reports failures as `EffectFailed` (Halborn FIND-015).
 
 ## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-10-01
 
