@@ -991,6 +991,15 @@ pub enum GovernanceCommand {
         #[arg(long)]
         cooldown_ns: u64,
     },
+    /// Submit a proposal to update the deposit NAV-freshness window.
+    SubmitSetMaxNavAge {
+        /// Governance admin address submitting the proposal.
+        #[arg(long)]
+        admin: AddressStr,
+        /// Proposed maximum NAV age in nanoseconds.
+        #[arg(long)]
+        max_nav_age_ns: u64,
+    },
     /// Submit a proposal to upgrade the vault WASM.
     SubmitUpgrade {
         /// Governance admin address submitting the proposal.

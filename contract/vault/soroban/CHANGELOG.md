@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ResyncIdleBalance` and `RefreshFees` are rejected with `EnforcedPause` while the vault is
   paused; a rejected resync does not consume the resync cooldown (Halborn FIND-007).
+- Deposits are rejected (`InvalidState`) while the vault holds external assets and no
+  `RefreshMarkets` covering every market with principal ran within the governance-configurable
+  `MaxNavAge` window (default 24 h; kind 10), so shares are not priced against a stale NAV
+  (Halborn FIND-001).
 - A queued withdrawal whose receiver cannot accept the asset (no or deauthorized trustline)
   now settles as a failed payout: escrow is refunded, nothing is burned, the head is
   dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out`. Previously the
