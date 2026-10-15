@@ -293,12 +293,12 @@ pub(super) fn governance_binding_matches(
     }
 }
 
-/// Reads the vault's governance binding via `proxy_view` (`[0][0][1]`).
-/// `None` means the binding could not be read.
-pub(super) fn read_governance_binding<E: CommandExecutor>(
+/// Reads the vault's `proxy_view` facts (governance binding, asset and share
+/// token ids, ...). `None` means the view could not be read.
+pub(super) fn read_vault_view<E: CommandExecutor>(
     stellar: &Stellar<'_, E>,
     vault: &str,
-) -> Option<String> {
+) -> Option<VaultFacts> {
     let view = stellar
         .invoke_view(
             vault,
@@ -308,7 +308,7 @@ pub(super) fn read_governance_binding<E: CommandExecutor>(
         .ok()?;
     let mut facts = VaultFacts::default();
     parse_proxy_view(&view.stdout, &mut facts);
-    facts.governance_view
+    Some(facts)
 }
 
 fn governance_queue_finding(facts: &VaultFacts) -> PreflightFinding {
