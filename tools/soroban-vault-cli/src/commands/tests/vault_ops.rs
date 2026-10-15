@@ -82,6 +82,87 @@ fn user_deposit_prefers_erc4626_proxy() {
     assert_eq!(tx.result_status.as_deref(), Some("success"));
 }
 
+/// Answers the asset token's `decimals` view; everything else is recorded.
+struct TokenDecimalsExecutor {
+    inner: RecordingExecutor,
+    decimals: &'static str,
+}
+
+impl CommandExecutor for TokenDecimalsExecutor {
+    fn run(
+        &self,
+        program: &str,
+        args: &[String],
+        redacted: &[usize],
+        env: &[crate::stellar::CommandEnv],
+    ) -> anyhow::Result<CommandOutput> {
+        if args.iter().any(|arg| arg == "decimals") {
+            return Ok(CommandOutput {
+                stdout: self.decimals.to_string(),
+                stderr: String::new(),
+            });
+        }
+        self.inner.run(program, args, redacted, env)
+    }
+}
+
+#[test]
+fn user_deposit_display_amount_must_use_the_asset_token_decimals() {
+    for (token_decimals, expected) in [("6", None), ("7", Some("10000000"))] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("proxy_4626".to_string(), imported_record(CONTRACT));
+        manifest
+            .contracts
+            .insert("asset_token".to_string(), imported_record(ASSET_CONTRACT));
+        manifest.save(&state).expect("save manifest");
+        let cli = base_cli(
+            state,
+            Commands::User(UserArgs {
+                command: UserCommand::Deposit {
+                    operator: ACCOUNT.parse().expect("operator"),
+                    receiver: None,
+                    assets: Some("1".parse().expect("assets")),
+                    assets_raw: None,
+                    asset_decimals: 7,
+                    min_shares_out: None,
+                    min_shares_out_raw: 0,
+                    share_decimals: ShareDecimalsArg::Manifest,
+                },
+            }),
+        );
+        let executor = TokenDecimalsExecutor {
+            inner: RecordingExecutor::new(),
+            decimals: token_decimals,
+        };
+
+        let outcome = run(&cli, &executor);
+
+        let calls = submitted_calls(&executor.inner.calls());
+        match expected {
+            None => {
+                let err = outcome.expect_err("decimals mismatch must refuse the deposit");
+                assert!(
+                    format!("{err:#}").contains("asset token reports 6 decimals"),
+                    "{err:#}"
+                );
+                assert!(calls.is_empty());
+            }
+            Some(raw) => {
+                outcome.expect("matching decimals deposit");
+                assert_eq!(calls.len(), 1);
+                assert!(
+                    calls[0].1.windows(2).any(|pair| pair == ["--assets", raw]),
+                    "{calls:?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn user_withdraw_uses_erc4626_async_entrypoint() {
     let dir = tempfile::tempdir().expect("tempdir");

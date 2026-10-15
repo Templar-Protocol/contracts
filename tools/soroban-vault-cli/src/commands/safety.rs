@@ -64,15 +64,16 @@ pub(super) fn confirm_dangerous_governance_change<E: CommandExecutor>(
     if cli.yes || cli.dry_run {
         return Ok(());
     }
+    prompt_yes("operation cancelled; pass --yes to confirm after reviewing the semantic diff")
+}
 
+/// Asks the operator to type `yes` on stdin; any other answer cancels with `cancelled`.
+pub(super) fn prompt_yes(cancelled: &str) -> anyhow::Result<()> {
     eprint!("Continue? Type 'yes' to submit: ");
     io::stderr().flush()?;
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;
-    anyhow::ensure!(
-        matches!(answer.trim(), "yes" | "y"),
-        "operation cancelled; pass --yes to confirm after reviewing the semantic diff"
-    );
+    anyhow::ensure!(matches!(answer.trim(), "yes" | "y"), "{cancelled}");
     Ok(())
 }
 
