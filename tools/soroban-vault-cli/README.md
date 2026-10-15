@@ -46,7 +46,7 @@ upload/reuse decision, contract deploy/import record, asset-token record, and in
 later initialize call fails, rerunning the command can reuse the IDs already written to the manifest.
 ### Release artifacts and local builds
 
-Normal deployment resolves the fixed, reviewed `soroban-v1.1.1` release catalog. It never compiles
+Normal deployment resolves the fixed, reviewed `soroban-v1.3.0-rc.1` release catalog. It never compiles
 implicitly and never embeds WASM in the CLI or image. Source selection is deliberately fixed:
 
 1. A valid entry under the release cache is rechecked for its exact byte length and SHA-256 and is

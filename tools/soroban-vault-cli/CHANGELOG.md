@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(soroban-cli)* resolve the fixed `soroban-v1.1.1` seven-asset catalog through an exact-length,
+- *(soroban-cli)* resolve the fixed `soroban-v1.3.0-rc.1` seven-asset catalog through an exact-length,
   SHA-256-verified release cache and fixed GitHub asset URLs
 
 - *(soroban-cli)* `governance submit-upgrade` now defaults `--wasm-hash` to the pinned

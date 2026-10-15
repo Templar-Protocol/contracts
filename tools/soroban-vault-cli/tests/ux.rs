@@ -92,7 +92,7 @@ fn json_deploy_dry_run_reports_release_intent_without_residue() {
     assert!(wasm["action"]
         .as_str()
         .expect("action")
-        .contains("download pinned release soroban-v1.1.1"));
+        .contains("download pinned release soroban-v1.3.0-rc.1"));
     assert!(!manifest.exists(), "dry-run created manifest");
     assert!(!cache.exists(), "dry-run created cache");
     assert!(
