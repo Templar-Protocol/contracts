@@ -802,6 +802,10 @@ tmplr-soroban-vault user deposit \
 # Exact raw units remain available for automation.
 tmplr-soroban-vault user deposit --operator G... --assets-raw 12500000
 
+# `user deposit` prints the amount in display and base units before signing and, on an
+# interactive terminal, asks for confirmation (skip with --yes). `--assets` is refused when
+# --asset-decimals differs from the asset token's on-chain decimals.
+
 # Queue an asynchronous exact-asset withdrawal through the ERC-4626 proxy.
 tmplr-soroban-vault user withdraw --operator G... --assets 1 --asset-decimals 7
 
@@ -882,6 +886,8 @@ tmplr-soroban-vault governance submit-set-restrictions \
   --accounts G...,G...
 
 # Submit typed cap, fee, cooldown, skim, allocator, and admin handoff proposals.
+# `submit-skim` refuses the vault's own asset or share token: the vault rejects skimming them,
+# so such a proposal could never execute.
 tmplr-soroban-vault governance submit-set-cap --admin G... --market-id 0 --cap 1000000
 tmplr-soroban-vault governance submit-set-fees \
   --admin G... \
