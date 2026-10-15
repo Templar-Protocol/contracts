@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release runtime hash, refuses unpinned hashes without `--allow-unpinned-wasm`, and
   verifies the hash is uploaded on the target network before submitting
 
+- *(soroban-cli)* `user deposit` prints the amount in display units (with base units and the
+  decimals used) before signing, asks for confirmation on an interactive terminal unless `--yes`,
+  and refuses `--assets` unless the asset token's on-chain decimals can be read and match
+  `--asset-decimals` (`--assets-raw` is unaffected)
+
+- *(soroban-cli)* `governance submit-skim` refuses the vault's own asset or share token, which the
+  vault rejects on execution (skim only recovers foreign tokens), and fails closed when those token
+  ids cannot be determined
+
 ### Changed
 
 - *(soroban-cli)* normal deployment now uses release/cache/workspace-seed precedence and fails
