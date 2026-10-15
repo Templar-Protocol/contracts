@@ -272,6 +272,10 @@ fn apply_supply_queue_policy(
             if !allowed {
                 return Err(ContractError::InvalidInput);
             }
+            // Halborn FIND-019: one adapter per market, else its position is counted once per market.
+            if bindings.iter().any(|(_, existing)| existing == adapter) {
+                return Err(ContractError::InvalidInput);
+            }
             bindings.set(target_id, adapter);
         }
     }

@@ -63,6 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out`. Previously the
   SAC transfer trapped and the queue was wedged behind that head. The token adapter uses
   `try_transfer` and reports failures as `EffectFailed` (Halborn FIND-015).
+- `SetSupplyQueue` rejects binding an adapter that is already bound to a different market, so one
+  adapter position can no longer be counted once per market (Halborn FIND-019).
 
 ## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-10-01
 
