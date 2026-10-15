@@ -49,6 +49,132 @@ fn preflight_reports_unverifiable_checks_for_v1_1_1_vault() {
 }
 
 #[test]
+fn allow_unverifiable_returns_report_when_only_unverifiable_checks_remain() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance_and_vault(&state);
+    let cli = Cli {
+        workspace_path: dir.path().into(),
+        json: false,
+        command: Commands::Upgrade(UpgradeArgs {
+            command: UpgradeCommand::Preflight(UpgradePreflightArgs {
+                vault: None,
+                attest_empty_withdrawal_queue: false,
+                allow_unverifiable: true,
+            }),
+        }),
+        ..base_cli(state, Commands::Status)
+    };
+    // Same v1.1.1 vault as above, queue readable and empty: only
+    // unverifiable findings remain. With --allow-unverifiable the run must
+    // accept the report instead of failing.
+    let executor = FailingPendingViewExecutor {
+        inner: RecordingExecutor::new(),
+        ids_fail: false,
+    };
+    let outcome = run(&cli, &executor);
+    assert!(
+        outcome.is_ok(),
+        "allow_unverifiable must accept a report with only unverifiable findings: \
+         {outcome:?}"
+    );
+    // Sanity: the same vault without the flag still blocks.
+    let cli = Cli {
+        command: Commands::Upgrade(UpgradeArgs {
+            command: UpgradeCommand::Preflight(UpgradePreflightArgs {
+                vault: None,
+                attest_empty_withdrawal_queue: false,
+                allow_unverifiable: false,
+            }),
+        }),
+        ..cli
+    };
+    let err = run(&cli, &executor).expect_err("without the flag the same vault blocks");
+    assert!(format!("{err:#}").contains("upgrade preflight blocked"));
+}
+
+#[test]
+fn undecodable_queue_leaves_governance_queue_unverifiable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance_and_vault(&state);
+    // The vault binding cannot be read because the pending-ids view
+    // fails to decode, so the governance queue must stay unverifiable
+    // rather than report "no proposals are pending".
+    let executor = FailingPendingViewExecutor {
+        inner: RecordingExecutor::new(),
+        ids_fail: true,
+    };
+    let cli = Cli {
+        workspace_path: dir.path().into(),
+        json: false,
+        command: Commands::Upgrade(UpgradeArgs {
+            command: UpgradeCommand::Preflight(UpgradePreflightArgs {
+                vault: None,
+                attest_empty_withdrawal_queue: false,
+                allow_unverifiable: false,
+            }),
+        }),
+        ..base_cli(state, Commands::Status)
+    };
+    let err = run(&cli, &executor).expect_err("unreadable queue must block");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("governance_queue") && message.contains("governance queue is unreadable"),
+        "{message}"
+    );
+    // Sanity: with the flag set the same report is accepted, because the
+    // queue itself is merely unverifiable, not provably dirty.
+    let cli = Cli {
+        command: Commands::Upgrade(UpgradeArgs {
+            command: UpgradeCommand::Preflight(UpgradePreflightArgs {
+                vault: None,
+                attest_empty_withdrawal_queue: false,
+                allow_unverifiable: true,
+            }),
+        }),
+        ..cli
+    };
+    let outcome = run(&cli, &executor);
+    assert!(
+        outcome.is_ok(),
+        "allow_unverifiable must accept the report: {outcome:?}"
+    );
+}
+
+/// Executor whose pending proposal views are unreadable: `pending_ids`
+/// returns nothing (or the view fails), so the queue stays unverifiable
+/// instead of reporting "no proposals are pending".
+struct FailingPendingViewExecutor {
+    inner: RecordingExecutor,
+    ids_fail: bool,
+}
+
+impl crate::stellar::CommandExecutor for FailingPendingViewExecutor {
+    fn run(
+        &self,
+        program: &str,
+        args: &[String],
+        redacted: &[usize],
+        env: &[crate::stellar::CommandEnv],
+    ) -> anyhow::Result<crate::stellar::CommandOutput> {
+        if args.iter().any(|arg| arg == "pending_ids") {
+            if self.ids_fail {
+                return Err(anyhow::anyhow!("pending_ids unreadable"));
+            }
+            return Ok(crate::stellar::CommandOutput {
+                stdout: "[]".to_string(),
+                stderr: String::new(),
+            });
+        }
+        if args.iter().any(|arg| arg == "pending") {
+            return Err(anyhow::anyhow!("undecodable proposal"));
+        }
+        self.inner.run(program, args, redacted, env)
+    }
+}
+
+#[test]
 fn preflight_finding_classification_is_pure() {
     let facts = crate::commands::upgrade::VaultFacts {
         vault_id: CONTRACT.to_string(),

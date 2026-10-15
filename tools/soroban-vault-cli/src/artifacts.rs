@@ -471,10 +471,12 @@ fn verify_bytes(
 }
 /// Statuses worth another attempt: rate limiting and server-side faults. Every
 /// other status is the server's settled answer and retrying only wastes time.
+/// Without a status, retry only transport faults (connect/timeout); decode or
+/// redirect-policy failures are deterministic and retrying wastes time.
 fn is_retryable(error: &reqwest::Error) -> bool {
     match error.status() {
         Some(status) => status.as_u16() == 429 || status.is_server_error(),
-        None => true,
+        None => error.is_timeout() || error.is_connect(),
     }
 }
 

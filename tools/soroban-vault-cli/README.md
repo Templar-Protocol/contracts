@@ -44,6 +44,7 @@ settings affect explicit builds only; they do not change the pinned release arti
 During non-dry-run deployment writes, the manifest is checkpointed after each successful artifact
 upload/reuse decision, contract deploy/import record, asset-token record, and initialization. If a
 later initialize call fails, rerunning the command can reuse the IDs already written to the manifest.
+
 ### Release artifacts and local builds
 
 Normal deployment resolves the fixed, reviewed `soroban-v1.3.0-rc.1` release catalog. It never compiles
@@ -74,7 +75,7 @@ target network; if it is not, the command fails and tells you to run
 `deploy wasm vault` to upload or reuse the pinned bytes, then resubmit.
 
 Local compilation is an explicit migration choice: pass bare `--build` to `deploy stack`,
-`deploy adapters`, `deploy curator-proxy`, or `deploy wasm <artifact>`. `--build` bypasses both
+`deploy adapters`, `deploy curator-proxy`, `deploy governance`, or `deploy wasm <artifact>`. `--build` bypasses both
 release cache and download, uses the checked-out workspace, and never writes locally built bytes
 into the release cache. The old implicit-build behavior and `--build false` form are not used.
 

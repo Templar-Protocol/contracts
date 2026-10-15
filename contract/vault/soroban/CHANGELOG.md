@@ -25,9 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Halborn FIND-009).
 - A queued withdrawal whose receiver cannot accept the asset (no or deauthorized trustline)
   now settles as a failed payout: escrow is refunded, nothing is burned, the head is
-  dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out`. Previously the
-  SAC transfer trapped and the queue was wedged behind that head. The token adapter uses
-  `try_transfer` and reports failures as `EffectFailed` (Halborn FIND-015).
+  dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out` — an expected
+  outcome of a failed payout, not a zero-progress defect. Operators seeing such a receipt
+  should follow the README guidance: alert and unblock the receiver's trustline before the
+  user re-requests. Previously the SAC transfer trapped and the queue was wedged behind
+  that head. The token adapter uses `try_transfer` and reports failures as `EffectFailed`
+  (Halborn FIND-015).
 - `SetSupplyQueue` rejects binding an adapter that is already bound to a different market, so one
   adapter position can no longer be counted once per market (Halborn FIND-019).
 - A market withdrawal no longer underflows when it realizes more than the recorded principal.
