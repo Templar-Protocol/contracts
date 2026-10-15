@@ -1,3 +1,5 @@
+use crate::commands::governance::{check_upgrade_wasm_policy, pinned_runtime_wasm_hash};
+
 use super::*;
 
 #[test]
@@ -219,4 +221,28 @@ fn governance_submit_and_wait_submits_then_accepts_ready_proposal() {
         .iter()
         .any(|(_, args)| args.iter().any(|arg| arg == "accept")
             && args.windows(2).any(|pair| pair == ["--proposal_id", "1"])));
+}
+
+#[test]
+fn pinned_runtime_wasm_hash_matches_release_table() {
+    assert_eq!(
+        pinned_runtime_wasm_hash(),
+        crate::artifacts::ReleaseArtifact::Runtime.pin().sha256
+    );
+    assert_eq!(pinned_runtime_wasm_hash().len(), 64);
+}
+
+#[test]
+fn upgrade_hash_policy_accepts_pinned_and_gated_overrides() {
+    let pinned = pinned_runtime_wasm_hash();
+
+    check_upgrade_wasm_policy(pinned, pinned, false).expect("pinned default accepted");
+
+    let unpinned = "0".repeat(64);
+    let error = check_upgrade_wasm_policy(&unpinned, pinned, false)
+        .expect_err("unpinned hash without override must be refused");
+    let message = error.to_string();
+    assert!(message.contains("allow-unpinned-wasm"), "{message}");
+
+    check_upgrade_wasm_policy(&unpinned, pinned, true).expect("override flag accepted");
 }

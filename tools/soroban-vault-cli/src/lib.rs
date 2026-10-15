@@ -5,6 +5,7 @@ pub mod cli;
 pub mod commands;
 pub mod manifest;
 pub mod profile;
+pub mod release_pin;
 pub mod stellar;
 pub mod types;
 
