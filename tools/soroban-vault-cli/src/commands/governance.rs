@@ -5,6 +5,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::artifacts::{ReleaseArtifact, RELEASE_TAG};
 use crate::{
     cli::{GovernanceCommand, GovernanceSubmitAndWaitCommand},
     manifest::Manifest,
@@ -377,14 +378,23 @@ pub(super) fn run_governance<E: CommandExecutor>(
                 ("--max_nav_age_ns", &max_nav_age_ns.to_string()),
             ]),
         )?),
-        GovernanceCommand::SubmitUpgrade { admin, wasm_hash } => invoke_response(stellar.invoke(
-            governance,
-            "submit_upgrade",
-            args([
-                ("--caller", admin.as_str()),
-                ("--new_wasm_hash", wasm_hash.as_str()),
-            ]),
-        )?),
+        GovernanceCommand::SubmitUpgrade {
+            admin,
+            wasm_hash,
+            allow_unpinned_wasm,
+        } => {
+            let pinned = pinned_runtime_wasm_hash();
+            let requested = wasm_hash.as_ref().map_or(pinned, |hash| hash.as_str());
+            check_upgrade_wasm_policy(requested, pinned, *allow_unpinned_wasm)?;
+            if !context.cli().dry_run {
+                verify_wasm_hash_on_network(stellar, requested)?;
+            }
+            invoke_response(stellar.invoke(
+                governance,
+                "submit_upgrade",
+                args([("--caller", admin.as_str()), ("--new_wasm_hash", requested)]),
+            )?)
+        }
         GovernanceCommand::SubmitMigrate { admin } => invoke_response(stellar.invoke(
             governance,
             "submit_migrate",
@@ -401,6 +411,49 @@ pub(super) fn run_governance<E: CommandExecutor>(
             args([("--caller", admin.as_str()), ("--kind", &kind.to_string())]),
         )?),
     }
+}
+
+/// SHA-256 of the pinned release runtime WASM; the default upgrade target.
+pub(super) fn pinned_runtime_wasm_hash() -> &'static str {
+    ReleaseArtifact::Runtime.pin().sha256
+}
+
+/// Upgrade submissions default to the pinned release runtime hash. A hash
+/// that differs is refused unless the operator passes the explicit
+/// `--allow-unpinned-wasm` override.
+pub(super) fn check_upgrade_wasm_policy(
+    requested: &str,
+    pinned: &str,
+    allow_unpinned_wasm: bool,
+) -> anyhow::Result<()> {
+    if requested == pinned {
+        return Ok(());
+    }
+    if !allow_unpinned_wasm {
+        anyhow::bail!(
+            "wasm hash {requested} is not the pinned release {RELEASE_TAG} runtime hash \
+             {pinned}; submit with the pinned hash (the default) or pass \
+             --allow-unpinned-wasm to override"
+        );
+    }
+    eprintln!("Warning: submitting upgrade to unpinned wasm hash {requested}");
+    Ok(())
+}
+
+/// The pinned bytes must already be uploaded to the target network before
+/// governance acts on their hash; submitting a proposal for bytes the network
+/// does not have only fails later, mid-upgrade.
+pub(super) fn verify_wasm_hash_on_network<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    wasm_hash: &str,
+) -> anyhow::Result<()> {
+    if !stellar.fetch_wasm_hash(wasm_hash)? {
+        anyhow::bail!(
+            "wasm hash {wasm_hash} is not uploaded on the target network; run \
+             `deploy wasm vault` to upload or reuse the pinned release bytes, then resubmit"
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn governance_plan(
