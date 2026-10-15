@@ -7,11 +7,11 @@ use super::helpers::{
     adapter_for_market, address_from_alloc_string, addresses_from_alloc_strings, apply_fee_change,
     emit_admin_event, emit_alloc_event, emit_pause_state_event, ensure_governance_identity,
     ensure_sentinel_identity, extend_storage_ttl, get_config_address, governance_caller,
-    kernel_address_from_sdk, load_max_nav_age_ns, load_virtual_offsets, lock_virtual_offsets,
-    migration_in_progress, require_contract_address, require_governance,
-    require_governance_control_plane, require_sentinel, require_signed,
-    require_wasm_or_account_address, sdk_string_to_alloc, set_config_address,
-    set_migration_in_progress, store_fees_spec, store_idle_resync_cooldown_ns,
+    kernel_address_from_sdk, load_fees_spec, load_max_nav_age_ns, load_virtual_offsets,
+    lock_virtual_offsets, migration_in_progress, require_allowed_fee_recipients,
+    require_contract_address, require_governance, require_governance_control_plane,
+    require_sentinel, require_signed, require_wasm_or_account_address, sdk_string_to_alloc,
+    set_config_address, set_migration_in_progress, store_fees_spec, store_idle_resync_cooldown_ns,
     store_max_nav_age_ns, store_virtual_offsets, store_withdrawal_cooldown_ns,
     supply_adapter_for_market, validate_and_rewrite_storage, virtual_offsets_locked,
     with_contract_vault_contract_error,
@@ -1852,6 +1852,8 @@ impl SorobanVaultContract {
         normalize_migrated_state(&env)?;
         runtime_to_contract(validate_and_rewrite_storage(&env))?;
         extend_storage_ttl(&env);
+        // Recipients stored before the FIND-009 guard must satisfy it before the vault resumes.
+        require_allowed_fee_recipients(&env, &runtime_to_contract(load_fees_spec(&env))?)?;
         set_migration_in_progress(&env, false);
         emit_admin_event(&env, symbol_short!("migrate"));
         Ok(())
