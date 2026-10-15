@@ -8775,6 +8775,72 @@ mod storage_tests {
         );
     }
 
+    /// Skim only recovers foreign tokens: governance skims of the vault's own asset or
+    /// share token are rejected (depositors' funds stay put), while a foreign token's whole
+    /// balance moves to the skim recipient.
+    #[test]
+    fn test_execute_governance_skim_sweeps_only_foreign_tokens() {
+        use soroban_sdk::{IntoVal, Symbol};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let recipient = SdkAddress::generate(&env);
+        let foreign = env
+            .register_stellar_asset_contract_v2(SdkAddress::generate(&env))
+            .address();
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+            set_config_address(
+                &env,
+                &crate::contract::VaultDataKey::SkimRecipient,
+                &recipient,
+            );
+        });
+        soroban_sdk::token::StellarAssetClient::new(&env, &asset).mint(&contract_id, &50);
+        soroban_sdk::token::StellarAssetClient::new(&env, &foreign).mint(&contract_id, &77);
+        let skim = |token: &SdkAddress| {
+            let payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::Skim {
+                    token: sdk_text(token),
+                }
+                .encode(),
+            );
+            env.try_invoke_contract::<(), crate::error::ContractError>(
+                &contract_id,
+                &Symbol::new(&env, "execute_governance"),
+                (&governance, &payload).into_val(&env),
+            )
+        };
+
+        for own_token in [&asset, &share] {
+            assert_eq!(
+                skim(own_token),
+                Err(Ok(crate::error::ContractError::InvalidInput))
+            );
+        }
+        let asset_token = soroban_sdk::token::Client::new(&env, &asset);
+        assert_eq!(asset_token.balance(&contract_id), 50);
+        assert_eq!(asset_token.balance(&recipient), 0);
+
+        assert_eq!(skim(&foreign), Ok(Ok(())));
+        let foreign_token = soroban_sdk::token::Client::new(&env, &foreign);
+        assert_eq!(foreign_token.balance(&contract_id), 0);
+        assert_eq!(foreign_token.balance(&recipient), 77);
+    }
+
     #[test]
     fn test_execute_governance_rejects_unauthorized_callers() {
         use soroban_sdk::{IntoVal, Symbol};
