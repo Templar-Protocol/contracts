@@ -38,7 +38,7 @@ governance_opt   := wasm_dir + "/templar_proxy_oracle_soroban_governance_contrac
 adapter_opt      := wasm_dir + "/templar_proxy_oracle_soroban_sep40_adapter_contract.optimized.wasm"
 
 remap_rustflags  := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
-soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
+soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.99.0")
 
 size_limit       := "131072"
 adapter_size_limit := "32768"
