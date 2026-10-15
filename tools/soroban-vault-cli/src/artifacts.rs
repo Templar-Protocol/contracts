@@ -400,9 +400,21 @@ pub fn ensure_uploaded<E: CommandExecutor>(
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Per-test cache root, so tests never mutate the process environment
+    /// (concurrent `setenv`/`getenv` across test threads is undefined behaviour).
+    pub(crate) static TEST_CACHE_ROOT: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Root of the release artifact cache: the exact nonempty [`CACHE_ENV`]
 /// override, otherwise the CLI-owned directory under the platform cache.
 pub(crate) fn release_cache_root() -> anyhow::Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = TEST_CACHE_ROOT.with(|root| root.borrow().clone()) {
+        return Ok(root);
+    }
     if let Some(value) = std::env::var_os(CACHE_ENV) {
         anyhow::ensure!(
             !value.is_empty(),
