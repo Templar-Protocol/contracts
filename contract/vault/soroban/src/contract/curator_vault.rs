@@ -1002,14 +1002,18 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<u128, RuntimeError> {
-        let next_principal = self
+        let principal = self
             .policy_state()
             .principal_for(market)
-            .ok_or_else(|| invalid_state_error("unknown market principal on withdraw"))?
-            .checked_sub(realized_amount)
-            .ok_or_else(|| invalid_state_error("principal underflow on withdraw"))?;
-        self.update_market_principal(market, next_principal);
-        let new_external = self.rebalance_withdraw(caller, op_id, realized_amount, now_ns)?;
+            .ok_or_else(|| invalid_state_error("unknown market principal on withdraw"))?;
+        // Only the principal-backed part is recognized here. Any surplus
+        // (`realized_amount - recognized`) is accrued yield already sitting in the
+        // vault's token balance; the next idle-balance reconciliation
+        // (`reconcile_fees_and_current_idle_balance`, which crystallizes fees first)
+        // books it as a capital flow.
+        let recognized = realized_amount.min(principal);
+        self.update_market_principal(market, principal - recognized);
+        let new_external = self.rebalance_withdraw(caller, op_id, recognized, now_ns)?;
         self.finish_allocation_internal(caller, op_id, now_ns)?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(new_external)
