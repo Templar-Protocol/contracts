@@ -293,7 +293,7 @@ jobs:
           targets: wasm32-unknown-unknown,wasm32v1-none
 
       - name: Install Soroban build toolchain
-        run: rustup toolchain install 1.89.0 --profile minimal --target wasm32-unknown-unknown --target wasm32v1-none
+        run: rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown --target wasm32v1-none
 
       - name: Install tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
