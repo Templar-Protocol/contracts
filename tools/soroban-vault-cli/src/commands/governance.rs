@@ -155,11 +155,11 @@ pub(super) fn run_governance<E: CommandExecutor>(
                 new_governance: new_governance.to_string(),
                 submitting_admin: admin.to_string(),
                 expected_admin: expected_admin.as_ref().map(AddressStr::to_string),
-                expected_wasm_hash: resolve_expected_wasm_hash(
+                expected_wasm_hash: Some(resolve_expected_wasm_hash(
                     manifest,
                     expected_wasm_hash.as_ref(),
                     new_governance.as_str(),
-                ),
+                )),
                 allow_unverified: *allow_unverified_governance,
             };
             if !context.cli().dry_run {

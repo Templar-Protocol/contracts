@@ -15,7 +15,8 @@ use crate::{
         AdapterArgs, AdapterCommand, ArtifactName, Cli, Commands, CuratorArgs, CuratorCommand,
         DeployArgs, DeployCommand, DeployCuratorProxyArgs, DeployPlanCommand, DeployStackArgs,
         ExtendTtlArgs, GovernanceArgs, GovernanceCommand, GovernanceSubmitAndWaitCommand,
-        ShareTokenArgs, ShareTokenCommand, UserArgs, UserCommand, DEFAULT_CONTRACT_SOURCE_REPO,
+        ShareTokenArgs, ShareTokenCommand, UpgradeArgs, UpgradeCommand, UserArgs, UserCommand,
+        DEFAULT_CONTRACT_SOURCE_REPO,
     },
     manifest::{ContractRecord, Manifest},
     stellar::{CommandExecutor, CommandOutput, Stellar},
@@ -511,6 +512,8 @@ fn write_fake_curator_proxy_wasm(root: &std::path::Path) {
     fs::write(path, "curator proxy").expect("write wasm");
 }
 
+#[path = "tests/cutover.rs"]
+mod cutover;
 #[path = "tests/deploy/adapters.rs"]
 mod deploy_adapters;
 #[path = "tests/deploy/curator_proxy.rs"]
@@ -531,13 +534,11 @@ mod doctor;
 mod facade;
 #[path = "tests/governance.rs"]
 mod governance;
-#[path = "tests/cutover.rs"]
-mod cutover;
 #[path = "tests/output.rs"]
 mod output;
-#[path = "tests/upgrade.rs"]
-mod upgrade;
 #[path = "tests/ttl.rs"]
 mod ttl;
+#[path = "tests/upgrade.rs"]
+mod upgrade;
 #[path = "tests/vault_ops.rs"]
 mod vault_ops;
