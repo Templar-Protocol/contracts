@@ -16,6 +16,7 @@ use templar_soroban_governance::GovernanceActionKind;
 
 use super::{
     context::CommandContext,
+    cutover::{guard_set_governance, resolve_expected_wasm_hash, CutoverParams},
     deploy::stellar_command_shape,
     inventory::{args, parse_proposal_id, required_contract},
     invoke::{address_vec_json, invoke_response, option_i128_arg, supply_queue_entries_json},
@@ -144,14 +145,35 @@ pub(super) fn run_governance<E: CommandExecutor>(
         GovernanceCommand::SubmitSetGovernance {
             admin,
             new_governance,
-        } => invoke_response(stellar.invoke(
-            governance,
-            "submit_set_governance",
-            args([
-                ("--caller", admin.as_str()),
-                ("--governance", new_governance.as_str()),
-            ]),
-        )?),
+            expected_admin,
+            expected_wasm_hash,
+            allow_unverified_governance,
+        } => {
+            let params = CutoverParams {
+                vault: required_contract(manifest, "vault")?.to_string(),
+                current_governance: governance.to_string(),
+                new_governance: new_governance.to_string(),
+                submitting_admin: admin.to_string(),
+                expected_admin: expected_admin.as_ref().map(AddressStr::to_string),
+                expected_wasm_hash: resolve_expected_wasm_hash(
+                    manifest,
+                    expected_wasm_hash.as_ref(),
+                    new_governance.as_str(),
+                ),
+                allow_unverified: *allow_unverified_governance,
+            };
+            if !context.cli().dry_run {
+                guard_set_governance(stellar, &params)?;
+            }
+            invoke_response(stellar.invoke(
+                governance,
+                "submit_set_governance",
+                args([
+                    ("--caller", admin.as_str()),
+                    ("--governance", new_governance.as_str()),
+                ]),
+            )?)
+        }
         GovernanceCommand::SubmitSetPaused { admin, paused } => invoke_response(stellar.invoke(
             governance,
             "submit_set_paused",

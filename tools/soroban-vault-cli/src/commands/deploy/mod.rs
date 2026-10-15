@@ -2,6 +2,7 @@
 
 mod adapters;
 mod curator_proxy;
+mod governance;
 mod plan;
 mod reconcile;
 mod session;
@@ -21,6 +22,7 @@ use super::{
 
 use adapters::deploy_adapters;
 use curator_proxy::deploy_curator_proxy;
+use governance::deploy_governance;
 use plan::run_deploy_plan;
 pub(in crate::commands) use plan::stellar_command_shape;
 pub(in crate::commands) use reconcile::run_reconcile;
@@ -66,6 +68,10 @@ pub(in crate::commands) fn run<E: CommandExecutor>(
         DeployCommand::Adapters(adapters) => {
             let mut deployment = DeploymentContext::new(context, manifest);
             deploy_adapters(&mut deployment, adapters)
+        }
+        DeployCommand::Governance(args) => {
+            let mut deployment = DeploymentContext::new(context, manifest);
+            deploy_governance(&mut deployment, args)
         }
         DeployCommand::CuratorProxy(args) => {
             let mut deployment = DeploymentContext::new(context, manifest);

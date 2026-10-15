@@ -671,6 +671,65 @@ stellar contract invoke \
 - Successful non-dry-run write commands append an audit record to the manifest `transactions` list with timestamp, command/action, target contract/function when known, tx hash when visible in Stellar output, source public address when known, status, and artifact hash when applicable.
 - Dangerous governance submissions such as admin rotation, timelock updates, supply queue replacement, and fee updates print a semantic old/new diff in human mode and require `--yes` or interactive confirmation before submitting. JSON/JSON-lines mode skips prompts for automation.
 
+## Upgrade Safety for Existing Vaults
+
+Before upgrading a deployed vault to a new runtime, run a read-only
+pre-upgrade check against the currently deployed contracts:
+
+```sh
+tmplr-soroban-vault upgrade preflight
+tmplr-soroban-vault upgrade preflight --json
+```
+
+The check reports one line per finding with status `pass`, `warn`,
+`blocking`, or `unverifiable`, and exits non-zero whenever any finding is
+`blocking` or `unverifiable` (use `--allow-unverifiable` to downgrade the
+latter). Checks:
+
+- migration flag on the vault (the migration state must not already be set)
+- stored performance/management fee recipients must not be the vault, the
+  asset token, or the share token (FIND-009 rejects such fee specs at
+  `migrate`)
+- `virtual_assets > 0` combined with a pending withdrawal queue
+  (`normalize_migrated_state` would fail); if the queue cannot be read,
+  the check reports `unverifiable`, and `--attest-empty-withdrawal-queue`
+  records the operator attestation instead of a false pass
+- vault op-state is idle
+- duplicate adapter bindings across markets (FIND-019)
+- external assets present (warn: deposits stay blocked until a full
+  `RefreshMarkets` after the upgrade)
+- manifest governance id matches the on-chain governance binding
+- governance queue entries older than 7 days past their ready time
+  (they become `ProposalExpired` once accepted)
+
+Checks that cannot be performed with the views the deployed contract
+exposes are reported as `unverifiable` with the manual fallback command;
+the preflight never passes them silently.
+
+### Governance cutover
+
+To move a vault to a new governance contract:
+
+```sh
+tmplr-soroban-vault deploy governance --vault <CVAULT> --timelock-ns <NS>
+tmplr-soroban-vault governance submit-set-governance --admin <GADMIN> --new-governance <CNEW>
+tmplr-soroban-vault governance accept --admin <GADMIN> --proposal-id <ID>   # after the governance timelock
+tmplr-soroban-vault upgrade confirm-governance-cutover
+tmplr-soroban-vault deploy curator-proxy --vault <CVAULT> --governance <CNEW> --force-new
+```
+
+`deploy governance` records the new contract under
+`governance_pending` without touching the active governance id, and
+prints the exact follow-up commands. `submit-set-governance` refuses to
+submit unless the target governance verifies on-chain (it binds this
+vault, carries the expected admin, and was deployed from the expected
+WASM hash). The expected hash defaults to the `governance_pending` record, then to the pinned
+release governance hash; `--expected-wasm-hash` overrides both. Only
+`--allow-unverified-governance` bypasses the guard.
+`upgrade confirm-governance-cutover` verifies once more and only then
+promotes the pending record to `governance`, preserving the previous id
+under `governance_previous`.
+
 ## Profiles
 
 Profiles are public TOML config files for repeated local and Docker operations. They can store
