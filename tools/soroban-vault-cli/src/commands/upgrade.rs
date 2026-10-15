@@ -47,6 +47,12 @@ pub(super) struct VaultFacts {
     pub(super) paused: Option<bool>,
     pub(super) virtual_assets: Option<i128>,
     pub(super) external_assets_present: Option<bool>,
+    /// `navrfsh` (last full NAV refresh) and `maxnav` instance entries; `None` when absent
+    /// (or storage unreadable), which the runtime treats as never refreshed / the default age.
+    pub(super) nav_refreshed_ns: Option<u64>,
+    pub(super) max_nav_age_ns: Option<u64>,
+    /// Wall-clock time used as an estimate of ledger time for the staleness check.
+    pub(super) now_ns: u64,
     pub(super) max_deposit_allowed: Option<i128>,
     pub(super) migration_flag: Option<bool>,
     pub(super) fee_recipients: Option<[(u128, String); 2]>,
@@ -230,22 +236,35 @@ pub(super) fn duplicate_adapters(bindings: &[(u32, String)]) -> Vec<String> {
     duplicates
 }
 
+/// The runtime's `SOROBAN_DEFAULT_MAX_NAV_AGE_NS` (24 h), used when `maxnav` is unset.
+const DEFAULT_MAX_NAV_AGE_NS: u64 = 86_400_000_000_000;
+
+/// Mirrors the runtime's deposit gate: with external assets, deposits need a NAV refreshed
+/// within MaxNavAge (`u64::MAX` disables the gate; a never-refreshed NAV is stale).
 fn external_assets_finding(facts: &VaultFacts) -> PreflightFinding {
-    match facts.external_assets_present {
-        Some(false) => pass(
+    let max_age = facts.max_nav_age_ns.unwrap_or(DEFAULT_MAX_NAV_AGE_NS);
+    match (facts.external_assets_present, facts.nav_refreshed_ns) {
+        (Some(false), _) => pass("external_assets", "no external assets are marked present"),
+        (Some(true), _) if max_age == u64::MAX => pass(
             "external_assets",
-            "no external assets are marked present",
+            "external assets are present; the stale-NAV deposit gate is disabled (MaxNavAge = u64::MAX)",
         ),
-        Some(true) => PreflightFinding {
+        (Some(true), Some(refreshed)) if facts.now_ns.saturating_sub(refreshed) <= max_age => pass(
+            "external_assets",
+            "external assets are present and the NAV was refreshed within MaxNavAge",
+        ),
+        (Some(true), _) => PreflightFinding {
             check: "external_assets".to_string(),
             status: PreflightStatus::Warn,
-            detail: "external assets are present: deposits stay blocked until a full RefreshMarkets \
-                     covers every market after the upgrade"
+            detail: "external assets are present and the NAV is stale or was never refreshed \
+                     (always the case right after an upgrade): deposits stay blocked until a \
+                     RefreshMarkets covers every market with principal"
                 .to_string(),
         },
-        None => unverifiable(
+        (None, _) => unverifiable(
             "external_assets",
-            "proxy_view external-asset slot unavailable; manual check: proxy_view position 3 element 5",
+            "proxy_view external-asset slot unavailable; manual check: proxy_view [0][2][2] \
+             (external assets) is non-zero",
         ),
     }
 }
@@ -406,6 +425,15 @@ pub(super) fn collect_vault_facts<E: CommandExecutor>(
         facts.migration_flag = migration_flag_from(&entries);
         facts.fee_recipients = entries.get("fees").and_then(decode_fee_recipients);
         facts.adapter_bindings = adapter_bindings_from(&entries);
+        let instance_u64 = |key: &str| {
+            entries
+                .get(key)
+                .and_then(|value| value.get("u64"))
+                .and_then(json_num)
+        };
+        facts.nav_refreshed_ns = instance_u64("navrfsh");
+        facts.max_nav_age_ns = instance_u64("maxnav");
+        facts.now_ns = super::governance::system_now_ns();
     }
 
     if let Some(governance) = facts.governance_view.clone() {
