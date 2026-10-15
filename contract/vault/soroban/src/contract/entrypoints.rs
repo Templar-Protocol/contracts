@@ -531,6 +531,25 @@ fn apply_fees_policy(
     }
     let performance_recipient = accounts.get(0).ok_or(ContractError::InvalidInput)?;
     let management_recipient = accounts.get(1).ok_or(ContractError::InvalidInput)?;
+    // FIND-008: settle the window accrued under the current spec and recipients, then
+    // re-anchor so the new spec starts a clean window. Requires an idle vault.
+    let now_ns = ledger_timestamp_ns(env)?;
+    let mut settle = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        if !vault.state()?.op_state.is_idle() {
+            return Err(RuntimeError::invalid_state(""));
+        }
+        if vault.fees_due_for_value_transfer(now_ns)? {
+            vault.refresh_fees(now_ns)?;
+        }
+        let state = vault.state_mut()?;
+        // At the anchor's own ledger the anchor is already current; a capped same-ledger
+        // gain accrues no fee yet and must stay on it rather than be erased by a reset.
+        if now_ns > state.fee_anchor.timestamp_ns.as_u64() {
+            state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(now_ns));
+        }
+        vault.save_state()
+    };
+    with_contract_vault_contract_error(env, &mut settle)?;
     apply_fee_change(
         env,
         performance_fee_wad,

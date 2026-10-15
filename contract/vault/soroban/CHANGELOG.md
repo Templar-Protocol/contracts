@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Halborn FIND-001).
 - A negative adapter valuation is written down to zero on refresh and supply observation
   instead of aborting the call with `InvalidInput` (Halborn FIND-013).
+- A governance fee change now settles fees accrued under the previous spec to the previous
+  recipients and re-anchors, so the new rate and recipients apply only going forward. The
+  change requires an idle vault (Halborn FIND-008).
 - A queued withdrawal whose receiver cannot accept the asset (no or deauthorized trustline)
   now settles as a failed payout: escrow is refunded, nothing is burned, the head is
   dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out`. Previously the
