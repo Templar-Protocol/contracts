@@ -206,6 +206,19 @@ pub(crate) fn store_idle_resync_cooldown_ns(env: &Env, idle_resync_cooldown_ns: 
     );
 }
 
+pub(crate) fn load_max_nav_age_ns(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&VaultDataKey::MaxNavAgeNs)
+        .unwrap_or(SOROBAN_DEFAULT_MAX_NAV_AGE_NS)
+}
+
+pub(crate) fn store_max_nav_age_ns(env: &Env, max_nav_age_ns: u64) {
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::MaxNavAgeNs, &max_nav_age_ns);
+}
+
 pub(crate) fn virtual_offsets_locked(env: &Env) -> bool {
     env.storage()
         .instance()

@@ -347,6 +347,7 @@ impl FromStr for GovernanceActionKindArg {
             "other" => GovernanceActionKind::Other,
             "withdrawalcooldown" => GovernanceActionKind::WithdrawalCooldown,
             "idleresynccooldown" => GovernanceActionKind::IdleResyncCooldown,
+            "maxnavage" => GovernanceActionKind::MaxNavAge,
             _ => return Err(format!("unknown governance action kind: {value}")),
         };
         Ok(Self(kind))
@@ -377,6 +378,7 @@ impl fmt::Display for GovernanceActionKindArg {
             GovernanceActionKind::Other => "Other",
             GovernanceActionKind::WithdrawalCooldown => "WithdrawalCooldown",
             GovernanceActionKind::IdleResyncCooldown => "IdleResyncCooldown",
+            GovernanceActionKind::MaxNavAge => "MaxNavAge",
         })
     }
 }

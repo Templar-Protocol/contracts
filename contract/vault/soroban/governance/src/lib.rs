@@ -22,11 +22,11 @@ use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
     GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
-    GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, GOVERNANCE_POLICY_KIND_CAP,
-    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::math::wad::Wad;
 use templar_vault_kernel::{DurationNs, TimestampNs, DEFAULT_COOLDOWN_NS};
@@ -42,6 +42,7 @@ const MAX_PENDING_PROPOSALS: usize = 64;
 const PENDING_PAGE_SIZE: u64 = 16;
 const DEFAULT_WITHDRAWAL_COOLDOWN_NS: u64 = DEFAULT_COOLDOWN_NS;
 const DEFAULT_IDLE_RESYNC_COOLDOWN_NS: u64 = 120 * 1_000_000_000;
+const DEFAULT_MAX_NAV_AGE_NS: u64 = DAY_NS;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RevokerRole {
@@ -66,6 +67,7 @@ enum GovernanceActionKey {
     Fees,
     WithdrawalCooldown,
     IdleResyncCooldown,
+    MaxNavAge,
     Restrictions,
     Sentinel,
     Allocators,
@@ -95,6 +97,7 @@ impl GovernanceAction {
             Self::SetFees(_) => GovernanceActionKey::Fees,
             Self::SetWithdrawalCooldown(_) => GovernanceActionKey::WithdrawalCooldown,
             Self::SetIdleResyncCooldown(_) => GovernanceActionKey::IdleResyncCooldown,
+            Self::SetMaxNavAge(_) => GovernanceActionKey::MaxNavAge,
             Self::SetRestrictions(_, _) => GovernanceActionKey::Restrictions,
             Self::SetSentinel(_) => GovernanceActionKey::Sentinel,
             Self::SetAllocators(_) => GovernanceActionKey::Allocators,
@@ -175,6 +178,9 @@ impl SorobanVaultGovernanceContract {
             &DataKey::CurrentIdleResyncCooldownNs,
             &DEFAULT_IDLE_RESYNC_COOLDOWN_NS,
         );
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentMaxNavAgeNs, &DEFAULT_MAX_NAV_AGE_NS);
         env.storage()
             .instance()
             .set(&DataKey::CurrentRestrictionMode, &RestrictionMode::None);
@@ -267,6 +273,14 @@ impl SorobanVaultGovernanceContract {
             caller,
             GovernanceAction::SetIdleResyncCooldown(idle_resync_cooldown_ns),
         )
+    }
+
+    pub fn submit_set_max_nav_age(
+        env: Env,
+        caller: Address,
+        max_nav_age_ns: u64,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::SetMaxNavAge(max_nav_age_ns))
     }
 
     pub fn submit_set_restrictions(
@@ -814,6 +828,7 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
         GovernanceAction::SetFees(_) => GovernanceActionKind::Fees,
         GovernanceAction::SetWithdrawalCooldown(_) => GovernanceActionKind::WithdrawalCooldown,
         GovernanceAction::SetIdleResyncCooldown(_) => GovernanceActionKind::IdleResyncCooldown,
+        GovernanceAction::SetMaxNavAge(_) => GovernanceActionKind::MaxNavAge,
         GovernanceAction::SetRestrictions(_, _) => GovernanceActionKind::Restrictions,
         GovernanceAction::SetSentinel(_) => GovernanceActionKind::Sentinel,
         GovernanceAction::SetAllocators(_) => GovernanceActionKind::Allocators,
@@ -843,7 +858,8 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
         GovernanceAction::SetSupplyQueue(_) => TimelockKind::SupplyQueue,
         GovernanceAction::SetFees(_)
         | GovernanceAction::SetWithdrawalCooldown(_)
-        | GovernanceAction::SetIdleResyncCooldown(_) => TimelockKind::Fees,
+        | GovernanceAction::SetIdleResyncCooldown(_)
+        | GovernanceAction::SetMaxNavAge(_) => TimelockKind::Fees,
         GovernanceAction::SetRestrictions(_, _) => TimelockKind::Restrictions,
         GovernanceAction::SetSentinel(_) => TimelockKind::Sentinel,
         GovernanceAction::SetAllocators(_) => TimelockKind::Allocators,
@@ -1015,6 +1031,17 @@ fn decide_submission(
                 .instance()
                 .get(&DataKey::CurrentIdleResyncCooldownNs)
                 .unwrap_or(DEFAULT_IDLE_RESYNC_COOLDOWN_NS);
+            if current == *proposed {
+                return Err(GovernanceError::NoChange);
+            }
+            Ok(TimelockDecision::Timelocked)
+        }
+        GovernanceAction::SetMaxNavAge(proposed) => {
+            let current = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentMaxNavAgeNs)
+                .unwrap_or(DEFAULT_MAX_NAV_AGE_NS);
             if current == *proposed {
                 return Err(GovernanceError::NoChange);
             }
@@ -1415,6 +1442,12 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 idle_resync_cooldown_ns,
             );
         }
+        GovernanceAction::SetMaxNavAge(max_nav_age_ns) => {
+            execute_vault_governance_action(env, &vault, action)?;
+            env.storage()
+                .instance()
+                .set(&DataKey::CurrentMaxNavAgeNs, max_nav_age_ns);
+        }
         GovernanceAction::SetRestrictions(mode, accounts) => {
             execute_vault_governance_action(env, &vault, action)?;
             env.storage()
@@ -1640,6 +1673,15 @@ fn governance_payload_for_action(
                 primary: None,
                 many: None,
                 value_a: Some(i128::from(*idle_resync_cooldown_ns)),
+                value_b: None,
+            })
+        }
+        GovernanceAction::SetMaxNavAge(max_nav_age_ns) => {
+            Some(GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+                primary: None,
+                many: None,
+                value_a: Some(i128::from(*max_nav_age_ns)),
                 value_b: None,
             })
         }
@@ -1923,6 +1965,7 @@ fn can_revoke_kind(role: RevokerRole, kind: GovernanceActionKind) -> bool {
                 | GovernanceActionKind::Fees
                 | GovernanceActionKind::WithdrawalCooldown
                 | GovernanceActionKind::IdleResyncCooldown
+                | GovernanceActionKind::MaxNavAge
                 | GovernanceActionKind::Restrictions
                 | GovernanceActionKind::TimelockConfig
                 | GovernanceActionKind::Cap
