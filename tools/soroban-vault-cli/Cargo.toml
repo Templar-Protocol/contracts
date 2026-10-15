@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+base64 = "0.22.1"
 bip39.workspace = true
 clap.workspace = true
 clap_complete = "4.5"

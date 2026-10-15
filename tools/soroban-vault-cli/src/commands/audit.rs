@@ -57,6 +57,7 @@ pub(super) fn command_name(command: &Commands) -> String {
         Commands::Profile(_) => "profile",
         Commands::Completions { .. } => "completions",
         Commands::Man => "man",
+        Commands::Upgrade(_) => "upgrade",
     }
     .to_string()
 }
@@ -145,7 +146,8 @@ pub(super) fn command_target_and_function(
         | Commands::ExportEnv
         | Commands::Profile(_)
         | Commands::Completions { .. }
-        | Commands::Man => (None, None),
+        | Commands::Man
+        | Commands::Upgrade(_) => (None, None),
     }
 }
 
@@ -166,6 +168,7 @@ pub(super) fn command_artifact_hash(command: &Commands, manifest: &Manifest) -> 
         | DeployCommand::Resume(_)
         | DeployCommand::Adapters(_)
         | DeployCommand::Plan(_)
-        | DeployCommand::Repair(_) => None,
+        | DeployCommand::Repair(_)
+        | DeployCommand::Governance(_) => None,
     }
 }

@@ -531,8 +531,12 @@ mod doctor;
 mod facade;
 #[path = "tests/governance.rs"]
 mod governance;
+#[path = "tests/cutover.rs"]
+mod cutover;
 #[path = "tests/output.rs"]
 mod output;
+#[path = "tests/upgrade.rs"]
+mod upgrade;
 #[path = "tests/ttl.rs"]
 mod ttl;
 #[path = "tests/vault_ops.rs"]
