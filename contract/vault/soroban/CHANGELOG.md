@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RefreshMarkets` covering every market with principal ran within the governance-configurable
   `MaxNavAge` window (default 24 h; kind 10), so shares are not priced against a stale NAV
   (Halborn FIND-001).
+- A negative adapter valuation is written down to zero on refresh and supply observation
+  instead of aborting the call with `InvalidInput` (Halborn FIND-013).
 - A queued withdrawal whose receiver cannot accept the asset (no or deauthorized trustline)
   now settles as a failed payout: escrow is refunded, nothing is burned, the head is
   dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out`. Previously the

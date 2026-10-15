@@ -833,7 +833,8 @@ fn allocate_impl(
         let adapter = supply_adapter_for_market(env, market)?;
         asset_client.transfer(&vault_address, &adapter, &amount);
         invoke_supply(env, &adapter, &asset_token, amount);
-        let observed_total_assets = to_u128(invoke_total_assets(env, &adapter, &asset_token))?;
+        let observed_total_assets =
+            valuation_to_u128(invoke_total_assets(env, &adapter, &asset_token));
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             let plan = vec![AllocationPlanEntry::new(market, amount_u128)];
@@ -898,7 +899,7 @@ fn refresh_markets_impl(
     for market in markets.iter() {
         let adapter = adapter_for_market(env, market)?;
         let total_assets = invoke_total_assets(env, &adapter, &asset_token);
-        refreshed_positions.push((market, to_u128(total_assets)?));
+        refreshed_positions.push((market, valuation_to_u128(total_assets)));
     }
 
     let mut markets_vec: Option<Vec<TargetId>> = Some(
