@@ -18,6 +18,7 @@ accounting maintenance, and TTL renewal.
 > - **Stellar runtime mechanics:** [`contract/vault/soroban/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/soroban/README.md)
 > - **Vault state machine:** [`contract/vault/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/README.md)
 > - **Stellar threat model:** [`contract/vault/soroban/STRIDE.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/soroban/STRIDE.md)
+> - **Upgrade runbook:** [`contract/vault/soroban/UPGRADING.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/soroban/UPGRADING.md)
 
 ## What a curator operates
 
