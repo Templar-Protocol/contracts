@@ -172,8 +172,9 @@ pub(super) fn extract_address(stdout: &str) -> Option<String> {
 }
 
 /// Resolves the WASM hash the new governance is expected to carry: an
-/// explicit flag wins, otherwise the hash recorded for the pending pending
-/// governance deployment when it names the same contract.
+/// explicit flag wins, then the hash recorded for the pending governance
+/// deployment when it names the same contract, and finally the pinned
+/// release governance SHA-256 so the guard is never left unarmed.
 pub(super) fn resolve_expected_wasm_hash(
     manifest: &Manifest,
     expected: Option<&WasmHash>,
@@ -182,10 +183,20 @@ pub(super) fn resolve_expected_wasm_hash(
     if let Some(hash) = expected {
         return Some(hash.as_str().to_string());
     }
-    let pending = manifest.contracts.get(GOVERNANCE_PENDING_KEY)?;
-    (pending.contract_id == new_governance)
-        .then(|| pending.wasm_hash.clone())
+    manifest
+        .contracts
+        .get(GOVERNANCE_PENDING_KEY)
+        .filter(|pending| pending.contract_id == new_governance)
+        .map(|pending| pending.wasm_hash.clone())
         .filter(|hash| hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+        .or_else(|| {
+            Some(
+                crate::artifacts::ReleaseArtifact::Governance
+                    .pin()
+                    .sha256
+                    .to_string(),
+            )
+        })
 }
 
 /// Guard shared by `governance submit-set-governance`. Returns `Ok(())` only
@@ -407,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn expected_hash_defaults_to_recorded_pending_record() {
+    fn expected_hash_defaults_to_pending_record_then_pinned_release() {
         let mut manifest = Manifest::new("testnet", None);
         manifest.contracts.insert(
             GOVERNANCE_PENDING_KEY.to_string(),
@@ -424,7 +435,24 @@ mod tests {
             resolve_expected_wasm_hash(&manifest, None, "CNEW"),
             Some("ab".repeat(32))
         );
-        assert_eq!(resolve_expected_wasm_hash(&manifest, None, "COTHER"), None);
+        assert_eq!(
+            resolve_expected_wasm_hash(&manifest, None, "COTHER"),
+            Some(
+                crate::artifacts::ReleaseArtifact::Governance
+                    .pin()
+                    .sha256
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            resolve_expected_wasm_hash(&Manifest::new("testnet", None), None, "CNEW"),
+            Some(
+                crate::artifacts::ReleaseArtifact::Governance
+                    .pin()
+                    .sha256
+                    .to_string()
+            )
+        );
     }
 
     #[test]

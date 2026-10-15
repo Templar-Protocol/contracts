@@ -149,5 +149,22 @@ fn run_dry_plan<E: CommandExecutor>(
             ));
             Ok(Response::Plan(response))
         }
+        DeployCommand::Governance(args) => {
+            let spec = ArtifactSpec::from_name(crate::cli::ArtifactName::Governance);
+            let mut response = PlanResponse::new("deploy governance", &context.cli().network);
+            response
+                .wasm
+                .push(plan::wasm_plan(context.cli(), manifest, spec, args.build)?);
+            response.contracts_to_deploy.push(PlanContract {
+                key: "governance_pending".to_string(),
+                contract_id: None,
+                reason: "dry-run plans a fresh pending governance instance".to_string(),
+            });
+            response.stellar_commands.push(plan::stellar_command_shape(
+                "contract deploy --wasm-hash <governance_hash> -- --admin <admin> --vault <vault_id> --timelock_ns <ns>",
+                true,
+            ));
+            Ok(Response::Plan(response))
+        }
     }
 }

@@ -76,7 +76,7 @@ fn wasm_plan_distinguishes_cache_workspace_seed_and_build_sources() {
     assert!(missing.local_hash.is_none());
     assert!(missing
         .action
-        .contains("download pinned release soroban-v1.1.1"));
+        .contains("download pinned release soroban-v1.3.0-rc.1"));
 
     let workspace_path = spec.wasm_path(&cli.workspace_path);
     fs::create_dir_all(workspace_path.parent().expect("parent")).expect("create workspace path");
