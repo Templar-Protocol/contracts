@@ -27,6 +27,7 @@ pub(super) struct CutoverFacts {
     pub(super) target_vault: Option<String>,
     pub(super) target_admin: Option<String>,
     pub(super) target_wasm_hash: Option<String>,
+    pub(super) current_vault: Option<String>,
 }
 
 #[allow(
@@ -71,6 +72,26 @@ pub(super) fn cutover_problems(params: &CutoverParams, facts: &CutoverFacts) -> 
         |observed| observed == params.vault,
         || "run `governance pending` against the target contract first".to_string(),
     );
+
+    // On-chain proof that the manifest's governance really controls the
+    // manifest vault: the current governance's `vault()` binding must
+    // match, or the manifest describes another vault than this governance
+    // can act on.
+    check_fact(
+        &mut problems,
+        params.allow_unverified,
+        "current-governance vault binding",
+        facts.current_vault.as_deref(),
+        Some(params.vault.as_str()),
+        |observed| observed == params.vault,
+        || {
+            format!(
+                "read `vault()` on the current governance {} first",
+                params.current_governance
+            )
+        },
+    );
+
     let expected_admin = params
         .expected_admin
         .as_deref()
@@ -150,6 +171,21 @@ pub(super) fn target_governance_facts<E: CommandExecutor>(
             .fetch_contract_wasm_hash(target)
             .ok()
             .filter(|hash| !hash.is_empty()),
+        current_vault: None,
+    }
+}
+
+/// The cutover facts plus the vault the CURRENT governance is bound to on
+/// chain; the guard fails closed when that binding is unreadable or names
+/// another vault than the manifest records.
+pub(super) fn cutover_facts<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    current_governance: &str,
+    target: &str,
+) -> CutoverFacts {
+    CutoverFacts {
+        current_vault: view_address(stellar, current_governance, "vault"),
+        ..target_governance_facts(stellar, target)
     }
 }
 
@@ -172,31 +208,42 @@ pub(super) fn extract_address(stdout: &str) -> Option<String> {
 }
 
 /// Resolves the WASM hash the new governance is expected to carry: an
-/// explicit flag wins, then the hash recorded for the pending governance
-/// deployment when it names the same contract, and finally the pinned
-/// release governance SHA-256 so the guard is never left unarmed.
+/// explicit flag wins; otherwise the pinned release governance SHA-256.
+/// The hash recorded on the pending record is trusted only when it equals
+/// the pin, so `deploy governance --wasm-hash` cannot silently arm the
+/// guard with an unpinned build.
 pub(super) fn resolve_expected_wasm_hash(
     manifest: &Manifest,
     expected: Option<&WasmHash>,
     new_governance: &str,
-) -> Option<String> {
+) -> String {
+    let pin = crate::artifacts::ReleaseArtifact::Governance.pin().sha256;
     if let Some(hash) = expected {
-        return Some(hash.as_str().to_string());
+        if hash.as_str() != pin {
+            eprintln!(
+                "warning: governance {new_governance} carries non-pinned WASM hash {}; \
+                 the cutover guard will expect this exact hash",
+                hash.as_str()
+            );
+        }
+        return hash.as_str().to_string();
     }
-    manifest
+    if let Some(pending) = manifest
         .contracts
         .get(GOVERNANCE_PENDING_KEY)
         .filter(|pending| pending.contract_id == new_governance)
         .map(|pending| pending.wasm_hash.clone())
         .filter(|hash| hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
-        .or_else(|| {
-            Some(
-                crate::artifacts::ReleaseArtifact::Governance
-                    .pin()
-                    .sha256
-                    .to_string(),
-            )
-        })
+    {
+        if pending != pin {
+            eprintln!(
+                "warning: pending governance {new_governance} was deployed with non-pinned \
+                 WASM hash {pending}; the guard expects the pinned release hash. \
+                 pass --expected-wasm-hash {pending} explicitly to override."
+            );
+        }
+    }
+    pin.to_string()
 }
 
 /// Guard shared by `governance submit-set-governance`. Returns `Ok(())` only
@@ -212,7 +259,7 @@ pub(super) fn guard_set_governance<E: CommandExecutor>(
         );
         return Ok(());
     }
-    let facts = target_governance_facts(stellar, &params.new_governance);
+    let facts = cutover_facts(stellar, &params.current_governance, &params.new_governance);
     let problems = cutover_problems(params, &facts);
     if problems.is_empty() {
         return Ok(());
@@ -282,16 +329,32 @@ fn confirm_governance_cutover<E: CommandExecutor>(
         .get("governance")
         .map(|record| record.contract_id.clone())
         .unwrap_or_default();
+    // The expected admin is the authority the current governance itself
+    // reports (never the governance contract id). When it cannot be
+    // queried (e.g. an imported manifest), fall back to the pending
+    // record's constructor admin.
+    let expected_admin =
+        view_address(context.stellar(), &current_governance, "admin").or_else(|| {
+            manifest
+                .contracts
+                .get(GOVERNANCE_PENDING_KEY)
+                .and_then(|record| record.constructor_args.get("admin").cloned())
+        });
+    anyhow::ensure!(
+        expected_admin.is_some(),
+        "cannot determine the expected governance admin; read the current governance `admin()` \
+         view or record constructor_args.admin for the pending governance"
+    );
     let params = CutoverParams {
         vault: vault.clone(),
-        current_governance: current_governance.clone(),
+        current_governance,
         new_governance: pending_id.clone(),
-        submitting_admin: current_governance,
-        expected_admin: None,
-        expected_wasm_hash: resolve_expected_wasm_hash(manifest, None, &pending_id),
+        submitting_admin: expected_admin.clone().unwrap_or_default(),
+        expected_admin,
+        expected_wasm_hash: Some(resolve_expected_wasm_hash(manifest, None, &pending_id)),
         allow_unverified: false,
     };
-    let facts = target_governance_facts(context.stellar(), &pending_id);
+    let facts = cutover_facts(context.stellar(), &params.current_governance, &pending_id);
     let problems = cutover_problems(&params, &facts);
     anyhow::ensure!(
         problems.is_empty(),
@@ -338,6 +401,7 @@ mod tests {
             target_vault: Some("CVAULT".to_string()),
             target_admin: Some("GADMIN".to_string()),
             target_wasm_hash: Some("ab".repeat(32)),
+            current_vault: Some("CVAULT".to_string()),
         }
     }
 
@@ -354,9 +418,10 @@ mod tests {
                 target_vault: None,
                 target_admin: None,
                 target_wasm_hash: None,
+                current_vault: None,
             },
         );
-        assert_eq!(problems.len(), 3);
+        assert_eq!(problems.len(), 4);
         assert!(problems[0].contains("manual check"));
     }
 
@@ -368,6 +433,7 @@ mod tests {
                 target_vault: None,
                 target_admin: None,
                 target_wasm_hash: None,
+                current_vault: None,
             },
         );
         assert!(problems.is_empty());
@@ -381,6 +447,7 @@ mod tests {
                 target_vault: Some("COTHER".to_string()),
                 target_admin: Some("GOTHER".to_string()),
                 target_wasm_hash: Some("cd".repeat(32)),
+                current_vault: Some("CVAULT".to_string()),
             },
         );
         assert_eq!(problems.len(), 3);
@@ -418,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn expected_hash_defaults_to_pending_record_then_pinned_release() {
+    fn pending_record_with_unpinned_hash_falls_back_to_the_release_pin() {
         let mut manifest = Manifest::new("testnet", None);
         manifest.contracts.insert(
             GOVERNANCE_PENDING_KEY.to_string(),
@@ -431,27 +498,25 @@ mod tests {
                 initialized: true,
             },
         );
-        assert_eq!(
-            resolve_expected_wasm_hash(&manifest, None, "CNEW"),
-            Some("ab".repeat(32))
+        let pin = crate::artifacts::ReleaseArtifact::Governance
+            .pin()
+            .sha256
+            .to_string();
+        assert_ne!(
+            pin,
+            "ab".repeat(32),
+            "fixture hash must differ from the pin"
         );
+        // A pending record with a non-pinned hash must not arm the guard.
+        assert_eq!(resolve_expected_wasm_hash(&manifest, None, "CNEW"), pin);
+        // An explicit flag always wins.
         assert_eq!(
-            resolve_expected_wasm_hash(&manifest, None, "COTHER"),
-            Some(
-                crate::artifacts::ReleaseArtifact::Governance
-                    .pin()
-                    .sha256
-                    .to_string()
-            )
-        );
-        assert_eq!(
-            resolve_expected_wasm_hash(&Manifest::new("testnet", None), None, "CNEW"),
-            Some(
-                crate::artifacts::ReleaseArtifact::Governance
-                    .pin()
-                    .sha256
-                    .to_string()
-            )
+            resolve_expected_wasm_hash(
+                &manifest,
+                Some(&"ab".repeat(32).parse().expect("hash")),
+                "CNEW"
+            ),
+            "ab".repeat(32)
         );
     }
 

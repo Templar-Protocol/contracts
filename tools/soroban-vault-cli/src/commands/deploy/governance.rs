@@ -53,26 +53,25 @@ pub(in crate::commands) fn deploy_governance<E: CommandExecutor>(
     let admin = if let Some(admin) = &args.admin {
         admin.to_string()
     } else {
+        // No fallback to the signing key: silently deploying with the
+        // deployer as admin can construct a different authority than the
+        // vault's current governance carries.
         let current = required_contract(manifest, "governance")?;
-        stellar
-            .invoke_view(current, "admin", Vec::new())
-            .ok()
-            .and_then(|out| {
+        let observed = stellar.invoke_view(current, "admin", Vec::new());
+        match observed {
+            Ok(out) => {
                 let trimmed = out.stdout.trim().trim_matches('"').to_string();
-                (trimmed.len() == 56).then_some(trimmed)
-            })
-            .or_else(|| {
-                stellar
-                    .source_public_address()
-                    .ok()
-                    .filter(|address| address.len() == 56)
-            })
-            .unwrap_or_default()
+                anyhow::ensure!(
+                    trimmed.len() == 56,
+                    "current governance {current} admin() returned no address; pass --admin explicitly"
+                );
+                trimmed
+            }
+            Err(err) => anyhow::bail!(
+                "cannot read admin() of current governance {current}: {err:#}; pass --admin explicitly"
+            ),
+        }
     };
-    anyhow::ensure!(
-        !admin.is_empty(),
-        "governance admin is unknown; pass --admin or configure a source account"
-    );
     anyhow::ensure!(
         admin != vault,
         "governance admin must not be the vault itself"
