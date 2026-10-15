@@ -59,7 +59,7 @@ implicitly and never embeds WASM in the CLI or image. Source selection is delibe
 
 An invalid cache entry or failed/mismatching download is a hard error; there is no compilation
 fallback. The cache root is `<platform-cache>/templar/soroban-vault-cli/artifacts` by default. Set
-the non-empty `TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE` value to use another writable root. In the
+a non-empty, absolute `TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE` path to use another writable root. In the
 published image the configured root is
 `/home/templar/.cache/templar/soroban-vault-cli/artifacts`.
 `doctor` remains offline. It verifies existing cached/workspace bytes and probes cache and

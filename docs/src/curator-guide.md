@@ -168,8 +168,8 @@ cache second, and then the fixed GitHub release asset. Every byte is checked for
 length and SHA-256. Corrupt cache entries and download failures stop the command; deployment
 never falls back to an implicit local build.
 
-The default cache root is `<platform-cache>/templar/soroban-vault-cli/artifacts`. Set a non-empty
-`TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE` value to use another writable root. In the published
+The default cache root is `<platform-cache>/templar/soroban-vault-cli/artifacts`. Set a non-empty,
+absolute `TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE` path to use another writable root. In the published
 image, mount `/home/templar/.cache/templar/soroban-vault-cli/artifacts` as persistent storage. A
 normal deployment does not bundle WASM bytes in the executable or image.
 

@@ -70,7 +70,7 @@ fn allow_unverifiable_returns_report_when_only_unverifiable_checks_remain() {
     // accept the report instead of failing.
     let executor = FailingPendingViewExecutor {
         inner: RecordingExecutor::new(),
-        ids_fail: false,
+        pending_ids: Some("[]"),
     };
     let outcome = run(&cli, &executor);
     assert!(
@@ -98,12 +98,11 @@ fn undecodable_queue_leaves_governance_queue_unverifiable() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");
     manifest_with_governance_and_vault(&state);
-    // The vault binding cannot be read because the pending-ids view
-    // fails to decode, so the governance queue must stay unverifiable
-    // rather than report "no proposals are pending".
+    // `pending_ids` itself fails, so the queue cannot be read and must stay
+    // unverifiable rather than report "no proposals are pending".
     let executor = FailingPendingViewExecutor {
         inner: RecordingExecutor::new(),
-        ids_fail: true,
+        pending_ids: None,
     };
     let cli = Cli {
         workspace_path: dir.path().into(),
@@ -142,12 +141,44 @@ fn undecodable_queue_leaves_governance_queue_unverifiable() {
     );
 }
 
-/// Executor whose pending proposal views are unreadable: `pending_ids`
-/// returns nothing (or the view fails), so the queue stays unverifiable
-/// instead of reporting "no proposals are pending".
+#[test]
+fn undecodable_proposal_leaves_governance_queue_unverifiable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance_and_vault(&state);
+    // `pending_ids` lists proposal 7 but its `pending` view cannot be decoded:
+    // the proposal lands in the queue warnings, and the check must not pass.
+    let executor = FailingPendingViewExecutor {
+        inner: RecordingExecutor::new(),
+        pending_ids: Some("[7]"),
+    };
+    let cli = Cli {
+        workspace_path: dir.path().into(),
+        json: false,
+        command: Commands::Upgrade(UpgradeArgs {
+            command: UpgradeCommand::Preflight(UpgradePreflightArgs {
+                vault: None,
+                attest_empty_withdrawal_queue: false,
+                allow_unverifiable: false,
+            }),
+        }),
+        ..base_cli(state, Commands::Status)
+    };
+    let message = format!(
+        "{:#}",
+        run(&cli, &executor).expect_err("undecodable proposal must block")
+    );
+    assert!(
+        message.contains("governance_queue") && message.contains("governance queue is unreadable"),
+        "{message}"
+    );
+}
+
+/// Executor whose pending-proposal views are unreadable: `pending_ids` returns
+/// the given list (or fails when `None`) and every `pending` view fails.
 struct FailingPendingViewExecutor {
     inner: RecordingExecutor,
-    ids_fail: bool,
+    pending_ids: Option<&'static str>,
 }
 
 impl crate::stellar::CommandExecutor for FailingPendingViewExecutor {
@@ -159,11 +190,11 @@ impl crate::stellar::CommandExecutor for FailingPendingViewExecutor {
         env: &[crate::stellar::CommandEnv],
     ) -> anyhow::Result<crate::stellar::CommandOutput> {
         if args.iter().any(|arg| arg == "pending_ids") {
-            if self.ids_fail {
-                return Err(anyhow::anyhow!("pending_ids unreadable"));
-            }
+            let ids = self
+                .pending_ids
+                .ok_or_else(|| anyhow::anyhow!("pending_ids unreadable"))?;
             return Ok(crate::stellar::CommandOutput {
-                stdout: "[]".to_string(),
+                stdout: ids.to_string(),
                 stderr: String::new(),
             });
         }
