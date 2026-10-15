@@ -34,19 +34,6 @@ pub(in crate::commands) fn deploy_governance<E: CommandExecutor>(
     }
     record_imported_contract_if_provided(context, manifest, "vault", args.vault.as_ref())?;
     let vault = required_contract(manifest, "vault")?.to_string();
-    if !args.force_new {
-        if let Some(record) = manifest.contracts.get(GOVERNANCE_PENDING_KEY) {
-            anyhow::ensure!(
-                manifest
-                    .contracts
-                    .get("governance")
-                    .is_none_or(|governance| governance.contract_id != record.contract_id),
-                "governance_pending {} is already active; nothing to do",
-                record.contract_id
-            );
-            return Ok(follow_up(&vault, &record.contract_id, &record.wasm_hash));
-        }
-    }
     let admin = if let Some(admin) = &args.admin {
         admin.to_string()
     } else {
@@ -68,6 +55,27 @@ pub(in crate::commands) fn deploy_governance<E: CommandExecutor>(
             ),
         }
     };
+    if !args.force_new {
+        if let Some(record) = manifest.contracts.get(GOVERNANCE_PENDING_KEY) {
+            anyhow::ensure!(
+                manifest
+                    .contracts
+                    .get("governance")
+                    .is_none_or(|governance| governance.contract_id != record.contract_id),
+                "governance_pending {} is already active; nothing to do",
+                record.contract_id
+            );
+            anyhow::ensure!(
+                pending_matches_request(record, &vault, &admin, &args.timelock_ns.to_string()),
+                "governance_pending {} was deployed with different vault/admin/timelock than \
+                 requested (vault {vault}, admin {admin}, timelock_ns {}); pass --force-new to \
+                 deploy a fresh governance",
+                record.contract_id,
+                args.timelock_ns
+            );
+            return Ok(follow_up(&vault, &record.contract_id, &record.wasm_hash));
+        }
+    }
     anyhow::ensure!(
         admin != vault,
         "governance admin must not be the vault itself"
@@ -116,6 +124,20 @@ pub(in crate::commands) fn deploy_governance<E: CommandExecutor>(
     Ok(follow_up(&vault, &pending, &wasm_hash))
 }
 
+/// An existing pending record is only reusable when its constructor args are
+/// exactly what this request would deploy.
+fn pending_matches_request(
+    record: &crate::manifest::ContractRecord,
+    vault: &str,
+    admin: &str,
+    timelock_ns: &str,
+) -> bool {
+    let recorded = |key: &str| record.constructor_args.get(key).map(String::as_str);
+    recorded("vault") == Some(vault)
+        && recorded("admin") == Some(admin)
+        && recorded("timelock_ns") == Some(timelock_ns)
+}
+
 fn follow_up(vault: &str, pending: &str, wasm_hash: &str) -> Response {
     let steps = [
         format!(
@@ -137,4 +159,26 @@ fn follow_up(vault: &str, pending: &str, wasm_hash: &str) -> Response {
             .collect::<Vec<_>>()
             .join("\n")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::ContractRecord;
+
+    #[test]
+    fn pending_record_is_reused_only_on_exact_match() {
+        let record = ContractRecord {
+            contract_id: "CPENDING".to_string(),
+            wasm_hash: "ab".repeat(32),
+            salt: None,
+            deploy_tx: None,
+            constructor_args: map_args([("admin", "GA"), ("vault", "CV"), ("timelock_ns", "5")]),
+            initialized: true,
+        };
+        assert!(pending_matches_request(&record, "CV", "GA", "5"));
+        assert!(!pending_matches_request(&record, "CV2", "GA", "5"));
+        assert!(!pending_matches_request(&record, "CV", "GB", "5"));
+        assert!(!pending_matches_request(&record, "CV", "GA", "6"));
+    }
 }
