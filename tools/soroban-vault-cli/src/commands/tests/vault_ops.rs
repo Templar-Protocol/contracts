@@ -82,6 +82,122 @@ fn user_deposit_prefers_erc4626_proxy() {
     assert_eq!(tx.result_status.as_deref(), Some("success"));
 }
 
+/// Answers the vault's `proxy_view` (with `vault_asset` as its asset token, when set) and the
+/// asset token's `decimals` view; everything else is recorded.
+struct TokenDecimalsExecutor {
+    inner: RecordingExecutor,
+    vault_asset: Option<&'static str>,
+    decimals: &'static str,
+}
+
+impl CommandExecutor for TokenDecimalsExecutor {
+    fn run(
+        &self,
+        program: &str,
+        args: &[String],
+        redacted: &[usize],
+        env: &[crate::stellar::CommandEnv],
+    ) -> anyhow::Result<CommandOutput> {
+        let answer = |stdout: String| {
+            Ok(CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
+        };
+        if args.iter().any(|arg| arg == "decimals") {
+            return answer(self.decimals.to_string());
+        }
+        if let Some(asset) = self.vault_asset {
+            if args.iter().any(|arg| arg == "proxy_view") {
+                return answer(format!(
+                    "[[[null,\"{CONTRACT}\",\"{asset}\",null],[null,null,null],\
+                     [null,null,null,null],null],null,[null,null,null]]"
+                ));
+            }
+        }
+        self.inner.run(program, args, redacted, env)
+    }
+}
+
+#[test]
+fn user_deposit_display_amount_must_use_the_vault_asset_token_decimals() {
+    let asset = Some(ASSET_CONTRACT);
+    for (decimals, vault_asset, manifest_asset, expected) in [
+        (
+            "6",
+            asset,
+            ASSET_CONTRACT,
+            Err("asset token reports 6 decimals"),
+        ),
+        (
+            "x",
+            asset,
+            ASSET_CONTRACT,
+            Err("cannot read the asset token's decimals"),
+        ),
+        ("7", asset, OTHER_CONTRACT, Err("stale manifest")),
+        (
+            "7",
+            None,
+            ASSET_CONTRACT,
+            Err("cannot read the vault's asset token"),
+        ),
+        ("7", asset, ASSET_CONTRACT, Ok("10000000")),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        for (key, id) in [
+            ("vault", CONTRACT),
+            ("proxy_4626", CONTRACT),
+            ("asset_token", manifest_asset),
+        ] {
+            manifest
+                .contracts
+                .insert(key.to_string(), imported_record(id));
+        }
+        manifest.save(&state).expect("save manifest");
+        let cli = base_cli(
+            state,
+            Commands::User(UserArgs {
+                command: UserCommand::Deposit {
+                    operator: ACCOUNT.parse().expect("operator"),
+                    receiver: None,
+                    assets: Some("1".parse().expect("assets")),
+                    assets_raw: None,
+                    asset_decimals: 7,
+                    min_shares_out: None,
+                    min_shares_out_raw: 0,
+                    share_decimals: ShareDecimalsArg::Manifest,
+                },
+            }),
+        );
+        let executor = TokenDecimalsExecutor {
+            inner: RecordingExecutor::new(),
+            vault_asset,
+            decimals,
+        };
+        let outcome = run(&cli, &executor);
+
+        let calls = submitted_calls(&executor.inner.calls());
+        match expected {
+            Err(reason) => {
+                let err = outcome.expect_err("unverified --assets conversion must be refused");
+                assert!(format!("{err:#}").contains(reason), "{err:#}");
+                assert!(calls.is_empty());
+            }
+            Ok(raw) => {
+                outcome.expect("matching decimals deposit");
+                assert_eq!(calls.len(), 1);
+                assert!(
+                    calls[0].1.windows(2).any(|pair| pair == ["--assets", raw]),
+                    "{calls:?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn user_withdraw_uses_erc4626_async_entrypoint() {
     let dir = tempfile::tempdir().expect("tempdir");

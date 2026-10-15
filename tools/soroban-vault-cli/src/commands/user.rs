@@ -1,15 +1,20 @@
 //! User-facing vault and share operations.
 
+use std::io::IsTerminal as _;
+
 use anyhow::Context;
 use templar_soroban_shared_types::VaultCommand as WireVaultCommand;
 
-use crate::{cli::UserCommand, manifest::Manifest, stellar::CommandExecutor};
+use crate::{
+    cli::UserCommand, manifest::Manifest, stellar::CommandExecutor, types::raw_to_decimal,
+};
 
 use super::{
     context::CommandContext,
     inventory::{args, contract_id, required_contract},
     invoke::invoke_response,
     output::Response,
+    safety::prompt_yes,
     vault_ops::{
         execute_vault, optional_amount, optional_share_amount, required_amount,
         required_share_amount,
@@ -37,6 +42,7 @@ pub(super) fn run_user<E: CommandExecutor>(
             min_shares_out_raw,
             share_decimals,
         } => {
+            let from_display = assets.is_some();
             let assets = required_amount("assets", assets.as_ref(), *assets_raw, *asset_decimals)?;
             let min_shares_out = optional_share_amount(
                 manifest,
@@ -47,6 +53,14 @@ pub(super) fn run_user<E: CommandExecutor>(
             )?
             .unwrap_or(0);
             let receiver = receiver.as_ref().unwrap_or(operator);
+            confirm_deposit(
+                context,
+                manifest,
+                assets,
+                *asset_decimals,
+                from_display,
+                &format!("from {operator} to {receiver}; min shares out {min_shares_out} (raw)"),
+            )?;
             if let Some(proxy) = contract_id(manifest, "proxy_4626") {
                 invoke_response(stellar.invoke(
                     proxy,
@@ -362,6 +376,85 @@ pub(super) fn run_user<E: CommandExecutor>(
             )?)
         }
     }
+}
+
+/// Shows the deposit in display units before it is signed, so a base-unit amount
+/// passed to `--assets` (scaled by 10^decimals) is visible before funds move.
+/// Refuses when `--assets` was converted with decimals the asset token disagrees with.
+fn confirm_deposit<E: CommandExecutor>(
+    context: &CommandContext<'_, E>,
+    manifest: &Manifest,
+    raw: i128,
+    asset_decimals: u32,
+    from_display: bool,
+    parties: &str,
+) -> anyhow::Result<()> {
+    let cli = context.cli();
+    let (vault_token, on_chain_decimals) = if cli.dry_run {
+        (None, None)
+    } else {
+        // The deposit lands in the vault's own asset token, so that is the authority;
+        // a manifest that names a different token is stale and refused.
+        let vault_token = contract_id(manifest, "vault").and_then(|vault| {
+            crate::commands::upgrade::read_vault_view(context.stellar(), vault)?.asset_token_id
+        });
+        if let (Some(vault_token), Some(recorded)) =
+            (&vault_token, contract_id(manifest, "asset_token"))
+        {
+            anyhow::ensure!(
+                vault_token == recorded,
+                "manifest asset_token {recorded} differs from the vault's asset token \
+                 {vault_token}; refusing the deposit (stale manifest)"
+            );
+        }
+        // Only the vault-verified token is trusted for decimals; an unverified manifest
+        // token could be stale, so the summary then falls back to --asset-decimals, labelled.
+        let decimals = vault_token
+            .as_deref()
+            .and_then(|token| {
+                context
+                    .stellar()
+                    .invoke_view(token, "decimals", Vec::new())
+                    .ok()
+            })
+            .and_then(|out| out.stdout.trim().trim_matches('"').parse::<u32>().ok());
+        (vault_token, decimals)
+    };
+    // `--assets` display amounts must be converted with the decimals of the token the vault
+    // actually holds; a conversion that cannot be verified is refused rather than trusted.
+    if from_display && !cli.dry_run {
+        anyhow::ensure!(
+            vault_token.is_some(),
+            "cannot read the vault's asset token to verify the --assets conversion; \
+             use --assets-raw with base units instead"
+        );
+        let actual = on_chain_decimals.context(
+            "cannot read the asset token's decimals to verify the --assets conversion; \
+             use --assets-raw with base units instead",
+        )?;
+        anyhow::ensure!(
+            actual == asset_decimals,
+            "--assets was converted with --asset-decimals {asset_decimals}, but the asset token \
+             reports {actual} decimals; pass --asset-decimals {actual} or use --assets-raw"
+        );
+    }
+    if cli.json || cli.json_lines {
+        return Ok(());
+    }
+    let decimals = on_chain_decimals.unwrap_or(asset_decimals);
+    let source = if on_chain_decimals.is_some() {
+        "asset token decimals"
+    } else {
+        "--asset-decimals; asset token decimals unread"
+    };
+    eprintln!(
+        "Deposit: {} assets ({raw} base units, {decimals} decimals from {source}) {parties}",
+        raw_to_decimal(raw, decimals)
+    );
+    if cli.yes || cli.dry_run || !std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+    prompt_yes("deposit cancelled; pass --yes to skip this confirmation")
 }
 
 fn require_atomic_exit_proxy<E: CommandExecutor>(
