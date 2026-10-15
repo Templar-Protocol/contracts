@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1](https://github.com/Templar-Protocol/contracts/compare/templar-market-contract-v1.6.0...templar-market-contract-v1.6.1) - 2026-10-14
+
+### Fixed
+
+- *(market)* bound withdrawal queue batch processing ([#659](https://github.com/Templar-Protocol/contracts/pull/659))
+
 ## [1.6.0](https://github.com/Templar-Protocol/contracts/compare/templar-market-contract-v1.5.3...templar-market-contract-v1.6.0) - 2026-10-01
 
 ### Added

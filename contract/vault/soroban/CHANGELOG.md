@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.1...templar-soroban-runtime-v1.2.0) - 2026-10-14
+
+### Added
+
+- *(soroban)* claim BLND emissions from blend adapter position (FIND-027)
+
+### Changed
+
+- *(soroban-vault)* share supply cap enforcement
+- *(vault)* share checked fee accrual math
+
+### Documentation
+
+- *(soroban)* note why adapter error code 8 is retired
+
+### Fixed
+
+- *(soroban-vault)* enforce allocation exposure caps (ENG-698)
+- *(soroban-vault)* enforce refresh exposure caps
+- *(soroban-vault)* record NAV beyond supply admission caps
+- *(soroban-vault)* crystallize queued withdrawal fees (ENG-699)
+- *(vault)* crystallize fees before redemptions
+- *(soroban-vault)* crystallize fees before idle reconciliation (ENG-700)
+- *(vault)* crystallize fees before idle reconciliation
+- *(soroban-vault)* accrue same-ledger fees before reconciliation
+- *(soroban)* drop unreachable reserve staleness check in blend adapter
+- *(soroban)* halt idle-balance resync while paused (FIND-007)
+- *(soroban)* halt RefreshFees while paused
+
+### Performance
+
+- *(soroban-vault)* fit rebased runtime under host limit
+
 ### Fixed
 
 - `ResyncIdleBalance` and `RefreshFees` are rejected with `EnforcedPause` while the vault is
