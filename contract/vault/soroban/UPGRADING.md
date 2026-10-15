@@ -13,8 +13,8 @@ before the subcommand.
 
 | Running | Path |
 |---|---|
-| `soroban-v1.1.1` release assets (commit `28374b86`) | Upgrade in place with this runbook (rehearsed end to end on a local network). |
-| A vault built from tag `templar-soroban-runtime-v1.2.0` | Same runbook; runtime storage is unchanged between v1.1.1, v1.2.0 and this release. |
+| `soroban-v1.1.1` release assets (commit `28374b86`) | Upgrade in place with this runbook (rehearsed end to end on a local network, including the Recovery paths). |
+| A vault built from tag `templar-soroban-runtime-v1.2.0` (commit `291afbb4`) | Same runbook (rehearsed end to end on a local network from bytes built in the tag's pinned image, including the Recovery paths). Existing persisted layouts are identical across v1.1.1, v1.2.0 and this release; this release only adds the `maxnav` and `navrfsh` instance keys (see [State migration](#state-migration)). |
 | Anything older (e.g. pre-v1.1.0 testnet demo bytes) | Not supported. Deploy a fresh stack and move funds; do not attempt Upgrade + Migrate. |
 
 ## What changes per contract
