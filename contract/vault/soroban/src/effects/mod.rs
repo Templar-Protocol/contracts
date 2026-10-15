@@ -642,8 +642,12 @@ impl Sep41Token for SdkTokenAdapter<'_> {
     }
 
     fn transfer(&self, from: &Address, to: &Address, amount: i128) -> EffectResult<()> {
-        self.client.transfer(from, to, &amount);
-        Ok(())
+        // try_transfer surfaces a failed sub-invocation (e.g. a receiver with no or a
+        // deauthorized trustline) as an error instead of trapping the whole call.
+        self.client
+            .try_transfer(from, to, &amount)
+            .map_err(|_| RuntimeError::effect_failed("transfer"))?
+            .map_err(|_| RuntimeError::effect_failed("transfer"))
     }
 
     fn balance(&self, addr: &Address) -> EffectResult<i128> {
