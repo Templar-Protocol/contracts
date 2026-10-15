@@ -317,28 +317,18 @@ fn governance_queue_finding(facts: &VaultFacts) -> PreflightFinding {
             "governance_queue",
             "no proposals are pending on the active governance contract",
         ),
-        (Some(pending), Some(0)) => pass(
+        (Some(pending), _) => blocking(
             "governance_queue",
             format!(
-                "{} proposal(s) pending, none past the 7-day execution window",
-                pending.len()
-            ),
-        ),
-        (Some(pending), Some(stale)) => PreflightFinding {
-            check: "governance_queue".to_string(),
-            status: PreflightStatus::Warn,
-            detail: format!(
-                "{stale} of {} pending proposal(s) are older than the 7-day execution window and \
-                 will be ProposalExpired on governance that enforces it; accept, revoke, or \
-                 re-submit them before the cutover",
-                pending.len()
-            ),
-        },
-        (Some(pending), None) => unverifiable(
-            "governance_queue",
-            format!(
-                "{} proposal(s) pending but their ready times are unreadable",
-                pending.len()
+                "{} proposal(s) pending on the active governance; pending proposals do not \
+                 move to the new governance — accept or revoke them (`governance queue`, \
+                 `governance accept --proposal-id`, `governance revoke --proposal-id`){}",
+                pending.len(),
+                match facts.stale_proposals {
+                    Some(stale) if stale > 0 =>
+                        format!(" ({stale} are older than the 7-day execution window: revoke)"),
+                    _ => String::new(),
+                }
             ),
         ),
         (None, _) => unverifiable(
