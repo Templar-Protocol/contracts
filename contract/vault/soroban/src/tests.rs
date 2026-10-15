@@ -2453,6 +2453,122 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_fee_change_rejects_vault_and_token_recipients() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance,
+                asset.clone(),
+                share.clone(),
+                17,
+                29,
+            )
+            .unwrap();
+
+            let vault = env.current_contract_address();
+            let other = SdkAddress::generate(&env);
+
+            // Halborn FIND-009: the vault escrow pool and token contracts cannot
+            // hold fee recipients.
+            let invalid = [
+                (vault.clone(), other.clone()),
+                (other.clone(), vault.clone()),
+                (share.clone(), other.clone()),
+                (other.clone(), asset.clone()),
+            ];
+            for (perf_recipient, mgmt_recipient) in invalid {
+                assert_eq!(
+                    apply_fee_change(&env, 0, perf_recipient, 0, mgmt_recipient, None),
+                    Err(crate::error::ContractError::InvalidInput)
+                );
+            }
+
+            let perf_recipient = SdkAddress::generate(&env);
+            let mgmt_recipient = SdkAddress::generate(&env);
+            assert_eq!(
+                apply_fee_change(
+                    &env,
+                    0,
+                    perf_recipient.clone(),
+                    0,
+                    mgmt_recipient.clone(),
+                    None,
+                ),
+                Ok(())
+            );
+
+            let fees = load_fees_spec(&env).unwrap();
+            assert_eq!(
+                fees.performance.recipient,
+                kernel_address_from_sdk(&env, &perf_recipient)
+            );
+            assert_eq!(
+                fees.management.recipient,
+                kernel_address_from_sdk(&env, &mgmt_recipient)
+            );
+        });
+    }
+
+    /// A recipient stored before the FIND-009 guard existed blocks `migrate`, which keeps the
+    /// migration flag set until governance stores a valid recipient pair.
+    #[test]
+    fn test_migrate_rejects_stored_vault_fee_recipient() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                17,
+                29,
+            )
+            .unwrap();
+            let vault_kernel = kernel_address_from_sdk(&env, &env.current_contract_address());
+            let legacy = FeesSpec::new(
+                FeeSlot::new(Wad::one() / 8, templar_vault_kernel::Address([8u8; 32])),
+                FeeSlot::new(Wad::one() / 16, vault_kernel),
+                None,
+            );
+            store_fees_spec(&env, &legacy).unwrap();
+            set_migration_in_progress(&env, true);
+
+            assert_eq!(
+                SorobanVaultContract::migrate(env.clone(), governance.clone()),
+                Err(crate::error::ContractError::InvalidInput)
+            );
+            assert!(migration_in_progress(&env));
+        });
+        // the test host allows one authorization per contract frame
+        env.as_contract(&contract_id, || {
+            let perf = SdkAddress::generate(&env);
+            let mgmt = SdkAddress::generate(&env);
+            apply_fee_change(&env, 0, perf, 0, mgmt, None).unwrap();
+            SorobanVaultContract::migrate(env.clone(), governance).unwrap();
+            assert!(!migration_in_progress(&env));
+        });
+    }
+
+    #[test]
     fn test_loads_virtual_offsets_from_storage() {
         use soroban_sdk::testutils::Address as _;
 
@@ -3131,6 +3247,78 @@ mod contract_tests {
             // the pre-change gain is not charged at the new 50% rate
             execute_command(&env, &VaultCommand::RefreshFees).unwrap();
             assert_eq!(share_client.balance(&perf), 0);
+        });
+    }
+
+    /// A legacy spec paying the vault itself (written before FIND-009) is not paid one last
+    /// window on a fee change: nothing is minted and the elapsed window is forfeited.
+    #[test]
+    fn test_fee_change_skips_settlement_to_disallowed_legacy_recipient() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let perf = soroban_sdk::Address::generate(&env);
+        let mgmt = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            let vault_kernel = kernel_address_from_sdk(&env, &env.current_contract_address());
+            store_fees_spec(
+                &env,
+                &FeesSpec::new(
+                    FeeSlot::new(Wad::one() / 10, vault_kernel),
+                    FeeSlot::new(Wad::zero(), vault_kernel),
+                    None,
+                ),
+            )
+            .unwrap();
+            // a 500 gain sits above the anchor, so the legacy 10% fee would be due
+            SorobanStorage::new(&env)
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_000,
+                    idle_assets: 1_500,
+                    fee_anchor: FeeAccrualAnchor::new(1_000, TimestampNs(1_000_000_000)),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+        env.ledger().with_mut(|li| li.timestamp = 2);
+        env.as_contract(&contract_id, || {
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy_cmd(100_000_000_000_000_000, &perf, &mgmt, None),
+            )
+            .unwrap();
+            let state = SorobanStorage::new(&env).load_state().unwrap().unwrap();
+            assert_eq!(state.total_shares, 1_000);
+            assert_eq!(
+                state.fee_anchor,
+                FeeAccrualAnchor::new(1_500, TimestampNs(2_000_000_000))
+            );
+            assert_eq!(
+                load_fees_spec(&env).unwrap().performance.recipient,
+                kernel_address_from_sdk(&env, &perf)
+            );
         });
     }
 
