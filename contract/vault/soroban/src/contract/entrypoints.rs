@@ -890,6 +890,7 @@ fn allocate_impl(
             return Err(ContractError::InvalidState);
         }
         let realized_amount_u128 = to_u128(realized_amount)?;
+        let remaining_value = valuation_to_u128(invoke_total_assets(env, &adapter, &asset_token));
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             let op_id = vault.begin_allocation_withdraw_internal(caller_kernel, market, now_ns)?;
@@ -897,6 +898,7 @@ fn allocate_impl(
                 caller_kernel,
                 market,
                 realized_amount_u128,
+                remaining_value,
                 op_id,
                 now_ns,
             )?;

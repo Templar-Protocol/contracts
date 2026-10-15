@@ -3,7 +3,6 @@ use super::helpers::{
 };
 use super::*;
 use templar_curator_primitives::policy::state::PolicyStateError;
-use templar_vault_kernel::abort;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
 #[derive(Clone, Copy)]
@@ -718,8 +717,22 @@ where
         decision: WithdrawAllocationDecision,
     ) -> Result<AllocationResult, RuntimeError> {
         let op_id = self.begin_allocation_withdraw_internal(caller, decision.market, 0)?;
-        let new_external_assets =
-            self.complete_withdraw_allocation(caller, decision.market, decision.amount, op_id, 0)?;
+        // No adapter here: the remaining position is principal less the withdrawal, mirroring
+        // the supply branch's `principal + amount` observation.
+        let remaining_value = self
+            .policy_state()
+            .principal_for(decision.market)
+            .ok_or_else(|| invalid_state_error("unknown market principal on withdraw"))?
+            .checked_sub(decision.amount)
+            .ok_or_else(|| invalid_state_error("withdraw exceeds market principal"))?;
+        let new_external_assets = self.complete_withdraw_allocation(
+            caller,
+            decision.market,
+            decision.amount,
+            remaining_value,
+            op_id,
+            0,
+        )?;
         Ok(Self::allocation_result(op_id, new_external_assets))
     }
 
@@ -822,13 +835,6 @@ where
             now_ns,
         )?;
         Ok(op_id)
-    }
-
-    fn update_market_principal(&mut self, market: TargetId, principal: u128) {
-        let policy = self.policy_state_mut();
-        policy
-            .set_principal(market, principal)
-            .unwrap_or_else(|_| abort!("market principal failed"));
     }
 
     fn set_policy_principal(
@@ -999,18 +1005,39 @@ where
         caller: Address,
         market: TargetId,
         realized_amount: u128,
+        remaining_value: u128,
         op_id: u64,
         now_ns: u64,
     ) -> Result<u128, RuntimeError> {
-        let next_principal = self
-            .policy_state()
-            .principal_for(market)
-            .ok_or_else(|| invalid_state_error("unknown market principal on withdraw"))?
-            .checked_sub(realized_amount)
-            .ok_or_else(|| invalid_state_error("principal underflow on withdraw"))?;
-        self.update_market_principal(market, next_principal);
+        if self.policy_state().principal_for(market).is_none() {
+            return Err(invalid_state_error("unknown market principal on withdraw"));
+        }
+        // FIND-020: mark the market at its observed pre-withdrawal value
+        // (`realized + remaining`) as a refresh would, so gain or loss since the last
+        // observation is recognized as NAV movement (fee-bearing, anchor untouched) rather
+        // than booked later as an idle inflow. Then move the realized amount to idle and
+        // keep the observed remainder as principal, so a partial exit cannot leave unobserved
+        // value behind a zero principal.
+        let observed = realized_amount
+            .checked_add(remaining_value)
+            .ok_or_else(|| invalid_state_error("market value overflow on withdraw"))?;
+        let mut staged_policy = self.policy_state.clone();
+        Self::set_policy_principal(
+            &mut staged_policy,
+            market,
+            observed,
+            "market principal failed",
+        )?;
+        self.sync_external_assets(caller, op_id, staged_policy.external_assets()?, now_ns)?;
+        Self::set_policy_principal(
+            &mut staged_policy,
+            market,
+            remaining_value,
+            "market principal failed",
+        )?;
         let new_external = self.rebalance_withdraw(caller, op_id, realized_amount, now_ns)?;
         self.finish_allocation_internal(caller, op_id, now_ns)?;
+        self.policy_state = staged_policy;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(new_external)
     }

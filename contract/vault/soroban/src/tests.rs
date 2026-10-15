@@ -1346,6 +1346,68 @@ mod contract_tests {
         assert!(stale_sync.is_err());
     }
 
+    /// Vault with 10_000 deposited and deployed to market 0, whose recorded principal (10_000)
+    /// is stale against the adapter's actual value.
+    fn vault_with_stale_market_principal(
+    ) -> CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter> {
+        let mut vault = create_test_vault();
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+        vault
+            .deposit(owner, receiver, 10_000, 0, 100)
+            .expect("deposit should seed shares");
+        vault
+            .policy_state_mut()
+            .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+            .unwrap();
+        vault.policy_state_mut().set_principal(0, 10_000).unwrap();
+        set_test_assets(&mut vault, 0, 10_000);
+        vault
+    }
+
+    #[test]
+    fn test_full_withdraw_from_yielding_market_recognizes_yield_as_gain() {
+        // FIND-020: a full exit's realized amount includes yield not yet reflected in
+        // principal. The exit must not underflow, and the yield is NAV gain (fee anchor
+        // untouched, so the performance fee applies), not an idle inflow that moves the anchor.
+        let mut vault = vault_with_stale_market_principal();
+        let anchor_before = vault.state().unwrap().fee_anchor;
+
+        let op_id = vault
+            .begin_allocation_withdraw_internal(caller(), 0, 1_000)
+            .unwrap();
+        vault
+            .complete_withdraw_allocation(caller(), 0, 10_500, 0, op_id, 1_000)
+            .expect("a full exit carrying surplus yield must not underflow");
+
+        let state = vault.state().unwrap();
+        assert_eq!(vault.policy_state().principal_for(0), Some(0));
+        assert_eq!(state.external_assets, 0);
+        assert_eq!(state.idle_assets, 10_500);
+        assert_eq!(state.total_assets, 10_500);
+        assert_eq!(state.fee_anchor, anchor_before);
+    }
+
+    #[test]
+    fn test_partial_withdraw_above_stale_principal_keeps_observed_remainder() {
+        // A withdrawal larger than the stale principal must not zero the principal while the
+        // adapter still holds value; otherwise NAV freshness (FIND-001) would skip the market.
+        let mut vault = vault_with_stale_market_principal();
+
+        let op_id = vault
+            .begin_allocation_withdraw_internal(caller(), 0, 1_000)
+            .unwrap();
+        vault
+            .complete_withdraw_allocation(caller(), 0, 11_000, 1_000, op_id, 1_000)
+            .unwrap();
+
+        let state = vault.state().unwrap();
+        assert_eq!(vault.policy_state().principal_for(0), Some(1_000));
+        assert_eq!(state.external_assets, 1_000);
+        assert_eq!(state.idle_assets, 11_000);
+        assert_eq!(state.total_assets, 12_000);
+    }
+
     #[test]
     fn test_begin_refreshing() {
         let mut vault = create_test_vault();

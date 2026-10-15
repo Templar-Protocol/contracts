@@ -65,6 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `try_transfer` and reports failures as `EffectFailed` (Halborn FIND-015).
 - `SetSupplyQueue` rejects binding an adapter that is already bound to a different market, so one
   adapter position can no longer be counted once per market (Halborn FIND-019).
+- A market withdrawal no longer underflows when it realizes more than the recorded principal.
+  The withdrawal observes the adapter's remaining value, marks the market at
+  `realized + remaining` as a refresh would (recognizing any gain for the performance fee),
+  then keeps the observed remainder as principal (Halborn FIND-020).
 
 ## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-10-01
 
