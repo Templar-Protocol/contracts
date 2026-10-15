@@ -1,4 +1,6 @@
-use crate::commands::governance::{check_upgrade_wasm_policy, pinned_runtime_wasm_hash};
+use crate::commands::governance::{
+    check_upgrade_wasm_policy, pinned_runtime_wasm_hash, reject_vault_token_skim,
+};
 
 use super::*;
 
@@ -126,6 +128,77 @@ fn governance_restrictions_use_typed_mode_and_address_list() {
         .1
         .windows(2)
         .any(|pair| pair[0] == "--accounts" && pair[1].contains(ACCOUNT)));
+}
+
+#[test]
+fn governance_skim_of_vault_asset_or_share_token_is_refused_before_submission() {
+    for (token, role) in [(ASSET_CONTRACT, "asset"), (OTHER_CONTRACT, "share")] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        manifest_with_governance_and_vault(&state);
+        let mut manifest = Manifest::load_or_new(&state, "testnet", None).expect("manifest");
+        manifest
+            .contracts
+            .insert("asset_token".to_string(), imported_record(ASSET_CONTRACT));
+        manifest
+            .contracts
+            .insert("share_token".to_string(), imported_record(OTHER_CONTRACT));
+        manifest.save(&state).expect("save manifest");
+        let cli = base_cli(
+            state,
+            Commands::Governance(GovernanceArgs {
+                command: GovernanceCommand::SubmitSkim {
+                    admin: ACCOUNT.parse().expect("admin"),
+                    token: token.parse().expect("token"),
+                },
+            }),
+        );
+        let executor = RecordingExecutor::new();
+
+        let err = run(&cli, &executor).expect_err("skim of a vault token must be refused");
+
+        assert!(
+            format!("{err:#}").contains(&format!("vault's {role} token")),
+            "{err:#}"
+        );
+        assert!(submitted_calls(&executor.calls()).is_empty());
+    }
+}
+
+#[test]
+fn skim_guard_allows_only_foreign_tokens() {
+    let asset = Some(ASSET_CONTRACT);
+    let share = Some(OTHER_CONTRACT);
+    assert!(reject_vault_token_skim(ASSET_CONTRACT, asset, share).is_err());
+    assert!(reject_vault_token_skim(OTHER_CONTRACT, asset, share).is_err());
+    assert!(reject_vault_token_skim(CONTRACT, asset, share).is_ok());
+}
+
+#[test]
+fn governance_skim_is_refused_when_vault_token_ids_are_unknown() {
+    // The manifest records no asset/share token and the stubbed proxy_view reports
+    // none, so the guard cannot tell a foreign token from the vault's own.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance_and_vault(&state);
+    let cli = base_cli(
+        state,
+        Commands::Governance(GovernanceArgs {
+            command: GovernanceCommand::SubmitSkim {
+                admin: ACCOUNT.parse().expect("admin"),
+                token: ASSET_CONTRACT.parse().expect("token"),
+            },
+        }),
+    );
+    let executor = RecordingExecutor::new();
+
+    let err = run(&cli, &executor).expect_err("unknown token ids must fail closed");
+
+    assert!(
+        format!("{err:#}").contains("refusing to submit a skim (fail closed)"),
+        "{err:#}"
+    );
+    assert!(submitted_calls(&executor.calls()).is_empty());
 }
 
 #[test]
