@@ -5,7 +5,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::artifacts::{ReleaseArtifact, RELEASE_TAG};
+use crate::artifacts::RELEASE_TAG;
 use crate::{
     cli::{GovernanceCommand, GovernanceSubmitAndWaitCommand},
     manifest::Manifest,
@@ -153,17 +153,18 @@ pub(super) fn run_governance<E: CommandExecutor>(
                 vault: required_contract(manifest, "vault")?.to_string(),
                 current_governance: governance.to_string(),
                 new_governance: new_governance.to_string(),
-                submitting_admin: admin.to_string(),
-                expected_admin: expected_admin.as_ref().map(AddressStr::to_string),
-                expected_wasm_hash: Some(resolve_expected_wasm_hash(
+                submitting_admin: match expected_admin {
+                    Some(address) => address.to_string(),
+                    None => admin.to_string(),
+                },
+                expected_wasm_hash: resolve_expected_wasm_hash(
                     manifest,
                     expected_wasm_hash.as_ref(),
                     new_governance.as_str(),
-                )),
-                allow_unverified: *allow_unverified_governance,
+                ),
             };
             if !context.cli().dry_run {
-                guard_set_governance(stellar, &params)?;
+                guard_set_governance(stellar, &params, *allow_unverified_governance)?;
             }
             invoke_response(stellar.invoke(
                 governance,
@@ -437,7 +438,7 @@ pub(super) fn run_governance<E: CommandExecutor>(
 
 /// SHA-256 of the pinned release runtime WASM; the default upgrade target.
 pub(super) fn pinned_runtime_wasm_hash() -> &'static str {
-    ReleaseArtifact::Runtime.pin().sha256
+    crate::artifacts::ArtifactName::Vault.pin().sha256
 }
 
 /// Upgrade submissions default to the pinned release runtime hash. A hash

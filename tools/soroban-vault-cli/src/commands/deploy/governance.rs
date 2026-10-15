@@ -2,6 +2,8 @@
 //! *pending* so the active governance id in the manifest is only replaced
 //! after the on-chain cutover is confirmed.
 
+use anyhow::Context;
+
 use crate::{
     artifacts::{ensure_uploaded, ArtifactSpec},
     cli::{ArtifactName, DeployGovernanceArgs},
@@ -10,7 +12,7 @@ use crate::{
 
 use super::{
     super::{
-        cutover::{GOVERNANCE_PENDING_KEY, GOVERNANCE_PREVIOUS_KEY},
+        cutover::{extract_address, GOVERNANCE_PENDING_KEY, GOVERNANCE_PREVIOUS_KEY},
         inventory::{map_args, required_contract},
         output::Response,
     },
@@ -35,11 +37,6 @@ pub(in crate::commands) fn deploy_governance<E: CommandExecutor>(
     if !args.force_new {
         if let Some(record) = manifest.contracts.get(GOVERNANCE_PENDING_KEY) {
             anyhow::ensure!(
-                record.contract_id != vault,
-                "governance_pending already records {}; pass --force-new to deploy a fresh instance",
-                record.contract_id
-            );
-            anyhow::ensure!(
                 manifest
                     .contracts
                     .get("governance")
@@ -57,18 +54,17 @@ pub(in crate::commands) fn deploy_governance<E: CommandExecutor>(
         // deployer as admin can construct a different authority than the
         // vault's current governance carries.
         let current = required_contract(manifest, "governance")?;
-        let observed = stellar.invoke_view(current, "admin", Vec::new());
-        match observed {
-            Ok(out) => {
-                let trimmed = out.stdout.trim().trim_matches('"').to_string();
-                anyhow::ensure!(
-                    trimmed.len() == 56,
-                    "current governance {current} admin() returned no address; pass --admin explicitly"
-                );
-                trimmed
-            }
-            Err(err) => anyhow::bail!(
-                "cannot read admin() of current governance {current}: {err:#}; pass --admin explicitly"
+        let observed = stellar
+            .invoke_view(current, "admin", Vec::new())
+            .with_context(|| {
+                format!(
+                    "cannot read admin() of current governance {current}; pass --admin explicitly"
+                )
+            })?;
+        match extract_address(&observed.stdout) {
+            Some(address) => address,
+            None => anyhow::bail!(
+                "current governance {current} admin() returned no address; pass --admin explicitly"
             ),
         }
     };
@@ -121,16 +117,10 @@ pub(in crate::commands) fn deploy_governance<E: CommandExecutor>(
 }
 
 fn follow_up(vault: &str, pending: &str, wasm_hash: &str) -> Response {
-    let expected_hash = if wasm_hash.len() == 64 && wasm_hash.chars().all(|c| c.is_ascii_hexdigit())
-    {
-        format!(" --expected-wasm-hash {wasm_hash}")
-    } else {
-        String::new()
-    };
     let steps = [
         format!(
             "tmplr-soroban-vault governance submit-set-governance --admin <admin> \
-             --new-governance {pending}{expected_hash}"
+             --new-governance {pending} --expected-wasm-hash {wasm_hash}"
         ),
         "governance accept the proposal once the timelock has elapsed, then".to_string(),
         "tmplr-soroban-vault upgrade confirm-governance-cutover".to_string(),

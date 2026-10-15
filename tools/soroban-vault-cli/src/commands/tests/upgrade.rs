@@ -6,8 +6,7 @@ use crate::{
         output::PreflightStatus,
         upgrade::{
             adapter_bindings_from, decode_fee_recipients, migration_flag_from,
-            parse_contract_read_instance, parse_instance_storage, parse_pending_ids,
-            parse_proxy_view,
+            parse_contract_read_instance, parse_instance_storage, parse_proxy_view,
         },
     },
 };
@@ -319,8 +318,14 @@ fn zero_fee_slot_with_banned_recipient_blocks() {
 
 #[test]
 fn pending_id_parse_accepts_json_arrays_and_lists() {
-    assert_eq!(parse_pending_ids("[1, 2]"), vec![1, 2]);
-    assert_eq!(parse_pending_ids("1\n2\n"), vec![1, 2]);
+    assert_eq!(
+        crate::commands::governance::parse_u64s("[1, 2]"),
+        vec![1, 2]
+    );
+    assert_eq!(
+        crate::commands::governance::parse_u64s("1\n2\n"),
+        vec![1, 2]
+    );
 }
 
 fn kernel_hex(strkey: &str) -> String {
