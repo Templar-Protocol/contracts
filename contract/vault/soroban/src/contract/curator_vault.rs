@@ -572,7 +572,7 @@ where
         let assets_out = idle_payout.assets_out;
         let burn_shares = idle_payout.burn_shares;
         let op_id = idle_payout.op_id;
-        let completed = CompletedWithdrawal {
+        let mut completed = CompletedWithdrawal {
             request_id: idle_payout.request_id,
             owner: idle_payout.owner,
             receiver: idle_payout.receiver,
@@ -598,13 +598,23 @@ where
             amount: assets_out,
         }];
         self.ensure_effect_addresses_mapped(&transfer_effects, &ctx)?;
-        let transfer_summary = self.interpreter.execute_effects(&transfer_effects, &ctx)?;
-        summary.merge(transfer_summary);
+        // A receiver that cannot accept the asset must not wedge the FIFO queue: a failed
+        // transfer settles as Failure, which refunds the escrow and dequeues the head.
+        let outcome = match self.interpreter.execute_effects(&transfer_effects, &ctx) {
+            Ok(transfer_summary) => {
+                summary.merge(transfer_summary);
+                PayoutOutcome::Success
+            }
+            Err(RuntimeError::EffectFailed) => {
+                completed.assets_out = 0;
+                completed.shares_burned = 0;
+                PayoutOutcome::Failure
+            }
+            Err(err) => return Err(err),
+        };
 
-        let settle_summary = self.apply_kernel_action(
-            KernelAction::settle_payout(op_id, PayoutOutcome::Success),
-            now_ns,
-        )?;
+        let settle_summary =
+            self.apply_kernel_action(KernelAction::settle_payout(op_id, outcome), now_ns)?;
         summary.merge(settle_summary);
 
         Ok(ExecuteWithdrawResult::Payout { summary, completed })

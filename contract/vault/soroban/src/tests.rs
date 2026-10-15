@@ -346,7 +346,10 @@ mod contract_tests {
     use crate::contract::helpers::set_config_address;
     use crate::contract::*;
     use crate::convert::ledger_timestamp_ns;
-    use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
+    use crate::effects::{
+        AddressRegistrar, EffectContext, EffectInterpreter, EffectResult, SdkTokenAdapter,
+        Sep41Token,
+    };
     use crate::error::RuntimeError;
     use crate::storage::SOROBAN_MAX_PENDING_WITHDRAWALS;
     use crate::storage::{SorobanStorage, Storage};
@@ -405,6 +408,8 @@ mod contract_tests {
     #[derive(Clone, Debug, Default)]
     struct MockInterpreter {
         should_fail: bool,
+        /// Fail only `TransferAssets`, as a receiver that cannot accept the asset would.
+        fail_asset_transfers: bool,
         effects: Vec<KernelEffect>,
     }
 
@@ -412,6 +417,7 @@ mod contract_tests {
         fn new() -> Self {
             Self {
                 should_fail: false,
+                fail_asset_transfers: false,
                 effects: Vec::new(),
             }
         }
@@ -423,7 +429,10 @@ mod contract_tests {
             effect: &KernelEffect,
             _ctx: &EffectContext,
         ) -> EffectResult<()> {
-            if self.should_fail {
+            if self.should_fail
+                || (self.fail_asset_transfers
+                    && matches!(effect, KernelEffect::TransferAssets { .. }))
+            {
                 return Err(RuntimeError::effect_failed("mock interpreter failed"));
             }
             self.effects.push(effect.clone());
@@ -1668,6 +1677,83 @@ mod contract_tests {
         assert_eq!(state.idle_assets, 2_500);
         assert_eq!(state.total_assets, 22_500);
         assert_eq!(state.total_shares, 30_000);
+    }
+
+    /// FIND-015: a queue head whose receiver cannot accept the asset settles as a failed
+    /// payout (escrow refunded, nothing burned, head dequeued) instead of erroring out and
+    /// wedging every withdrawal behind it.
+    #[test]
+    fn test_idle_payout_transfer_failure_refunds_escrow_and_dequeues_head() {
+        let mut vault = create_test_vault();
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let poisoned_receiver = templar_vault_kernel::Address([2u8; 32]);
+        let second_owner = templar_vault_kernel::Address([3u8; 32]);
+        vault.deposit(owner, owner, 10_000, 0, 100).unwrap();
+        vault
+            .deposit(second_owner, second_owner, 10_000, 0, 100)
+            .unwrap();
+        vault
+            .request_withdraw(owner, poisoned_receiver, 10_000, 0, 200)
+            .unwrap();
+        vault
+            .request_withdraw(second_owner, second_owner, 10_000, 0, 200)
+            .unwrap();
+        let exec_time = 200 + SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1;
+
+        vault.interpreter.fail_asset_transfers = true;
+        let crate::contract::ExecuteWithdrawResult::Payout { completed, .. } = vault
+            .execute_withdraw(caller(), exec_time)
+            .expect("a failed transfer must settle, not error")
+        else {
+            panic!("execute_withdraw should settle the head");
+        };
+        assert_eq!(completed.request_id, 0);
+        assert_eq!(completed.assets_out, 0);
+        assert_eq!(completed.shares_burned, 0);
+
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.withdraw_queue.head().map(|(id, _)| id), Some(1));
+        assert_eq!(state.total_shares, 20_000);
+        assert_eq!(state.idle_assets, 20_000);
+        assert!(vault.interpreter.effects.iter().any(|e| matches!(
+            e,
+            KernelEffect::TransferShares { to, shares: 10_000, .. } if *to == owner
+        )));
+        assert!(!vault
+            .interpreter
+            .effects
+            .iter()
+            .any(|e| matches!(e, KernelEffect::BurnShares { .. })));
+
+        // the queue is live again: the next head pays out normally
+        vault.interpreter.fail_asset_transfers = false;
+        let crate::contract::ExecuteWithdrawResult::Payout { completed, .. } =
+            vault.execute_withdraw(caller(), exec_time).unwrap()
+        else {
+            panic!("second head should pay out");
+        };
+        assert_eq!(completed.request_id, 1);
+        assert_eq!(completed.assets_out, 10_000);
+        assert!(vault.state().unwrap().withdraw_queue.head().is_none());
+    }
+
+    /// The SAC adapter reports a failed transfer as an error instead of trapping.
+    #[test]
+    fn test_sdk_token_adapter_transfer_failure_is_an_error() {
+        use soroban_sdk::testutils::Address as _;
+        let env = Env::default();
+        env.mock_all_auths();
+        let asset = env
+            .register_stellar_asset_contract_v2(SdkAddress::generate(&env))
+            .address();
+        let from = SdkAddress::generate(&env);
+        let to = SdkAddress::generate(&env);
+        let adapter = SdkTokenAdapter::new(&env, &asset);
+        assert_eq!(
+            adapter.transfer(&from, &to, 1),
+            Err(RuntimeError::EffectFailed)
+        );
     }
 
     #[test]
