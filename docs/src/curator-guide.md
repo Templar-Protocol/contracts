@@ -161,7 +161,7 @@ state, and successful transaction audit records. Treat it as operational state,
 back it up, and pass `--state` explicitly when operating more than one vault.
 ### Artifact source and cache policy
 
-Normal deployment uses the fixed reviewed `soroban-v1.1.1` catalog. Resolution is strict and
+Normal deployment uses the fixed reviewed `soroban-v1.3.0-rc.1` catalog. Resolution is strict and
 ordered: a verified release-cache entry first, an exact-pin workspace output seeded into that
 cache second, and then the fixed GitHub release asset. Every byte is checked for the catalog's
 length and SHA-256. Corrupt cache entries and download failures stop the command; deployment

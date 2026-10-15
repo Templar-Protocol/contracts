@@ -1359,6 +1359,7 @@ mod tests {
                     DeployCommand::Adapters(args) => args.build,
                     DeployCommand::CuratorProxy(args) => args.build,
                     DeployCommand::Wasm(args) => args.build,
+                    DeployCommand::Governance(args) => args.build,
                     DeployCommand::Plan(_) | DeployCommand::Repair(_) => {
                         panic!("expected artifact deploy command")
                     }
@@ -1379,6 +1380,7 @@ mod tests {
                     DeployCommand::Adapters(args) => args.build,
                     DeployCommand::CuratorProxy(args) => args.build,
                     DeployCommand::Wasm(args) => args.build,
+                    DeployCommand::Governance(args) => args.build,
                     DeployCommand::Plan(_) | DeployCommand::Repair(_) => {
                         panic!("expected artifact deploy command")
                     }
