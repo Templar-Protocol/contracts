@@ -150,7 +150,7 @@ tmplr-soroban-vault deploy curator-proxy --vault <VAULT> --governance <NEW_GOVER
 | Situation | Recovery |
 |---|---|
 | `migrate` fails `InvalidInput` (bad fee recipient) | Revoke the failed migrate proposal; `submit-cancel-migration` + accept (clears the flag; the vault runs the new runtime); fix fees with `submit-set-fees` + accept; **submit `Upgrade` again with the same hash** + accept (sets the flag again); `submit-migrate` + accept. A bare re-migrate after cancelling fails `InvalidState`. |
-| `migrate` fails `InvalidState` (virtual assets + queued withdrawal) | Same as above, but drain the withdrawal queue instead of fixing fees. |
+| `migrate` fails `InvalidState` (virtual assets + queued withdrawal) | Revoke the failed migrate proposal; `submit-cancel-migration` + accept (clears the flag); **drain the withdrawal queue (`user execute-withdraw`) only now** — while the vault is frozen between `Upgrade` and `Migrate` acceptance, `execute_withdraw` itself fails `InvalidState`; then **submit `Upgrade` again with the same hash** + accept; `submit-migrate` + accept. |
 | Deposits fail `InvalidState` after the upgrade | Run `curator refresh-markets` over every market with principal. |
 | `governance accept-ready` stops on a failing proposal | Accept by `--proposal-id`, or revoke the failing one. |
 | Upgrade proposal for bytes not installed on the network | `submit-upgrade` refuses it. With the override, the accept fails and the vault stays on the old runtime; revoke it. |

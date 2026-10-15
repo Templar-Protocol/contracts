@@ -27,11 +27,11 @@ use super::{
 };
 
 pub(super) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
-pub(super) const KERNEL_ADDRESS_VERSION: u8 = 1;
 /// Governance's `PROPOSAL_EXECUTION_WINDOW_NS`: a proposal older than this
 /// past its ready time is ProposalExpired on governance that enforces it.
 pub(super) const PROPOSAL_EXECUTION_WINDOW_NS: u128 = 7 * 24 * 60 * 60 * 1_000_000_000;
-pub(super) const INSTANCE_KEY_XDR: &str = "\"ledger_key_contract_instance\"";
+/// Base64 XDR of `ScVal::LedgerKeyContractInstance`.
+pub(super) const INSTANCE_KEY_XDR: &str = "AAAAFA==";
 
 /// The on-chain facts the preflight decision needs. `None` always means
 /// "could not verify", never "checked and clean".
@@ -80,7 +80,7 @@ pub(super) fn evaluate_vault_preflight(facts: &VaultFacts) -> PreflightReport {
         ),
         None => unverifiable(
             "migration_flag",
-            "no view exposes the migration flag; manual check: `stellar contract read --id <vault> --key-xdr \"\\\"ledger_key_contract_instance\\\"\"` and inspect the `migrate` instance entry",
+            "instance storage unreadable; manual check: `stellar contract read --id <vault> --durability persistent --output json` and inspect the `migrate` instance entry (absent means false)",
         ),
     });
     findings.push(fee_recipient_finding(facts));
@@ -107,58 +107,45 @@ pub(super) fn evaluate_vault_preflight(facts: &VaultFacts) -> PreflightReport {
 }
 
 fn fee_recipient_finding(facts: &VaultFacts) -> PreflightFinding {
-    match &facts.fee_recipients {
-        None => unverifiable(
+    let (Some(recipients), Some(asset), Some(share)) = (
+        &facts.fee_recipients,
+        &facts.asset_token_id,
+        &facts.share_token_id,
+    ) else {
+        return unverifiable(
             "fee_recipients",
-            "fee recipient storage unreadable; manual check: `stellar contract read` the `fees` instance entry and compare recipient addresses against the vault, asset token, and share token",
-        ),
-
-        Some(recipients) => {
-            let mut problems = Vec::new();
-            for (slot, (fee, recipient)) in recipients.iter().enumerate() {
-                let label = if slot == 0 { "performance" } else { "management" };
-                if fee == &0 {
-                    continue;
-                }
-                for banned in [
-                    "vault",
-                    "asset_token",
-                    "share_token",
-                ]
-                .into_iter()
-                .zip(banned_recipients(facts))
-                {
-                    if banned.1 == *recipient {
-                        problems.push(format!(
-                            "{label} fee recipient {recipient} is the {} (FIND-009 would reject the upgrade)",
-                            banned.0
-                        ));
-                    }
-                }
-            }
-            if problems.is_empty() {
-                pass(
-                    "fee_recipients",
-                    "neither fee recipient is the vault, asset token, or share token",
-                )
-            } else {
-                blocking("fee_recipients", problems.join("; "))
+            "fee recipient storage or token identities unreadable; manual check: `stellar contract read --id <vault> --durability persistent --output json` and compare the `fees` recipients against sha256(domain||strkey) of the vault, asset token, and share token",
+        );
+    };
+    // `migrate` checks both slots even when the fee is zero.
+    let banned = [
+        ("vault", kernel_address(&facts.vault_id)),
+        ("asset token", kernel_address(asset)),
+        ("share token", kernel_address(share)),
+    ];
+    let mut problems = Vec::new();
+    for (slot, (_, recipient)) in recipients.iter().enumerate() {
+        let label = if slot == 0 {
+            "performance"
+        } else {
+            "management"
+        };
+        for (name, address) in &banned {
+            if address == recipient {
+                problems.push(format!(
+                    "{label} fee recipient is the {name} (FIND-009: migrate would reject the vault); set a valid recipient before upgrading"
+                ));
             }
         }
     }
-}
-
-fn banned_recipients(facts: &VaultFacts) -> Vec<String> {
-    std::iter::once(kernel_address(&facts.vault_id))
-        .chain(
-            facts
-                .asset_token_id
-                .as_deref()
-                .into_iter()
-                .chain(facts.share_token_id.as_deref())
-                .map(kernel_address),
+    if problems.is_empty() {
+        pass(
+            "fee_recipients",
+            "neither fee recipient is the vault, asset token, or share token",
         )
-        .collect()
+    } else {
+        blocking("fee_recipients", problems.join("; "))
+    }
 }
 
 fn withdrawal_queue_finding(facts: &VaultFacts) -> PreflightFinding {
@@ -171,38 +158,36 @@ fn withdrawal_queue_finding(facts: &VaultFacts) -> PreflightFinding {
             "withdrawal_queue",
             "virtual assets are zero, so normalize_migrated_state cannot be blocked by pending withdrawals",
         ),
-        Some(_) if facts.attest_empty_withdrawal_queue => unverifiable(
+        Some(_) if facts.attest_empty_withdrawal_queue => warn(
             "withdrawal_queue",
-            "operator attested the withdrawal queue is empty but the check cannot confirm it from the exposed views",
+            "operator attested the withdrawal queue is empty; the check cannot confirm it from the exposed views, so a non-empty queue would make `migrate` fail",
         ),
         Some(_) => unverifiable(
             "withdrawal_queue",
-            "virtual assets are non-zero and no view exposes the withdrawal queue; manual check: `stellar contract read` the vault instance and persistent entries for `withdraw_queue`",
+            "virtual assets are non-zero and no view exposes the withdrawal queue; drain the queue, then re-run with --attest-empty-withdrawal-queue",
         ),
     }
 }
 
+/// `migrate` has no idle or paused precondition, so operator state only
+/// ever warns (it still matters for fee changes after the upgrade).
 fn op_state_finding(facts: &VaultFacts) -> PreflightFinding {
     match (facts.paused, facts.max_deposit_allowed) {
-        (Some(true), _) => unverifiable(
+        (Some(true), _) => warn(
             "op_state_idle",
-            "the vault is paused, so deposit limits cannot prove the operator state; manual check: wait for the unpause or read the operator state blob",
+            "the vault is paused; migrate does not require an idle vault, but confirm no operator action is mid-flight",
         ),
-        (Some(false), Some(0)) => blocking(
+        (Some(false), Some(0)) => warn(
             "op_state_idle",
-            "deposits are capped to zero while unpaused, which means the operator state is not idle",
+            "deposits are capped to zero while unpaused, so the operator state is probably not idle; migrate does not require idleness",
         ),
         (Some(false), Some(_)) => pass(
             "op_state_idle",
             "deposits are allowed, so the operator state is idle",
         ),
-        (Some(false), None) => unverifiable(
+        _ => warn(
             "op_state_idle",
-            "deposit limit view unavailable; manual check: proxy_view max_deposit must be non-zero",
-        ),
-        (None, _) => unverifiable(
-            "op_state_idle",
-            "proxy_view unavailable; manual check: proxy_view(max_deposit) and paused flags",
+            "proxy_view unavailable; migrate does not require an idle vault, but check proxy_view paused/max_deposit manually",
         ),
     }
 }
@@ -341,6 +326,10 @@ fn unverifiable(check: &str, detail: impl Into<String>) -> PreflightFinding {
     finding(check, (PreflightStatus::Unverifiable, detail.into()))
 }
 
+fn warn(check: &str, detail: impl Into<String>) -> PreflightFinding {
+    finding(check, (PreflightStatus::Warn, detail.into()))
+}
+
 /// Reads every fact the preflight decision needs. Individual reads that
 /// fail stay `None`; only a vault that cannot be reached at all aborts.
 pub(super) fn collect_vault_facts<E: CommandExecutor>(
@@ -382,11 +371,9 @@ pub(super) fn collect_vault_facts<E: CommandExecutor>(
     }
 
     if let Some(entries) = read_instance_storage(stellar, vault) {
-        facts.migration_flag = entries.get("migrate").and_then(|v| v.as_bool());
-        facts.fee_recipients = entries
-            .get("fees")
-            .and_then(|v| v.as_str().and_then(decode_fee_recipients));
-        facts.adapter_bindings = entries.get("adapmap").and_then(parse_adapter_map);
+        facts.migration_flag = migration_flag_from(&entries);
+        facts.fee_recipients = entries.get("fees").and_then(decode_fee_recipients);
+        facts.adapter_bindings = adapter_bindings_from(&entries);
     }
 
     if let Some(governance) = facts.governance_view.clone() {
@@ -436,8 +423,10 @@ pub(super) fn read_instance_storage<E: CommandExecutor>(
         .run(
             [
                 vec!["contract".to_string(), "read".to_string()],
-                vec!["--contract".to_string(), vault.to_string()],
+                vec!["--id".to_string(), vault.to_string()],
                 vec!["--key-xdr".to_string(), INSTANCE_KEY_XDR.to_string()],
+                vec!["--durability".to_string(), "persistent".to_string()],
+                vec!["--output".to_string(), "json".to_string()],
                 stellar.network_args(),
             ]
             .concat(),
@@ -445,27 +434,38 @@ pub(super) fn read_instance_storage<E: CommandExecutor>(
             stellar.source_env(),
         )
         .ok()?;
-    let encoded = out.stdout.trim();
-    // `contract read` emits CSV; the value column holds base64 XDR.
-    let encoded = encoded.split(',').next_back()?.trim_matches('"');
-    let decoded = stellar
-        .run(
-            vec![
-                "xdr".to_string(),
-                "decode".to_string(),
-                "--type".to_string(),
-                "ScVal".to_string(),
-                "--input".to_string(),
-                "single-base64".to_string(),
-                "--output".to_string(),
-                "json".to_string(),
-                encoded.to_string(),
-            ],
-            &[],
-            Vec::new(),
-        )
-        .ok()?;
-    parse_instance_storage(&decoded.stdout)
+    parse_contract_read_instance(&out.stdout)
+}
+
+/// `stellar contract read --output json` emits CSV rows of
+/// `key,value,last_modified_ledger,live_until_ledger`; the value column is
+/// the JSON-rendered ledger entry.
+pub(super) fn parse_contract_read_instance(stdout: &str) -> Option<serde_json::Map<String, Value>> {
+    parse_instance_storage(&csv_field(stdout, 1)?)
+}
+
+/// Returns the zero-based `index`th field of the first CSV record, handling
+/// quoted fields with doubled quotes and embedded newlines.
+fn csv_field(input: &str, index: usize) -> Option<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut quoted = false;
+    while let Some(ch) = chars.next() {
+        match (ch, quoted) {
+            ('"', true) if chars.peek() == Some(&'"') => {
+                chars.next();
+                current.push('"');
+            }
+            ('"', true) => quoted = false,
+            ('"', false) if current.is_empty() => quoted = true,
+            (',', false) => fields.push(std::mem::take(&mut current)),
+            ('\n' | '\r', false) => break,
+            (c, _) => current.push(c),
+        }
+    }
+    fields.push(current);
+    fields.into_iter().nth(index)
 }
 
 pub(super) fn parse_instance_storage(stdout: &str) -> Option<serde_json::Map<String, Value>> {
@@ -482,21 +482,36 @@ pub(super) fn parse_instance_storage(stdout: &str) -> Option<serde_json::Map<Str
     map.contains_key("init").then_some(map)
 }
 
-pub(super) fn decode_fee_recipients(encoded: &str) -> Option<[(u128, String); 2]> {
-    // `stellar xdr decode --output json` renders ScVal bytes as base64.
-    use base64::Engine as _;
-    let bytes = base64::engine::GeneralPurpose::new(
-        &base64::alphabet::STANDARD,
-        base64::engine::general_purpose::PAD,
-    )
-    .decode(encoded.trim())
-    .ok()?;
-    if bytes.len() < 96 {
+/// The stored `migrate` flag: absent means false (the runtime removes the
+/// key when clearing); present but not a tagged bool is unreadable.
+pub(super) fn migration_flag_from(entries: &serde_json::Map<String, Value>) -> Option<bool> {
+    match entries.get("migrate") {
+        None => Some(false),
+        Some(value) => value.get("bool")?.as_bool(),
+    }
+}
+
+/// Absent `adapmap` means no adapter bindings.
+pub(super) fn adapter_bindings_from(
+    entries: &serde_json::Map<String, Value>,
+) -> Option<Vec<(u32, String)>> {
+    match entries.get("adapmap") {
+        None => Some(Vec::new()),
+        Some(value) => parse_adapter_map(value),
+    }
+}
+
+/// Decodes the stored `fees` blob, rendered as `{"bytes": "<hex>"}`. Layout
+/// (little-endian WADs): fee(16) recipient(32) fee(16) recipient(32) then a
+/// growth-cap flag byte (+16 bytes when set): 97 or 113 bytes.
+pub(super) fn decode_fee_recipients(value: &Value) -> Option<[(u128, String); 2]> {
+    let bytes = hex::decode(value.get("bytes")?.as_str()?.trim()).ok()?;
+    if bytes.len() != 97 && bytes.len() != 113 {
         return None;
     }
     let fee_at = |offset: usize| -> Option<u128> {
         let chunk: [u8; 16] = bytes[offset..offset + 16].try_into().ok()?;
-        Some(u128::from_be_bytes(chunk))
+        Some(u128::from_le_bytes(chunk))
     };
     let recipient_at = |offset: usize| hex::encode(&bytes[offset..offset + 32]);
     Some([
@@ -505,41 +520,63 @@ pub(super) fn decode_fee_recipients(encoded: &str) -> Option<[(u128, String); 2]
     ])
 }
 
-/// Address kernel key: sha256(domain || version || strkey), the exact bytes
-/// the runtime stores for fee recipients and banned addresses.
+/// Address kernel key: sha256(domain || strkey), identical to the runtime's
+/// `kernel_address_from_sdk` (no version byte).
 pub(super) fn kernel_address(strkey: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(KERNEL_ADDRESS_DOMAIN);
-    hasher.update([KERNEL_ADDRESS_VERSION]);
     hasher.update(strkey.as_bytes());
     hex::encode(hasher.finalize())
 }
 
+/// Parses `proxy_view`'s JSON. Layout (entrypoints.rs `proxy_view`):
+/// `[[[_, governance, asset, share], [vshares, vassets, paused],
+/// [_, _, external, _], _], _, [_, _, max_deposit, ..]]`.
 pub(super) fn parse_proxy_view(stdout: &str, facts: &mut VaultFacts) {
-    let Ok(value) = serde_json::from_str::<Value>(stdout) else {
+    let trimmed = stdout.trim();
+    let value = serde_json::from_str::<Value>(trimmed)
+        .ok()
+        .filter(Value::is_array)
+        .or_else(|| {
+            // Read-only invokes print a banner line before the JSON value.
+            trimmed
+                .find('[')
+                .and_then(|index| serde_json::from_str::<Value>(&trimmed[index..]).ok())
+                .filter(Value::is_array)
+        });
+    let Some(value) = value else {
         return;
     };
-    facts.governance_view = value
-        .get(0)
-        .and_then(|tuple| tuple.get(1))
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    if let Some(position1) = value.get(1) {
-        facts.paused = position1.get(0).and_then(Value::as_bool);
-        facts.virtual_assets = position1.get(2).and_then(json_i128);
-        facts.external_assets_present = position1.get(5).and_then(Value::as_bool);
+    let text_at = |path: &[usize]| {
+        path.iter()
+            .try_fold(&value, |node, index| node.get(*index))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    };
+    let node_at = |path: &[usize]| path.iter().try_fold(&value, |node, index| node.get(*index));
+    facts.governance_view = text_at(&[0, 0, 1]);
+    if let Some(asset) = text_at(&[0, 0, 2]) {
+        facts.asset_token_id = Some(asset);
     }
-    if let Some(position2) = value.get(2) {
-        facts.max_deposit_allowed = position2.get(5).and_then(json_i128);
+    if let Some(share) = text_at(&[0, 0, 3]) {
+        facts.share_token_id = Some(share);
     }
+    facts.virtual_assets = node_at(&[0, 1, 1]).and_then(json_i128);
+    facts.paused = node_at(&[0, 1, 2]).and_then(Value::as_bool);
+    facts.external_assets_present = node_at(&[0, 2, 2])
+        .and_then(json_i128)
+        .map(|external| external != 0);
+    facts.max_deposit_allowed = node_at(&[2, 2]).and_then(json_i128);
 }
 
+/// Parses the tagged ScVal map `{"map":[{"key":{"u32":n},"val":{"address":"C…"}}]}`.
 pub(super) fn parse_adapter_map(value: &Value) -> Option<Vec<(u32, String)>> {
-    let entries = value.as_object()?;
     let mut bindings = Vec::new();
-    for (market, adapter) in entries {
-        bindings.push((market.parse().ok()?, adapter.as_str()?.to_string()));
+    for entry in value.get("map")?.as_array()? {
+        let market = entry.get("key")?.get("u32")?.as_u64()?;
+        let adapter = entry.get("val")?.get("address")?.as_str()?;
+        bindings.push((u32::try_from(market).ok()?, adapter.to_string()));
     }
     Some(bindings)
 }
