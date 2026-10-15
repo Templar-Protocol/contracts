@@ -27,6 +27,7 @@ pub(super) enum Response {
     GovernanceQueue(GovernanceQueueResponse),
     GovernanceExplain(GovernanceProposalView),
     GovernanceAcceptReady(GovernanceAcceptReadyResponse),
+    UpgradePreflight(UpgradePreflightResponse),
 }
 
 impl Response {
@@ -47,6 +48,7 @@ impl Response {
             Self::GovernanceQueue(_) => "governance_queue",
             Self::GovernanceExplain(_) => "governance_explain",
             Self::GovernanceAcceptReady(_) => "governance_accept_ready",
+            Self::UpgradePreflight(_) => "upgrade_preflight",
         }
     }
 
@@ -55,6 +57,13 @@ impl Response {
             Self::Plan(plan) => plan.warnings.clone(),
             Self::GovernanceQueue(queue) => queue.warnings.clone(),
             Self::GovernanceAcceptReady(result) => result.skipped.clone(),
+            Self::UpgradePreflight(result) => result
+                .report
+                .findings
+                .iter()
+                .filter(|finding| finding.status == PreflightStatus::Warn)
+                .map(|finding| format!("{}: {}", finding.check, finding.detail))
+                .collect(),
             Self::Reconcile(result) => result
                 .components
                 .iter()
@@ -277,6 +286,58 @@ pub(super) struct GovernanceProposalView {
 pub(super) struct GovernanceAcceptReadyResponse {
     pub(super) accepted: Vec<u64>,
     pub(super) skipped: Vec<String>,
+}
+
+#[derive(Debug)]
+pub(super) struct UpgradePreflightResponse {
+    pub(super) vault: String,
+    pub(super) report: PreflightReport,
+    pub(super) allow_unverifiable: bool,
+}
+
+impl serde::Serialize for UpgradePreflightResponse {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("UpgradePreflightResponse", 3)?;
+        state.serialize_field("vault", &self.vault)?;
+        state.serialize_field("allow_unverifiable", &self.allow_unverifiable)?;
+        state.serialize_field("report", &self.report)?;
+        state.end()
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct PreflightReport {
+    pub(super) runtime_version: String,
+    pub(super) findings: Vec<PreflightFinding>,
+    pub(super) ok: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct PreflightFinding {
+    pub(super) check: String,
+    pub(super) status: PreflightStatus,
+    pub(super) detail: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PreflightStatus {
+    Pass,
+    Warn,
+    Blocking,
+    Unverifiable,
+}
+
+impl PreflightStatus {
+    pub(super) const fn as_label(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Warn => "warn",
+            Self::Blocking => "blocking",
+            Self::Unverifiable => "unverifiable",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

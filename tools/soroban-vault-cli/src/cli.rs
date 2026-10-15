@@ -135,12 +135,15 @@ pub enum Commands {
     },
     /// Generate a roff manpage on stdout
     Man,
+    /// Pre-upgrade safety checks and governance cutover confirmation for existing vaults
+    Upgrade(UpgradeArgs),
 }
 
 impl Commands {
     pub fn is_write(&self) -> bool {
         match self {
             Self::Doctor
+            | Self::Upgrade(_)
             | Self::Status
             | Self::ExportEnv
             | Self::Profile(_)
@@ -209,6 +212,8 @@ pub enum DeployCommand {
     Repair(ReconcileArgs),
     /// Add Blend or custodial adapters to an existing or imported vault deployment
     Adapters(DeployAdaptersArgs),
+    /// Deploy a fresh governance contract for an existing or imported vault deployment
+    Governance(DeployGovernanceArgs),
     /// Deploy a fresh curator proxy for an existing or imported vault deployment
     CuratorProxy(DeployCuratorProxyArgs),
     /// Upload or verify a single WASM artifact
@@ -353,6 +358,33 @@ pub struct DeployCuratorProxyArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct DeployGovernanceArgs {
+    /// Existing vault contract address. Required when the manifest does not already contain `vault`.
+    #[arg(long, env = "SOROBAN_VAULT")]
+    pub vault: Option<AddressStr>,
+
+    /// Governance admin for the new contract. Defaults to the current governance contract's admin().
+    #[arg(long, env = "SOROBAN_ADMIN")]
+    pub admin: Option<AddressStr>,
+
+    /// Governance timelock in nanoseconds for the new contract (constructor argument)
+    #[arg(long, env = "SOROBAN_GOV_TIMELOCK_NS")]
+    pub timelock_ns: u64,
+
+    /// Reuse an already-uploaded governance WASM by hash instead of the pinned release artifact
+    #[arg(long, env = "SOROBAN_GOV_WASM_HASH")]
+    pub wasm_hash: Option<WasmHash>,
+
+    /// Build from the checked-out workspace instead of using the pinned release artifact.
+    #[arg(long)]
+    pub build: bool,
+
+    /// Abandon a matching checkpointed record and deploy a fresh instance.
+    #[arg(long)]
+    pub force_new: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct DeployWasmArgs {
     /// Known artifact name
     #[arg(value_enum)]
@@ -361,6 +393,35 @@ pub struct DeployWasmArgs {
     /// Build from the checked-out workspace instead of using the pinned release artifact.
     #[arg(long)]
     pub build: bool,
+}
+
+#[derive(Clone, Args, Debug)]
+pub struct UpgradeArgs {
+    #[command(subcommand)]
+    pub command: UpgradeCommand,
+}
+
+#[derive(Clone, Subcommand, Debug)]
+pub enum UpgradeCommand {
+    /// Run read-only pre-upgrade safety checks against an existing vault
+    Preflight(UpgradePreflightArgs),
+    /// Confirm a pending governance cutover after the proposal was accepted
+    ConfirmGovernanceCutover,
+}
+
+#[derive(Clone, Args, Debug)]
+pub struct UpgradePreflightArgs {
+    /// Existing vault contract address. Required when the manifest does not already contain `vault`.
+    #[arg(long, env = "SOROBAN_VAULT")]
+    pub vault: Option<AddressStr>,
+
+    /// Attest that the vault withdrawal queue is empty even when it cannot be read
+    #[arg(long)]
+    pub attest_empty_withdrawal_queue: bool,
+
+    /// Exit zero even when checks cannot be performed with the exposed views
+    #[arg(long)]
+    pub allow_unverifiable: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, ValueEnum)]
@@ -807,6 +868,15 @@ pub enum GovernanceCommand {
         /// Proposed replacement governance contract address.
         #[arg(long)]
         new_governance: AddressStr,
+        /// Governance admin the target contract must report (defaults to the submitting admin).
+        #[arg(long)]
+        expected_admin: Option<AddressStr>,
+        /// WASM hash the target governance contract must have been deployed from.
+        #[arg(long)]
+        expected_wasm_hash: Option<WasmHash>,
+        /// Submit even when the target governance cannot be verified on-chain.
+        #[arg(long)]
+        allow_unverified_governance: bool,
     },
     /// Submit a timelocked unpause proposal. Omit --paused; Sentinel pause is a direct call.
     SubmitSetPaused {
@@ -1249,7 +1319,8 @@ mod tests {
                 | DeployCommand::Repair(_)
                 | DeployCommand::Adapters(_)
                 | DeployCommand::CuratorProxy(_)
-                | DeployCommand::Wasm(_) => panic!("expected deploy stack"),
+                | DeployCommand::Wasm(_)
+                | DeployCommand::Governance(_) => panic!("expected deploy stack"),
             },
             _ => panic!("expected deploy command"),
         }
@@ -1269,6 +1340,14 @@ mod tests {
             ],
             vec!["deploy", "curator-proxy", "--vault", POOL],
             vec!["deploy", "wasm", "vault"],
+            vec![
+                "deploy",
+                "governance",
+                "--vault",
+                POOL,
+                "--timelock-ns",
+                "1",
+            ],
         ] {
             let cli = Cli::try_parse_from(
                 std::iter::once("tmplr-soroban-vault").chain(args.iter().copied()),
@@ -1354,7 +1433,8 @@ mod tests {
                 | DeployCommand::Repair(_)
                 | DeployCommand::Adapters(_)
                 | DeployCommand::CuratorProxy(_)
-                | DeployCommand::Wasm(_) => panic!("expected deploy stack"),
+                | DeployCommand::Wasm(_)
+                | DeployCommand::Governance(_) => panic!("expected deploy stack"),
             },
             _ => panic!("expected deploy command"),
         }
@@ -1397,7 +1477,8 @@ mod tests {
                 | DeployCommand::Resume(_)
                 | DeployCommand::Repair(_)
                 | DeployCommand::CuratorProxy(_)
-                | DeployCommand::Wasm(_) => panic!("expected deploy adapters"),
+                | DeployCommand::Wasm(_)
+                | DeployCommand::Governance(_) => panic!("expected deploy adapters"),
             },
             _ => panic!("expected deploy command"),
         }
@@ -1451,7 +1532,8 @@ mod tests {
                 | DeployCommand::Repair(_)
                 | DeployCommand::Adapters(_)
                 | DeployCommand::CuratorProxy(_)
-                | DeployCommand::Wasm(_) => panic!("expected deploy plan"),
+                | DeployCommand::Wasm(_)
+                | DeployCommand::Governance(_) => panic!("expected deploy plan"),
             },
             _ => panic!("expected deploy command"),
         }
@@ -1517,7 +1599,8 @@ mod tests {
                 | DeployCommand::Resume(_)
                 | DeployCommand::Repair(_)
                 | DeployCommand::Adapters(_)
-                | DeployCommand::Wasm(_) => panic!("expected deploy curator-proxy"),
+                | DeployCommand::Wasm(_)
+                | DeployCommand::Governance(_) => panic!("expected deploy curator-proxy"),
             },
             _ => panic!("expected deploy command"),
         }
