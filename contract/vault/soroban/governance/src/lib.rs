@@ -36,6 +36,8 @@ const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
 const MIN_TIMELOCK_NS: u64 = 0;
 const DAY_NS: u64 = 86_400_000_000_000;
 const MAX_TIMELOCK_NS: u64 = 30 * DAY_NS;
+const PROPOSAL_EXECUTION_WINDOW_NS: u64 = 7 * DAY_NS;
+const OTHER_APPROVAL_TTL_NS: u64 = 30 * DAY_NS;
 const MAX_PENDING_PROPOSALS: usize = 64;
 const PENDING_PAGE_SIZE: u64 = 16;
 const DEFAULT_WITHDRAWAL_COOLDOWN_NS: u64 = DEFAULT_COOLDOWN_NS;
@@ -489,10 +491,7 @@ impl SorobanVaultGovernanceContract {
     /// consumed. Misuse can make approvals unverifiable or unsafe to execute.
     pub fn check_other(env: Env, key: Symbol, payload_hash: BytesN<32>) -> bool {
         extend_instance_ttl(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::ApprovedOther(key, payload_hash))
-            .unwrap_or(false)
+        other_approval_live(&env, &key, &payload_hash).unwrap_or(false)
     }
 
     pub fn consume_other(
@@ -504,18 +503,13 @@ impl SorobanVaultGovernanceContract {
         extend_instance_ttl(&env);
         require_vault_caller(&env, &caller)?;
 
-        let approved: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::ApprovedOther(key.clone(), payload_hash.clone()))
-            .unwrap_or(false);
-        if !approved {
+        if !other_approval_live(&env, &key, &payload_hash)? {
             return Err(GovernanceError::OtherNotApproved);
         }
 
         env.storage()
             .instance()
-            .remove(&DataKey::ApprovedOther(key, payload_hash));
+            .remove(&DataKey::ApprovedOtherUntil(key, payload_hash));
         Ok(())
     }
 
@@ -546,12 +540,41 @@ impl SorobanVaultGovernanceContract {
         Ok(removed)
     }
 
+    /// Revoke an already-approved opaque governance action by its exact
+    /// key/hash pair, before it is consumed or expires.
+    ///
+    /// Returns `OtherNotApproved` if no live approval exists for the pair.
+    pub fn revoke_other_approved(
+        env: Env,
+        caller: Address,
+        key: Symbol,
+        payload_hash: BytesN<32>,
+    ) -> Result<(), GovernanceError> {
+        extend_instance_ttl(&env);
+        require_revoke_kind(&env, &caller, GovernanceActionKind::Other)?;
+        if !other_approval_live(&env, &key, &payload_hash)? {
+            return Err(GovernanceError::OtherNotApproved);
+        }
+        env.storage()
+            .instance()
+            .remove(&DataKey::ApprovedOtherUntil(key, payload_hash));
+        Ok(())
+    }
+
     pub fn accept(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
 
         let now_ns = ledger_timestamp_ns(&env)?;
         let mut queue = load_queue(&env);
+        let expired = queue.iter().any(|entry| {
+            entry.value.id == proposal_id
+                && now_ns.0.saturating_sub(entry.ready_at_ns.0) > PROPOSAL_EXECUTION_WINDOW_NS
+        });
+        if expired {
+            // Returning an error reverts storage, so the entry stays queued; `revoke` clears it.
+            return Err(GovernanceError::ProposalExpired);
+        }
         let proposal = match queue.take_by_key(
             now_ns,
             &ProposalKey::ProposalId(proposal_id),
@@ -588,6 +611,15 @@ impl SorobanVaultGovernanceContract {
         }
         if matching > 1 {
             return Err(GovernanceError::DuplicatePending);
+        }
+
+        let expired = queue.iter().any(|entry| {
+            action_kind(&entry.value.action) == kind
+                && now_ns.0.saturating_sub(entry.ready_at_ns.0) > PROPOSAL_EXECUTION_WINDOW_NS
+        });
+        if expired {
+            // Returning an error reverts storage, so the entry stays queued; `revoke` clears it.
+            return Err(GovernanceError::ProposalExpired);
         }
 
         let proposal = match queue.take_by_key(now_ns, &kind, queued_proposal_kind) {
@@ -707,7 +739,14 @@ impl SorobanVaultGovernanceContract {
 
         let decision = decide_submission(&env, &action)?;
         let now_ns = ledger_timestamp_ns(&env)?;
-        let timelock_ns = DurationNs(load_timelocks(&env).get(timelock_kind_for_action(&action)));
+        let timelocks = load_timelocks(&env);
+        let mut timelock_ns = timelocks.get(timelock_kind_for_action(&action));
+        if let GovernanceAction::SetTimelock(kind, _) = &action {
+            // A decrease must wait for the longer of the changed kind's own
+            // delay and the timelock-config delay (Halborn FIND-022).
+            timelock_ns = timelock_ns.max(load_timelocks(&env).get(*kind));
+        }
+        let timelock_ns = DurationNs(timelock_ns);
         let pending_key = action.pending_key();
         let mut queue = load_queue(&env);
         let replaces_existing = queue.has_pending_key(&pending_key, QueuedProposal::action_key);
@@ -1100,17 +1139,24 @@ fn decide_submission(
         | GovernanceAction::Migrate
         | GovernanceAction::CancelMigration => Ok(TimelockDecision::Timelocked),
         GovernanceAction::Other(key, payload_hash) => {
-            let approved: bool = env
-                .storage()
-                .instance()
-                .get(&DataKey::ApprovedOther(key.clone(), payload_hash.clone()))
-                .unwrap_or(false);
-            if approved {
+            if other_approval_live(env, key, payload_hash)? {
                 return Err(GovernanceError::NoChange);
             }
             Ok(TimelockDecision::Timelocked)
         }
     }
+}
+
+fn other_approval_live(
+    env: &Env,
+    key: &Symbol,
+    payload_hash: &BytesN<32>,
+) -> Result<bool, GovernanceError> {
+    let until: Option<u64> = env.storage().instance().get(&DataKey::ApprovedOtherUntil(
+        key.clone(),
+        payload_hash.clone(),
+    ));
+    Ok(until.is_some_and(|until| ledger_timestamp_ns(env).is_ok_and(|now| now.0 <= until)))
 }
 
 fn to_wad(value: i128) -> Result<Wad, GovernanceError> {
@@ -1478,9 +1524,12 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 .set(&DataKey::TimelockNs, &timelocks.timelock_config_ns);
         }
         GovernanceAction::Other(key, payload_hash) => {
+            let until = ledger_timestamp_ns(env)?
+                .0
+                .saturating_add(OTHER_APPROVAL_TTL_NS);
             env.storage().instance().set(
-                &DataKey::ApprovedOther(key.clone(), payload_hash.clone()),
-                &true,
+                &DataKey::ApprovedOtherUntil(key.clone(), payload_hash.clone()),
+                &until,
             );
         }
     }

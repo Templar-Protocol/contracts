@@ -13,7 +13,7 @@ pub(crate) enum DataKey {
     NextProposalId,
     PendingPageIndex,
     PendingPage(u64),
-    ApprovedOther(Symbol, BytesN<32>),
+    ApprovedOtherUntil(Symbol, BytesN<32>),
     CurrentPaused,
     CurrentFees,
     CurrentRestrictionMode,
@@ -308,4 +308,5 @@ pub enum GovernanceError {
     TimelockOutOfBounds = 9,
     OtherNotApproved = 10,
     Abdicated = 11,
+    ProposalExpired = 12,
 }
