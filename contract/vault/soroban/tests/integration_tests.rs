@@ -3604,6 +3604,14 @@ fn soroban_contract_resync_idle_balance_crystallizes_fees_before_reconciliation(
             0,
         )
         .unwrap();
+        // fee policy before the seeded anchor: a fee change re-anchors (FIND-008)
+        set_fee_policy(
+            &env,
+            &governance,
+            &performance_recipient,
+            &management_recipient,
+            0,
+        );
 
         let mut storage = SorobanStorage::new(&env);
         storage
@@ -3634,13 +3642,6 @@ fn soroban_contract_resync_idle_balance_crystallizes_fees_before_reconciliation(
     .as_u128_saturating();
     assert!(crystallized_management_shares > 0);
     env.as_contract(&contract_id, || {
-        set_fee_policy(
-            &env,
-            &governance,
-            &performance_recipient,
-            &management_recipient,
-            0,
-        );
         proxy
             .execute_unit(&VaultCommand::ResyncIdleBalance)
             .unwrap();
@@ -3829,6 +3830,17 @@ fn eng700_fixture(fee_mode: u8) -> Eng700Fixture {
             0,
         )
         .expect("initialize");
+        // The fee policy is applied before the anchor is seeded: a fee change settles and
+        // re-anchors (FIND-008), and these tests rely on an open [T0, now] window.
+        if fee_mode != 3 {
+            set_fee_policy(
+                &env,
+                &governance,
+                &performance_recipient,
+                &management_recipient,
+                fee_mode,
+            );
+        }
         SorobanStorage::new(&env)
             .save_state(&VaultState {
                 total_assets: ENG700_ASSETS,
@@ -3845,15 +3857,6 @@ fn eng700_fixture(fee_mode: u8) -> Eng700Fixture {
                 ..Default::default()
             })
             .expect("save state");
-        if fee_mode != 3 {
-            set_fee_policy(
-                &env,
-                &governance,
-                &performance_recipient,
-                &management_recipient,
-                fee_mode,
-            );
-        }
     });
     Eng700Fixture {
         env,
