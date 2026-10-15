@@ -1328,6 +1328,21 @@ mod tests {
 
     #[test]
     fn deploy_build_flags_are_explicit_opt_ins() {
+        let build_of = |cli: Cli| -> bool {
+            match cli.command {
+                Commands::Deploy(args) => match args.command {
+                    DeployCommand::Stack(args) | DeployCommand::Resume(args) => args.build,
+                    DeployCommand::Adapters(args) => args.build,
+                    DeployCommand::CuratorProxy(args) => args.build,
+                    DeployCommand::Wasm(args) => args.build,
+                    DeployCommand::Governance(args) => args.build,
+                    DeployCommand::Plan(_) | DeployCommand::Repair(_) => {
+                        panic!("expected artifact deploy command")
+                    }
+                },
+                _ => panic!("expected deploy command"),
+            }
+        };
         for args in [
             vec!["deploy", "stack", "--admin", ADMIN],
             vec![
@@ -1353,20 +1368,7 @@ mod tests {
                 std::iter::once("tmplr-soroban-vault").chain(args.iter().copied()),
             )
             .expect("parse default deploy source");
-            let build = match cli.command {
-                Commands::Deploy(args) => match args.command {
-                    DeployCommand::Stack(args) | DeployCommand::Resume(args) => args.build,
-                    DeployCommand::Adapters(args) => args.build,
-                    DeployCommand::CuratorProxy(args) => args.build,
-                    DeployCommand::Wasm(args) => args.build,
-                    DeployCommand::Governance(args) => args.build,
-                    DeployCommand::Plan(_) | DeployCommand::Repair(_) => {
-                        panic!("expected artifact deploy command")
-                    }
-                },
-                _ => panic!("expected deploy command"),
-            };
-            assert!(!build);
+            assert!(!build_of(cli));
 
             let cli = Cli::try_parse_from(
                 std::iter::once("tmplr-soroban-vault")
@@ -1374,20 +1376,7 @@ mod tests {
                     .chain(std::iter::once("--build")),
             )
             .expect("parse explicit build");
-            let build = match cli.command {
-                Commands::Deploy(args) => match args.command {
-                    DeployCommand::Stack(args) | DeployCommand::Resume(args) => args.build,
-                    DeployCommand::Adapters(args) => args.build,
-                    DeployCommand::CuratorProxy(args) => args.build,
-                    DeployCommand::Wasm(args) => args.build,
-                    DeployCommand::Governance(args) => args.build,
-                    DeployCommand::Plan(_) | DeployCommand::Repair(_) => {
-                        panic!("expected artifact deploy command")
-                    }
-                },
-                _ => panic!("expected deploy command"),
-            };
-            assert!(build);
+            assert!(build_of(cli));
         }
 
         Cli::try_parse_from([

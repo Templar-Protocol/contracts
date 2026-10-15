@@ -132,46 +132,7 @@ pub(super) fn manifest_writable_check(path: &Path) -> DoctorCheck {
             format!("manifest path {} has no parent directory", path.display()),
         );
     };
-    if !parent.exists() {
-        return DoctorCheck::warn(
-            "manifest_writable",
-            format!(
-                "manifest directory {} does not exist yet; deploy will try to create it",
-                parent.display()
-            ),
-        );
-    }
-    if !parent.is_dir() {
-        return DoctorCheck::fail(
-            "manifest_writable",
-            format!("manifest parent {} is not a directory", parent.display()),
-        );
-    }
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let probe = parent.join(format!(
-        ".tmplr-soroban-vault-cli-write-test-{}-{nanos}",
-        std::process::id()
-    ));
-    match OpenOptions::new().write(true).create_new(true).open(&probe) {
-        Ok(_) => {
-            let _ = fs::remove_file(&probe);
-            DoctorCheck::pass(
-                "manifest_writable",
-                format!("manifest directory {} is writable", parent.display()),
-            )
-        }
-        Err(error) => DoctorCheck::fail(
-            "manifest_writable",
-            format!(
-                "cannot write manifest directory {}: {error}",
-                parent.display()
-            ),
-        ),
-    }
+    writable_dir_check("manifest_writable", "manifest", parent)
 }
 
 pub(super) fn artifact_cache_writable_check() -> DoctorCheck {
@@ -179,152 +140,43 @@ pub(super) fn artifact_cache_writable_check() -> DoctorCheck {
         Ok(root) => root,
         Err(error) => return DoctorCheck::fail("artifact_cache_writable", format!("{error:#}")),
     };
+    writable_dir_check("artifact_cache_writable", "artifact cache root", &root)
+}
+
+/// Shared probe: warn when the directory does not exist yet (deploy will
+/// create it), fail when it is not a directory, else create/remove a probe
+/// file.
+pub(super) fn writable_dir_check(name: &str, what: &str, dir: &Path) -> DoctorCheck {
+    if !dir.exists() {
+        return DoctorCheck::warn(
+            name,
+            format!(
+                "{what} {} does not exist yet; deploy will try to create it",
+                dir.display()
+            ),
+        );
+    }
+    if !dir.is_dir() {
+        return DoctorCheck::fail(name, format!("{what} {} is not a directory", dir.display()));
+    }
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let probe_name = format!(
-        ".tmplr-soroban-vault-cache-probe-{}-{nanos}",
+    let probe = dir.join(format!(
+        ".tmplr-soroban-vault-cli-write-test-{}-{nanos}",
         std::process::id()
-    );
-
-    if root.exists() {
-        if !root.is_dir() {
-            return DoctorCheck::fail(
-                "artifact_cache_writable",
-                format!("artifact cache root {} is not a directory", root.display()),
-            );
+    ));
+    match OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            DoctorCheck::pass(name, format!("{what} {} is writable", dir.display()))
         }
-        return probe_cache_directory(&root, &root.join(probe_name), None);
-    }
-
-    let mut ancestor = root.as_path();
-    while !ancestor.exists() {
-        let Some(parent) = ancestor.parent() else {
-            return DoctorCheck::fail(
-                "artifact_cache_writable",
-                format!(
-                    "artifact cache root {} has no existing ancestor",
-                    root.display()
-                ),
-            );
-        };
-        ancestor = parent;
-    }
-    if !ancestor.is_dir() {
-        return DoctorCheck::fail(
-            "artifact_cache_writable",
-            format!(
-                "artifact cache ancestor {} is not a directory",
-                ancestor.display()
-            ),
-        );
-    }
-    let temporary_root = ancestor.join(probe_name);
-    let relative = root.strip_prefix(ancestor).unwrap_or(Path::new("cache"));
-    let probe_directory = temporary_root.join(relative);
-    if let Err(error) = fs::create_dir_all(&probe_directory) {
-        let cleanup_error = fs::remove_dir_all(&temporary_root).err();
-        return DoctorCheck::fail(
-            "artifact_cache_writable",
-            match cleanup_error {
-                Some(cleanup_error) => format!(
-                    "cannot create temporary artifact cache probe {}: {error}; cannot remove temporary probe tree {}: {cleanup_error}",
-                    probe_directory.display(),
-                    temporary_root.display()
-                ),
-                None => format!(
-                    "cannot create temporary artifact cache probe {}: {error}",
-                    probe_directory.display()
-                ),
-            },
-        );
-    }
-    probe_cache_directory(
-        &root,
-        &probe_directory.join("writable"),
-        Some(&temporary_root),
-    )
-}
-
-fn probe_cache_directory(root: &Path, probe: &Path, cleanup_root: Option<&Path>) -> DoctorCheck {
-    let result = (|| -> anyhow::Result<()> {
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(probe)
-            .map_err(|error| anyhow::anyhow!("create {}: {error}", probe.display()))?;
-        file.sync_all()
-            .map_err(|error| anyhow::anyhow!("sync {}: {error}", probe.display()))?;
-        close_probe_file(file, probe)?;
-        fs::remove_file(probe)
-            .map_err(|error| anyhow::anyhow!("remove {}: {error}", probe.display()))?;
-        if let Some(cleanup_root) = cleanup_root {
-            fs::remove_dir_all(cleanup_root).map_err(|error| {
-                anyhow::anyhow!(
-                    "remove temporary probe tree {}: {error}",
-                    cleanup_root.display()
-                )
-            })?;
-        }
-        Ok(())
-    })();
-
-    match result {
-        Ok(()) => DoctorCheck::pass(
-            "artifact_cache_writable",
-            format!("artifact cache root {} is writable", root.display()),
+        Err(error) => DoctorCheck::fail(
+            name,
+            format!("cannot write {what} {}: {error}", dir.display()),
         ),
-        Err(error) => {
-            let cleanup_error = if let Some(cleanup_root) = cleanup_root {
-                fs::remove_dir_all(cleanup_root).err().map(|cleanup_error| {
-                    format!(
-                        "remove temporary probe tree {}: {cleanup_error}",
-                        cleanup_root.display()
-                    )
-                })
-            } else {
-                fs::remove_file(probe)
-                    .err()
-                    .map(|cleanup_error| format!("remove {}: {cleanup_error}", probe.display()))
-            };
-            DoctorCheck::fail(
-                "artifact_cache_writable",
-                match cleanup_error {
-                    Some(cleanup_error) => format!("{error:#}; cleanup failed: {cleanup_error}"),
-                    None => format!("{error:#}"),
-                },
-            )
-        }
     }
-}
-
-#[cfg(unix)]
-fn close_probe_file(file: std::fs::File, path: &Path) -> anyhow::Result<()> {
-    use std::os::fd::IntoRawFd as _;
-
-    let fd = file.into_raw_fd();
-    // SAFETY: `into_raw_fd` transfers sole ownership of this valid descriptor.
-    if unsafe { close(fd) } == 0 {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!(
-            "close {}: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ))
-    }
-}
-
-#[cfg(not(unix))]
-fn close_probe_file(file: std::fs::File, _path: &Path) -> anyhow::Result<()> {
-    drop(file);
-    Ok(())
-}
-
-#[cfg(unix)]
-unsafe extern "C" {
-    fn close(fd: std::os::raw::c_int) -> std::os::raw::c_int;
 }
 
 pub(super) fn artifact_doctor_checks(cli: &Cli) -> Vec<DoctorCheck> {

@@ -14,8 +14,9 @@ use std::{
 use anyhow::{anyhow, Context};
 use sha2::{Digest, Sha256};
 
+pub use crate::cli::ArtifactName;
+
 use crate::{
-    cli::ArtifactName,
     manifest::{ArtifactRecord, Manifest},
     stellar::{CommandExecutor, Stellar},
 };
@@ -52,45 +53,7 @@ pub struct ReleasePin {
     pub sha256: &'static str,
 }
 
-/// Exhaustive typed model of the artifacts shipped in [`RELEASE_TAG`].
-///
-/// Every artifact the CLI can deploy is a variant here, and every variant
-/// carries its reviewed release pin; resolution and upload verify against it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReleaseArtifact {
-    Runtime,
-    Governance,
-    ShareToken,
-    BlendAdapter,
-    CustodialAdapter,
-    Proxy4626,
-    CuratorProxy,
-}
-
-impl ReleaseArtifact {
-    /// Every artifact in the release, in stack deployment order.
-    pub const ALL: [ReleaseArtifact; 7] = [
-        Self::Runtime,
-        Self::Governance,
-        Self::ShareToken,
-        Self::Proxy4626,
-        Self::CuratorProxy,
-        Self::BlendAdapter,
-        Self::CustodialAdapter,
-    ];
-
-    pub const fn from_name(name: ArtifactName) -> Self {
-        match name {
-            ArtifactName::Vault => Self::Runtime,
-            ArtifactName::Governance => Self::Governance,
-            ArtifactName::ShareToken => Self::ShareToken,
-            ArtifactName::BlendAdapter => Self::BlendAdapter,
-            ArtifactName::CustodialAdapter => Self::CustodialAdapter,
-            ArtifactName::Proxy4626 => Self::Proxy4626,
-            ArtifactName::CuratorProxy => Self::CuratorProxy,
-        }
-    }
-
+impl ArtifactName {
     /// Reviewed release pin: exact byte length and SHA-256 of the asset.
     ///
     /// The numbers live in the pinned-release table ([`RELEASE_ASSETS`]);
@@ -107,7 +70,7 @@ impl ReleaseArtifact {
     /// Manifest key for the artifact. Deploy flows look records up by it.
     pub const fn key(self) -> &'static str {
         match self {
-            Self::Runtime => "vault",
+            Self::Vault => "vault",
             Self::Governance => "governance",
             Self::ShareToken => "share_token",
             Self::BlendAdapter => "blend_adapter",
@@ -120,7 +83,7 @@ impl ReleaseArtifact {
     /// Cargo package building the artifact.
     pub const fn package(self) -> &'static str {
         match self {
-            Self::Runtime => "templar-soroban-runtime",
+            Self::Vault => "templar-soroban-runtime",
             Self::Governance => "templar-soroban-governance",
             Self::ShareToken => "templar-soroban-share-token",
             Self::BlendAdapter => "templar-soroban-blend-adapter",
@@ -133,7 +96,7 @@ impl ReleaseArtifact {
     /// Release asset file name, and the workspace build output name.
     pub const fn wasm_file_name(self) -> &'static str {
         match self {
-            Self::Runtime => "templar_soroban_runtime.wasm",
+            Self::Vault => "templar_soroban_runtime.wasm",
             Self::Governance => "templar_soroban_governance.wasm",
             Self::ShareToken => "templar_soroban_share_token.wasm",
             Self::BlendAdapter => "templar_soroban_blend_adapter.wasm",
@@ -143,39 +106,11 @@ impl ReleaseArtifact {
         }
     }
 
-    /// Asset path relative to the workspace root.
-    pub const fn wasm_relative_path(self) -> &'static str {
-        match self {
-            Self::Runtime => {
-                "target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm"
-            }
-            Self::Governance => {
-                "target/wasm32-unknown-unknown/release-soroban/templar_soroban_governance.wasm"
-            }
-            Self::ShareToken => {
-                "target/wasm32-unknown-unknown/release-soroban/templar_soroban_share_token.wasm"
-            }
-            Self::BlendAdapter => {
-                "target/wasm32-unknown-unknown/release-soroban/templar_soroban_blend_adapter.wasm"
-            }
-            Self::CustodialAdapter => {
-                "target/wasm32-unknown-unknown/release-soroban/templar_soroban_custodial_adapter.wasm"
-            }
-            Self::Proxy4626 => {
-                "target/wasm32-unknown-unknown/release-soroban/templar_4626_proxy_soroban.wasm"
-            }
-            Self::CuratorProxy => {
-                "target/wasm32-unknown-unknown/release-soroban/templar_curator_proxy_soroban.wasm"
-            }
-        }
-    }
-
     /// Typed spec tying the artifact's deploy metadata to its release pin.
     pub const fn spec(self) -> ArtifactSpec {
         ArtifactSpec {
             key: self.key(),
             package: self.package(),
-            wasm_relative_path: self.wasm_relative_path(),
             build_output_dir: "target/wasm32-unknown-unknown/release-soroban",
             release: self,
         }
@@ -186,14 +121,13 @@ impl ReleaseArtifact {
 pub struct ArtifactSpec {
     pub key: &'static str,
     pub package: &'static str,
-    pub wasm_relative_path: &'static str,
     pub build_output_dir: &'static str,
-    pub release: ReleaseArtifact,
+    pub release: ArtifactName,
 }
 
 impl ArtifactSpec {
     pub fn from_name(name: ArtifactName) -> Self {
-        ReleaseArtifact::from_name(name).spec()
+        name.spec()
     }
 
     pub fn stack_artifacts(include_blend: bool, include_custodial: bool) -> Vec<Self> {
@@ -214,7 +148,9 @@ impl ArtifactSpec {
     }
 
     pub fn wasm_path(&self, workspace: &Path) -> PathBuf {
-        workspace.join(self.wasm_relative_path)
+        workspace
+            .join(self.build_output_dir)
+            .join(self.release.wasm_file_name())
     }
 
     pub fn output_dir(&self, workspace: &Path) -> PathBuf {
@@ -255,28 +191,20 @@ pub(crate) fn inspect_existing_release_artifact(
 ) -> anyhow::Result<ExistingReleaseArtifact> {
     let resolver = ArtifactResolver::production()?;
     let cache_path = resolver.cache_file(spec.release);
-    match fs::read(&cache_path) {
-        Ok(bytes) => {
-            let sha256 = verify_release_bytes(spec.release, &bytes, "cache entry")?;
-            return Ok(ExistingReleaseArtifact::Cache {
-                path: cache_path,
-                sha256,
-            });
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(anyhow!(
-                "read cached release artifact {}: {error}",
-                cache_path.display()
-            ));
-        }
+    if let Some(sha256) =
+        resolver.read_verified_cache_entry(spec, &cache_path, spec.release.pin())?
+    {
+        return Ok(ExistingReleaseArtifact::Cache {
+            path: cache_path,
+            sha256,
+        });
     }
 
     let workspace_path = spec.wasm_path(workspace);
     if workspace_path.exists() {
         let bytes = fs::read(&workspace_path)
             .with_context(|| format!("read {}", workspace_path.display()))?;
-        return match verify_release_bytes(spec.release, &bytes, "workspace") {
+        return match verify_bytes(spec.release, spec.release.pin(), &bytes, "workspace") {
             Ok(sha256) => Ok(ExistingReleaseArtifact::WorkspaceSeed {
                 path: workspace_path,
                 sha256,
@@ -306,13 +234,13 @@ impl ArtifactResolver {
         })
     }
 
-    fn cache_file(&self, release: ReleaseArtifact) -> PathBuf {
+    fn cache_file(&self, release: ArtifactName) -> PathBuf {
         self.cache_root
             .join(RELEASE_TAG)
             .join(release.wasm_file_name())
     }
 
-    fn asset_url(&self, release: ReleaseArtifact) -> String {
+    fn asset_url(&self, release: ArtifactName) -> String {
         format!(
             "{}/{}/{}",
             self.base_url,
@@ -321,26 +249,7 @@ impl ArtifactResolver {
         )
     }
 
-    /// Resolve and upload-or-reuse one artifact, returning its wasm hash.
-    pub(crate) fn ensure_uploaded<E: CommandExecutor>(
-        &self,
-        stellar: &Stellar<'_, E>,
-        manifest: &mut Manifest,
-        workspace: &Path,
-        spec: ArtifactSpec,
-        build: bool,
-    ) -> anyhow::Result<String> {
-        self.ensure_uploaded_with_pin(
-            stellar,
-            manifest,
-            workspace,
-            spec,
-            build,
-            spec.release.pin(),
-        )
-    }
-
-    fn ensure_uploaded_with_pin<E: CommandExecutor>(
+    pub(crate) fn ensure_uploaded_with_pin<E: CommandExecutor>(
         &self,
         stellar: &Stellar<'_, E>,
         manifest: &mut Manifest,
@@ -366,6 +275,29 @@ impl ArtifactResolver {
         Self::publish(stellar, manifest, spec, &wasm_path, &resolved_sha)
     }
 
+    /// Read and verify the cache entry. `None` only for a missing entry;
+    /// an unreadable or corrupt entry is a hard error.
+    #[allow(clippy::unused_self)]
+    fn read_verified_cache_entry(
+        &self,
+        spec: ArtifactSpec,
+        cache_file: &Path,
+        pin: ReleasePin,
+    ) -> anyhow::Result<Option<String>> {
+        match fs::read(cache_file) {
+            Ok(bytes) => Ok(Some(verify_bytes(
+                spec.release,
+                pin,
+                &bytes,
+                "cache entry",
+            )?)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(anyhow!(
+                "read cached release artifact {}: {error}",
+                cache_file.display()
+            )),
+        }
+    }
     /// Cache, then workspace seed, then verified download.
     fn resolve_with_pin(
         &self,
@@ -374,18 +306,8 @@ impl ArtifactResolver {
         pin: ReleasePin,
     ) -> anyhow::Result<(PathBuf, String)> {
         let cache_file = self.cache_file(spec.release);
-        match fs::read(&cache_file) {
-            Ok(bytes) => {
-                let resolved_sha = verify_bytes(spec.release, pin, &bytes, "cache entry")?;
-                return Ok((cache_file, resolved_sha));
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(anyhow!(
-                    "read cached release artifact {}: {error}",
-                    cache_file.display()
-                ));
-            }
+        if let Some(resolved_sha) = self.read_verified_cache_entry(spec, &cache_file, pin)? {
+            return Ok((cache_file, resolved_sha));
         }
 
         let workspace_wasm = spec.wasm_path(workspace);
@@ -468,7 +390,14 @@ pub fn ensure_uploaded<E: CommandExecutor>(
     spec: ArtifactSpec,
     build: bool,
 ) -> anyhow::Result<String> {
-    ArtifactResolver::production()?.ensure_uploaded(stellar, manifest, workspace, spec, build)
+    ArtifactResolver::production()?.ensure_uploaded_with_pin(
+        stellar,
+        manifest,
+        workspace,
+        spec,
+        build,
+        spec.release.pin(),
+    )
 }
 
 /// Root of the release artifact cache: the exact nonempty [`CACHE_ENV`]
@@ -516,16 +445,8 @@ fn build_artifact<E: CommandExecutor>(
 ///
 /// Length is checked before the digest so a disagreement reports bytes a
 /// reader can compare against the release rather than an opaque hash.
-fn verify_release_bytes(
-    release: ReleaseArtifact,
-    bytes: &[u8],
-    source: &str,
-) -> anyhow::Result<String> {
-    verify_bytes(release, release.pin(), bytes, source)
-}
-
 fn verify_bytes(
-    release: ReleaseArtifact,
+    release: ArtifactName,
     pin: ReleasePin,
     bytes: &[u8],
     source: &str,
@@ -550,58 +471,42 @@ fn verify_bytes(
 }
 /// Statuses worth another attempt: rate limiting and server-side faults. Every
 /// other status is the server's settled answer and retrying only wastes time.
-fn is_retryable(status: u16) -> bool {
-    status == 429 || (500..600).contains(&status)
-}
-
-enum DownloadAttempt {
-    Status(u16),
-    Transport(reqwest::Error),
+fn is_retryable(error: &reqwest::Error) -> bool {
+    match error.status() {
+        Some(status) => status.as_u16() == 429 || status.is_server_error(),
+        None => true,
+    }
 }
 
 fn download_with_retries(url: &str) -> anyhow::Result<Vec<u8>> {
     let client = http_client()?;
-    let mut last_status = None;
-    let mut last_transport = None;
+    let mut last_error = None;
     for attempt in 0..DOWNLOAD_ATTEMPTS {
         if attempt > 0 {
             thread::sleep(RETRY_BACKOFF.saturating_mul(1u32 << (attempt - 1)));
         }
-        match try_download(client, url) {
-            Ok(bytes) => return Ok(bytes),
-            Err(DownloadAttempt::Status(status)) if is_retryable(status) => {
-                last_status = Some(status);
+        match client
+            .get(url)
+            .send()
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .and_then(reqwest::blocking::Response::bytes)
+        {
+            Ok(bytes) => return Ok(bytes.to_vec()),
+            Err(error) if is_retryable(&error) => {
+                tracing::debug!(url, error = %error, attempt, "release download attempt failed");
+                last_error = Some(error);
             }
-            Err(DownloadAttempt::Status(status)) => {
-                return Err(anyhow!("download failed: {url} returned status {status}"));
-            }
-            Err(DownloadAttempt::Transport(error)) => {
-                tracing::debug!(url, error = %error, attempt, "release download transport error");
-                last_transport = Some(error);
-            }
+            Err(error) => return Err(error.into()),
         }
     }
-    if let Some(error) = last_transport {
-        return Err(anyhow!(
+    match last_error {
+        Some(error) => Err(anyhow!(
             "download failed after {DOWNLOAD_ATTEMPTS} attempts: {url}: {error}"
-        ));
+        )),
+        None => Err(anyhow!(
+            "download made no attempts for {url}; check DOWNLOAD_ATTEMPTS"
+        )),
     }
-    let status = last_status.unwrap_or_default();
-    Err(anyhow!(
-        "download failed after {DOWNLOAD_ATTEMPTS} attempts: {url} kept returning status {status}"
-    ))
-}
-
-fn try_download(client: &reqwest::blocking::Client, url: &str) -> Result<Vec<u8>, DownloadAttempt> {
-    let response = client.get(url).send().map_err(DownloadAttempt::Transport)?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(DownloadAttempt::Status(status.as_u16()));
-    }
-    response
-        .bytes()
-        .map(|bytes| bytes.to_vec())
-        .map_err(DownloadAttempt::Transport)
 }
 
 /// One client per process, so repeated downloads reuse connections instead of
@@ -684,7 +589,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use clap::Parser as _;
+    use clap::{Parser as _, ValueEnum as _};
 
     use super::*;
 
@@ -908,7 +813,7 @@ mod tests {
         stellar: &Stellar<'_, ChainMock>,
         manifest: &mut Manifest,
         workspace: &Path,
-        release: ReleaseArtifact,
+        release: ArtifactName,
         resolver: &ArtifactResolver,
         pin: ReleasePin,
     ) -> anyhow::Result<String> {
@@ -920,8 +825,8 @@ mod tests {
         // The reviewed values themselves live in the pin table in
         // `release_pin.rs`; this guards the table's *shape* so swapping a
         // release cannot silently drop, duplicate, or mistype an asset row.
-        assert_eq!(RELEASE_ASSETS.len(), ReleaseArtifact::ALL.len());
-        for release in ReleaseArtifact::ALL {
+        assert_eq!(RELEASE_ASSETS.len(), ArtifactName::value_variants().len());
+        for release in ArtifactName::value_variants() {
             let asset = release.wasm_file_name();
             let rows = RELEASE_ASSETS
                 .iter()
@@ -946,7 +851,7 @@ mod tests {
     fn valid_cache_skips_http_and_reuses_network_hash() {
         let root = tempfile::tempdir().expect("temp cache");
         let workspace = tempfile::tempdir().expect("temp workspace");
-        let release = ReleaseArtifact::Runtime;
+        let release = ArtifactName::Vault;
         let pin = pinned(TEST_BYTES);
         let resolver = resolver(root.path(), "http://127.0.0.1:9");
         let cache_file = resolver.cache_file(release);
@@ -977,7 +882,7 @@ mod tests {
     fn corrupt_cache_is_hard_error_before_http_or_upload() {
         let root = tempfile::tempdir().expect("temp cache");
         let workspace = tempfile::tempdir().expect("temp workspace");
-        let release = ReleaseArtifact::Runtime;
+        let release = ArtifactName::Vault;
         let pin = pinned(TEST_BYTES);
         let server = ReleaseServer::spawn(ScriptedResponse {
             status: 200,
@@ -1013,7 +918,7 @@ mod tests {
     fn exact_workspace_seed_populates_cache_and_uploads_cache_path() {
         let root = tempfile::tempdir().expect("temp cache");
         let workspace = tempfile::tempdir().expect("temp workspace");
-        let release = ReleaseArtifact::Runtime;
+        let release = ArtifactName::Vault;
         let pin = pinned(TEST_BYTES);
         let resolver = resolver(root.path(), "http://127.0.0.1:9");
         let workspace_file = release.spec().wasm_path(workspace.path());
@@ -1070,7 +975,7 @@ mod tests {
     fn mismatching_workspace_downloads_and_caches_verified_bytes() {
         let root = tempfile::tempdir().expect("temp cache");
         let workspace = tempfile::tempdir().expect("temp workspace");
-        let release = ReleaseArtifact::Runtime;
+        let release = ArtifactName::Vault;
         let pin = pinned(TEST_BYTES);
         let server = ReleaseServer::spawn(ScriptedResponse {
             status: 200,
@@ -1111,7 +1016,7 @@ mod tests {
     fn upload_hash_mismatch_fails_before_manifest_mutation() {
         let root = tempfile::tempdir().expect("temp cache");
         let workspace = tempfile::tempdir().expect("temp workspace");
-        let release = ReleaseArtifact::Runtime;
+        let release = ArtifactName::Vault;
         let pin = pinned(TEST_BYTES);
         let resolver = resolver(root.path(), "http://127.0.0.1:9");
         let cache_file = resolver.cache_file(release);
@@ -1141,7 +1046,7 @@ mod tests {
     fn settled_404_is_not_retried() {
         let root = tempfile::tempdir().expect("temp cache");
         let workspace = tempfile::tempdir().expect("temp workspace");
-        let release = ReleaseArtifact::Runtime;
+        let release = ArtifactName::Vault;
         let pin = pinned(TEST_BYTES);
         let server = ReleaseServer::spawn(ScriptedResponse {
             status: 404,
@@ -1163,7 +1068,7 @@ mod tests {
         )
         .expect_err("404 must fail");
 
-        assert!(format!("{error:#}").contains("status 404"));
+        assert!(format!("{error:#}").contains("404"));
         assert_eq!(server.hit_count(), 1);
     }
 }
