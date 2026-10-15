@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A governance fee change now settles fees accrued under the previous spec to the previous
   recipients and re-anchors, so the new rate and recipients apply only going forward. The
   change requires an idle vault (Halborn FIND-008).
+- Fee recipients may no longer be the vault itself or its asset/share token contracts; such a
+  change is rejected with `InvalidInput`, and `migrate` rejects a previously stored conflicting
+  recipient the same way before clearing the migration flag. A fee change replacing such a
+  stored recipient forfeits the accrued window instead of minting it to that recipient
+  (Halborn FIND-009).
 - A queued withdrawal whose receiver cannot accept the asset (no or deauthorized trustline)
   now settles as a failed payout: escrow is refunded, nothing is burned, the head is
   dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out`. Previously the
