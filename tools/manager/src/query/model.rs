@@ -265,7 +265,7 @@ impl Serialize for Value {
         match self {
             Self::Text(value) | Self::Asset(value) => serializer.serialize_str(value),
             Self::Version(value) => serializer.collect_str(value),
-            Self::Number(value) => value.serialize(serializer),
+            Self::Number(value) => value.quantize().serialize(serializer),
         }
     }
 }
@@ -276,7 +276,7 @@ fn typed_comparison(left: &Value, right: &Value) -> Option<Ordering> {
             Some(left.cmp(right))
         }
         (Value::Version(left), Value::Version(right)) => Some(left.cmp(right)),
-        (Value::Number(left), Value::Number(right)) => Some(left.cmp(right)),
+        (Value::Number(left), Value::Number(right)) => Some(left.quantize().cmp(&right.quantize())),
         _ => None,
     }
 }
@@ -542,6 +542,98 @@ mod tests {
     }
     fn predicate(text: &str) -> Predicate {
         Predicate::parse(NodeKind::Market, text).unwrap()
+    }
+
+    #[test]
+    fn derived_decimals_respect_fractional_filter_boundaries() {
+        let principal = |amount| super::super::prices::token_amount(amount, 6).unwrap();
+        let usage =
+            |amount: u128| templar_common::market::usage_ratio(1_000_000.into(), amount.into());
+        for (field, values, threshold) in [
+            (
+                "borrowed",
+                [principal(99_999), principal(100_000), principal(100_001)],
+                "0.1",
+            ),
+            (
+                "usage_ratio",
+                [usage(99_999), usage(100_000), usage(100_001)],
+                "10%",
+            ),
+        ] {
+            let values = values.map(Value::Number);
+            for (operator, expected) in [
+                ("=", [false, true, false]),
+                ("!=", [true, false, true]),
+                ("<", [true, false, false]),
+                ("<=", [true, true, false]),
+                (">", [false, false, true]),
+                (">=", [false, true, true]),
+            ] {
+                let filter = predicate(&format!("{field} {operator} {threshold}"));
+                for (actual, expected) in values.iter().zip(expected) {
+                    assert_eq!(filter.matches(Some(actual)), expected, "{field} {operator}");
+                }
+            }
+            for descending in [false, true] {
+                assert_eq!(
+                    compare_values(Some(&values[1]), Some(&number("0.1")), descending),
+                    Ordering::Equal
+                );
+            }
+            for (left_index, left) in values.iter().enumerate() {
+                for (right_index, right) in values.iter().enumerate() {
+                    let expected = left_index.cmp(&right_index);
+                    assert_eq!(compare_values(Some(left), Some(right), false), expected);
+                    assert_eq!(
+                        compare_values(Some(left), Some(right), true),
+                        expected.reverse()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_comparison_uses_transitive_quantized_keys() {
+        let values = [0, 4, 8, 12]
+            .map(|repr| Value::Number(Decimal::from_repr([repr, 0, 0, 0, 0, 0, 0, 0])));
+        for left in &values {
+            for middle in &values {
+                for right in &values {
+                    if typed_comparison(left, middle).unwrap().is_le()
+                        && typed_comparison(middle, right).unwrap().is_le()
+                    {
+                        assert!(typed_comparison(left, right).unwrap().is_le());
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            typed_comparison(&values[0], &values[1]),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            typed_comparison(&values[1], &values[2]),
+            Some(Ordering::Equal)
+        );
+        assert_eq!(
+            typed_comparison(&Value::Number(Decimal::MAX), &Value::Number(Decimal::MAX)),
+            Some(Ordering::Equal)
+        );
+    }
+
+    #[test]
+    fn numeric_output_can_be_reused_as_an_equality_filter() {
+        for amount in 0..128 {
+            let value = Value::Number(super::super::prices::token_amount(amount, 38).unwrap());
+            let literal =
+                serde_json::from_value::<String>(serde_json::to_value(&value).unwrap()).unwrap();
+            assert!(
+                predicate(&format!("borrowed = {literal}")).matches(Some(&value)),
+                "amount={amount}, literal={literal}"
+            );
+        }
     }
 
     #[test]

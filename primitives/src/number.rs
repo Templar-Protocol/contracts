@@ -205,6 +205,18 @@ impl Decimal {
         Self { repr: U512(repr) }
     }
 
+    /// Round to the representation grid used when parsing decimal strings.
+    ///
+    /// Rounds to the nearest multiple of eight representation units, with ties
+    /// rounded up and overflow saturated at [`Self::MAX`]. This is allocation-free,
+    /// monotonic, and idempotent; parsed values are unchanged.
+    #[must_use]
+    pub fn quantize(self) -> Self {
+        Self {
+            repr: Self::epsilon_round(self.repr),
+        }
+    }
+
     pub fn is_zero(&self) -> bool {
         self.repr.is_zero()
     }
@@ -382,7 +394,12 @@ impl Decimal {
     }
 
     fn epsilon_round(repr: U512) -> U512 {
-        (repr + (Self::REPR_EPSILON >> 1)) & !(Self::REPR_EPSILON - 1)
+        let (rounded, overflowed) = repr.overflowing_add(Self::REPR_EPSILON >> 1);
+        if overflowed {
+            U512::MAX
+        } else {
+            rounded & !(Self::REPR_EPSILON - 1)
+        }
     }
 
     fn fractional_part_to_dec_string(&self, precision: usize, round_up: bool) -> (String, bool) {
@@ -1121,6 +1138,74 @@ mod tests {
             assert_eq!(Decimal::from_str(&value).is_ok(), expected, "{value}");
             assert_eq!(regex.is_match(&value), expected, "{value}");
         }
+    }
+
+    #[test]
+    fn quantize_preserves_parsed_values() {
+        for text in [
+            "0",
+            "0.1",
+            "0.01",
+            "0.00000000000000000000000000000000000001",
+            "0.99999999999999999999999999999999999999",
+            "1",
+            "1.6958947224456518",
+            "9007199254740993.1",
+        ] {
+            let value: Decimal = text.parse().unwrap();
+            assert_eq!(value.quantize(), value, "{text}");
+        }
+        assert_eq!(Decimal::MAX.quantize(), Decimal::MAX);
+    }
+
+    #[test]
+    fn quantize_rounds_to_the_parsing_grid() {
+        for (repr, expected) in [(0, 0), (3, 0), (4, 8), (7, 8), (8, 8), (11, 8), (12, 16)] {
+            let value = Decimal {
+                repr: U512::from(repr),
+            };
+            assert_eq!(value.quantize().repr, U512::from(expected));
+        }
+        let derived = Decimal::from(100_000u32) / Decimal::from(1_000_000u32);
+        assert_eq!(derived.quantize(), dec!("0.1"));
+    }
+
+    #[test]
+    fn quantize_is_monotonic_idempotent_and_saturating() {
+        for base in [
+            U512::zero(),
+            Decimal::ONE.repr - U512::from(16),
+            U512::MAX - U512::from(32),
+        ] {
+            let mut previous = Decimal::ZERO;
+            for offset in 0..=32 {
+                let value = Decimal {
+                    repr: base + U512::from(offset),
+                };
+                let rounded = value.quantize();
+                assert!(previous <= rounded);
+                assert_eq!(rounded.quantize(), rounded);
+                assert!(rounded.abs_diff(value).repr <= U512::from(4));
+                assert!(
+                    rounded == Decimal::MAX || rounded.repr % Decimal::REPR_EPSILON == U512::zero()
+                );
+                previous = rounded;
+            }
+        }
+        for distance in 0..=3 {
+            let value = Decimal {
+                repr: U512::MAX - U512::from(distance),
+            };
+            assert_eq!(value.quantize(), Decimal::MAX);
+        }
+        assert_eq!(
+            Decimal {
+                repr: U512::MAX - U512::from(4),
+            }
+            .quantize()
+            .repr,
+            U512::MAX - U512::from(7)
+        );
     }
 
     #[test]

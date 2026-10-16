@@ -117,6 +117,9 @@ support equality and inequality only. Versions compare numeric
 `major.minor.patch` components. APR and utilization accept `10%` or `0.1`;
 USD and token amounts use plain nonnegative decimals, without currency symbols
 or scientific notation.
+Numeric predicates, sorting, and output use the same fixed-point quantization as
+parsed decimal text, so emitted values can be reused as thresholds and derived
+amounts respect equality and inclusive bounds without approximate comparisons.
 
 | Fields | Meaning |
 | --- | --- |
@@ -184,9 +187,12 @@ Expansion follows only requested paths, never every edge of a relationship cycle
 USD valuation fetches fresh signed Lazer/RedStone payloads, verifies them through
 the deployed adapters, then resolves the proxy's configured price and
 transformations from supplied inputs. Requests are deduplicated across the scan.
-Every required source must be available and satisfy the market's maximum age;
-there is no partial-source valuation, stored-price fallback, or stablecoin peg
-assumption. Lazer requires `PYTH_LAZER_API_KEY` or `--pyth-lazer-api-key` only when
+Every required source, including its transformation, must yield a positive,
+representable price and satisfy the market's maximum age. The query uses
+`oracle.resolvePriceAllSources` so a failed transformation cannot be hidden by a
+healthy fallback source. There is no partial-source valuation, stored-price
+fallback, or stablecoin peg assumption.
+Lazer requires `PYTH_LAZER_API_KEY` or `--pyth-lazer-api-key` only when
 used. RedStone requires its Node.js bridge/runtime; provider options appear in
 `query markets --help`. Classic Pyth-backed dependencies currently have no
 verified provider preview and therefore produce unavailable USD values.

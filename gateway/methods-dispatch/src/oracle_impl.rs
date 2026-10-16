@@ -20,7 +20,7 @@ use templar_gateway_core::{
 use templar_gateway_methods_spec::oracle::{
     GetPrice, GetPriceResolutionDependencies, GetPriceResolutionDependenciesResult, GetPrices,
     LazerOraclePrices, OracleContractKind, PythOraclePrices, RedStoneOraclePrices, ResolvePrice,
-    ResolvePrices, ResolvedPrice,
+    ResolvePriceAllSources, ResolvePrices, ResolvedPrice,
 };
 use templar_proxy_oracle_kernel::proxy::aggregator::method::Aggregate;
 use templar_proxy_oracle_near_common::convert;
@@ -47,16 +47,17 @@ impl<C: HasNearClient> DispatchRead<GetPriceResolutionDependencies, C> for Dispa
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<ResolvePrice, C> for Dispatch {
     async fn dispatch(request: ResolvePrice, ctx: C) -> GatewayResult<Option<pyth::Price>> {
-        let params = request;
-        let inputs = ResolutionInputs::new(params.pyth, params.redstone, params.lazer);
-        resolve_price(
-            &ctx,
-            &inputs,
-            params.oracle_id,
-            params.price_id,
-            Nanoseconds::from_secs(params.age),
-        )
-        .await
+        resolve_supplied_price(request, &ctx, SourcePolicy::AllowPartial).await
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<ResolvePriceAllSources, C> for Dispatch {
+    async fn dispatch(
+        request: ResolvePriceAllSources,
+        ctx: C,
+    ) -> GatewayResult<Option<pyth::Price>> {
+        resolve_supplied_price(request.request, &ctx, SourcePolicy::RequireAll).await
     }
 }
 
@@ -68,8 +69,15 @@ impl<C: HasNearClient> DispatchRead<ResolvePrices, C> for Dispatch {
         let max_age = Nanoseconds::from_secs(params.age);
         let mut prices = Vec::with_capacity(params.price_ids.len());
         for price_id in params.price_ids {
-            let price =
-                resolve_price(&ctx, &inputs, params.oracle_id.clone(), price_id, max_age).await?;
+            let price = resolve_price(
+                &ctx,
+                &inputs,
+                params.oracle_id.clone(),
+                price_id,
+                max_age,
+                SourcePolicy::AllowPartial,
+            )
+            .await?;
             prices.push(ResolvedPrice { price_id, price });
         }
         Ok(prices)
@@ -152,15 +160,39 @@ impl ResolutionInputs {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourcePolicy {
+    AllowPartial,
+    RequireAll,
+}
+
+async fn resolve_supplied_price<C: HasNearClient>(
+    request: ResolvePrice,
+    ctx: &C,
+    policy: SourcePolicy,
+) -> GatewayResult<Option<pyth::Price>> {
+    let inputs = ResolutionInputs::new(request.pyth, request.redstone, request.lazer);
+    resolve_price(
+        ctx,
+        &inputs,
+        request.oracle_id,
+        request.price_id,
+        Nanoseconds::from_secs(request.age),
+        policy,
+    )
+    .await
+}
+
 async fn resolve_price<C: HasNearClient>(
     ctx: &C,
     inputs: &ResolutionInputs,
     oracle_id: AccountId,
     price_id: PriceIdentifier,
     max_age: Nanoseconds,
+    policy: SourcePolicy,
 ) -> GatewayResult<Option<pyth::Price>> {
     let kind = query_oracle_kind(ctx, oracle_id.clone()).await?;
-    match kind {
+    let result = match kind {
         OracleContractKind::Direct => Ok(fetch_oracle_request(
             inputs,
             OracleRequest::pyth(oracle_id, price_id),
@@ -199,10 +231,14 @@ async fn resolve_price<C: HasNearClient>(
             })?;
             let mut prices = vec![];
             for source in proxy.sources() {
-                let price = resolve_proxy_entry_price(ctx, inputs, source, max_age)
-                    .await?
+                let resolved = resolve_proxy_entry_price(ctx, inputs, source, max_age).await?;
+                let price = resolved
+                    .filter(|price| policy == SourcePolicy::AllowPartial || price.price.0 > 0)
                     .as_ref()
                     .and_then(convert::pyth_price_try_to_kernel);
+                if policy == SourcePolicy::RequireAll && price.is_none() {
+                    return Ok(None);
+                }
                 prices.push(price);
             }
             Ok(proxy
@@ -212,7 +248,10 @@ async fn resolve_price<C: HasNearClient>(
                 .as_ref()
                 .and_then(convert::pyth_price_try_from_kernel))
         }
-    }
+    };
+    result.map(|price| {
+        price.filter(|price| policy == SourcePolicy::AllowPartial || price.price.0 > 0)
+    })
 }
 
 async fn get_price_onchain<C: HasNearClient>(

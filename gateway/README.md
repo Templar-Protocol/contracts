@@ -27,6 +27,12 @@ Give a read's output its own struct only when it has two or more fields. This go
 
 `read_outputs_are_not_single_field_wrappers` in `templar-gateway-catalog` is a tripwire for the common case, a single-field struct returned directly, across the shared read lists (`op.get` is registered outside them). It does not look inside `Option` or `Vec`; review covers the rest.
 
+## Supplied Oracle Price Resolution
+
+`oracle.resolvePrice` and `oracle.resolvePrices` preserve the configured aggregator's fallback behavior. For consumers that require a complete source set, `oracle.resolvePriceAllSources` accepts the same flattened input as `oracle.resolvePrice` and returns `None` if any effective proxy source is missing, fails transformation, is nonpositive after transformation, or cannot convert to a kernel price. Successful resolution uses the same transformations and aggregator math; direct and LST results must also be positive.
+
+This opt-in method preserves the ordinary resolver's source-specific age and projection rules. It does not fetch or verify supplied payloads: callers requiring verified fresh data must first use the provider-backed previews below.
+
 ## Provider-Backed Oracle Previews
 
 `oracle.getLazerUpdate { oracle_id, feed_ids }` and `oracle.getRedStoneUpdate { oracle_id, feed_ids }` fetch signed data through the configured provider source, then verify it using the deployed adapter's stateless view. They return the same bare price shapes as `lazer.getFeedsData` and `redstone.readPriceData`, without writing or merging stored prices. Rust clients use `Client::via::<OracleUpdatesDispatch>()` and `read`.

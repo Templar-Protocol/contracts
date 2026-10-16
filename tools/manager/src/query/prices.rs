@@ -23,7 +23,7 @@ use templar_gateway_core::{
 };
 use templar_gateway_methods_spec::oracle::{
     GetPriceResolutionDependencies, LazerOraclePrices, LazerPriceEntry, RedStoneOraclePrices,
-    RedStonePriceEntry, ResolvePrice,
+    RedStonePriceEntry, ResolvePrice, ResolvePriceAllSources,
 };
 use templar_gateway_oracle_updates_dispatch::{
     Dispatch as OracleUpdatesDispatch, OracleSourceArgs, ProvidesLazerSource,
@@ -160,7 +160,7 @@ pub(crate) async fn fresh_prices(
                         .map_err(|error| format!("{error:#}"))?;
                     let price = ctx
                         .client
-                        .read(request)
+                        .read(ResolvePriceAllSources { request })
                         .await
                         .map_err(|error| format!("resolve fresh price on {oracle_id}: {error}"))?
                         .ok_or_else(|| {
@@ -557,6 +557,21 @@ mod tests {
         assert!(amplified.near_equal("0.00000000000000000001".parse().unwrap()));
         let large = principal_value(u128::MAX, 0, &price(i64::MAX, 0)).unwrap();
         assert!(large > Decimal::from(u128::MAX));
+    }
+
+    #[test]
+    fn usd_output_can_be_reused_as_a_numeric_threshold() {
+        use super::super::model::{NodeKind, Predicate, Value};
+        let usd = principal_value(56, 38, &price(1, -1)).unwrap();
+        let value = Value::Number(usd);
+        let literal =
+            serde_json::from_value::<String>(serde_json::to_value(&value).unwrap()).unwrap();
+        assert!(
+            Predicate::parse(NodeKind::Market, &format!("borrowed_usd = {literal}"))
+                .unwrap()
+                .matches(Some(&value)),
+            "USD output {literal} must match its own numeric threshold"
+        );
     }
 
     #[test]

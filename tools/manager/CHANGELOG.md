@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Skip confirmed deleted accounts during live queries without marking the scan incomplete; retain failures for RPC errors and existing, unrecognized contracts.
+- Compare and serialize derived numeric fields on the same Decimal grid as parsed thresholds so fractional equality, inclusive filters, and emitted-value thresholds are consistent.
+- Reject USD valuations when any configured source transformation fails instead of accepting a partial-source proxy fallback.
 
 ## [0.7.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.6.0...templar-manager-v0.7.0) - 2026-10-01
 

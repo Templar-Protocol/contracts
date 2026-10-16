@@ -69,6 +69,17 @@ pub struct ResolvePrice {
     pub lazer: Vec<LazerOraclePrices>,
 }
 
+/// Resolve a positive price only when every configured source resolves successfully.
+///
+/// Unlike `ResolvePrice`, proxy sources must remain positive and convertible after
+/// transformation; aggregator fallback cannot hide a failed source.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "oracle.resolvePriceAllSources", output = Option<pyth::Price>)]
+pub struct ResolvePriceAllSources {
+    #[serde(flatten)]
+    pub request: ResolvePrice,
+}
+
 /// Resolve multiple prices from supplied inputs.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(read = "oracle.resolvePrices", output = Vec<ResolvedPrice>)]
