@@ -28,10 +28,11 @@ just -f $JF size-check       # developer build; invalidates release evidence
 just -f $JF release-gate     # clean tracked tree only
 ```
 
-`release-gate` performs one fresh unoptimized+optimized build of each of the
-five artifacts, publishes the optimized files, writes the schema-4 manifest
-last, and validates the exact files without rebuilding. A failed build or
-validation removes stale manifest/PASS evidence. `validate-release` takes no
+`release-gate` exports the tracked commit outside the checkout, so it does not
+inherit untracked checkout Cargo configuration; `TMPDIR` must be outside the
+checkout too. It builds and optimizes each of the five artifacts once, publishes
+the optimized files, writes the schema-4 manifest last, and validates without
+rebuilding. A failed build or validation removes stale manifest/PASS evidence. `validate-release` takes no
 paths: it validates only the canonical manifest and artifacts under
 `target/proxy-oracle-soroban/`.
 
@@ -52,20 +53,27 @@ SRC=<funded-cli-identity> PYTH_LAZER_API_KEY_FILE=<mode-600-file> \
   contract/proxy-oracle/soroban/scripts/e2e_live.sh all
 ```
 
-Phases are `deploy`, `ownership`, `configure`, `push`, and `refresh`; a later phase refuses
-to run before its prerequisites pass, and a phase that already passed is
-skipped. Re-running re-hashes and resumes the same
-checkpoint envelope and refuses administrator, deterministic deployment plan,
-artifact, provider, tool, policy, or endpoint drift. Use `--reinitialize` only
-when a new deployment plan is intentional; reset refuses an unmarked non-empty
-output directory. This tool has no mainnet mode and never tears down contracts.
+Phases are `deploy`, `ownership`, `configure`, `push`, and `refresh`; prerequisites
+must pass before a later phase runs. Completed phases are skipped, but while
+`refresh` is pending, `push`, `refresh`, and `all` recheck Lazer freshness and
+renew stale data without repeating deployment or governance. Fresh-data and
+completed-refresh resumes need no Pyth credential; renewing stale data needs it.
+Re-running re-hashes and resumes the same checkpoint envelope and refuses
+administrator, deployment plan, artifact, provider, tool, policy, or endpoint drift.
+Use `--reinitialize` only when a new deployment plan is intentional; reset refuses
+an unmarked non-empty output directory. This tool has no mainnet mode and never
+tears down contracts.
 
-A submitted transaction is only ever resolved by polling its recorded hash,
-never resent. If a send never reached the network — the operation stays
-unresolved and every run dies on "remains unresolved" — clear it with
-`--abandon-unresolved`, which polls once more and records the operation as
-failed only when its own send failed locally. It refuses an operation whose
-send succeeded, so a transaction that landed late is still found by a resume.
+Each recorded push retains its request/response at
+`operations/NNNN/lazer_response.json`. Renewal preparation uses the next operation
+directory, so a failed build, simulation, or signing step preserves the previous
+push's evidence and its historical phase proof.
+
+A submitted transaction is only resolved by polling its recorded hash, never
+resent. A local send error, `PENDING`, or `NOT_FOUND` does not prove rejection:
+the operation remains unresolved and blocks new writes until a terminal RPC
+result. There is no abandonment command; checkpoints containing an `abandoned`
+operation are rejected rather than permitting a replacement.
 
 ## 2. Deploy
 

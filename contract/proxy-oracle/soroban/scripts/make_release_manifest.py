@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -160,12 +159,7 @@ def developer_action(action: str, slug: str, toolchain: str) -> None:
 
 
 def export_commit(commit: str, destination: Path) -> Path:
-    """Lay out exactly the tracked content of `commit` and nothing else.
-
-    A release attributes its digests to a commit, so it builds from one. An
-    untracked, ignored, or half-saved file in the worktree cannot reach the
-    bytes, which is a guarantee no amount of checking the worktree can give.
-    """
+    """Export tracked content; release builds keep this outside the checkout."""
     destination.mkdir(parents=True, exist_ok=True)
     archive = subprocess.run(
         ["git", "archive", "--format=tar", commit],
@@ -193,11 +187,15 @@ def release(toolchain: str) -> None:
     rustc = run_text(["rustc", f"+{toolchain}", "--version"])
     if not rustc.startswith(f"rustc {toolchain}"):
         fail(f"rustc output does not match requested toolchain {toolchain}")
-    staging = RELEASE_DIR / "release-build"
-    if staging.exists():
-        shutil.rmtree(staging)
-    try:
-        source_root = export_commit(commit, staging / "source")
+    with (
+        tempfile.TemporaryDirectory(prefix=".release-", dir=RELEASE_DIR) as staged,
+        tempfile.TemporaryDirectory(prefix="templar-soroban-source-") as exported,
+    ):
+        staging = Path(staged)
+        source_root = Path(exported)
+        if source_root.resolve().is_relative_to(ROOT.resolve()):
+            fail("release source temporary directory must be outside the checkout")
+        export_commit(commit, source_root)
         versions = package_versions(source_root)
         results: dict[str, dict[str, object]] = {}
         optimized_paths: dict[str, Path] = {}
@@ -243,8 +241,6 @@ def release(toolchain: str) -> None:
             MANIFEST_PATH,
             (json.dumps(manifest, indent=2) + "\n").encode(),
         )
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
 
 
 def execute(action: str, slug: str, toolchain: str) -> None:

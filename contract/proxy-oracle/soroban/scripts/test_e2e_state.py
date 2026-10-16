@@ -740,55 +740,6 @@ class CheckpointStoreTests(unittest.TestCase):
                 )
 
 
-class StandingRecordTests(unittest.TestCase):
-    """An abandoned attempt must not stand for its step in any reader."""
-
-    def store_with_abandoned(
-        self, directory: Path, phase: str, kind: str, args: dict[str, object]
-    ) -> rehearsal.CheckpointStore:
-        value = checkpoint()
-        operations = value["operations"]
-        assert isinstance(operations, list)
-        for number, status in ((1, "abandoned"), (2, "succeeded")):
-            operations.append(
-                {
-                    "number": number,
-                    "phase": phase,
-                    "kind": kind,
-                    "target": CONTRACT,
-                    "args": args,
-                    "status": status,
-                    "tx_hash": TX_HASH,
-                    "envelope_path": (
-                        f"operations/{number:04d}/signed-envelope.xdr"
-                    ),
-                    "result_path": f"operations/{number:04d}/rpc-result.json",
-                }
-            )
-        return rehearsal.CheckpointStore(
-            settings(directory).state_path, value
-        )
-
-    def test_abandoned_records_do_not_stand_for_their_step(self) -> None:
-        args = {"new_owner": CONTRACT, "live_until_ledger": 100}
-        with tempfile.TemporaryDirectory() as raw:
-            store = self.store_with_abandoned(
-                Path(raw), "ownership", "ownership_transfer", args
-            )
-            standing = store.standing_operations(
-                "ownership", "ownership_transfer", CONTRACT
-            )
-            self.assertEqual(
-                [entry["status"] for entry in standing], ["succeeded"]
-            )
-            self.assertEqual(
-                store.terminal_operation(
-                    "ownership", "ownership_transfer", CONTRACT, args
-                )["number"],
-                2,
-            )
-
-
 class ProviderDriftTests(unittest.TestCase):
     def test_drifted_provider_is_named_and_stops_the_resume(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -1311,94 +1262,6 @@ class TransactionStateMachineTests(unittest.TestCase):
                 3,
             )
 
-    def test_an_abandoned_attempt_lets_the_step_be_rebuilt(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            current_settings, store = self.prepare_operation(
-                Path(raw), submitted=False
-            )
-            executor = rehearsal.TransactionExecutor(
-                current_settings,
-                store,
-                runner=FakeRunner(fail_send=True),
-                rpc=RpcQueue(
-                    {"status": "NOT_FOUND"},
-                    {"status": "SUCCESS", "returnValue": "AAAA"},
-                ),
-                sleep=lambda _: None,
-            )
-            executor.submit(store.operations()[0])
-            with self.assertRaisesRegex(
-                rehearsal.RehearsalError, "never reached the network"
-            ):
-                executor.abandon_unresolved()
-
-            rebuilt = executor.execute(
-                "refresh",
-                "refresh",
-                CONTRACT,
-                {"asset": {"Other": "XLM"}},
-                ["stellar", "contract", "invoke", "--id", CONTRACT],
-            )
-            self.assertEqual(rebuilt["status"], "succeeded")
-            self.assertEqual(store.operations()[0]["status"], "abandoned")
-
-    def test_an_abandoned_state_bearing_step_rebuilds_then_resumes(self) -> None:
-        """The abandoned record must stay invisible to the step lookup.
-
-        Otherwise the rebuilt record is a second match for a kind the dedupe
-        keeps unique, and the next resume aborts as if the checkpoint were
-        corrupt.
-        """
-        with tempfile.TemporaryDirectory() as raw:
-            current_settings, store = self.prepare_operation(
-                Path(raw),
-                submitted=False,
-                kind="ownership_transfer",
-                phase="ownership",
-                args={"new_owner": CONTRACT, "live_until_ledger": 100},
-            )
-            abandoning = rehearsal.TransactionExecutor(
-                current_settings,
-                store,
-                runner=FakeRunner(fail_send=True),
-                rpc=RpcQueue({"status": "NOT_FOUND"}),
-                sleep=lambda _: None,
-            )
-            abandoning.submit(store.operations()[0])
-            with self.assertRaisesRegex(
-                rehearsal.RehearsalError, "never reached the network"
-            ):
-                abandoning.abandon_unresolved()
-
-            executor = rehearsal.TransactionExecutor(
-                current_settings,
-                store,
-                runner=FakeRunner(),
-                rpc=RpcQueue({"status": "SUCCESS", "returnValue": "AAAA"}),
-                sleep=lambda _: None,
-            )
-            args = {"new_owner": CONTRACT, "live_until_ledger": 101}
-            rebuilt = executor.execute(
-                "ownership",
-                "ownership_transfer",
-                CONTRACT,
-                args,
-                ["stellar", "contract", "invoke", "--id", CONTRACT],
-            )
-            self.assertEqual(rebuilt["number"], 2)
-            resumed = executor.execute(
-                "ownership",
-                "ownership_transfer",
-                CONTRACT,
-                args,
-                ["stellar", "contract", "invoke", "must-not-build"],
-            )
-            self.assertEqual(resumed["number"], 2)
-            self.assertEqual(
-                [operation["status"] for operation in store.operations()],
-                ["abandoned", "succeeded"],
-            )
-
     def test_a_failed_maintenance_operation_is_still_never_retried(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             current_settings, store = self.prepare_operation(
@@ -1528,117 +1391,50 @@ class TransactionStateMachineTests(unittest.TestCase):
             )
 
 
-    def test_ambiguous_send_failure_is_only_polled_on_resume(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            current_settings, store = self.prepare_operation(
-                Path(raw), submitted=False
-            )
-            initial_runner = FakeRunner(fail_send=True)
-            initial = rehearsal.TransactionExecutor(
-                current_settings,
-                store,
-                runner=initial_runner,
-                rpc=RpcQueue(
-                    *({"status": "NOT_FOUND"} for _ in range(60))
-                ),
-                sleep=lambda _: None,
-            )
-            with self.assertRaisesRegex(
-                rehearsal.RehearsalError, "failed to send"
-            ):
-                initial.resolve_unfinished()
-            self.assertEqual(
-                [
-                    call[0][1:3] for call in initial_runner.calls
-                ],
-                [
-                    ["tx", "decode"],
-                    ["tx", "hash"],
-                    ["tx", "send"],
-                ],
-            )
-            self.assertEqual(
-                store.operations()[0]["status"], "send_failed"
-            )
-
-            resume_runner = mock.Mock(
-                side_effect=AssertionError(
-                    "resume must only poll the recorded hash"
+    def test_ambiguous_send_stays_unresolved_until_network_finality(self) -> None:
+        for status in ("NOT_FOUND", "PENDING"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as raw:
+                current_settings, store = self.prepare_operation(
+                    Path(raw), submitted=False
                 )
-            )
-            resumed = rehearsal.TransactionExecutor(
-                current_settings,
-                store,
-                runner=resume_runner,
-                rpc=self.success_rpc(),
-                sleep=lambda _: None,
-            )
-            resumed.resolve_unfinished()
-            resume_runner.assert_not_called()
-            self.assertEqual(
-                store.operations()[0]["status"], "succeeded"
-            )
-            self.assertIn(
-                "send transport failure",
-                (
-                    current_settings.output
-                    / "operations/0001/send.error"
-                ).read_text(),
-            )
-    def test_abandon_unresolved_requires_a_failed_send_and_is_terminal(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            current_settings, store = self.prepare_operation(
-                Path(raw), submitted=False
-            )
-            sent = rehearsal.TransactionExecutor(
-                current_settings,
-                store,
-                runner=FakeRunner(),
-                rpc=RpcQueue({"status": "NOT_FOUND"}),
-                sleep=lambda _: None,
-            )
-            sent.submit(store.operations()[0])
-            with self.assertRaisesRegex(
-                rehearsal.RehearsalError, "only an operation whose send failed"
-            ):
-                sent.abandon_unresolved()
-            self.assertEqual(store.operations()[0]["status"], "submitted")
-
-        with tempfile.TemporaryDirectory() as raw:
-            current_settings, store = self.prepare_operation(
-                Path(raw), submitted=False
-            )
-            failed = rehearsal.TransactionExecutor(
-                current_settings,
-                store,
-                runner=FakeRunner(fail_send=True),
-                rpc=RpcQueue({"status": "NOT_FOUND"}),
-                sleep=lambda _: None,
-            )
-            failed.submit(store.operations()[0])
-            with self.assertRaisesRegex(
-                rehearsal.RehearsalError, "never reached the network"
-            ):
-                failed.abandon_unresolved()
-            self.assertEqual(store.operations()[0]["status"], "abandoned")
-
-    def test_abandon_resolves_a_transaction_the_network_does_have(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            current_settings, store = self.prepare_operation(
-                Path(raw), submitted=False
-            )
-            executor = rehearsal.TransactionExecutor(
-                current_settings,
-                store,
-                runner=FakeRunner(fail_send=True),
-                rpc=self.success_rpc(),
-                sleep=lambda _: None,
-            )
-            executor.submit(store.operations()[0])
-            executor.abandon_unresolved()
-            self.assertEqual(store.operations()[0]["status"], "succeeded")
+                executor = rehearsal.TransactionExecutor(
+                    current_settings,
+                    store,
+                    runner=FakeRunner(fail_send=True),
+                    rpc=RpcQueue(*({"status": status} for _ in range(60))),
+                    sleep=lambda _: None,
+                )
+                with self.assertRaisesRegex(
+                    rehearsal.RehearsalError, "remains unresolved"
+                ):
+                    executor.resolve_unfinished()
+                loaded = rehearsal.CheckpointStore.load(current_settings.state_path)
+                self.assertEqual(loaded.unresolved()["tx_hash"], TX_HASH)
+                with self.assertRaisesRegex(
+                    rehearsal.RehearsalError, "second unresolved"
+                ):
+                    loaded.record_prepared(
+                        "ownership", "ownership_transfer", CONTRACT,
+                        {"new_owner": OTHER_CONTRACT, "live_until_ledger": 100},
+                        "c" * 64,
+                        current_settings.output / "operations/0002/signed-envelope.xdr",
+                    )
+                resumed = rehearsal.TransactionExecutor(
+                    current_settings,
+                    loaded,
+                    runner=mock.Mock(side_effect=AssertionError("must not resend")),
+                    rpc=self.success_rpc(),
+                    sleep=lambda _: None,
+                )
+                resumed.resolve_unfinished()
+                self.assertEqual(
+                    [(entry["tx_hash"], entry["status"]) for entry in loaded.operations()],
+                    [(TX_HASH, "succeeded")],
+                )
+                self.assertIn(
+                    "send transport failure",
+                    (current_settings.output / "operations/0001/send.error").read_text(),
+                )
 
     def test_zero_count_return_value_is_observable(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -2066,30 +1862,158 @@ class RehearsalLogicTests(unittest.TestCase):
             driver = self.governance_postcondition_driver(Path(raw), value, [9])
             driver.verify_deployment_postconditions("governance")
 
-    def test_pending_refresh_runs_without_the_push_credential(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            value = checkpoint()
-            phase_results = value["phase_results"]
-            assert isinstance(phase_results, dict)
-            for phase in rehearsal.PHASES:
-                if phase == "refresh":
-                    continue
-                phase_results[phase] = {
-                    "operation_numbers": [],
-                    "evidence_path": f"phases/{phase}.json",
-                }
-            driver = self.driver(Path(raw), value)
-            driver.phase_refresh = mock.Mock()  # type: ignore[method-assign]
-            driver.pyth_api_key = mock.Mock(  # type: ignore[method-assign]
-                side_effect=AssertionError("credential must not be read")
-            )
+    def test_pending_refresh_reuses_fresh_push_and_renews_stale_push(self) -> None:
+        for phase in ("all", "refresh", "push"):
+            for timestamp, failure in (
+                (100, None),  # Inclusive freshness boundary.
+                (99, None),
+                (99, "build"),
+                (99, "simulate"),
+                (99, "sign"),
+            ):
+                with (
+                    self.subTest(phase=phase, timestamp=timestamp, failure=failure),
+                    tempfile.TemporaryDirectory() as raw,
+                    mock.patch.object(rehearsal.time, "time", return_value=3700),
+                ):
+                    value = checkpoint()
+                    value["operations"].append(self.successful_operation(
+                        "push", "push", CONTRACT, {"payload": "44"}
+                    ))
+                    driver = self.driver(Path(raw), value)
+                    driver.store.first_save()
+                    for prior in ("deploy", "ownership", "configure"):
+                        driver.store.pass_phase(prior, [])
+                    rehearsal.atomic_write(
+                        driver.settings.output / "operations/0001/rpc-result.json",
+                        b'{"status":"SUCCESS","returnValue":"push"}',
+                    )
+                    recorded_response = (
+                        driver.settings.output / "operations/0001/lazer_response.json"
+                    )
+                    rehearsal.atomic_write(
+                        recorded_response,
+                        json.dumps({
+                            "request": driver.lazer_request_body(),
+                            "response": {"leEcdsa": {"data": "44"}},
+                        }).encode(),
+                    )
+                    original_response = recorded_response.read_bytes()
+                    expected_timestamp = 3700 if timestamp == 99 else timestamp
+                    accepted = self.accepted_status()
+                    accepted["vec"][1]["map"][2]["val"]["u64"] = str(expected_timestamp)
+                    decoded = {
+                        "push": {"u32": 1},
+                        "refresh": accepted,
+                        "batch_refresh": {"vec": [accepted]},
+                        "ttl_assets": {"vec": [{"bool": True}]},
+                        "ttl_contracts": {"vec": [{"bool": True}] * 3},
+                    }
+                    kinds = (
+                        (["push"] if timestamp == 99 else [])
+                        + ([] if phase == "push" else list(decoded)[1:])
+                    )
+                    queue = RpcQueue(*(
+                        {"status": "SUCCESS", "returnValue": kind} for kind in kinds
+                    ))
+                    live = {"timestamp": timestamp}
+                    cli = FakeRunner()
+                    failing_command = {
+                        "build": ["stellar", "contract", "invoke"],
+                        "simulate": ["stellar", "tx", "simulate"],
+                        "sign": ["stellar", "tx", "sign"],
+                    }.get(failure)
 
-            driver.run("all")
+                    def runner(args, *, input_text=None):
+                        if args[:3] == failing_command:
+                            raise rehearsal.RehearsalError("injected preparation failure")
+                        if args[:3] == ["stellar", "xdr", "decode"]:
+                            return subprocess.CompletedProcess(
+                                args, 0, json.dumps(decoded[input_text]), ""
+                            )
+                        return cli(args, input_text=input_text)
 
-            driver.phase_refresh.assert_called_once_with()
-            driver.pyth_api_key.assert_not_called()
+                    def rpc(*args):
+                        result = queue(*args)
+                        if result.get("returnValue") == "push":
+                            live["timestamp"] = 3700
+                        return result
+
+                    def view(_contract, function, _args=None, **_kwargs):
+                        if function == "stored_price":
+                            return {
+                                "mantissa": 5_000_000_000, "expo": -8,
+                                "publish_time_us": live["timestamp"] * 1_000_000,
+                            }
+                        if function == "aggregated_latest":
+                            return {
+                                "mantissa": 5_000_000_000, "expo": -8,
+                                "timestamp": live["timestamp"],
+                            }
+                        return {"price": 5_000_000_000, "timestamp": live["timestamp"]}
+
+                    driver.view = view
+                    driver.transactions = rehearsal.TransactionExecutor(
+                        driver.settings, driver.store, runner=runner, rpc=rpc,
+                        sleep=lambda _: None,
+                    )
+                    response = mock.MagicMock()
+                    response.__enter__.return_value = response
+                    response.read.return_value = b'{"leEcdsa":{"data":"55"}}'
+                    with (
+                        mock.patch.object(
+                            rehearsal.urllib.request, "urlopen", return_value=response
+                        ),
+                        mock.patch.object(driver, "pyth_api_key", return_value="token") as key,
+                    ):
+                        with mock.patch.object(
+                            rehearsal.time, "time", return_value=timestamp
+                        ):
+                            driver.phase_push()
+                        phase_evidence = driver.settings.output / "phases/push.json"
+                        original_phase_evidence = phase_evidence.read_bytes()
+                        renewal_payload = "55"
+                        if failure is not None:
+                            before = driver.settings.state_path.read_bytes()
+                            with self.assertRaises(rehearsal.RehearsalError):
+                                driver.run(phase)
+                            self.assertEqual(
+                                driver.settings.state_path.read_bytes(), before
+                            )
+                            self.assertEqual(
+                                recorded_response.read_bytes(), original_response
+                            )
+                            driver.store = rehearsal.CheckpointStore.load(
+                                driver.settings.state_path
+                            )
+                            driver.transactions.store = driver.store
+                            failing_command = None
+                            renewal_payload = "66"
+                            response.read.return_value = b'{"leEcdsa":{"data":"66"}}'
+                        if timestamp == 100:
+                            key.side_effect = AssertionError("credential unavailable")
+                        driver.run(phase)
+                        operations = driver.store.operations()
+                        self.assertEqual(
+                            [entry["args"]["payload"] for entry in operations
+                             if entry["kind"] == "push"],
+                            ["44", renewal_payload] if timestamp == 99 else ["44"],
+                        )
+                        self.assertEqual(live["timestamp"], expected_timestamp)
+                        self.assertEqual(
+                            driver.store.value["phase_results"]["refresh"] is not None,
+                            phase != "push",
+                        )
+                        self.assertEqual(
+                            recorded_response.read_bytes(), original_response
+                        )
+                        self.assertEqual(
+                            phase_evidence.read_bytes(), original_phase_evidence
+                        )
+                        before = driver.settings.state_path.read_bytes()
+                        key.side_effect = AssertionError("credential unavailable")
+                        driver.run(phase)
+                        self.assertEqual(driver.settings.state_path.read_bytes(), before)
 
     def test_live_recorded_transfer_skips_duplicate_transfer(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -2574,7 +2498,7 @@ class RehearsalLogicTests(unittest.TestCase):
             )
             driver = self.driver(Path(raw), value)
             rehearsal.atomic_write(
-                driver.settings.output / "lazer_response.json",
+                driver.settings.output / "operations/0001/lazer_response.json",
                 json.dumps(
                     {
                         "request": driver.lazer_request_body(),
@@ -2643,7 +2567,7 @@ class RehearsalLogicTests(unittest.TestCase):
             )
             driver = self.driver(directory, value)
             rehearsal.atomic_write(
-                driver.settings.output / "lazer_response.json",
+                driver.settings.output / "operations/0001/lazer_response.json",
                 b'{"request":{},"response":{}}',
             )
             driver.transactions = self.Transactions(  # type: ignore[assignment]
@@ -2797,104 +2721,44 @@ class RehearsalLogicTests(unittest.TestCase):
             for phase in rehearsal.PHASES:
                 getattr(driver, f"phase_{phase}").assert_not_called()
 
-    def test_refresh_phase_submits_exact_batch_sequence(self) -> None:
-        class SequenceTransactions:
-            def __init__(self, results: list[object]):
-                self.results = iter(results)
-                self.calls: list[
-                    tuple[
-                        str, str, str, dict[str, object], list[str]
-                    ]
-                ] = []
-
-            def execute(
-                self,
-                phase: str,
-                kind: str,
-                target: str,
-                args: dict[str, object],
-                command: list[str],
-            ) -> dict[str, object]:
-                self.calls.append((phase, kind, target, args, command))
-                return {"status": "succeeded"}
-
-            def return_value(self, _: object) -> object:
-                return next(self.results)
-
-            def submitted_now(self, _: object) -> bool:
-                return True
-
-        accepted = self.accepted_status()
-        batch_accepted = {
-            "vec": [
-                {"symbol": "Accepted"},
-                {
-                    "map": [
-                        {
-                            "key": {"symbol": "expo"},
-                            "val": {"i32": -8},
-                        },
-                        {
-                            "key": {"symbol": "mantissa"},
-                            "val": {"i64": "5100000000"},
-                        },
-                        {
-                            "key": {"symbol": "timestamp"},
-                            "val": {"u64": "124"},
-                        },
-                    ]
-                },
-            ]
-        }
-        results = [
-            accepted,
-            {"vec": [batch_accepted]},
-            {"vec": [{"bool": True}]},
-            {
-                "vec": [
-                    {"bool": True},
-                    {"bool": True},
-                    {"bool": True},
-                ]
-            },
-        ]
-        with tempfile.TemporaryDirectory() as raw, mock.patch.object(
-            rehearsal.time, "time", return_value=123
-        ):
-            value = checkpoint()
-            phase_results = value["phase_results"]
-            assert isinstance(phase_results, dict)
-            for phase in rehearsal.PHASES:
-                phase_results[phase] = {
-                    "operation_numbers": [],
-                    "evidence_path": f"phases/{phase}.json",
-                }
-            driver = self.driver(Path(raw), value)
-            transactions = SequenceTransactions(results)
-            driver.transactions = transactions  # type: ignore[assignment]
-            driver.view = mock.Mock(  # type: ignore[method-assign]
-                side_effect=[
-                    {"mantissa": 5_000_000_000, "expo": -8, "timestamp": 123},
-                    {"price": 5_000_000_000, "timestamp": 123},
-                    {"mantissa": 5_100_000_000, "expo": -8, "timestamp": 124},
-                ]
-            )
-            driver.store.pass_phase = mock.Mock()  # type: ignore[method-assign]
-            driver.phase_refresh()
-
-        self.assertEqual(
-            [kind for _, kind, _, _, _ in transactions.calls],
-            [
-                "refresh",
-                "batch_refresh",
-                "ttl_assets",
-                "ttl_contracts",
-            ],
-        )
-        driver.store.pass_phase.assert_called_once()
-
 
 class FilesystemAndSecretTests(unittest.TestCase):
+    def test_snapshot_symlink_cannot_change_external_files_or_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            current_settings = settings(directory)
+            outside = directory / "outside"
+            outside.mkdir()
+            manifest = outside / "release-manifest.json"
+            manifest.write_bytes(b"keep")
+            manifest.chmod(0o600)
+            with rehearsal.output_lock(current_settings.output):
+                current_settings.snapshot.symlink_to(outside, target_is_directory=True)
+                with self.assertRaisesRegex(
+                    rehearsal.RehearsalError, "snapshot directory must not be a symlink"
+                ):
+                    rehearsal.snapshot_release(current_settings)
+            self.assertEqual(manifest.read_bytes(), b"keep")
+            self.assertEqual(manifest.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(set(outside.iterdir()), {manifest})
+
+    def test_secure_read_rejects_fifo_without_waiting_for_a_writer(self) -> None:
+        scripts = Path(rehearsal.__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as raw:
+            fifo = Path(raw) / "state.json"
+            os.mkfifo(fifo)
+            code = (
+                f"import sys; sys.path.insert(0, {str(scripts)!r}); "
+                "from pathlib import Path; from e2e_state import secure_read; "
+                "secure_read(Path(sys.argv[1]), 'checkpoint')"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", code, str(fifo)],
+                capture_output=True, text=True, timeout=2,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("single-link regular file", result.stderr)
+
     def test_secure_read_rejects_symlink_and_multilink(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
@@ -3004,7 +2868,9 @@ class FilesystemAndSecretTests(unittest.TestCase):
                 request.get_header("User-agent"),
                 rehearsal.HTTP_USER_AGENT,
             )
-            persisted = (current_settings.output / "lazer_response.json").read_text()
+            persisted = (
+                current_settings.output / "operations/0001/lazer_response.json"
+            ).read_text()
             self.assertNotIn("super-secret", persisted)
             self.assertNotIn("Authorization", persisted)
 

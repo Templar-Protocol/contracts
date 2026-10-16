@@ -876,7 +876,12 @@ def inspect_artifact_fd(fd: int, artifact: Artifact) -> ArtifactMeasurement:
 def read_single_link_file(path: Path, label: str) -> bytes:
     if path.is_symlink():
         fail(f"{label} must not be a symlink")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     descriptor = os.open(path, flags)
     try:
         metadata = os.fstat(descriptor)

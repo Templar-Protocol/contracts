@@ -103,10 +103,9 @@ OPERATION_STATUSES = (
     "send_failed",
     "succeeded",
     "failed",
-    "abandoned",
 )
 UNRESOLVED_STATUSES = ("prepared", "submitted", "send_failed")
-TERMINAL_STATUSES = ("succeeded", "failed", "abandoned")
+TERMINAL_STATUSES = ("succeeded", "failed")
 SLUGS = tuple(artifact.slug for artifact in ARTIFACTS)
 SYMBOL_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
 CONTRACT_RE = re.compile(r"^C[A-Z2-7]{55}$")
@@ -1306,6 +1305,8 @@ def provider_fingerprints(settings: Settings) -> dict[str, dict[str, str]]:
 
 
 def snapshot_release(settings: Settings) -> tuple[dict[str, object], dict[str, dict[str, str]]]:
+    if settings.snapshot.is_symlink():
+        fail("snapshot directory must not be a symlink")
     with release_lock():
         manifest_bytes = secure_read(MANIFEST_PATH, "release manifest")
         manifest = strict_json_bytes(manifest_bytes, "release manifest")
@@ -1542,21 +1543,14 @@ class CheckpointStore:
         assert isinstance(operations, list)
         return operations
 
-    def standing_operations(
+    def operations_for(
         self, phase: str, kind: str, target: str
     ) -> list[dict[str, object]]:
-        """The records that still stand for a step, oldest first.
-
-        An abandoned attempt never reached the network, so it is evidence of a
-        discarded try rather than a record of the step. Every reader goes
-        through here, so that rule lives in one place.
-        """
         return [
             operation
             for operation in self.operations()
             if (operation["phase"], operation["kind"], operation["target"])
             == (phase, kind, target)
-            and operation["status"] != "abandoned"
         ]
 
     def find_operation(
@@ -1570,7 +1564,7 @@ class CheckpointStore:
     ) -> dict[str, object] | None:
         matches = [
             operation
-            for operation in self.standing_operations(phase, kind, target)
+            for operation in self.operations_for(phase, kind, target)
             if operation["status"] in statuses
             and (args is None or operation["args"] == args)
         ]
@@ -1661,17 +1655,6 @@ class CheckpointStore:
         self.mutate(
             lambda _: operation.__setitem__("status", "submitted")
         )
-
-    def mark_abandoned(
-        self, operation: dict[str, object], result_path: Path
-    ) -> None:
-        relative = self.terminal_result_path(operation, result_path)
-
-        def change(_: dict[str, object]) -> None:
-            operation["status"] = "abandoned"
-            operation["result_path"] = relative
-
-        self.mutate(change)
 
     def mark_send_failed(self, operation: dict[str, object]) -> None:
         if operation["status"] != "submitted":
@@ -2063,9 +2046,7 @@ class TransactionExecutor:
         self.store.mark_submitted(operation)
         operation_number = int(operation["number"])
         operation_dir = self.output_path(operation_directory(operation_number))
-        # OSError covers a send that never started — the spawn itself failing
-        # on ENOMEM, EAGAIN or EACCES — which is as much a failed send as a
-        # rejection, and leaving it uncaught would strand the operation.
+        # A failed send response does not prove the transaction was not accepted.
         try:
             result = self.runner(
                 ["stellar", "tx", "send", *self.settings.network_args],
@@ -2079,15 +2060,6 @@ class TransactionExecutor:
             return
         self.write_transcript(operation_number, "send", result)
 
-    def send_error(self, operation: dict[str, object]) -> str | None:
-        path = (
-            self.output_path(operation_directory(int(operation["number"])))
-            / "send.error"
-        )
-        if not path.exists():
-            return None
-        return secure_read(path, "send error").decode("utf-8", "replace").strip()
-
     def resolve_unfinished(self) -> None:
         operation = self.store.unresolved()
         if operation is None:
@@ -2096,48 +2068,7 @@ class TransactionExecutor:
             self.submit(operation)
         if self.poll(operation):
             return
-        if operation["status"] == "send_failed":
-            fail(
-                f"transaction {operation['tx_hash']} failed to send and the "
-                "network does not have it; rerun with --abandon-unresolved to "
-                "record it as failed"
-            )
         fail(f"submitted transaction {operation['tx_hash']} remains unresolved")
-
-    def abandon_unresolved(self) -> None:
-        """Discard an operation whose send never reached the network.
-
-        Only a `send_failed` operation qualifies: a transaction the send
-        command handed over cannot be declared dead from here. Polls once more
-        first, so one the network does have resolves normally instead. The
-        record is kept as evidence but no longer stands for the step, so the
-        next run rebuilds it.
-        """
-        operation = self.store.unresolved()
-        if operation is None:
-            fail("no unresolved operation to abandon")
-        if operation["status"] != "send_failed":
-            fail("only an operation whose send failed may be abandoned")
-        error = self.send_error(operation) or "send failed"
-        if self.poll(operation, attempts=1):
-            return
-        result_path = self.output_path(
-            operation_result_path(int(operation["number"]))
-        )
-        atomic_write(
-            result_path,
-            json.dumps(
-                {"status": "SEND_FAILED", "error": error},
-                indent=2,
-                sort_keys=True,
-            ).encode()
-            + b"\n",
-        )
-        self.store.mark_abandoned(operation, result_path)
-        fail(
-            f"operation {operation['number']} abandoned: its send never "
-            f"reached the network ({error}); rerun to rebuild it"
-        )
 
     def result(self, operation: dict[str, object]) -> dict[str, object]:
         if operation["status"] != "succeeded":
@@ -2602,7 +2533,7 @@ class Rehearsal:
         ids: dict[str, set[int]] = {"proposal_create": set(), "proposal_execute": set()}
         for kind in ids:
             for phase in PHASES:
-                for entry in self.store.standing_operations(
+                for entry in self.store.operations_for(
                     phase, kind, governance
                 ):
                     if entry["status"] != "succeeded":
@@ -2659,7 +2590,7 @@ class Rehearsal:
             self.deployments["governance"]["contract_id"]
         )
         creates = []
-        for entry in self.store.standing_operations(
+        for entry in self.store.operations_for(
             phase, "proposal_create", governance
         ):
             arguments = entry["args"]
@@ -2892,7 +2823,7 @@ class Rehearsal:
         )
         if owner == self.settings.administrator:
             latest = self.latest_ledger()
-            transfer_entries = self.store.standing_operations(
+            transfer_entries = self.store.operations_for(
                 "ownership", "ownership_transfer", runtime
             )
             if any(
@@ -3159,7 +3090,12 @@ class Rehearsal:
         ):
             fail("Pyth Lazer payload is not non-empty even-length hexadecimal")
         evidence = {"request": body, "response": response}
-        response_path = self.settings.output / "lazer_response.json"
+        # An unrecorded retry may reuse its slot, never a recorded push's evidence.
+        response_path = (
+            self.settings.output
+            / operation_directory(len(self.store.operations()) + 1)
+            / "lazer_response.json"
+        )
         atomic_write(
             response_path,
             json.dumps(evidence, indent=2, sort_keys=True).encode() + b"\n",
@@ -3183,12 +3119,26 @@ class Rehearsal:
             operation = recorded
             evidence = strict_json_bytes(
                 secure_read(
-                    self.settings.output / "lazer_response.json",
+                    self.settings.output
+                    / operation_directory(int(recorded["number"]))
+                    / "lazer_response.json",
                     "Pyth Lazer response evidence",
                 ),
                 "Pyth Lazer response evidence",
             )
-        else:
+            arguments = recorded["args"]
+            assert isinstance(arguments, dict)
+            self.validate_lazer_evidence(
+                evidence, require_string(arguments["payload"], "recorded Lazer payload")
+            )
+            price = self.view(
+                lazer, "lastprice",
+                {"asset": self.settings.source_assets["lazer"]},
+                decoder=decode_optional_price,
+            )
+            if price is None or not self.within_freshness(price["timestamp"]):
+                recorded = None
+        if recorded is None:
             payload, evidence = self.fetch_lazer_payload()
             push_args = {"payload": payload}
             operation = self.transactions.execute(
@@ -3208,7 +3158,8 @@ class Rehearsal:
         payload = require_string(
             arguments["payload"], "recorded Lazer payload"
         )
-        self.validate_lazer_evidence(evidence, payload)
+        if recorded is None:
+            self.validate_lazer_evidence(evidence, payload)
         stored = self.view(
             lazer,
             "stored_price",
@@ -3421,8 +3372,12 @@ class Rehearsal:
                 for prior in PHASES[:phase_index]
             ):
                 fail(f"{phase} requires every preceding phase to pass")
-            if phase_results[phase] is not None:
+            if phase_results[phase] is not None and (
+                phase != "push" or phase_results["refresh"] is not None
+            ):
                 continue
+            if phase == "refresh" and selected_phase == "refresh":
+                self.phase_push()
             getattr(self, f"phase_{phase}")()
 
 
@@ -3482,19 +3437,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=(*PHASES, "all"), nargs="?", default="all")
     parser.add_argument("--reinitialize", action="store_true", help="discard prior checkpoint and snapshot")
-    parser.add_argument(
-        "--abandon-unresolved",
-        action="store_true",
-        help="record an unresolved operation whose send failed as failed",
-    )
     args = parser.parse_args()
     try:
         settings = load_settings()
         with output_lock(settings.output):
             store = resume_or_initialize(settings, args.reinitialize)
             driver = Rehearsal(settings, store)
-            if args.abandon_unresolved:
-                driver.transactions.abandon_unresolved()
             driver.transactions.resolve_unfinished()
             driver.verify_recorded_deployments()
             driver.run(args.phase)
