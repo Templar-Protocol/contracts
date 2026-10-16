@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Expose the market's existing utilization calculation for consistent off-chain reporting.
+
 ## [2.1.0](https://github.com/Templar-Protocol/contracts/compare/templar-common-v2.0.0...templar-common-v2.1.0) - 2026-10-01
 
 ### Added

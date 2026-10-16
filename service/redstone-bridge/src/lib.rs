@@ -100,6 +100,8 @@ fn start_bridge(
     cmd.arg("--data-service-id");
     cmd.arg("redstone-primary-prod");
     cmd.kill_on_drop(true);
+    // IPC uses the socket; child stdout is diagnostic, not the caller's result.
+    cmd.stdout(std::io::stderr());
 
     let mut process = cmd.spawn()?;
 

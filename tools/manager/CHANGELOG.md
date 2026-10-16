@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Query live markets, proxy oracles, and governance contracts with typed snake_case filters, nested results, non-USD defaults, relationship inclusion/mapping, explicit asset aliases, and opt-in fresh indicative USD principal values.
+
+### Fixed
+
+- Skip confirmed deleted accounts during live queries without marking the scan incomplete; retain failures for RPC errors and existing, unrecognized contracts.
+
 ## [0.7.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.6.0...templar-manager-v0.7.0) - 2026-10-01
 
 ### Added

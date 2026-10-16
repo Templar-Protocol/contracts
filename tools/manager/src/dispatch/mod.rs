@@ -78,6 +78,7 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
         Command::Mpc { command } => mpc(ctx, command).await,
         Command::Patch { command } => patch(ctx, command).await,
         Command::Spec { command } => spec(ctx, command).await,
+        Command::Query { command } => crate::query::run(ctx, command).await,
         Command::RecoverNep141(args) => teardown::recover_nep141(ctx, args).await,
         Command::Read(call) => generic::read(ctx, call).await,
         Command::Write(call) => generic::write(ctx, call).await,
