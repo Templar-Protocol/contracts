@@ -35,6 +35,9 @@ the optimized files, writes the schema-4 manifest last, and validates without
 rebuilding. A failed build or validation removes stale manifest/PASS evidence. `validate-release` takes no
 paths: it validates only the canonical manifest and artifacts under
 `target/proxy-oracle-soroban/`.
+`dry-run` uses the same schema-4 validation and prints upload templates for all
+five artifacts. It performs no network or transaction simulation and broadcasts
+nothing.
 
 Size budgets: runtime and governance ≤ 131072 bytes; adapter, Lazer source, and
 batcher ≤ 32768 bytes. The manifest also binds the clean Git commit, Stellar CLI
