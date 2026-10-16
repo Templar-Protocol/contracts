@@ -143,7 +143,8 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
                 sources,
                 min_sources: 3,
                 max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                // Feeds a Blend pool reads use zero drift (RUNBOOK, Guardian L-05).
+                max_clock_drift_secs: Some(0),
             },
         ),
         &0,

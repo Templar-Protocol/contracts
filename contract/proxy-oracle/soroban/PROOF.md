@@ -35,7 +35,8 @@ at once.
   add it again.
 - **Freshness filter** — rejects prices older than `max_age_secs` or more than
   `max_clock_drift_secs` in the future, so stale or pre-manufactured prices
-  cannot be replayed.
+  cannot be replayed. Feeds a Blend pool reads must set `max_clock_drift_secs`
+  to 0 (see `RUNBOOK.md`, Guardian L-05).
 - **Manual trip** — a `ManualTripper` operator can immediately block a feed via
   governance; untripping needs the same role.
 
@@ -64,7 +65,7 @@ let proxy_config = ProxyConfig {
     sources: vec![pyth, redstone, reflector],
     min_sources: 3,
     max_age_secs: Some(300),
-    max_clock_drift_secs: Some(60),
+    max_clock_drift_secs: Some(0), // required for feeds a Blend pool reads
 };
 let stepwise = StepwiseChange { max_relative_change: dec("0.10") };
 let monotonic = MonotonicRun { max_streak: 3, min_relative_step_change: dec("0.01") };
