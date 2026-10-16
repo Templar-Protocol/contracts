@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `total_assets` reads only `config.index` and `data.b_rate` from the pool's `get_reserve`
+  result, so it works with both upstream Blend pools and the Templar Blend fork, whose
+  `ReserveConfig` adds `min_position`. Decoding the full struct with the upstream SDK type
+  trapped (`UnexpectedSize`) against fork pools.
+
 ## [1.1.0](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-blend-adapter-v1.0.2...templar-soroban-blend-adapter-v1.1.0) - 2026-10-14
 
 ### Added
