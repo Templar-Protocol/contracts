@@ -131,7 +131,7 @@ the `--action` JSON).
               {"oracle":"<SRC2>","asset":{"Other":"BTC"}},
               {"oracle":"<SRC3>","asset":{"Other":"BTC"}},
               {"oracle":"<SRC4>","asset":{"Other":"BTC"}}],
-  "min_sources": 3, "max_age_secs": 120, "max_clock_drift_secs": 30 }]}
+  "min_sources": 3, "max_age_secs": 120, "max_clock_drift_secs": 0 }]}
 ```
 
 3–16 sources; `min_sources ∈ [3, n]`; no duplicate oracle address; both
@@ -139,6 +139,18 @@ freshness bounds are required. `max_age_secs` is capped at 604800 (seven days)
 and `max_clock_drift_secs` at 3600 (one hour). Changing the source set or quorum
 clears the breaker set, history, and cache; configure and add breakers again after
 the source migration. `RemoveProxy` clears all state for the asset.
+
+**Feeds a Blend pool reads: set `max_clock_drift_secs` to 0.** The pool reads this proxy
+through the pool oracle adapter, which rounds timestamps down to its resolution, so a
+future-dated price that falls in the current bucket passes the pool's own future-date check
+(with a resolution of one second, the pool's check still applies). With a non-zero drift, a
+source sample published ahead of ledger time can become the newest history entry, read as
+zero seconds old until the clock catches up, and keep the pool pricing on it for up to
+`max_clock_drift_secs` while the market moves (Guardian L-05). At 0 the freshness filter
+rejects any sample published after the current ledger. A cross-chain sample stamped ahead
+of the Stellar ledger close time is skipped for that refresh and accepted once ledger time
+passes it, usually within one ledger. Check this value on every `SetProxy` for an asset a
+pool prices.
 
 **Breakers** — configure the set, add a breaker, then enforce it:
 
