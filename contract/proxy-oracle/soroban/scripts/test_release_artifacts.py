@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from unittest import mock
 
+import dry_run_deploy as dry_run
 import make_release_manifest as generator
 import release_artifacts as catalog
 import validate_release_artifacts as validator
@@ -156,6 +157,60 @@ class ReleaseManifestValidationTests(unittest.TestCase):
     def test_valid_five_artifact_manifest_and_three_line_cli_output(self) -> None:
         checked = self.validate()
         self.assertEqual(set(checked), {artifact.slug for artifact in catalog.ARTIFACTS})
+
+    def invoke_dry_run(self) -> tuple[int, Path, str, str]:
+        manifest_path = self.fixture.root / "release-manifest.json"
+        manifest_path.write_text(json.dumps(self.fixture.manifest))
+        evidence_path = self.fixture.root / "evidence/dry-run.txt"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "dry_run_deploy.py",
+                "--manifest",
+                str(manifest_path),
+                "--root",
+                str(self.fixture.root),
+                "--out",
+                str(evidence_path),
+            ],
+        ), mock.patch.object(
+            catalog, "RELEASE_DIR", self.fixture.root
+        ), mock.patch.object(
+            catalog, "LOCK_PATH", self.fixture.root / ".release.lock"
+        ), redirect_stdout(stdout), redirect_stderr(stderr):
+            result = dry_run.main()
+        return result, evidence_path, stdout.getvalue(), stderr.getvalue()
+
+    def test_dry_run_cli_rejects_tampered_lazer_and_clears_stale_evidence(self) -> None:
+        result, evidence_path, _, stderr = self.invoke_dry_run()
+        self.assertEqual(result, 0, stderr)
+        self.assertTrue(evidence_path.is_file())
+        lazer = next(
+            artifact for artifact in catalog.ARTIFACTS
+            if artifact.slug == "lazer_source"
+        )
+        path = self.fixture.root / lazer.manifest_path
+        payload = path.read_bytes()
+        path.write_bytes(payload[:-1] + bytes([payload[-1] ^ 1]))
+        result, _, stdout, stderr = self.invoke_dry_run()
+        self.assertEqual(result, 1)
+        self.assertIn("lazer_source: Wasm digest mismatch", stderr)
+        self.assertNotIn("PASS", stdout)
+        self.assertFalse(evidence_path.exists())
+
+    def test_dry_run_cli_rejects_missing_batcher_and_clears_stale_evidence(self) -> None:
+        result, evidence_path, _, stderr = self.invoke_dry_run()
+        self.assertEqual(result, 0, stderr)
+        self.assertTrue(evidence_path.is_file())
+        del self.fixture.manifest["artifacts"]["batcher"]
+        result, _, stdout, stderr = self.invoke_dry_run()
+        self.assertEqual(result, 1)
+        self.assertIn("manifest artifact set does not match the catalog", stderr)
+        self.assertNotIn("PASS", stdout)
+        self.assertFalse(evidence_path.exists())
 
     def test_semver_parser_is_linear_and_preserves_legal_suffixes(self) -> None:
         for value in (

@@ -109,7 +109,7 @@ budget-check:
         --out "{{evidence_dir}}/budget-check.txt"
     @echo "✓ Budget check passed — evidence: {{evidence_dir}}/budget-check.txt"
 
-# Offline artifact/manifest consistency check plus the recorded deploy commands.
+# Offline schema-4 artifact validation plus upload templates; no chain simulation.
 dry-run:
     @if [ ! -f "{{manifest_path}}" ]; then \
         echo "ERROR: release manifest not found — run: just -f {{justfile_directory()}}/justfile release" >&2; \
