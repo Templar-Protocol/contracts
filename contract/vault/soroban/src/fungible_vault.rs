@@ -6,8 +6,8 @@
 
 use soroban_sdk::{token, Address as SdkAddress, Env};
 use templar_vault_kernel::{
-    compute_fee_shares_from_assets, compute_management_fee_shares, total_assets_for_fee_accrual,
-    FeeAccrualAnchor, Number, TimestampNs, VaultConfig, VaultState, MIN_WITHDRAWAL_ASSETS,
+    compute_fee_accrual, should_refresh_fees_for_value_transfer, FeeAccrualAnchor, TimestampNs,
+    VaultConfig, VaultState, MIN_WITHDRAWAL_ASSETS,
 };
 
 use crate::contract::{
@@ -32,52 +32,21 @@ fn preview_state_with_fee_accrual(
         state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(now_ns));
         return Ok(state);
     }
-    if now_ns <= anchor.timestamp_ns.as_u64() {
+
+    if !should_refresh_fees_for_value_transfer(&state, config, TimestampNs(now_ns)) {
         return Ok(state);
     }
 
-    let current_assets = state.total_assets;
-    let fee_assets_base = total_assets_for_fee_accrual(
-        current_assets,
-        anchor.total_assets,
-        anchor.timestamp_ns.as_u64(),
-        now_ns,
-        config.fees.max_total_assets_growth_rate,
-    );
-
-    let management_shares = compute_management_fee_shares(
-        fee_assets_base,
-        current_assets,
+    let accrual = compute_fee_accrual(
+        state.total_assets,
         state.total_shares,
-        config.fees.management.fee_wad,
-        anchor.timestamp_ns.as_u64(),
-        now_ns,
-    );
-    let max_supply = Number::from(u128::MAX);
-    let supply_after_management =
-        Number::from(state.total_shares).saturating_add(management_shares);
-    if supply_after_management > max_supply {
-        return Err(ContractError::ConversionOverflow);
-    }
-
-    let profit = fee_assets_base.saturating_sub(anchor.total_assets);
-    let performance_fee_assets = config
-        .fees
-        .performance
-        .fee_wad
-        .apply_floored(Number::from(profit));
-    let performance_shares = compute_fee_shares_from_assets(
-        performance_fee_assets,
-        Number::from(current_assets),
-        supply_after_management,
-    );
-
-    let total_supply = supply_after_management.saturating_add(performance_shares);
-    if total_supply > max_supply {
-        return Err(ContractError::ConversionOverflow);
-    }
-    state.total_shares = total_supply.as_u128_trunc();
-    state.fee_anchor = FeeAccrualAnchor::new(current_assets, TimestampNs(now_ns));
+        anchor,
+        &config.fees,
+        TimestampNs(now_ns),
+    )
+    .map_err(|_| ContractError::ConversionOverflow)?;
+    state.total_shares = accrual.new_total_shares;
+    state.fee_anchor = accrual.new_anchor;
 
     Ok(state)
 }
@@ -101,16 +70,17 @@ pub(crate) fn share_balance(env: &Env, owner: &SdkAddress) -> i128 {
 pub(crate) fn reconcile_actual_idle_assets(
     state: &mut VaultState,
     actual_idle_assets: u128,
-    now_ns: u64,
-) {
+) -> bool {
     if !state.is_idle() || state.idle_assets == actual_idle_assets {
-        return;
+        return false;
     }
-
+    let inflow = actual_idle_assets.saturating_sub(state.idle_assets);
     state.idle_assets = actual_idle_assets;
     state.sync_total_assets();
-    let observed_at = TimestampNs(now_ns);
-    state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, observed_at);
+    if inflow != 0 {
+        state.fee_anchor.total_assets = state.fee_anchor.total_assets.saturating_add(inflow);
+    }
+    true
 }
 
 /// Load kernel state and a default config for read-only conversion math.
@@ -129,10 +99,7 @@ pub(crate) fn reconcile_actual_idle_assets(
 pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfig), ContractError> {
     let storage = SorobanStorage::new(env);
     let stored_state = storage.load_state();
-    let mut state = runtime_to_contract(stored_state)?.unwrap_or_default();
-    let now_ns = ledger_timestamp_ns(env)?;
-    let actual_idle_assets = load_actual_idle_assets(env)?;
-    reconcile_actual_idle_assets(&mut state, actual_idle_assets, now_ns);
+    let state = runtime_to_contract(stored_state)?.unwrap_or_default();
     let (virtual_shares, virtual_assets) = load_virtual_offsets(env);
     let config = VaultConfig {
         fees: runtime_to_contract(load_fees_spec(env))?,
@@ -143,6 +110,8 @@ pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfi
         virtual_shares,
         virtual_assets,
     };
-    let fee_aware_state = preview_state_with_fee_accrual(env, state, &config)?;
+    let mut fee_aware_state = preview_state_with_fee_accrual(env, state, &config)?;
+    let actual_idle_assets = load_actual_idle_assets(env)?;
+    reconcile_actual_idle_assets(&mut fee_aware_state, actual_idle_assets);
     Ok((fee_aware_state, config))
 }

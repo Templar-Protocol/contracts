@@ -5,6 +5,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::artifacts::RELEASE_TAG;
 use crate::{
     cli::{GovernanceCommand, GovernanceSubmitAndWaitCommand},
     manifest::Manifest,
@@ -15,6 +16,7 @@ use templar_soroban_governance::GovernanceActionKind;
 
 use super::{
     context::CommandContext,
+    cutover::{guard_set_governance, resolve_expected_wasm_hash, CutoverParams},
     deploy::stellar_command_shape,
     inventory::{args, parse_proposal_id, required_contract},
     invoke::{address_vec_json, invoke_response, option_i128_arg, supply_queue_entries_json},
@@ -35,6 +37,18 @@ pub(super) fn run_governance<E: CommandExecutor>(
 ) -> anyhow::Result<Response> {
     let stellar = context.stellar();
     let governance = required_contract(manifest, "governance")?;
+    if !context.cli().dry_run && command.is_write() {
+        let vault = required_contract(manifest, "vault")?;
+        let binding = crate::commands::upgrade::read_governance_binding(stellar, vault);
+        let manifest_governance = manifest
+            .contracts
+            .get("governance")
+            .map(|record| record.contract_id.as_str());
+        crate::commands::upgrade::governance_binding_matches(
+            manifest_governance,
+            binding.as_deref(),
+        )?;
+    }
     match command {
         GovernanceCommand::PlanAccept { admin, proposal_id } => {
             Ok(Response::Plan(governance_plan(
@@ -143,14 +157,36 @@ pub(super) fn run_governance<E: CommandExecutor>(
         GovernanceCommand::SubmitSetGovernance {
             admin,
             new_governance,
-        } => invoke_response(stellar.invoke(
-            governance,
-            "submit_set_governance",
-            args([
-                ("--caller", admin.as_str()),
-                ("--governance", new_governance.as_str()),
-            ]),
-        )?),
+            expected_admin,
+            expected_wasm_hash,
+            allow_unverified_governance,
+        } => {
+            let params = CutoverParams {
+                vault: required_contract(manifest, "vault")?.to_string(),
+                current_governance: governance.to_string(),
+                new_governance: new_governance.to_string(),
+                submitting_admin: match expected_admin {
+                    Some(address) => address.to_string(),
+                    None => admin.to_string(),
+                },
+                expected_wasm_hash: resolve_expected_wasm_hash(
+                    manifest,
+                    expected_wasm_hash.as_ref(),
+                    new_governance.as_str(),
+                ),
+            };
+            if !context.cli().dry_run {
+                guard_set_governance(stellar, &params, *allow_unverified_governance)?;
+            }
+            invoke_response(stellar.invoke(
+                governance,
+                "submit_set_governance",
+                args([
+                    ("--caller", admin.as_str()),
+                    ("--governance", new_governance.as_str()),
+                ]),
+            )?)
+        }
         GovernanceCommand::SubmitSetPaused { admin, paused } => invoke_response(stellar.invoke(
             governance,
             "submit_set_paused",
@@ -366,14 +402,34 @@ pub(super) fn run_governance<E: CommandExecutor>(
                 ]),
             )?)
         }
-        GovernanceCommand::SubmitUpgrade { admin, wasm_hash } => invoke_response(stellar.invoke(
+        GovernanceCommand::SubmitSetMaxNavAge {
+            admin,
+            max_nav_age_ns,
+        } => invoke_response(stellar.invoke(
             governance,
-            "submit_upgrade",
+            "submit_set_max_nav_age",
             args([
                 ("--caller", admin.as_str()),
-                ("--new_wasm_hash", wasm_hash.as_str()),
+                ("--max_nav_age_ns", &max_nav_age_ns.to_string()),
             ]),
         )?),
+        GovernanceCommand::SubmitUpgrade {
+            admin,
+            wasm_hash,
+            allow_unpinned_wasm,
+        } => {
+            let pinned = pinned_runtime_wasm_hash();
+            let requested = wasm_hash.as_ref().map_or(pinned, |hash| hash.as_str());
+            check_upgrade_wasm_policy(requested, pinned, *allow_unpinned_wasm)?;
+            if !context.cli().dry_run {
+                verify_wasm_hash_on_network(stellar, requested)?;
+            }
+            invoke_response(stellar.invoke(
+                governance,
+                "submit_upgrade",
+                args([("--caller", admin.as_str()), ("--new_wasm_hash", requested)]),
+            )?)
+        }
         GovernanceCommand::SubmitMigrate { admin } => invoke_response(stellar.invoke(
             governance,
             "submit_migrate",
@@ -390,6 +446,49 @@ pub(super) fn run_governance<E: CommandExecutor>(
             args([("--caller", admin.as_str()), ("--kind", &kind.to_string())]),
         )?),
     }
+}
+
+/// SHA-256 of the pinned release runtime WASM; the default upgrade target.
+pub(super) fn pinned_runtime_wasm_hash() -> &'static str {
+    crate::artifacts::ArtifactName::Vault.pin().sha256
+}
+
+/// Upgrade submissions default to the pinned release runtime hash. A hash
+/// that differs is refused unless the operator passes the explicit
+/// `--allow-unpinned-wasm` override.
+pub(super) fn check_upgrade_wasm_policy(
+    requested: &str,
+    pinned: &str,
+    allow_unpinned_wasm: bool,
+) -> anyhow::Result<()> {
+    if requested == pinned {
+        return Ok(());
+    }
+    if !allow_unpinned_wasm {
+        anyhow::bail!(
+            "wasm hash {requested} is not the pinned release {RELEASE_TAG} runtime hash \
+             {pinned}; submit with the pinned hash (the default) or pass \
+             --allow-unpinned-wasm to override"
+        );
+    }
+    eprintln!("Warning: submitting upgrade to unpinned wasm hash {requested}");
+    Ok(())
+}
+
+/// The pinned bytes must already be uploaded to the target network before
+/// governance acts on their hash; submitting a proposal for bytes the network
+/// does not have only fails later, mid-upgrade.
+pub(super) fn verify_wasm_hash_on_network<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    wasm_hash: &str,
+) -> anyhow::Result<()> {
+    if !stellar.fetch_wasm_hash(wasm_hash)? {
+        anyhow::bail!(
+            "wasm hash {wasm_hash} is not uploaded on the target network; run \
+             `deploy wasm vault` to upload or reuse the pinned release bytes, then resubmit"
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn governance_plan(
@@ -625,7 +724,7 @@ fn governance_action_kind(action: &str) -> Option<GovernanceActionKind> {
         .find_map(|(candidate, kind)| (*candidate == action).then_some(*kind))
 }
 
-const GOVERNANCE_ACTION_KINDS: [(&str, GovernanceActionKind); 24] = [
+const GOVERNANCE_ACTION_KINDS: [(&str, GovernanceActionKind); 25] = [
     ("SetAdmin", GovernanceActionKind::Admin),
     ("SetCurator", GovernanceActionKind::Curator),
     ("SetGovernance", GovernanceActionKind::Governance),
@@ -655,6 +754,7 @@ const GOVERNANCE_ACTION_KINDS: [(&str, GovernanceActionKind); 24] = [
         "SetIdleResyncCooldown",
         GovernanceActionKind::IdleResyncCooldown,
     ),
+    ("SetMaxNavAge", GovernanceActionKind::MaxNavAge),
     ("Other", GovernanceActionKind::Other),
 ];
 

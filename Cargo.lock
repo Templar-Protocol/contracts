@@ -3780,9 +3780,9 @@ dependencies = [
 
 [[package]]
 name = "ethnum"
-version = "1.5.2"
+version = "1.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca81e6b4777c89fd810c25a4be2b1bd93ea034fbe58e6a75216a34c6b82c539b"
+checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
 
 [[package]]
 name = "event-listener"
@@ -12969,7 +12969,7 @@ dependencies = [
 
 [[package]]
 name = "templar-accumulator"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -12988,7 +12988,7 @@ dependencies = [
 
 [[package]]
 name = "templar-common"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "borsh 1.6.1",
  "clap",
@@ -13037,7 +13037,7 @@ dependencies = [
 
 [[package]]
 name = "templar-curator-primitives"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "borsh 1.6.1",
  "derive_more 1.0.0",
@@ -13064,7 +13064,7 @@ dependencies = [
 
 [[package]]
 name = "templar-funding-bridge"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13134,7 +13134,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-artifacts-dispatch"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "near-account-id",
@@ -13152,7 +13152,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-artifacts-spec"
-version = "0.2.6"
+version = "0.3.0"
 dependencies = [
  "near-account-id",
  "schemars 0.8.22",
@@ -13177,7 +13177,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-client"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "clap",
  "near-api",
@@ -13195,7 +13195,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "actix",
  "anyhow",
@@ -13247,7 +13247,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-methods-dispatch"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "borsh 1.6.1",
@@ -13256,6 +13256,7 @@ dependencies = [
  "near-account-id",
  "near-api",
  "near-contract-standards",
+ "near-sdk",
  "rstest",
  "serde",
  "serde_json",
@@ -13278,7 +13279,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-methods-spec"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "near-account-id",
  "schemars 0.8.22",
@@ -13296,7 +13297,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-oracle-updates-dispatch"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13330,11 +13331,12 @@ dependencies = [
  "tokio-tungstenite 0.28.0",
  "tracing",
  "url",
+ "wiremock",
 ]
 
 [[package]]
 name = "templar-gateway-oracle-updates-spec"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "hex",
  "near-account-id",
@@ -13343,13 +13345,14 @@ dependencies = [
  "serde_json",
  "templar-common",
  "templar-gateway-macros",
+ "templar-gateway-methods-spec",
  "templar-gateway-types",
  "templar-universal-account",
 ]
 
 [[package]]
 name = "templar-gateway-runtime"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "actix",
  "async-trait",
@@ -13363,21 +13366,26 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-service"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "actix",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "byteorder",
  "clap",
  "dirs 6.0.0",
  "dotenvy",
+ "ed25519-dalek",
+ "hex",
+ "hex-literal",
  "jsonrpsee",
  "near-account-id",
  "near-api",
  "near-sandbox",
  "near-sdk",
  "near-token",
+ "pyth-lazer-protocol",
  "reqwest 0.12.28",
  "rstest",
  "serde",
@@ -13414,7 +13422,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-store"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "async-trait",
  "borsh 1.6.1",
@@ -13469,7 +13477,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-types"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64 0.22.1",
  "borsh 1.6.1",
@@ -13492,7 +13500,7 @@ dependencies = [
 
 [[package]]
 name = "templar-liquidator"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13526,7 +13534,7 @@ dependencies = [
 
 [[package]]
 name = "templar-lst-oracle-contract"
-version = "1.2.7"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "getrandom 0.2.17",
@@ -13546,7 +13554,7 @@ dependencies = [
 
 [[package]]
 name = "templar-manager"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13599,7 +13607,7 @@ dependencies = [
 
 [[package]]
 name = "templar-market-contract"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "anyhow",
  "getrandom 0.2.17",
@@ -13623,7 +13631,7 @@ dependencies = [
 
 [[package]]
 name = "templar-market-monitor"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -13647,7 +13655,7 @@ dependencies = [
 
 [[package]]
 name = "templar-patch-state-contract"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13719,7 +13727,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-common"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "near-primitives",
  "near-sdk",
@@ -13731,7 +13739,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-contract"
-version = "0.4.6"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13755,7 +13763,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-governance-common"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "clap",
  "near-sdk",
@@ -13769,7 +13777,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-governance-contract"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13887,7 +13895,7 @@ dependencies = [
 
 [[package]]
 name = "templar-pyth-lazer-adapter-contract"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "byteorder",
  "ed25519-dalek",
@@ -13918,7 +13926,7 @@ dependencies = [
 
 [[package]]
 name = "templar-redstone-adapter-contract"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "getrandom 0.2.17",
  "hex-literal",
@@ -13932,7 +13940,7 @@ dependencies = [
 
 [[package]]
 name = "templar-redstone-bridge"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "hex",
  "serde",
@@ -13945,7 +13953,7 @@ dependencies = [
 
 [[package]]
 name = "templar-registry-contract"
-version = "3.0.1"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "getrandom 0.2.17",
@@ -13954,8 +13962,11 @@ dependencies = [
  "near-sdk-contract-tools",
  "near-token",
  "rstest",
+ "serde",
  "serde_json",
  "templar-common",
+ "templar-gateway-core",
+ "templar-gateway-methods-spec",
  "templar-gateway-testing",
  "templar-gateway-types",
  "test-utils",
@@ -13964,7 +13975,7 @@ dependencies = [
 
 [[package]]
 name = "templar-relayer"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -14013,7 +14024,7 @@ dependencies = [
 
 [[package]]
 name = "templar-sandbox"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "near-api",
@@ -14030,7 +14041,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-blend-adapter"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "blend-contract-sdk",
  "soroban-sdk",
@@ -14059,7 +14070,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-runtime"
-version = "1.1.1"
+version = "1.3.0-rc.1"
 dependencies = [
  "blend-contract-sdk",
  "derive_more 1.0.0",
@@ -14108,6 +14119,7 @@ dependencies = [
  "ed25519-dalek-bip32",
  "hex",
  "indicatif",
+ "reqwest 0.12.28",
  "secrecy",
  "serde",
  "serde_json",
@@ -14127,7 +14139,7 @@ dependencies = [
 
 [[package]]
 name = "templar-tools-common"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "cargo_metadata 0.23.1",
@@ -14137,7 +14149,7 @@ dependencies = [
 
 [[package]]
 name = "templar-universal-account"
-version = "1.2.5"
+version = "1.2.6"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -14161,7 +14173,7 @@ dependencies = [
 
 [[package]]
 name = "templar-universal-account-contract"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -14181,7 +14193,7 @@ dependencies = [
 
 [[package]]
 name = "templar-vault-client"
-version = "1.2.5"
+version = "1.2.6"
 dependencies = [
  "anyhow",
  "futures",
@@ -14209,7 +14221,7 @@ dependencies = [
 
 [[package]]
 name = "templar-vault-contract"
-version = "1.2.5"
+version = "1.2.6"
 dependencies = [
  "anyhow",
  "borsh 1.6.1",
@@ -14234,7 +14246,7 @@ dependencies = [
 
 [[package]]
 name = "templar-vault-kernel"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "borsh 1.6.1",
  "derive_more 1.0.0",

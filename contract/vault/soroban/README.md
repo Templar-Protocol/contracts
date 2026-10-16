@@ -12,6 +12,9 @@ This crate is the Soroban executor layer for the shared vault kernel. It owns:
 - RBAC/auth enforcement via `require_auth()` + shared `ActionKind`
 - execution of `KernelEffect`s against Soroban token contracts
 
+To upgrade a deployed vault to a new release, follow
+[UPGRADING.md](UPGRADING.md) before touching governance or WASM.
+
 Governance timelock/orchestration lives in the dedicated `contract/vault/soroban/governance`
 contract. The runtime still applies canonical governance state changes. Vault-bound governance
 actions cross the contract boundary via `execute_governance(env, caller, payload)`, where the
@@ -73,17 +76,37 @@ sequenceDiagram
 
 The Soroban vault treats unsolicited underlying transfers as idle assets for existing
 shareholders, not as profit that the next depositor can capture. Read-only conversion and preview
-helpers first compare the persisted `idle_assets` value with the asset token balance held by the
-vault and simulate the reconciled state before quoting shares or assets.
+helpers first simulate any elapsed management/performance fees, and any performance fee accrued
+against a gain booked at the checkpoint ledger, against the persisted accounting, and
+then apply the same capital-flow reconciliation to their in-memory copy before quoting shares
+or assets.
 
-State-changing paths that depend on current share pricing use the same lazy reconciliation rule
-before executing kernel actions. `DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance` all read
-the live asset token balance, update `idle_assets`, recompute `total_assets`, and reset the
-`fee_anchor` to the reconciled total at the current ledger timestamp. This keeps direct transfers,
-fee refreshes, and later deposits on one accounting baseline without requiring a separate keeper
-transaction before every user deposit.
-When fees are active, deposits first crystallize any elapsed management/performance fees before
-the post-deposit anchor is written, so deposit principal cannot erase already accrued fees.
+State-changing paths use one shared ordering before the kernel executes the requested deposit or
+refresh action, decided by the kernel predicate `should_refresh_fees_for_value_transfer` and reused
+by deposits, atomic exits, preview helpers, and balance reconciliation. The predicate crystallizes
+fees when ledger time is newer than the stored checkpoint, and also when ledger time equals the
+checkpoint while a performance fee is actually due against it. A market gain booked by
+`RefreshMarkets` at the checkpoint ledger therefore still pays its performance fee before a
+same-ledger deposit, donation reconciliation, or `RefreshFees` call can re-price or re-anchor it.
+With a `max_total_assets_growth_rate` cap configured, the zero-elapsed window clamps the fee base
+back to the checkpoint, so nothing is chargeable at that ledger: the predicate declines to refresh,
+and the kernel rejects a `RefreshFees` action at the checkpoint timestamp. That rejection only
+surfaces when no idle reconciliation happens, because a command that also observes a changed idle
+balance still reconciles it and succeeds, leaving the capped gain accrued against the preserved
+checkpoint rather than re-anchored away.
+
+`DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance` first crystallize the due management and
+performance fees against the persisted accounting and the stored `fee_anchor`. They then reconcile
+the live asset token balance as a capital flow: a positive delta raises `fee_anchor.total_assets`
+by exactly the delta under the no-panic safe-add convention with the checkpoint timestamp
+preserved, and a negative delta restates the balances and leaves both `fee_anchor` fields
+untouched so loss recovery is not recorded as profit. Reconciliation itself neither lowers nor
+advances the checkpoint. A successful deposit rewrites the checkpoint to the post-deposit total at
+deposit time. A `RefreshFees` execution re-anchors to the current recorded values at ledger time
+even when nothing is minted, and that re-anchor is skipped when reconciliation restates the
+balance. Later fee refresh and deposit checkpoint behavior remains today's model, so the
+checkpoint is not an all-time high-water mark and can move down when recorded AUM falls. Full
+per-share high-water-mark and loss-recovery fee handling remains ENG-701 scope.
 
 ### Governance Control-Plane Boundary
 
@@ -136,6 +159,28 @@ queued withdrawer's requested slippage bound, but it also means later NAV declin
 the remaining share supply rather than by the already-queued request. This is an intentional
 accounting tradeoff of the queued path and should be considered when setting withdrawal cooldowns,
 allocator response processes, and adapter risk limits.
+
+When either fee slot is active, `request_withdraw` first crystallizes accrued
+management and performance fees before it prices and persists the request's
+`expected_assets` claim, using the same lazy fee refresh that guards atomic exits
+and deposits. The queued claim is therefore always computed against the post-fee
+share supply and conversion rate, so a queued request cannot capture value that
+fee crystallization would assign to fee recipients, even when the request drains
+the requester's entire share balance. Fees that keep accruing after the request
+timestamp are not settled against that fixed claim today: only fee-recipient
+crediting occurs after request time, and settling post-request fees at a
+settlement boundary is the pending ENG-697 epoch-settlement work.
+
+Redemption conversions use the lower of the configured virtual-offset quote and
+the holder's real-asset pro-rata value, while deposit and mint pricing keeps the
+configured virtual basis. Virtual offsets can defend deposits against donation
+attacks, but cannot make queued or atomic exits consume assets that back the
+remaining real shares.
+
+Upgrade migration fails closed when a vault with configured virtual assets has
+pending withdrawals. Operators must settle the existing fixed claims before
+upgrading because their request-time real-asset basis cannot be reconstructed
+safely from current state.
 
 There is no user-callable cancellation path for queued withdrawals in this version. A queued user
 can exit only when the request is executed, skipped by policy as a zero/restricted request, or
@@ -219,6 +264,33 @@ separately calls `execute_withdraw`. Off-chain indexers and reconciliation jobs 
 `execute_withdraw` and the emitted withdrawal / payout events as the settlement trigger for the
 async queue.
 
+### Supply Admission And Observation Re-Validation
+
+Every supply path — the typed `Allocate` entrypoint, `VaultCommand::Allocate`, and the internal
+curator allocation flow — is checked before any asset transfer or adapter call, and checked again
+after the adapter reports. Supply is admitted only when all of the following hold:
+
+- the market is configured and enabled;
+- the market is currently a member of the governance-configured supply queue;
+- the principal after the request stays within the market cap;
+- the market's cap group, if any, still has headroom under both its absolute cap and its relative
+  cap, where the relative cap is applied to the pre-allocation `total_assets` snapshot and the
+  group check counts the cumulative principal of every market in that group.
+
+After the adapter call, the reported total assets must stay within the active allocation step and
+must satisfy the same market and cap-group limits before any principal or accounting state is
+persisted. A violation returns `ContractError::InvalidState`, so the whole Soroban transaction
+reverts and token balances, adapter state, policy principals, and kernel accounting are unchanged.
+Measuring the group limits against the pre-allocation snapshot keeps an adapter from enlarging the
+denominator of a relative cap during the same allocation it is supposed to be bounded by, and
+re-checking after the call means the limit holds even if the adapter or a policy change makes the
+pre-request decision stale.
+
+Disabling supply for a market — by disabling it, setting its cap to zero, or removing it from the
+supply queue — blocks further supply while leaving that market's existing adapter binding in
+place, so withdrawals already deployed against that market keep settling through the same
+adapter.
+
 If withdrawal execution enters `Withdrawing` and cannot progress because idle
 liquidity remains below the kernel minimum, an allocator-emergency actor can
 submit `VaultCommand::AbortWithdrawing { caller, op_id }` through `execute`.
@@ -232,6 +304,35 @@ In the default Soroban RBAC policy this is available to allocator-emergency
 operators (`allocator`, `sentinel`, and `curator`), not ordinary users. The
 transition restores any `Withdrawing.collected` amount to idle accounting before
 refunding escrowed shares, dequeuing the head request, and returning to `Idle`.
+
+### Refresh Observation Validation
+
+Refresh stages all selected adapter observations before synchronizing kernel accounting or
+persisting policy. Each observation must name a configured market and stay within that market's
+cap, and the aggregate of current `idle_assets` plus final staged `external_assets` must not
+overflow. A violation returns `ContractError::InvalidState` and rolls back the entire public
+refresh, including adapter transaction state.
+
+Refresh reports actual exposure; it does not gate it. Absolute and relative group caps are supply
+admission controls: they decide whether new supply may be deployed, not whether a gain or loss the
+adapters already observed may be recognised. Booked group principals can therefore sit above
+`min(absolute_cap, floor(relative_cap * total_assets))` after an out-of-group loss, after a
+permissionless withdrawal shrinks the denominator, or after governance tightens a cap. Observation
+alone is not authenticated by caps — refresh never proves that reported assets exist.
+
+Group principals are recorded from the final staged state, so a repeated market observation
+retains its last value.
+
+While a group sits over cap, new supply to any of its markets is refused with
+`ContractError::InvalidState` before any transfer, and withdrawals that reduce exposure keep
+working; the group becomes admissible again as soon as its principal falls back under the cap.
+
+Existing exposure in disabled or unqueued markets remains refreshable. Refresh does not
+authenticate adapter NAV, and partial refresh leaves unqueried NAV stale.
+
+Use vetted adapters and monitor NAV changes and report freshness across all markets. Market caps
+bound refresh reports, while absolute and relative group caps bound new supply and concentration
+in the accounted state rather than prove that reported assets exist.
 
 ## Prerequisites
 

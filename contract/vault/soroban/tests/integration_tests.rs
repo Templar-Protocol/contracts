@@ -4,16 +4,20 @@
 
 use rstest::{fixture, rstest};
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
-    Address as SdkAddress, Bytes, Env,
+    Address as SdkAddress, Bytes, Env, IntoVal, Symbol,
 };
 use std::string::String as AllocString;
+use templar_curator_primitives::policy::cap_group::CapGroupId;
 use templar_curator_primitives::policy::state::MarketConfig;
+use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_soroban_governance::{GovernanceError, SorobanVaultGovernanceContract};
 use templar_soroban_runtime::{
     contract::{
-        ContractConfig, CuratorVault, SorobanVaultContract, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+        ContractConfig, CuratorVault, SorobanVaultContract, VaultDataKey,
+        SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
     },
     rbac::{RbacAuth, RbacConfig, Role},
     storage::SorobanStorage,
@@ -23,10 +27,11 @@ use templar_soroban_runtime::{
     Storage, // Import the trait
 };
 use templar_soroban_shared_types::{
-    DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, GovernanceCommand, VaultCommand,
-    GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_CURATOR,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
-    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
+    DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, GovernanceCommand, I128Receipt,
+    VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
+    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::{
@@ -442,7 +447,15 @@ fn fee_aware_preview_state(env: &Env, mut state: VaultState, config: &VaultConfi
     let now_ns = env.ledger().timestamp().saturating_mul(1_000_000_000);
     let anchor = state.fee_anchor;
 
-    if state.total_shares == 0 || now_ns <= anchor.timestamp_ns.as_u64() {
+    let same_timestamp_performance_due = now_ns == anchor.timestamp_ns.as_u64()
+        && config.fees.max_total_assets_growth_rate.is_none()
+        && !config.fees.performance.fee_wad.is_zero()
+        && state.total_assets > anchor.total_assets;
+    if state.total_shares == 0
+        || !config.fees.has_active_slot_fees()
+        || now_ns < anchor.timestamp_ns.as_u64()
+        || (now_ns == anchor.timestamp_ns.as_u64() && !same_timestamp_performance_due)
+    {
         return state;
     }
 
@@ -764,7 +777,7 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
     let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
 
     env.ledger().set(LedgerInfo {
-        timestamp: 100,
+        timestamp: 0,
         protocol_version: 25,
         ..Default::default()
     });
@@ -1396,17 +1409,25 @@ fn create_test_vault() -> TestVault {
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
+    for market_id in [0u32, 1, 2] {
+        vault
+            .policy_state_mut()
+            .set_market_config(market_id, MarketConfig::new(true, i128::MAX as u128, None))
+            .unwrap();
+    }
     vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
-        .unwrap();
-    vault
-        .policy_state_mut()
-        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
-        .unwrap();
-    vault
-        .policy_state_mut()
-        .set_market_config(2, MarketConfig::new(true, i128::MAX as u128, None))
+        .replace_supply_queue(
+            SupplyQueue::try_from_entries(
+                vec![
+                    SupplyQueueEntry::new(0, 100).unwrap(),
+                    SupplyQueueEntry::new(1, 100).unwrap(),
+                    SupplyQueueEntry::new(2, 100).unwrap(),
+                ],
+                None,
+            )
+            .unwrap(),
+        )
         .unwrap();
     vault
 }
@@ -1435,11 +1456,914 @@ fn create_rbac_vault() -> RbacVault {
         .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
         .unwrap();
     vault
+        .policy_state_mut()
+        .replace_supply_queue(
+            SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(0, 100).unwrap()], None)
+                .unwrap(),
+        )
+        .unwrap();
+    vault
 }
 
 #[fixture]
 fn rbac_vault() -> RbacVault {
     create_rbac_vault()
+}
+
+struct RealSupplyFixture {
+    env: Env,
+    contract: SdkAddress,
+    asset: SdkAddress,
+    allocator: SdkAddress,
+    /// Sole depositor; holds every share the fixture minted.
+    user: SdkAddress,
+    /// One adapter per market, index == market id. Markets never share an adapter.
+    adapters: Vec<SdkAddress>,
+    governance: SdkAddress,
+}
+
+fn invoke_vault(env: &Env, contract: &SdkAddress, command: &VaultCommand) -> Bytes {
+    let payload = Bytes::from_slice(env, &command.encode());
+    env.invoke_contract(
+        contract,
+        &Symbol::new(env, "execute"),
+        (&payload,).into_val(env),
+    )
+}
+
+fn try_invoke_vault(
+    env: &Env,
+    contract: &SdkAddress,
+    command: &VaultCommand,
+) -> Result<Bytes, templar_soroban_runtime::ContractError> {
+    let payload = Bytes::from_slice(env, &command.encode());
+    match env.try_invoke_contract::<Bytes, templar_soroban_runtime::ContractError>(
+        contract,
+        &Symbol::new(env, "execute"),
+        (&payload,).into_val(env),
+    ) {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Err(Ok(error)) => Err(error),
+        result => panic!("unexpected host invocation result: {result:?}"),
+    }
+}
+
+fn invoke_governance(
+    env: &Env,
+    contract: &SdkAddress,
+    caller: &SdkAddress,
+    command: &GovernanceCommand,
+) {
+    env.as_contract(contract, || {
+        VaultProxy::new(env)
+            .execute_governance_unit(caller, command)
+            .unwrap();
+    });
+}
+
+#[contract]
+struct LocalMarketAdapter;
+
+#[contractimpl]
+impl LocalMarketAdapter {
+    pub fn supply(env: Env, _vault: SdkAddress, _asset: SdkAddress, amount: i128) {
+        let key = Symbol::new(&env, "position");
+        let position: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        env.storage().instance().set(&key, &(position + amount));
+    }
+
+    pub fn total_assets(env: Env, _asset: SdkAddress) -> i128 {
+        env.storage().instance().set(
+            &Symbol::new(&env, "reads"),
+            &(Self::read_count(env.clone()) + 1),
+        );
+        let position: i128 = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "position"))
+            .unwrap_or(0);
+        let overage: i128 = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "overage"))
+            .unwrap_or(0);
+        position + overage
+    }
+
+    pub fn read_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&Symbol::new(&env, "reads"))
+            .unwrap_or(0)
+    }
+
+    pub fn progress_withdrawal(
+        env: Env,
+        vault: SdkAddress,
+        asset: SdkAddress,
+        amount: i128,
+    ) -> i128 {
+        soroban_sdk::token::Client::new(&env, &asset).transfer(
+            &env.current_contract_address(),
+            &vault,
+            &amount,
+        );
+        let key = Symbol::new(&env, "position");
+        let position: i128 = env.storage().instance().get(&key).unwrap_or(0);
+        env.storage().instance().set(&key, &(position - amount));
+        amount
+    }
+}
+
+/// Builds a funded vault with `adapter_count` markets, each bound to its own adapter contract
+/// and each genuinely holding `supply_each` through the real supply path. Markets never share
+/// an adapter, so a reported position always belongs to exactly one market.
+fn adapter_fixture(adapter_count: usize, market_cap: i128, supply_each: i128) -> RealSupplyFixture {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract = env.register(SorobanVaultContract, ());
+    let curator = SdkAddress::generate(&env);
+    let asset = env
+        .register_stellar_asset_contract_v2(SdkAddress::generate(&env))
+        .address();
+    let share = env
+        .register_stellar_asset_contract_v2(contract.clone())
+        .address();
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract, &(0u64)),
+    );
+    let adapters: Vec<SdkAddress> = (0..adapter_count)
+        .map(|_| env.register(LocalMarketAdapter, ()))
+        .collect();
+    let allocator = SdkAddress::generate(&env);
+    let user = SdkAddress::generate(&env);
+    env.ledger().set(LedgerInfo {
+        timestamp: 1,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&contract, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator.clone(),
+            governance.clone(),
+            asset.clone(),
+            share,
+            0,
+            0,
+        )
+        .unwrap();
+    });
+    invoke_governance(
+        &env,
+        &contract,
+        &governance,
+        &GovernanceCommand::SetGovernanceConfig {
+            kind: GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+            primary: None,
+            many: Some(vec![sdk_wire(&allocator)]),
+            value_a: None,
+            value_b: None,
+        },
+    );
+    invoke_governance(
+        &env,
+        &contract,
+        &governance,
+        &GovernanceCommand::SetGovernanceConfig {
+            kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+            primary: None,
+            many: Some(adapters.iter().map(sdk_wire).collect::<Vec<AllocString>>()),
+            value_a: None,
+            value_b: None,
+        },
+    );
+    for market in 0..adapter_count as u32 {
+        invoke_governance(
+            &env,
+            &contract,
+            &governance,
+            &GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_CAP,
+                target_ids: None,
+                mode: None,
+                accounts: None,
+                market_id: Some(market),
+                cap_group_id: None,
+                value: Some(market_cap),
+                value_b: None,
+                value_c: None,
+            },
+        );
+    }
+    invoke_governance(
+        &env,
+        &contract,
+        &governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+            target_ids: Some((0..adapter_count as u32).collect::<Vec<u32>>()),
+            mode: None,
+            accounts: Some(adapters.iter().map(sdk_wire).collect::<Vec<AllocString>>()),
+            market_id: None,
+            cap_group_id: None,
+            value: None,
+            value_b: None,
+            value_c: None,
+        },
+    );
+    StellarAssetClient::new(&env, &asset).mint(&user, &10_000);
+    invoke_vault(
+        &env,
+        &contract,
+        &VaultCommand::DepositWithMin {
+            owner: sdk_wire(&user),
+            receiver: sdk_wire(&user),
+            assets: 10_000,
+            min_shares_out: 0,
+        },
+    );
+    for market in 0..adapter_count as u32 {
+        let supplied = invoke_vault(
+            &env,
+            &contract,
+            &VaultCommand::Allocate {
+                caller: sdk_wire(&allocator),
+                market,
+                amount: supply_each,
+                supply: true,
+            },
+        );
+        assert_eq!(
+            I128Receipt::decode(&supplied.to_alloc_vec()).unwrap().value,
+            i128::from(market + 1) * supply_each,
+            "external assets must accumulate one admitted step per market"
+        );
+    }
+    RealSupplyFixture {
+        env,
+        contract,
+        asset,
+        allocator,
+        user,
+        adapters,
+        governance,
+    }
+}
+
+fn real_supply_fixture(supply_amount: i128) -> RealSupplyFixture {
+    adapter_fixture(1, 2_000, supply_amount)
+}
+
+fn supply_at(
+    fixture: &RealSupplyFixture,
+    market: u32,
+    amount: i128,
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    try_invoke_vault(
+        &fixture.env,
+        &fixture.contract,
+        &VaultCommand::Allocate {
+            caller: sdk_wire(&fixture.allocator),
+            market,
+            amount,
+            supply: true,
+        },
+    )
+    .map(|bytes| I128Receipt::decode(&bytes.to_alloc_vec()).unwrap().value)
+}
+
+fn supply(
+    fixture: &RealSupplyFixture,
+    amount: i128,
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    supply_at(fixture, 0, amount)
+}
+
+fn settle_at(
+    fixture: &RealSupplyFixture,
+    market: u32,
+    amount: i128,
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    try_invoke_vault(
+        &fixture.env,
+        &fixture.contract,
+        &VaultCommand::Allocate {
+            caller: sdk_wire(&fixture.allocator),
+            market,
+            amount,
+            supply: false,
+        },
+    )
+    .map(|bytes| I128Receipt::decode(&bytes.to_alloc_vec()).unwrap().value)
+}
+
+fn settlement(
+    fixture: &RealSupplyFixture,
+    amount: i128,
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    settle_at(fixture, 0, amount)
+}
+
+fn exclude_supply(fixture: &RealSupplyFixture, exclusion: u32) {
+    fixture.env.as_contract(&fixture.contract, || {
+        let mut storage = SorobanStorage::new(&fixture.env);
+        let mut policy = storage.load_policy_state().unwrap().unwrap();
+        match exclusion {
+            0 => policy.set_market_enabled(0, false).unwrap(),
+            1 => policy
+                .replace_supply_queue(SupplyQueue::try_from_entries(vec![], None).unwrap())
+                .unwrap(),
+            _ => policy.set_market_cap(0, 0).unwrap(),
+        }
+        storage.save_policy_state(&policy).unwrap();
+    });
+}
+
+fn balances(fixture: &RealSupplyFixture) -> (i128, i128) {
+    let token = soroban_sdk::token::Client::new(&fixture.env, &fixture.asset);
+    (
+        token.balance(&fixture.contract),
+        token.balance(&fixture.adapters[0]),
+    )
+}
+
+fn vault_invariants(fixture: &RealSupplyFixture) -> (bool, u128, u128, u128, Option<SdkAddress>) {
+    fixture.env.as_contract(&fixture.contract, || {
+        let storage = SorobanStorage::new(&fixture.env);
+        let state = storage.load_state().unwrap().unwrap();
+        let policy = storage.load_policy_state().unwrap().unwrap();
+        let bindings = fixture
+            .env
+            .storage()
+            .instance()
+            .get::<_, soroban_sdk::Map<u32, SdkAddress>>(&VaultDataKey::AdapterBindings)
+            .unwrap();
+        (
+            state.op_state.is_idle(),
+            state.external_assets,
+            state.idle_assets,
+            policy.principal_for(0).unwrap(),
+            bindings.get(0),
+        )
+    })
+}
+
+#[test]
+fn overreported_supply_observation_is_refused_and_rolled_back() {
+    // The adapter reports exposure outside the admitted allocation step. The observation guard
+    // refuses before accounting; market and cap-group refusals are tested at admission.
+    let fixture = real_supply_fixture(1_000);
+    let balance_before = balances(&fixture);
+    let invariant_before = vault_invariants(&fixture);
+    assert_eq!(balance_before, (9_000, 1_000));
+    assert_eq!(
+        invariant_before,
+        (true, 1_000, 9_000, 1_000, Some(fixture.adapters[0].clone()))
+    );
+    report_overage_at(&fixture, 0, 501);
+    assert_eq!(
+        supply(&fixture, 1_000),
+        Err(templar_soroban_runtime::ContractError::InvalidState)
+    );
+    assert_eq!(balances(&fixture), balance_before);
+    assert_eq!(vault_invariants(&fixture), invariant_before);
+    report_overage_at(&fixture, 0, 0);
+    assert_eq!(supply(&fixture, 1_000), Ok(2_000));
+    assert_eq!(balances(&fixture), (8_000, 2_000));
+    assert_eq!(
+        vault_invariants(&fixture),
+        (true, 2_000, 8_000, 2_000, Some(fixture.adapters[0].clone()))
+    );
+}
+
+#[rstest]
+#[case(0)]
+#[case(1)]
+#[case(2)]
+fn supply_exclusion_preserves_binding_and_settlement(#[case] exclusion: u32) {
+    let fixture = real_supply_fixture(1_000);
+    let balance_before = balances(&fixture);
+    let invariant_before = vault_invariants(&fixture);
+    exclude_supply(&fixture, exclusion);
+    assert_eq!(
+        supply(&fixture, 1_000),
+        Err(templar_soroban_runtime::ContractError::InvalidState)
+    );
+    assert_eq!(balances(&fixture), balance_before);
+    assert_eq!(vault_invariants(&fixture), invariant_before);
+    assert_eq!(settlement(&fixture, 1_000), Ok(0));
+    assert_eq!(balances(&fixture), (10_000, 0));
+    assert_eq!(
+        vault_invariants(&fixture),
+        (true, 0, 10_000, 0, Some(fixture.adapters[0].clone()))
+    );
+}
+
+const REFRESH_CAP_GROUP: &str = "eng698-refresh";
+
+fn set_refresh_group_cap(fixture: &RealSupplyFixture, absolute_cap: i128) {
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_GROUP,
+            target_ids: None,
+            mode: Some(0),
+            accounts: None,
+            market_id: None,
+            cap_group_id: Some(REFRESH_CAP_GROUP.to_string()),
+            value: Some(absolute_cap),
+            value_b: None,
+            value_c: None,
+        },
+    );
+}
+
+fn set_refresh_group_membership(fixture: &RealSupplyFixture, market: u32) {
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_GROUP,
+            target_ids: None,
+            mode: Some(2),
+            accounts: None,
+            market_id: Some(market),
+            cap_group_id: Some(REFRESH_CAP_GROUP.to_string()),
+            value: None,
+            value_b: None,
+            value_c: None,
+        },
+    );
+}
+
+fn set_refresh_group_relative_cap(fixture: &RealSupplyFixture, relative_cap: i128) {
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_GROUP,
+            target_ids: None,
+            mode: Some(1),
+            accounts: None,
+            market_id: None,
+            cap_group_id: Some(REFRESH_CAP_GROUP.to_string()),
+            value: Some(relative_cap),
+            value_b: None,
+            value_c: None,
+        },
+    );
+}
+
+/// Reports `overage` from the adapter bound to `market`, so one market's NAV can move alone.
+fn report_overage_at(fixture: &RealSupplyFixture, market: u32, overage: i128) {
+    let adapter = &fixture.adapters[usize::try_from(market).unwrap()];
+    fixture.env.as_contract(adapter, || {
+        fixture
+            .env
+            .storage()
+            .instance()
+            .set(&Symbol::new(&fixture.env, "overage"), &overage);
+    });
+}
+
+/// Booked group principal and its current effective cap, read straight from vault storage.
+fn refresh_group_state(fixture: &RealSupplyFixture) -> (u128, u128) {
+    let group_id = CapGroupId::try_from(REFRESH_CAP_GROUP.to_string()).unwrap();
+    fixture.env.as_contract(&fixture.contract, || {
+        let storage = SorobanStorage::new(&fixture.env);
+        let state = storage.load_state().unwrap().unwrap();
+        let policy = storage.load_policy_state().unwrap().unwrap();
+        let record = policy.cap_groups().get(&group_id).unwrap();
+        (
+            record.principal,
+            record.cap.effective_cap(state.total_assets),
+        )
+    })
+}
+
+/// Permissionless atomic exit by the fixture depositor; returns the assets paid from idle.
+fn atomic_redeem(
+    fixture: &RealSupplyFixture,
+    receiver: &SdkAddress,
+    shares: i128,
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    try_invoke_vault(
+        &fixture.env,
+        &fixture.contract,
+        &VaultCommand::AtomicRedeem {
+            owner: sdk_wire(&fixture.user),
+            receiver: sdk_wire(receiver),
+            operator: sdk_wire(&fixture.user),
+            shares,
+            min_assets_out: 0,
+        },
+    )
+    .map(|bytes| I128Receipt::decode(&bytes.to_alloc_vec()).unwrap().value)
+}
+
+fn refresh(
+    fixture: &RealSupplyFixture,
+    markets: &[u32],
+) -> Result<i128, templar_soroban_runtime::ContractError> {
+    try_invoke_vault(
+        &fixture.env,
+        &fixture.contract,
+        &VaultCommand::RefreshMarkets {
+            caller: sdk_wire(&fixture.allocator),
+            markets: markets.to_vec(),
+        },
+    )
+    .map(|bytes| I128Receipt::decode(&bytes.to_alloc_vec()).unwrap().value)
+}
+
+/// Reads counted across every bound adapter, so one read per market is attributable.
+fn adapter_reads(fixture: &RealSupplyFixture) -> u32 {
+    fixture
+        .adapters
+        .iter()
+        .map(|adapter| {
+            fixture.env.invoke_contract::<u32>(
+                adapter,
+                &Symbol::new(&fixture.env, "read_count"),
+                soroban_sdk::Vec::new(&fixture.env),
+            )
+        })
+        .sum()
+}
+
+#[derive(Debug, PartialEq)]
+struct RefreshSnapshot {
+    idle: bool,
+    next_op_id: u64,
+    total_assets: u128,
+    idle_assets: u128,
+    external_assets: u128,
+    principals: Vec<u128>,
+    group_principal: u128,
+    policy_blobs: [Option<Vec<u8>>; 4],
+    adapter_reads: u32,
+}
+
+fn refresh_snapshot(fixture: &RealSupplyFixture) -> RefreshSnapshot {
+    let mut snapshot = fixture.env.as_contract(&fixture.contract, || {
+        let storage = SorobanStorage::new(&fixture.env);
+        let state = storage.load_state().unwrap().unwrap();
+        let policy = storage.load_policy_state().unwrap().unwrap();
+        let group_id = CapGroupId::try_from(REFRESH_CAP_GROUP.to_string()).unwrap();
+        let group_principal = policy
+            .cap_groups()
+            .get(&group_id)
+            .map_or(0, |record| record.principal);
+        RefreshSnapshot {
+            idle: state.op_state.is_idle(),
+            next_op_id: state.next_op_id,
+            total_assets: state.total_assets,
+            idle_assets: state.idle_assets,
+            external_assets: state.external_assets,
+            principals: vec![
+                policy.principal_for(0).unwrap_or_default(),
+                policy.principal_for(1).unwrap_or_default(),
+                policy.principal_for(2).unwrap_or_default(),
+            ],
+            group_principal,
+            policy_blobs: [
+                storage.load_policy_markets().unwrap(),
+                storage.load_policy_principals().unwrap(),
+                storage.load_policy_cap_groups().unwrap(),
+                storage.load_policy_supply_queue().unwrap(),
+            ],
+            adapter_reads: 0,
+        }
+    });
+    snapshot.adapter_reads = adapter_reads(fixture);
+    snapshot
+}
+
+fn set_market_cap(fixture: &RealSupplyFixture, market: u32, cap: i128) {
+    invoke_governance(
+        &fixture.env,
+        &fixture.contract,
+        &fixture.governance,
+        &GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_CAP,
+            target_ids: None,
+            mode: None,
+            accounts: None,
+            market_id: Some(market),
+            cap_group_id: None,
+            value: Some(cap),
+            value_b: None,
+            value_c: None,
+        },
+    );
+}
+
+#[test]
+fn refresh_per_market_cap_breach_rolls_back_and_boundary_persists() {
+    // Two markets, two adapters, each reporting only its own position. The per-market ceiling is
+    // the refusal left inside refresh, and it must roll back the adapter reads already done,
+    // proving cross-contract atomicity through the public execute entry.
+    let fixture = adapter_fixture(2, 2_000, 1_000);
+    set_refresh_group_cap(&fixture, 10_000);
+    set_refresh_group_membership(&fixture, 0);
+    set_refresh_group_membership(&fixture, 1);
+    set_market_cap(&fixture, 1, 500);
+
+    let before = refresh_snapshot(&fixture);
+    assert_eq!(
+        before.principals,
+        vec![1_000, 1_000, 0],
+        "each adapter must report its own market position"
+    );
+    assert_eq!(before.group_principal, 2_000);
+
+    assert_eq!(
+        refresh(&fixture, &[0, 1]),
+        Err(templar_soroban_runtime::ContractError::InvalidState)
+    );
+    assert_eq!(
+        refresh_snapshot(&fixture),
+        before,
+        "the failing refresh must roll back vault, policy, and every adapter read"
+    );
+
+    set_market_cap(&fixture, 1, 2_000);
+    assert_eq!(adapter_reads(&fixture), before.adapter_reads);
+
+    assert_eq!(refresh(&fixture, &[0, 1]), Ok(2_000));
+    let after = refresh_snapshot(&fixture);
+    assert!(after.idle);
+    assert_eq!(after.next_op_id, before.next_op_id + 1);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (10_000, 8_000, 2_000)
+    );
+    assert_eq!(after.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(after.group_principal, 2_000);
+    assert_eq!(
+        after.adapter_reads,
+        before.adapter_reads + 2,
+        "each of the two markets must be read from its own adapter exactly once"
+    );
+}
+
+#[test]
+fn refresh_books_exposure_over_group_cap_and_group_cap_still_gates_supply() {
+    // Both adapters already hold 1_000 each, so the absolute group cap (1_999) is below the
+    // exposure that exists. Refresh reports reality and must book it; the group cap keeps gating
+    // new supply and never blocks a withdrawal that reduces exposure.
+    let fixture = adapter_fixture(2, 2_000, 1_000);
+    set_refresh_group_cap(&fixture, 1_999);
+    set_refresh_group_membership(&fixture, 0);
+    set_refresh_group_membership(&fixture, 1);
+
+    let before = refresh_snapshot(&fixture);
+    assert_eq!(before.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(before.group_principal, 2_000);
+
+    assert_eq!(
+        refresh(&fixture, &[0, 1]),
+        Ok(2_000),
+        "observed exposure must be booked even above the group cap"
+    );
+    let after = refresh_snapshot(&fixture);
+    assert!(after.idle);
+    assert_eq!(after.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(after.group_principal, 2_000);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (10_000, 8_000, 2_000)
+    );
+    assert_eq!(after.adapter_reads, before.adapter_reads + 2);
+
+    let balances_before = balances(&fixture);
+    assert_eq!(balances_before, (8_000, 1_000));
+    assert_eq!(
+        supply_at(&fixture, 0, 1),
+        Err(templar_soroban_runtime::ContractError::InvalidState),
+        "a breached group must refuse any extra supply"
+    );
+    assert_eq!(
+        balances(&fixture),
+        balances_before,
+        "refusal must precede the transfer"
+    );
+    assert_eq!(
+        refresh_snapshot(&fixture),
+        after,
+        "a refused supply must leave vault, policy, and adapter reads untouched"
+    );
+
+    assert_eq!(
+        settle_at(&fixture, 0, 1_000),
+        Ok(1_000),
+        "an exposure-reducing withdrawal must stay permitted"
+    );
+    let reduced = refresh_snapshot(&fixture);
+    assert_eq!(reduced.principals, vec![0, 1_000, 0]);
+    assert_eq!(reduced.group_principal, 1_000);
+    assert_eq!(
+        (
+            reduced.total_assets,
+            reduced.idle_assets,
+            reduced.external_assets
+        ),
+        (10_000, 9_000, 1_000)
+    );
+    assert_eq!(balances(&fixture), (9_000, 0));
+
+    // The gate is live rather than stuck: headroom up to the cap is admitted, one unit more is not.
+    assert_eq!(supply_at(&fixture, 0, 999), Ok(1_999));
+    assert_eq!(balances(&fixture), (8_001, 999));
+    assert_eq!(
+        supply_at(&fixture, 0, 1),
+        Err(templar_soroban_runtime::ContractError::InvalidState)
+    );
+    assert_eq!(refresh_snapshot(&fixture).group_principal, 1_999);
+}
+
+#[test]
+fn refresh_books_outside_group_loss_then_atomic_redeem_pays_the_updated_nav() {
+    // Three markets, three independently reporting adapters. Market 2 sits outside the capped
+    // group and its own adapter reports a 1_000 NAV loss, which is what pushes the untouched group
+    // above its relative cap. The refresh must book that loss, supply must stay gated, and the
+    // permissionless atomic exit must price on the refreshed NAV instead of the stranded one.
+    let fixture = adapter_fixture(3, 2_000, 1_000);
+    set_refresh_group_relative_cap(&fixture, 200_000_000_000_000_000);
+    set_refresh_group_membership(&fixture, 0);
+    set_refresh_group_membership(&fixture, 1);
+    assert_eq!(
+        refresh_group_state(&fixture),
+        (2_000, 2_000),
+        "the group starts exactly at its 20% relative cap"
+    );
+
+    report_overage_at(&fixture, 2, -1_000);
+    let before = refresh_snapshot(&fixture);
+    assert_eq!(before.principals, vec![1_000, 1_000, 1_000]);
+    assert_eq!(before.group_principal, 2_000);
+    assert_eq!(
+        (
+            before.total_assets,
+            before.idle_assets,
+            before.external_assets
+        ),
+        (10_000, 7_000, 3_000)
+    );
+
+    assert_eq!(
+        refresh(&fixture, &[0, 1, 2]),
+        Ok(2_000),
+        "an out-of-group loss must be booked even when it pushes the group over cap"
+    );
+    let after = refresh_snapshot(&fixture);
+    assert!(after.idle);
+    assert_eq!(after.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (9_000, 7_000, 2_000)
+    );
+    assert_eq!(after.group_principal, 2_000);
+    assert_eq!(
+        after.adapter_reads,
+        before.adapter_reads + 3,
+        "one honest read per market, from three different adapters"
+    );
+    assert_eq!(
+        refresh_group_state(&fixture),
+        (2_000, 1_800),
+        "the loss alone is what leaves the group over its relative cap"
+    );
+
+    let balances_before = balances(&fixture);
+    assert_eq!(balances_before, (7_000, 1_000));
+    assert_eq!(
+        supply_at(&fixture, 0, 1),
+        Err(templar_soroban_runtime::ContractError::InvalidState),
+        "recording a loss must not widen the supply gate"
+    );
+    assert_eq!(balances(&fixture), balances_before);
+    assert_eq!(refresh_snapshot(&fixture), after);
+
+    let receiver = SdkAddress::generate(&fixture.env);
+    assert_eq!(
+        atomic_redeem(&fixture, &receiver, 1_000),
+        Ok(900),
+        "1_000 shares must price at 0.9 assets on the refreshed NAV, not the stranded 1.0"
+    );
+    assert_eq!(
+        StellarAssetClient::new(&fixture.env, &fixture.asset).balance(&receiver),
+        900
+    );
+    let exited = refresh_snapshot(&fixture);
+    assert_eq!(
+        (
+            exited.total_assets,
+            exited.idle_assets,
+            exited.external_assets
+        ),
+        (8_100, 6_100, 2_000)
+    );
+    assert_eq!(exited.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(exited.group_principal, 2_000);
+}
+
+#[test]
+fn refresh_after_permissionless_atomic_redemption_still_books_unchanged_exposure() {
+    // No adapter moves: an idle atomic redemption only shrinks the denominator, which is enough
+    // to put an unchanged group over its relative cap. A later refresh of the same principals
+    // must still succeed, and the gate must still refuse new supply.
+    let fixture = adapter_fixture(2, 2_000, 1_000);
+    set_refresh_group_relative_cap(&fixture, 250_000_000_000_000_000);
+    set_refresh_group_membership(&fixture, 0);
+    set_refresh_group_membership(&fixture, 1);
+    assert_eq!(refresh_group_state(&fixture), (2_000, 2_500));
+
+    let receiver = SdkAddress::generate(&fixture.env);
+    assert_eq!(atomic_redeem(&fixture, &receiver, 2_001), Ok(2_001));
+    assert_eq!(
+        StellarAssetClient::new(&fixture.env, &fixture.asset).balance(&receiver),
+        2_001
+    );
+    let redeemed = refresh_snapshot(&fixture);
+    assert_eq!(
+        (
+            redeemed.total_assets,
+            redeemed.idle_assets,
+            redeemed.external_assets
+        ),
+        (7_999, 5_999, 2_000)
+    );
+    assert_eq!(redeemed.group_principal, 2_000);
+    assert_eq!(
+        refresh_group_state(&fixture),
+        (2_000, 1_999),
+        "the redemption alone must be what pushes the group over cap"
+    );
+
+    assert_eq!(
+        refresh(&fixture, &[0, 1]),
+        Ok(2_000),
+        "an unchanged observation must refresh while a permissionless exit tightened the cap"
+    );
+    let after = refresh_snapshot(&fixture);
+    assert!(after.idle);
+    assert_eq!(after.principals, vec![1_000, 1_000, 0]);
+    assert_eq!(after.group_principal, 2_000);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (7_999, 5_999, 2_000)
+    );
+    assert_eq!(after.adapter_reads, redeemed.adapter_reads + 2);
+
+    assert_eq!(
+        supply_at(&fixture, 0, 1),
+        Err(templar_soroban_runtime::ContractError::InvalidState),
+        "the tightened cap must still refuse new supply"
+    );
+    assert_eq!(refresh_snapshot(&fixture), after);
+}
+
+#[test]
+fn refresh_idle_plus_external_overflow_is_invalid_state_and_rolls_back() {
+    // Two independent adapters each report i128::MAX under matching market caps. Their sum still
+    // fits u128, so only the idle + external aggregate overflows. The refusal must stay
+    // InvalidState and leave vault, policy, and every adapter read untouched.
+    let fixture = adapter_fixture(2, i128::MAX, 1_000);
+    let huge_overage = i128::MAX - 1_000;
+    report_overage_at(&fixture, 0, huge_overage);
+    report_overage_at(&fixture, 1, huge_overage);
+
+    let before = refresh_snapshot(&fixture);
+    assert_eq!(before.idle_assets, 8_000);
+    assert_eq!(before.external_assets, 2_000);
+
+    assert_eq!(
+        refresh(&fixture, &[0, 1]),
+        Err(templar_soroban_runtime::ContractError::InvalidState),
+        "idle + reported external overflow must keep the InvalidState public error"
+    );
+    assert_eq!(
+        refresh_snapshot(&fixture),
+        before,
+        "the refused refresh must roll back vault, policy, and adapter reads"
+    );
+
+    report_overage_at(&fixture, 0, 0);
+    report_overage_at(&fixture, 1, 0);
+    assert_eq!(refresh(&fixture, &[0, 1]), Ok(2_000));
+    let after = refresh_snapshot(&fixture);
+    assert_eq!(
+        (after.total_assets, after.idle_assets, after.external_assets),
+        (10_000, 8_000, 2_000)
+    );
+    assert_eq!(after.principals, vec![1_000, 1_000, 0]);
 }
 
 // Deposit Flow Tests
@@ -2626,16 +3550,17 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
             .expect("state present");
         assert_eq!(stored_state.total_assets, 800);
         assert_eq!(stored_state.idle_assets, 800);
+        // Reconciliation raises the checkpoint by exactly the +300 inflow and never advances time.
         assert_eq!(stored_state.fee_anchor.total_assets, 800);
         assert_eq!(
             stored_state.fee_anchor.timestamp_ns,
-            templar_vault_kernel::TimestampNs(100_000_000_000)
+            templar_vault_kernel::TimestampNs(0)
         );
     });
 }
 
 #[rstest]
-fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
+fn soroban_contract_resync_idle_balance_crystallizes_fees_before_reconciliation() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set(LedgerInfo {
@@ -2679,6 +3604,14 @@ fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
             0,
         )
         .unwrap();
+        // fee policy before the seeded anchor: a fee change re-anchors (FIND-008)
+        set_fee_policy(
+            &env,
+            &governance,
+            &performance_recipient,
+            &management_recipient,
+            0,
+        );
 
         let mut storage = SorobanStorage::new(&env);
         storage
@@ -2697,26 +3630,18 @@ fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
 
     asset_admin_client.mint(&contract_id, &(refreshed_assets as i128));
 
+    // Pre-crystallization (the ENG-700 fix) must mint the [0, RESYNC_NS] window before capital flow.
+    let crystallized_management_shares = compute_management_fee_shares(
+        STARTING_ASSETS,
+        STARTING_ASSETS,
+        STARTING_ASSETS,
+        management_fee_wad,
+        0,
+        RESYNC_NS,
+    )
+    .as_u128_saturating();
+    assert!(crystallized_management_shares > 0);
     env.as_contract(&contract_id, || {
-        proxy
-            .execute_governance_unit(
-                &governance,
-                &GovernanceCommand::SetGovernancePolicy {
-                    kind: GOVERNANCE_POLICY_KIND_FEES,
-                    target_ids: None,
-                    mode: None,
-                    accounts: Some(vec![
-                        sdk_wire(&performance_recipient),
-                        sdk_wire(&management_recipient),
-                    ]),
-                    market_id: None,
-                    cap_group_id: None,
-                    value: Some(0),
-                    value_b: Some(management_fee_wad.as_u128_trunc() as i128),
-                    value_c: None,
-                },
-            )
-            .unwrap();
         proxy
             .execute_unit(&VaultCommand::ResyncIdleBalance)
             .unwrap();
@@ -2725,6 +3650,17 @@ fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
             .load_state()
             .expect("load state")
             .expect("state present");
+        // The erased [T0, RESYNC_NS] window is minted at resync time under the stored checkpoint.
+        assert_eq!(
+            share_client.balance(&management_recipient),
+            crystallized_management_shares as i128
+        );
+        assert_eq!(
+            stored_state.total_shares,
+            STARTING_ASSETS + crystallized_management_shares
+        );
+        // Reconciliation then credits the surplus and raises the checkpoint by exactly that inflow.
+        assert_eq!(stored_state.idle_assets, refreshed_assets);
         assert_eq!(stored_state.total_assets, refreshed_assets);
         assert_eq!(
             stored_state.fee_anchor,
@@ -2744,12 +3680,13 @@ fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
     let expected_management_shares = compute_management_fee_shares(
         refreshed_assets,
         refreshed_assets,
-        STARTING_ASSETS,
+        STARTING_ASSETS + crystallized_management_shares,
         management_fee_wad,
         RESYNC_NS,
         REFRESH_NS,
     )
     .as_u128_saturating();
+    assert!(expected_management_shares > 0);
 
     env.as_contract(&contract_id, || {
         proxy.execute_unit(&VaultCommand::RefreshFees).unwrap();
@@ -2760,11 +3697,11 @@ fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
             .expect("state present");
         assert_eq!(
             stored_state.total_shares,
-            STARTING_ASSETS + expected_management_shares
+            STARTING_ASSETS + crystallized_management_shares + expected_management_shares
         );
         assert_eq!(
             share_client.balance(&management_recipient),
-            expected_management_shares as i128
+            (crystallized_management_shares + expected_management_shares) as i128
         );
         assert_eq!(share_client.balance(&performance_recipient), 0);
         assert_eq!(
@@ -2775,4 +3712,728 @@ fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
             )
         );
     });
+}
+
+const ENG700_ASSETS: u128 = 1_000_000_000_000;
+const ENG700_FEE_ANCHOR: u128 = 900_000_000_000;
+const ENG700_ZERO_FEE_ANCHOR: u128 = 1_100_000_000_000;
+const ENG700_DONATION: u128 = 100_000_000_000;
+const ENG700_SHORTFALL: u128 = 1_000_000;
+const ENG700_LEDGER_SECONDS: u64 = 63_072_000;
+const ENG700_LEDGER_NS: u64 = ENG700_LEDGER_SECONDS * 1_000_000_000;
+const ENG700_RECOVERY_SECONDS: u64 = 126_144_000;
+const ENG700_RECOVERY_NS: u64 = ENG700_RECOVERY_SECONDS * 1_000_000_000;
+const ENG700_DEPOSIT_ASSETS: i128 = 100;
+const ENG700_DONATION_DELTA: i128 = ENG700_DONATION as i128;
+const ENG700_SHORTFALL_DELTA: i128 = -(ENG700_SHORTFALL as i128);
+
+// Configure the fee legs through the governance bridge, or clear them for the zero-fee rows.
+// Callers must already be inside the vault contract context.
+fn set_fee_policy(
+    env: &Env,
+    governance: &soroban_sdk::Address,
+    performance_recipient: &soroban_sdk::Address,
+    management_recipient: &soroban_sdk::Address,
+    fee_mode: u8,
+) {
+    let (performance_fee_wad, management_fee_wad) = match fee_mode {
+        0 => (Wad::zero(), Wad::one() / 20),
+        1 => (Wad::one() / 5, Wad::zero()),
+        2 => (Wad::one() / 5, Wad::one() / 20),
+        _ => (Wad::zero(), Wad::zero()),
+    };
+    set_fee_policy_with_growth_cap(
+        env,
+        governance,
+        performance_recipient,
+        management_recipient,
+        performance_fee_wad.as_u128_trunc() as i128,
+        management_fee_wad.as_u128_trunc() as i128,
+        None,
+    );
+}
+
+// Configure the fee legs and the optional total-asset growth-rate cap through
+// the governance bridge. Callers must already be inside the vault contract
+// context.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test bridge mirrors the wire command"
+)]
+fn set_fee_policy_with_growth_cap(
+    env: &Env,
+    governance: &soroban_sdk::Address,
+    performance_recipient: &soroban_sdk::Address,
+    management_recipient: &soroban_sdk::Address,
+    performance_fee_wad: i128,
+    management_fee_wad: i128,
+    max_growth_rate_wad: Option<i128>,
+) {
+    VaultProxy::new(env)
+        .execute_governance_unit(
+            governance,
+            &GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_FEES,
+                target_ids: None,
+                mode: None,
+                accounts: Some(vec![
+                    sdk_wire(performance_recipient),
+                    sdk_wire(management_recipient),
+                ]),
+                market_id: None,
+                cap_group_id: None,
+                value: Some(performance_fee_wad),
+                value_b: Some(management_fee_wad),
+                value_c: max_growth_rate_wad,
+            },
+        )
+        .expect("configure fees");
+}
+
+struct Eng700Fixture {
+    env: Env,
+    contract_id: soroban_sdk::Address,
+    asset_token: soroban_sdk::Address,
+    share_token: soroban_sdk::Address,
+    management_recipient: soroban_sdk::Address,
+    performance_recipient: soroban_sdk::Address,
+    depositor: soroban_sdk::Address,
+}
+
+// fee_mode: 0 = management only, 1 = performance only, 2 = both, 3 = zero fees.
+fn eng700_fixture(fee_mode: u8) -> Eng700Fixture {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
+    let asset_token = env
+        .register_stellar_asset_contract_v2(soroban_sdk::Address::generate(&env))
+        .address();
+    let share_token = env
+        .register_stellar_asset_contract_v2(contract_id.clone())
+        .address();
+    let management_recipient = soroban_sdk::Address::generate(&env);
+    let performance_recipient = soroban_sdk::Address::generate(&env);
+    let depositor = soroban_sdk::Address::generate(&env);
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            governance.clone(),
+            governance.clone(),
+            asset_token.clone(),
+            share_token.clone(),
+            0,
+            0,
+        )
+        .expect("initialize");
+        // The fee policy is applied before the anchor is seeded: a fee change settles and
+        // re-anchors (FIND-008), and these tests rely on an open [T0, now] window.
+        if fee_mode != 3 {
+            set_fee_policy(
+                &env,
+                &governance,
+                &performance_recipient,
+                &management_recipient,
+                fee_mode,
+            );
+        }
+        SorobanStorage::new(&env)
+            .save_state(&VaultState {
+                total_assets: ENG700_ASSETS,
+                total_shares: ENG700_ASSETS,
+                idle_assets: ENG700_ASSETS,
+                fee_anchor: FeeAccrualAnchor::new(
+                    if fee_mode == 3 {
+                        ENG700_ZERO_FEE_ANCHOR
+                    } else {
+                        ENG700_FEE_ANCHOR
+                    },
+                    templar_vault_kernel::TimestampNs(0),
+                ),
+                ..Default::default()
+            })
+            .expect("save state");
+    });
+    Eng700Fixture {
+        env,
+        contract_id,
+        asset_token,
+        share_token,
+        management_recipient,
+        performance_recipient,
+        depositor,
+    }
+}
+
+fn eng700_set_ledger(fixture: &Eng700Fixture, timestamp: u64) {
+    fixture.env.ledger().set(LedgerInfo {
+        timestamp,
+        protocol_version: 25,
+        ..Default::default()
+    });
+}
+
+// trigger: 0 = RefreshFees, 1 = DepositWithMin, 2 = ResyncIdleBalance.
+fn eng700_run_trigger(fixture: &Eng700Fixture, trigger: u8) -> i128 {
+    let proxy = VaultProxy::new(&fixture.env);
+    let mut deposit_shares_out = 0i128;
+    fixture
+        .env
+        .as_contract(&fixture.contract_id, || match trigger {
+            0 => {
+                proxy
+                    .execute_unit(&VaultCommand::RefreshFees)
+                    .expect("refresh fees trigger");
+            }
+            2 => {
+                proxy
+                    .execute_unit(&VaultCommand::ResyncIdleBalance)
+                    .expect("resync trigger");
+            }
+            _ => {
+                let receipt = proxy
+                    .execute(&VaultCommand::DepositWithMin {
+                        owner: sdk_wire(&fixture.depositor),
+                        receiver: sdk_wire(&fixture.depositor),
+                        assets: ENG700_DEPOSIT_ASSETS,
+                        min_shares_out: 0,
+                    })
+                    .expect("deposit trigger");
+                deposit_shares_out = DepositReceipt::decode(&receipt.to_alloc_vec())
+                    .expect("deposit receipt")
+                    .shares_out;
+            }
+        });
+    deposit_shares_out
+}
+
+// The stored VaultState plus the vault asset, management recipient, performance
+// recipient, and depositor share balances.
+fn eng700_observe(fixture: &Eng700Fixture) -> (VaultState, i128, i128, i128, i128) {
+    let stored_state = fixture.env.as_contract(&fixture.contract_id, || {
+        SorobanStorage::new(&fixture.env)
+            .load_state()
+            .expect("load state")
+            .expect("state present")
+    });
+    let share_client = soroban_sdk::token::Client::new(&fixture.env, &fixture.share_token);
+    (
+        stored_state,
+        soroban_sdk::token::Client::new(&fixture.env, &fixture.asset_token)
+            .balance(&fixture.contract_id),
+        share_client.balance(&fixture.management_recipient),
+        share_client.balance(&fixture.performance_recipient),
+        share_client.balance(&fixture.depositor),
+    )
+}
+
+// A configured leg must be strictly positive and a disabled leg strictly zero;
+// every minted share must reach a configured recipient or a deposit receiver.
+fn eng700_assert_fees(
+    fee_mode: u8,
+    total_shares: i128,
+    management: i128,
+    performance: i128,
+    deposit_shares: i128,
+) {
+    let management_configured = matches!(fee_mode, 0 | 2);
+    let performance_configured = matches!(fee_mode, 1 | 2);
+    assert_eq!(
+        (management > 0, management == 0),
+        (management_configured, !management_configured),
+        "management leg must mint exactly when configured"
+    );
+    assert_eq!(
+        (performance > 0, performance == 0),
+        (performance_configured, !performance_configured),
+        "performance leg must mint exactly when configured"
+    );
+    assert_eq!(
+        total_shares,
+        ENG700_ASSETS as i128 + management + performance + deposit_shares,
+        "supply must equal the seeded supply plus crystallized and purchased shares only"
+    );
+}
+
+// One trigger step against the given fixture: fund the vault at the checkpoint
+// plus delta, crystallize elapsed fees, execute the trigger, reconcile the live
+// balance, and pin the fee legs, restated assets, and checkpoint.
+fn eng700_step(
+    fixture: &Eng700Fixture,
+    trigger: u8,
+    fee_mode: u8,
+    delta: i128,
+) -> (VaultState, i128, i128, i128, i128) {
+    StellarAssetClient::new(&fixture.env, &fixture.asset_token)
+        .mint(&fixture.contract_id, &(ENG700_ASSETS as i128 + delta));
+    if trigger == 1 {
+        StellarAssetClient::new(&fixture.env, &fixture.asset_token)
+            .mint(&fixture.depositor, &ENG700_DEPOSIT_ASSETS);
+    }
+    eng700_set_ledger(fixture, ENG700_LEDGER_SECONDS);
+    let deposit_shares = eng700_run_trigger(fixture, trigger);
+    let (stored, vault_balance, management, performance, depositor) = eng700_observe(fixture);
+    assert_eq!(deposit_shares > 0, trigger == 1);
+    assert_eq!(depositor, deposit_shares);
+    eng700_assert_fees(
+        fee_mode,
+        stored.total_shares as i128,
+        management,
+        performance,
+        deposit_shares,
+    );
+    let deposit_inflow = if trigger == 1 {
+        ENG700_DEPOSIT_ASSETS
+    } else {
+        0
+    };
+    let restated = ENG700_ASSETS as i128 + deposit_inflow + delta;
+    assert_eq!(
+        (
+            stored.idle_assets as i128,
+            stored.total_assets as i128,
+            vault_balance
+        ),
+        (restated, restated, restated)
+    );
+    // Crystallization moves the checkpoint to the recorded total at trigger time, and a deposit
+    // rewrites it to the post-deposit total. With fees unconfigured, only a matched-balance fee
+    // refresh re-anchors; reconciliation itself adds a positive inflow on top of the checkpoint
+    // and preserves its timestamp, and never lowers the checkpoint for an outflow.
+    let re_anchored = fee_mode != 3 || trigger == 1 || (delta == 0 && trigger == 0);
+    let checkpoint = if trigger == 1 {
+        ENG700_ASSETS as i128 + deposit_inflow
+    } else if re_anchored {
+        ENG700_ASSETS as i128
+    } else {
+        ENG700_ZERO_FEE_ANCHOR as i128
+    };
+    assert_eq!(
+        stored.fee_anchor,
+        FeeAccrualAnchor::new(
+            (checkpoint + delta.max(0)) as u128,
+            templar_vault_kernel::TimestampNs(if re_anchored { ENG700_LEDGER_NS } else { 0 }),
+        ),
+    );
+    (stored, vault_balance, management, performance, depositor)
+}
+
+fn eng700_check(trigger: u8, fee_mode: u8, delta: i128) -> (VaultState, i128, i128, i128, i128) {
+    let fixture = eng700_fixture(fee_mode);
+    eng700_step(&fixture, trigger, fee_mode, delta)
+}
+
+#[rstest]
+fn soroban_contract_eng700_triggers_crystallize_before_balance_actions(
+    #[values(0u8, 1u8, 2u8)] trigger: u8,
+    #[values(0u8, 1u8, 2u8, 3u8)] fee_mode: u8,
+) {
+    eng700_check(trigger, fee_mode, 0);
+}
+
+#[rstest]
+fn soroban_contract_eng700_mismatch_reconciles_as_capital_flow(
+    #[values(0u8, 2u8)] trigger: u8,
+    #[values(0u8, 1u8, 2u8, 3u8)] fee_mode: u8,
+    #[values(ENG700_DONATION_DELTA, ENG700_SHORTFALL_DELTA)] delta: i128,
+) {
+    eng700_check(trigger, fee_mode, delta);
+}
+
+// Paired undisturbed and one-unit-donation runs must crystallize identical fee
+// legs and mint identical deposit shares, because crystallization and share
+// pricing run against the persisted accounting before reconciliation credits the
+// inflow, and a one-unit base cannot move any truncated leg or purchase. Zero
+// rounding tolerance: a leg that is zeroed by reconciliation-first handling or
+// whole-anchor replacement, or deposit shares minted against reconciled
+// accounting, trips these exact balance comparisons.
+#[rstest]
+fn soroban_contract_eng700_one_unit_donation_preserves_crystallized_fees_and_deposit_shares(
+    #[values(0u8, 1u8)] trigger: u8,
+    #[values(0u8, 1u8, 2u8)] fee_mode: u8,
+) {
+    let (.., control_management, control_performance, control_depositor) =
+        eng700_check(trigger, fee_mode, 0);
+    let (.., donation_management, donation_performance, donation_depositor) =
+        eng700_check(trigger, fee_mode, 1);
+    assert_eq!(
+        donation_management, control_management,
+        "a donated unit must not alter the management fee leg"
+    );
+    assert_eq!(
+        donation_performance, control_performance,
+        "a donated unit must not alter the performance fee leg"
+    );
+    assert_eq!(
+        donation_depositor, control_depositor,
+        "deposit shares must not be minted against reconciled accounting"
+    );
+}
+
+#[rstest]
+fn soroban_contract_eng700_loss_then_recovery_resyncs_keep_checkpoint_and_charge_zero_recovery_fees(
+) {
+    let fixture = eng700_fixture(2);
+    // The checkpoint follows the pre-loss accounting, so the loss is not recoverable profit.
+    let (.., lost_performance, _) = eng700_step(&fixture, 2, 2, -ENG700_DONATION_DELTA);
+
+    StellarAssetClient::new(&fixture.env, &fixture.asset_token)
+        .mint(&fixture.contract_id, &ENG700_DONATION_DELTA);
+    eng700_set_ledger(&fixture, ENG700_RECOVERY_SECONDS);
+    eng700_run_trigger(&fixture, 2);
+    let (recovered, recovered_balance, recovered_management, recovered_performance, _) =
+        eng700_observe(&fixture);
+    assert_eq!(
+        recovered_performance, lost_performance,
+        "recovery inflow must not be charged as performance profit"
+    );
+    eng700_assert_fees(
+        2,
+        recovered.total_shares as i128,
+        recovered_management,
+        recovered_performance,
+        0,
+    );
+    let restored = ENG700_ASSETS as i128;
+    assert_eq!(
+        (
+            recovered.idle_assets as i128,
+            recovered.total_assets as i128,
+            recovered_balance
+        ),
+        (restored, restored, restored)
+    );
+    assert_eq!(
+        recovered.fee_anchor,
+        FeeAccrualAnchor::new(
+            ENG700_ASSETS,
+            templar_vault_kernel::TimestampNs(ENG700_RECOVERY_NS)
+        )
+    );
+}
+
+// Same-ledger fee ordering regression.
+//
+// Every step runs at one ledger timestamp. A public `DepositWithMin` creates
+// the fee checkpoint, `Allocate` deploys the balance, `RefreshMarkets` books
+// an external market gain against that checkpoint, real tokens are donated to
+// the vault, and a deposit is then previewed and executed with
+// `min_shares_out = preview`. The accrued performance fee must crystallize
+// against the pre-donation accounting before the donation is reconciled, so
+// the performance recipient owns exactly the shares earned by the market gain,
+// the donation is never charged as profit, and the preview cannot drift from
+// execution.
+const SAME_LEDGER_TS_SECONDS: u64 = 100;
+const SAME_LEDGER_TS_NS: u64 = SAME_LEDGER_TS_SECONDS * 1_000_000_000;
+const SAME_LEDGER_SEED_DEPOSIT: i128 = 1_000;
+const SAME_LEDGER_DEPLOYED: i128 = 1_000;
+const SAME_LEDGER_GAIN: i128 = 500;
+const SAME_LEDGER_DONATION: i128 = 1_500;
+const SAME_LEDGER_PURCHASE: i128 = 1_000;
+
+/// Reports the asset tokens it actually holds, so minting to it models an
+/// external market whose value rises.
+#[contract]
+pub struct BalanceReportingAdapter;
+
+#[contractimpl]
+impl BalanceReportingAdapter {
+    pub fn supply(_env: Env, _vault: SdkAddress, _asset: SdkAddress, _amount: i128) {}
+
+    pub fn total_assets(env: Env, asset: SdkAddress) -> i128 {
+        soroban_sdk::token::Client::new(&env, &asset).balance(&env.current_contract_address())
+    }
+}
+
+struct SameLedgerFixture {
+    env: Env,
+    contract_id: SdkAddress,
+    asset_token: SdkAddress,
+    share_token: SdkAddress,
+    adapter: SdkAddress,
+    allocator: SdkAddress,
+    performance_recipient: SdkAddress,
+    management_recipient: SdkAddress,
+    depositor: SdkAddress,
+}
+
+fn same_ledger_fixture(max_growth_rate_wad: Option<i128>) -> SameLedgerFixture {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: SAME_LEDGER_TS_SECONDS,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let allocator = SdkAddress::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&allocator, &contract_id, &(0u64)),
+    );
+    let asset_token = env
+        .register_stellar_asset_contract_v2(SdkAddress::generate(&env))
+        .address();
+    let share_token = env
+        .register_stellar_asset_contract_v2(contract_id.clone())
+        .address();
+    let adapter = env.register(BalanceReportingAdapter, ());
+    let performance_recipient = SdkAddress::generate(&env);
+    let management_recipient = SdkAddress::generate(&env);
+    let depositor = SdkAddress::generate(&env);
+
+    let proxy = VaultProxy::new(&env);
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            governance.clone(),
+            governance.clone(),
+            asset_token.clone(),
+            share_token.clone(),
+            0,
+            0,
+        )
+        .expect("initialize");
+    });
+    // The test host permits one authorization per contract frame, so every
+    // governance command runs in its own frame.
+    env.as_contract(&contract_id, || {
+        set_fee_policy_with_growth_cap(
+            &env,
+            &governance,
+            &performance_recipient,
+            &management_recipient,
+            (Wad::one() / 5).as_u128_trunc() as i128,
+            0,
+            max_growth_rate_wad,
+        );
+    });
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute_governance_unit(
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+                    primary: None,
+                    many: Some(vec![sdk_wire(&allocator)]),
+                    value_a: None,
+                    value_b: None,
+                },
+            )
+            .expect("configure allocators");
+    });
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        let mut policy_state = storage
+            .load_policy_state()
+            .expect("load policy state")
+            .unwrap_or_default();
+        policy_state
+            .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+            .expect("configure market");
+        storage
+            .save_policy_state(&policy_state)
+            .expect("save policy state");
+    });
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute_governance_unit(
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+                    primary: None,
+                    many: Some(vec![sdk_wire(&adapter)]),
+                    value_a: None,
+                    value_b: None,
+                },
+            )
+            .expect("allow adapter");
+    });
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute_governance_unit(
+                &governance,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(vec![0u32]),
+                    mode: None,
+                    accounts: Some(vec![sdk_wire(&adapter)]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                },
+            )
+            .expect("configure supply queue");
+    });
+
+    SameLedgerFixture {
+        env,
+        contract_id,
+        asset_token,
+        share_token,
+        adapter,
+        allocator,
+        performance_recipient,
+        management_recipient,
+        depositor,
+    }
+}
+
+#[rstest]
+// Cases: gain booked at the checkpoint ledger, growth-rate cap, expected accrued
+// fee shares, expected purchase shares. Uncapped, the 20% fee on the 500 gain
+// is 100 assets, so the pre-donation base of 1500 assets and 1000 shares mints
+// floor(100 * 1000 / (1500 - 100)) = 71 fee shares, and the 1000-asset purchase
+// then takes floor(1000 * 1071 / 3000) = 357. A configured cap clamps the
+// zero-elapsed fee base back to the checkpoint, so nothing is chargeable and the
+// purchase is plain pro-rata floor(1000 * 1000 / 3000) = 333. With no gain the
+// donation is pure capital flow: zero fee shares and floor(1000 * 1000 / 2500).
+#[case(0i128, None, 0u128, 400u128)]
+#[case(SAME_LEDGER_GAIN, None, 71u128, 357u128)]
+#[case(SAME_LEDGER_GAIN, Some((Wad::one() / 5).as_u128_trunc() as i128), 0u128, 333u128)]
+fn soroban_contract_same_ledger_gain_crystallizes_fees_before_donation_and_deposit(
+    #[case] gain: i128,
+    #[case] max_growth_rate_wad: Option<i128>,
+    #[case] expected_fee_shares: u128,
+    #[case] expected_purchase_shares: u128,
+) {
+    let fixture = same_ledger_fixture(max_growth_rate_wad);
+    let env = &fixture.env;
+    let proxy = VaultProxy::new(env);
+    let asset_admin = StellarAssetClient::new(env, &fixture.asset_token);
+    let share_client = soroban_sdk::token::Client::new(env, &fixture.share_token);
+
+    asset_admin.mint(
+        &fixture.depositor,
+        &(SAME_LEDGER_SEED_DEPOSIT + SAME_LEDGER_PURCHASE),
+    );
+
+    // 1. A public deposit creates the fee checkpoint at this ledger.
+    let seed_shares = env.as_contract(&fixture.contract_id, || {
+        let receipt = proxy
+            .execute(&VaultCommand::DepositWithMin {
+                owner: sdk_wire(&fixture.depositor),
+                receiver: sdk_wire(&fixture.depositor),
+                assets: SAME_LEDGER_SEED_DEPOSIT,
+                min_shares_out: 0,
+            })
+            .expect("anchoring deposit");
+        DepositReceipt::decode(&receipt.to_alloc_vec())
+            .expect("anchoring deposit receipt")
+            .shares_out
+    });
+    assert_eq!(seed_shares, SAME_LEDGER_SEED_DEPOSIT);
+
+    // 2. Deploy the whole balance, then book the external market gain at the
+    //    same ledger through the public refresh command.
+    env.as_contract(&fixture.contract_id, || {
+        proxy
+            .execute(&VaultCommand::Allocate {
+                caller: sdk_wire(&fixture.allocator),
+                market: 0,
+                amount: SAME_LEDGER_DEPLOYED,
+                supply: true,
+            })
+            .expect("deploy to market");
+    });
+    if gain > 0 {
+        asset_admin.mint(&fixture.adapter, &gain);
+    }
+    env.as_contract(&fixture.contract_id, || {
+        proxy
+            .execute(&VaultCommand::RefreshMarkets {
+                caller: sdk_wire(&fixture.allocator),
+                markets: vec![0u32],
+            })
+            .expect("refresh markets");
+    });
+
+    // 3. A donation of real tokens arrives. Reconciliation must treat it as a
+    //    capital flow, never as profit.
+    asset_admin.mint(&fixture.contract_id, &SAME_LEDGER_DONATION);
+
+    // Expected state: the purchase is priced after crystallization against the
+    // recorded pre-donation total, and after the donation is credited.
+    let recorded_pre_donation_assets = (SAME_LEDGER_SEED_DEPOSIT + gain) as u128;
+    let shares_after_crystallization = seed_shares as u128 + expected_fee_shares;
+    let reconciled_assets = recorded_pre_donation_assets + SAME_LEDGER_DONATION as u128;
+
+    // 4. Preview and execute at the same ledger, pinned to the preview.
+    let preview = env.as_contract(&fixture.contract_id, || {
+        proxy
+            .preview_deposit(SAME_LEDGER_PURCHASE)
+            .expect("preview deposit")
+    });
+    assert_eq!(
+        preview as u128, expected_purchase_shares,
+        "preview must price the purchase against the post-crystallization, post-reconciliation rate"
+    );
+
+    let executed = env.as_contract(&fixture.contract_id, || {
+        let receipt = proxy
+            .execute(&VaultCommand::DepositWithMin {
+                owner: sdk_wire(&fixture.depositor),
+                receiver: sdk_wire(&fixture.depositor),
+                assets: SAME_LEDGER_PURCHASE,
+                min_shares_out: preview,
+            })
+            .expect("deposit pinned to the preview must not slip");
+        DepositReceipt::decode(&receipt.to_alloc_vec())
+            .expect("deposit receipt")
+            .shares_out
+    });
+    assert_eq!(
+        executed, preview,
+        "execution must mint exactly the previewed shares"
+    );
+
+    // The fee recipient owns exactly the shares accrued against the
+    // pre-donation market gain: not diluted by the donation, not charged on it,
+    // and not re-anchored away uncharged when uncapped.
+    assert_eq!(
+        share_client.balance(&fixture.performance_recipient),
+        expected_fee_shares as i128,
+        "performance recipient must own the pre-donation accrued shares"
+    );
+    assert_eq!(
+        share_client.balance(&fixture.management_recipient),
+        0,
+        "no management leg is configured"
+    );
+
+    let stored = env.as_contract(&fixture.contract_id, || {
+        SorobanStorage::new(env)
+            .load_state()
+            .expect("load state")
+            .expect("state present")
+    });
+    let expected_total_assets = reconciled_assets + SAME_LEDGER_PURCHASE as u128;
+    assert_eq!(stored.total_assets, expected_total_assets);
+    assert_eq!(
+        stored.total_shares,
+        shares_after_crystallization + expected_purchase_shares
+    );
+    assert_eq!(
+        stored.idle_assets,
+        SAME_LEDGER_DONATION as u128 + SAME_LEDGER_PURCHASE as u128
+    );
+    assert_eq!(
+        stored.external_assets,
+        (SAME_LEDGER_DEPLOYED + gain) as u128
+    );
+    assert_eq!(
+        stored.fee_anchor,
+        FeeAccrualAnchor::new(
+            expected_total_assets,
+            templar_vault_kernel::TimestampNs(SAME_LEDGER_TS_NS)
+        ),
+        "the deposit re-anchors at the post-deposit total on this ledger"
+    );
 }

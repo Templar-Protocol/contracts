@@ -1,6 +1,6 @@
 [package]
 name = "templar-gateway-oracle-updates-spec"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-gateway-macros.workspace = true
+templar-gateway-methods-spec.workspace = true
 templar-gateway-types.workspace = true
 templar-universal-account.workspace = true
 

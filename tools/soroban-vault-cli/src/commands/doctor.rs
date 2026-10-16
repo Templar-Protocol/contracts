@@ -7,7 +7,10 @@ use std::{
 };
 
 use crate::{
-    artifacts::ArtifactSpec,
+    artifacts::{
+        inspect_existing_release_artifact, release_cache_root, ArtifactSpec,
+        ExistingReleaseArtifact, RELEASE_REPO, RELEASE_TAG,
+    },
     cli::Cli,
     stellar::{keys_address_source_account_args, CommandExecutor},
 };
@@ -62,6 +65,7 @@ pub(super) fn run_doctor<E: CommandExecutor>(context: &CommandContext<'_, E>) ->
 
     checks.push(source_account_doctor_check(context));
     checks.push(manifest_writable_check(&cli.state));
+    checks.push(artifact_cache_writable_check());
     checks.extend(artifact_doctor_checks(cli));
     checks.extend(docker_mount_checks(cli));
 
@@ -128,80 +132,107 @@ pub(super) fn manifest_writable_check(path: &Path) -> DoctorCheck {
             format!("manifest path {} has no parent directory", path.display()),
         );
     };
-    if !parent.exists() {
+    writable_dir_check("manifest_writable", "manifest", parent)
+}
+
+pub(super) fn artifact_cache_writable_check() -> DoctorCheck {
+    let root = match release_cache_root() {
+        Ok(root) => root,
+        Err(error) => return DoctorCheck::fail("artifact_cache_writable", format!("{error:#}")),
+    };
+    writable_dir_check("artifact_cache_writable", "artifact cache root", &root)
+}
+
+/// Shared probe: warn when the directory does not exist yet (deploy will
+/// create it), fail when it is not a directory, else create/remove a probe
+/// file.
+pub(super) fn writable_dir_check(name: &str, what: &str, dir: &Path) -> DoctorCheck {
+    if !dir.exists() {
         return DoctorCheck::warn(
-            "manifest_writable",
+            name,
             format!(
-                "manifest directory {} does not exist yet; deploy will try to create it",
-                parent.display()
+                "{what} {} does not exist yet; deploy will try to create it",
+                dir.display()
             ),
         );
     }
-    if !parent.is_dir() {
-        return DoctorCheck::fail(
-            "manifest_writable",
-            format!("manifest parent {} is not a directory", parent.display()),
-        );
+    if !dir.is_dir() {
+        return DoctorCheck::fail(name, format!("{what} {} is not a directory", dir.display()));
     }
-
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let probe = parent.join(format!(
+    let probe = dir.join(format!(
         ".tmplr-soroban-vault-cli-write-test-{}-{nanos}",
         std::process::id()
     ));
     match OpenOptions::new().write(true).create_new(true).open(&probe) {
         Ok(_) => {
             let _ = fs::remove_file(&probe);
-            DoctorCheck::pass(
-                "manifest_writable",
-                format!("manifest directory {} is writable", parent.display()),
-            )
+            DoctorCheck::pass(name, format!("{what} {} is writable", dir.display()))
         }
         Err(error) => DoctorCheck::fail(
-            "manifest_writable",
-            format!(
-                "cannot write manifest directory {}: {error}",
-                parent.display()
-            ),
+            name,
+            format!("cannot write {what} {}: {error}", dir.display()),
         ),
     }
 }
 
 pub(super) fn artifact_doctor_checks(cli: &Cli) -> Vec<DoctorCheck> {
-    let workspace_manifest = cli.workspace_path.join("Cargo.toml");
+    // Offline, zero-residue readiness probe: read-only inspection of the
+    // release cache and workspace seed. No directories are created, nothing
+    // is downloaded, and no state is mutated.
     ArtifactSpec::stack_artifacts(true, true)
         .into_iter()
-        .map(|spec| {
-            let wasm_path = spec.wasm_path(&cli.workspace_path);
-            if wasm_path.exists() {
-                DoctorCheck::pass(
-                    format!("artifact_{}", spec.key),
-                    format!("found {}", wasm_path.display()),
-                )
-            } else if workspace_manifest.exists() {
-                DoctorCheck::warn(
-                    format!("artifact_{}", spec.key),
-                    format!(
-                        "{} is missing; deploy --build can build package {}",
-                        wasm_path.display(),
-                        spec.package
-                    ),
-                )
-            } else {
-                DoctorCheck::fail(
-                    format!("artifact_{}", spec.key),
-                    format!(
-                        "{} is missing and {} was not found",
-                        wasm_path.display(),
-                        workspace_manifest.display()
-                    ),
-                )
-            }
-        })
+        .map(
+            |spec| match inspect_existing_release_artifact(&cli.workspace_path, spec) {
+                Ok(existing) => artifact_check(&spec, &existing),
+                Err(error) => {
+                    DoctorCheck::fail(format!("artifact_{}", spec.key), format!("{error:#}"))
+                }
+            },
+        )
         .collect()
+}
+
+pub(super) fn artifact_check(
+    spec: &ArtifactSpec,
+    existing: &ExistingReleaseArtifact,
+) -> DoctorCheck {
+    let name = format!("artifact_{}", spec.key);
+    match existing {
+        ExistingReleaseArtifact::Cache { path, sha256 }
+        | ExistingReleaseArtifact::WorkspaceSeed { path, sha256 } => DoctorCheck::pass(
+            name,
+            format!(
+                "verified release pin at {} (sha256 {sha256})",
+                path.display()
+            ),
+        ),
+        ExistingReleaseArtifact::IgnoredWorkspace {
+            cache_path,
+            workspace_path,
+            reason,
+        } => DoctorCheck::warn(
+            name,
+            format!(
+                "workspace output {} is not the pinned release ({reason}) and will be ignored; deploy downloads {RELEASE_TAG} from {RELEASE_REPO} into {}",
+                workspace_path.display(),
+                cache_path.display()
+            ),
+        ),
+        ExistingReleaseArtifact::Missing { cache_path } => DoctorCheck::warn(
+            name,
+            format!(
+                "{} is not cached and no verified workspace seed exists; deploy downloads the \
+                 pinned release {RELEASE_TAG} from {RELEASE_REPO} GitHub releases, or deploy \
+                 --build builds package {}",
+                cache_path.display(),
+                spec.package
+            ),
+        ),
+    }
 }
 
 pub(super) fn docker_mount_checks(cli: &Cli) -> Vec<DoctorCheck> {

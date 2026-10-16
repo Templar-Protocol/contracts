@@ -47,6 +47,7 @@ pub enum GovernanceActionKind {
     Other,
     WithdrawalCooldown,
     IdleResyncCooldown,
+    MaxNavAge,
 }
 
 #[contracttype]
@@ -124,6 +125,7 @@ pub enum GovernanceAction {
     Other(Symbol, BytesN<32>),
     SetWithdrawalCooldown(u64),
     SetIdleResyncCooldown(u64),
+    SetMaxNavAge(u64),
 }
 
 #[contracttype]
@@ -150,4 +152,5 @@ pub enum GovernanceError {
     TimelockOutOfBounds = 9,
     OtherNotApproved = 10,
     Abdicated = 11,
+    ProposalExpired = 12,
 }

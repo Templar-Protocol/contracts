@@ -120,7 +120,6 @@ macro_rules! for_each_read_method {
         $callback!($crate::registry::GetDeployment);
         $callback!($crate::registry::GetRegistryEntry);
         $callback!($crate::registry::GetVersion);
-        $callback!($crate::registry::GetVersionCodeHash);
         $callback!($crate::registry::ListDeployments);
         $callback!($crate::registry::ListDeploymentsByKind);
         $callback!($crate::registry::ListVersions);

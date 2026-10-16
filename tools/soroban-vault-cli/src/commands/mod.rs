@@ -4,6 +4,7 @@ mod adapter;
 mod audit;
 mod context;
 mod curator;
+mod cutover;
 mod deploy;
 mod doctor;
 mod governance;
@@ -13,6 +14,7 @@ mod output;
 mod safety;
 mod share_token;
 mod ttl;
+mod upgrade;
 mod user;
 mod vault_ops;
 
@@ -31,6 +33,7 @@ use adapter::run_adapter;
 use audit::{command_name, transaction_record};
 use context::CommandContext;
 use curator::run_curator;
+use cutover::run_upgrade;
 use deploy::run_reconcile;
 use doctor::run_doctor;
 use governance::run_governance;
@@ -83,6 +86,7 @@ pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
             unreachable!("handled before manifest load")
         }
         Commands::Deploy(args) => deploy::run(&context, &mut manifest, args),
+        Commands::Upgrade(args) => run_upgrade(&context, &mut manifest, &args.command),
         Commands::Reconcile(args) => Ok(run_reconcile(&context, &manifest, args)),
         Commands::User(args) => run_user(&context, &manifest, &args.command),
         Commands::Curator(args) => run_curator(&context, &manifest, &args.command),

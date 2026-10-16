@@ -1,4 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Env};
+use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_curator_primitives::MarketConfig;
 use templar_soroban_runtime::{
     contract::{
@@ -48,6 +49,13 @@ fn configure_market_zero(vault: &mut SorobanTestVault<'_>) {
     vault
         .policy_state_mut()
         .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .replace_supply_queue(
+            SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(0, 1).unwrap()], None)
+                .unwrap(),
+        )
         .unwrap();
     let policy_state = vault.policy_state().clone();
     vault.storage.save_policy_state(&policy_state).unwrap();

@@ -173,5 +173,6 @@ Re-running re-hashes and resumes one unresolved envelope by its transaction
 hash. Use `--reinitialize` only to deliberately discard that state and plan new
 contract IDs; destructive reset refuses an unmarked non-empty output directory.
 
-All five contracts build through `stellar contract build` with the pinned
-toolchain. Plain `cargo build` is not the release path.
+All five contracts build through `stellar contract build` with Soroban Rust
+1.99.0; host tests still use the workspace toolchain. Plain `cargo build` is not
+the release path.

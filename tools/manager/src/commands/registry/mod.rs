@@ -42,9 +42,9 @@ pub enum RegistryNs {
     RemoveVersion(RemoveVersion),
     /// Remove every version from the registry, then delete the (signer) account.
     Remove(Remove),
-    /// Upgrade a registry that predates versioned state onto a released registry, migrating its
-    /// state in the same transaction. Submits nothing unless every check passes, including a
-    /// sandbox replay of the exact transaction against the registry's complete state.
+    /// Upgrade a registry onto a released registry through its owner-only `upgrade`. Submits
+    /// nothing unless every check passes, including a sandbox replay of the exact transaction
+    /// against the registry's complete state.
     Upgrade(Upgrade),
     /// Remove every market deployed from the registry (signing as each with the
     /// shared `--secret-key`).

@@ -194,7 +194,7 @@ mod tests {
             signer_id: signer.parse().expect("valid account"),
             receiver_id: "registry.near".parse().expect("valid account"),
             function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
+                method_name: "deploy".to_owned(),
                 args: PlanArgs::Json(serde_json::json!({})),
                 gas,
                 deposit,

@@ -3,7 +3,6 @@ use super::helpers::{
 };
 use super::*;
 use templar_curator_primitives::policy::state::PolicyStateError;
-use templar_vault_kernel::abort;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
 #[derive(Clone, Copy)]
@@ -171,6 +170,21 @@ where
             virtual_shares: self.config.virtual_shares,
             virtual_assets: self.config.virtual_assets,
         }
+    }
+
+    /// Whether accrued fees must crystallize before a value transfer or an
+    /// observed-balance reconciliation at `now_ns`. A strictly later ledger
+    /// always crystallizes elapsed fees; an equal-ledger transfer crystallizes
+    /// only a performance fee that is actually due against the checkpoint, so
+    /// a gain booked at the checkpoint timestamp cannot be re-priced uncharged.
+    pub(super) fn fees_due_for_value_transfer(&self, now_ns: u64) -> Result<bool, RuntimeError> {
+        Ok(
+            templar_vault_kernel::should_refresh_fees_for_value_transfer(
+                self.state()?,
+                &self.kernel_config(),
+                TimestampNs(now_ns),
+            ),
+        )
     }
 
     #[inline(never)]
@@ -434,7 +448,7 @@ where
         receiver: &SdkAddress,
         owner: &SdkAddress,
         operator: &SdkAddress,
-    ) -> Result<(Address, Address, Address, u64, EffectSummary), RuntimeError> {
+    ) -> Result<(Address, Address, Address, u64), RuntimeError> {
         require_signed(operator);
         self.ensure_vault_mapped(env)?;
         let owner_kernel = self.register_sdk_address(env, owner)?;
@@ -442,25 +456,7 @@ where
         let operator_kernel = self.register_sdk_address(env, operator)?;
         let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
 
-        let mut summary = EffectSummary::new();
-        let fees_active = !self.config.fees.management.fee_wad.is_zero()
-            || !self.config.fees.performance.fee_wad.is_zero();
-        if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns.as_u64() {
-            summary.merge(self.apply_kernel_action(
-                KernelAction::RefreshFees {
-                    now_ns: TimestampNs(now_ns),
-                },
-                now_ns,
-            )?);
-        }
-
-        Ok((
-            owner_kernel,
-            receiver_kernel,
-            operator_kernel,
-            now_ns,
-            summary,
-        ))
+        Ok((owner_kernel, receiver_kernel, operator_kernel, now_ns))
     }
 
     fn atomic_withdraw_effects(
@@ -521,17 +517,17 @@ where
             return Err(RuntimeError::invalid_input(""));
         }
 
-        let (owner_kernel, receiver_kernel, operator_kernel, now_ns, mut summary) =
+        let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
             self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        summary.merge(self.atomic_withdraw_effects(
+        let summary = self.atomic_withdraw_effects(
             owner_kernel,
             receiver_kernel,
             operator_kernel,
             to_u128(assets).map_err(|_| RuntimeError::invalid_input(""))?,
             to_u128(max_shares_burned).map_err(|_| RuntimeError::invalid_input(""))?,
             now_ns,
-        )?);
+        )?;
         to_i128(summary.shares_burned).map_err(|_| RuntimeError::invalid_input(""))
     }
 
@@ -549,17 +545,17 @@ where
             return Err(RuntimeError::invalid_input(""));
         }
 
-        let (owner_kernel, receiver_kernel, operator_kernel, now_ns, mut summary) =
+        let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
             self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        summary.merge(self.atomic_redeem_effects(
+        let summary = self.atomic_redeem_effects(
             owner_kernel,
             receiver_kernel,
             operator_kernel,
             to_u128(shares).map_err(|_| RuntimeError::invalid_input(""))?,
             to_u128(min_assets_out).map_err(|_| RuntimeError::invalid_input(""))?,
             now_ns,
-        )?);
+        )?;
         to_i128(summary.assets_transferred).map_err(|_| RuntimeError::invalid_input(""))
     }
 
@@ -575,7 +571,7 @@ where
         let assets_out = idle_payout.assets_out;
         let burn_shares = idle_payout.burn_shares;
         let op_id = idle_payout.op_id;
-        let completed = CompletedWithdrawal {
+        let mut completed = CompletedWithdrawal {
             request_id: idle_payout.request_id,
             owner: idle_payout.owner,
             receiver: idle_payout.receiver,
@@ -601,13 +597,23 @@ where
             amount: assets_out,
         }];
         self.ensure_effect_addresses_mapped(&transfer_effects, &ctx)?;
-        let transfer_summary = self.interpreter.execute_effects(&transfer_effects, &ctx)?;
-        summary.merge(transfer_summary);
+        // A receiver that cannot accept the asset must not wedge the FIFO queue: a failed
+        // transfer settles as Failure, which refunds the escrow and dequeues the head.
+        let outcome = match self.interpreter.execute_effects(&transfer_effects, &ctx) {
+            Ok(transfer_summary) => {
+                summary.merge(transfer_summary);
+                PayoutOutcome::Success
+            }
+            Err(RuntimeError::EffectFailed) => {
+                completed.assets_out = 0;
+                completed.shares_burned = 0;
+                PayoutOutcome::Failure
+            }
+            Err(err) => return Err(err),
+        };
 
-        let settle_summary = self.apply_kernel_action(
-            KernelAction::settle_payout(op_id, PayoutOutcome::Success),
-            now_ns,
-        )?;
+        let settle_summary =
+            self.apply_kernel_action(KernelAction::settle_payout(op_id, outcome), now_ns)?;
         summary.merge(settle_summary);
 
         Ok(ExecuteWithdrawResult::Payout { summary, completed })
@@ -683,6 +689,12 @@ where
         caller: Address,
         decision: SupplyAllocationDecision,
     ) -> Result<AllocationResult, RuntimeError> {
+        let pre_allocation_total_assets = self.state()?.total_assets;
+        self.validate_supply_admission(
+            decision.market,
+            decision.amount,
+            pre_allocation_total_assets,
+        )?;
         let op_id = self.begin_allocation_internal(
             caller,
             &[AllocationPlanEntry::new(decision.market, decision.amount)],
@@ -694,6 +706,7 @@ where
             decision.observed_total_assets,
             op_id,
             0,
+            pre_allocation_total_assets,
         )?;
         Ok(Self::allocation_result(op_id, new_external_assets))
     }
@@ -704,8 +717,22 @@ where
         decision: WithdrawAllocationDecision,
     ) -> Result<AllocationResult, RuntimeError> {
         let op_id = self.begin_allocation_withdraw_internal(caller, decision.market, 0)?;
-        let new_external_assets =
-            self.complete_withdraw_allocation(caller, decision.market, decision.amount, op_id, 0)?;
+        // No adapter here: the remaining position is principal less the withdrawal, mirroring
+        // the supply branch's `principal + amount` observation.
+        let remaining_value = self
+            .policy_state()
+            .principal_for(decision.market)
+            .ok_or_else(|| invalid_state_error("unknown market principal on withdraw"))?
+            .checked_sub(decision.amount)
+            .ok_or_else(|| invalid_state_error("withdraw exceeds market principal"))?;
+        let new_external_assets = self.complete_withdraw_allocation(
+            caller,
+            decision.market,
+            decision.amount,
+            remaining_value,
+            op_id,
+            0,
+        )?;
         Ok(Self::allocation_result(op_id, new_external_assets))
     }
 
@@ -810,13 +837,6 @@ where
         Ok(op_id)
     }
 
-    fn update_market_principal(&mut self, market: TargetId, principal: u128) {
-        let policy = self.policy_state_mut();
-        policy
-            .set_principal(market, principal)
-            .unwrap_or_else(|_| abort!("market principal failed"));
-    }
-
     fn set_policy_principal(
         policy: &mut PolicyState,
         market: TargetId,
@@ -828,11 +848,76 @@ where
             .map_err(|_| invalid_state_error(message))
     }
 
+    /// Enforce supply admission before any asset transfer or adapter call.
+    ///
+    /// Supply requires an enabled market with current supply-queue membership, a
+    /// post-request principal within the market cap, and absolute and relative
+    /// cap-group headroom measured against the pre-allocation total-assets
+    /// snapshot.
+    pub(crate) fn validate_supply_admission(
+        &self,
+        market: TargetId,
+        amount: u128,
+        pre_allocation_total_assets: u128,
+    ) -> Result<(), RuntimeError> {
+        let policy = self.policy_state();
+        let config = policy
+            .market_config(market)
+            .ok_or_else(|| invalid_state_error("unknown market on supply"))?;
+        if !config.enabled {
+            return Err(invalid_state_error("market disabled on supply"));
+        }
+        if !policy
+            .supply_queue()
+            .entries()
+            .iter()
+            .any(|entry| entry.target_id == market)
+        {
+            return Err(invalid_state_error("market not in supply queue"));
+        }
+        let principal = policy
+            .principal_for(market)
+            .ok_or_else(|| invalid_state_error("unknown market principal on supply"))?;
+        let candidate_principal = principal
+            .checked_add(amount)
+            .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
+        Self::enforce_supply_caps(
+            policy,
+            config,
+            candidate_principal,
+            amount,
+            pre_allocation_total_assets,
+        )
+    }
+
+    fn enforce_supply_caps(
+        policy: &PolicyState,
+        config: &MarketConfig,
+        candidate_principal: u128,
+        delta: u128,
+        pre_allocation_total_assets: u128,
+    ) -> Result<(), RuntimeError> {
+        if candidate_principal > config.cap {
+            return Err(invalid_state_error("supply exceeds market cap"));
+        }
+        let Some(cap_group_id) = config.cap_group_id.as_ref() else {
+            return Ok(());
+        };
+        let record = policy
+            .cap_group(cap_group_id)
+            .ok_or_else(|| invalid_state_error("unknown cap group on supply"))?;
+        record
+            .cap
+            .enforce(record.principal, delta, pre_allocation_total_assets)
+            .map_err(|_| invalid_state_error("supply exceeds cap group limit"))
+    }
+
     fn validate_supply_observation(
         policy: &PolicyState,
         market: TargetId,
         observed_total_assets: u128,
         supply_amount: u128,
+        pre_allocation_total_assets: u128,
     ) -> Result<(), RuntimeError> {
         let previous_principal = policy
             .principal_for(market)
@@ -843,7 +928,16 @@ where
         if observed_total_assets < previous_principal || observed_total_assets > max_principal {
             return Err(invalid_state_error("supply observation out of bounds"));
         }
-        Ok(())
+        let config = policy
+            .market_config(market)
+            .ok_or_else(|| invalid_state_error("unknown market on supply"))?;
+        Self::enforce_supply_caps(
+            policy,
+            config,
+            observed_total_assets,
+            observed_total_assets - previous_principal,
+            pre_allocation_total_assets,
+        )
     }
 
     fn validate_refresh_observation(
@@ -870,6 +964,7 @@ where
         observed_total_assets: u128,
         op_id: u64,
         now_ns: u64,
+        pre_allocation_total_assets: u128,
     ) -> Result<u128, RuntimeError> {
         let allocation = self
             .state()?
@@ -888,6 +983,7 @@ where
             market,
             observed_total_assets,
             current_step.amount,
+            pre_allocation_total_assets,
         )?;
         let mut staged_policy = self.policy_state.clone();
         Self::set_policy_principal(
@@ -909,27 +1005,41 @@ where
         caller: Address,
         market: TargetId,
         realized_amount: u128,
+        remaining_value: u128,
         op_id: u64,
         now_ns: u64,
     ) -> Result<u128, RuntimeError> {
-        let next_principal = self
-            .policy_state()
-            .principal_for(market)
-            .ok_or_else(|| invalid_state_error("unknown market principal on withdraw"))?
-            .checked_sub(realized_amount)
-            .ok_or_else(|| invalid_state_error("principal underflow on withdraw"))?;
-        self.update_market_principal(market, next_principal);
+        if self.policy_state().principal_for(market).is_none() {
+            return Err(invalid_state_error("unknown market principal on withdraw"));
+        }
+        // FIND-020: mark the market at its observed pre-withdrawal value
+        // (`realized + remaining`) as a refresh would, so gain or loss since the last
+        // observation is recognized as NAV movement (fee-bearing, anchor untouched) rather
+        // than booked later as an idle inflow. Then move the realized amount to idle and
+        // keep the observed remainder as principal, so a partial exit cannot leave unobserved
+        // value behind a zero principal.
+        let observed = realized_amount
+            .checked_add(remaining_value)
+            .ok_or_else(|| invalid_state_error("market value overflow on withdraw"))?;
+        let mut staged_policy = self.policy_state.clone();
+        Self::set_policy_principal(
+            &mut staged_policy,
+            market,
+            observed,
+            "market principal failed",
+        )?;
+        self.sync_external_assets(caller, op_id, staged_policy.external_assets()?, now_ns)?;
+        Self::set_policy_principal(
+            &mut staged_policy,
+            market,
+            remaining_value,
+            "market principal failed",
+        )?;
         let new_external = self.rebalance_withdraw(caller, op_id, realized_amount, now_ns)?;
         self.finish_allocation_internal(caller, op_id, now_ns)?;
+        self.policy_state = staged_policy;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(new_external)
-    }
-
-    #[inline]
-    fn classify_refreshed_positions(
-        refreshed_positions: &[(TargetId, u128)],
-    ) -> Vec<(TargetId, u128)> {
-        refreshed_positions.to_vec()
     }
 
     fn validate_refreshed_positions_against_plan(
@@ -975,10 +1085,17 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
-        let refreshed_positions = Self::classify_refreshed_positions(refreshed_positions);
-        self.validate_refreshed_positions_against_plan(&refreshed_positions)?;
-        let staged_policy = self.stage_refreshed_positions(&refreshed_positions)?;
+        self.validate_refreshed_positions_against_plan(refreshed_positions)?;
+        let staged_policy = self.stage_refreshed_positions(refreshed_positions)?;
         let new_external_assets = staged_policy.external_assets()?;
+        // Refresh reports actual exposure. Absolute/relative cap groups are supply admission
+        // controls: they gate new supply, they do not refuse recognition of a gain or loss the
+        // adapters already observed. This aggregate is still a checked add, and keeping it here
+        // preserves the InvalidState public error for refresh callers.
+        self.state()?
+            .idle_assets
+            .checked_add(new_external_assets)
+            .ok_or_else(|| invalid_state_error("total assets overflow on refresh"))?;
         self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         let result = self.finish_refreshing(caller, op_id, now_ns)?;
         self.policy_state = staged_policy;

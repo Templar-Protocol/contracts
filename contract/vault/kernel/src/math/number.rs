@@ -273,7 +273,12 @@ impl Number {
     }
 
     #[inline(never)]
-    fn mul_div_with_rounding(x: Number, y: Number, denom: Number, round_up: bool) -> Number {
+    pub(crate) fn mul_div_with_rounding(
+        x: Number,
+        y: Number,
+        denom: Number,
+        round_up: bool,
+    ) -> Number {
         // Fast path: zero inputs
         if x.is_zero() || y.is_zero() {
             return Number::zero();

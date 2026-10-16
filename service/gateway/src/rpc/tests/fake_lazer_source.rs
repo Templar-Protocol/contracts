@@ -113,3 +113,66 @@ impl<C> ProvidesLazerSource for WithFakeLazerSource<C> {
         &self.lazer_source
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum TestRedStoneSource {
+    Live(templar_gateway_oracle_updates_dispatch::RedStoneBridgeClient),
+    Fixture(Result<Vec<u8>, TestRedStoneError>),
+}
+
+#[derive(Debug, Clone, Error)]
+#[error("{0}")]
+pub struct TestRedStoneError(pub String);
+
+#[async_trait]
+impl OraclePayloadSource for TestRedStoneSource {
+    type PriceId = templar_common::oracle::redstone::FeedId;
+    type Error = TestRedStoneError;
+
+    async fn fetch_payload(&self, ids: &[Self::PriceId]) -> Result<Vec<u8>, Self::Error> {
+        match self {
+            Self::Live(source) => source
+                .fetch_payload(ids)
+                .await
+                .map_err(|error| TestRedStoneError(error.to_string())),
+            Self::Fixture(result) => result.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WithTestRedStoneSource<C> {
+    inner: C,
+    redstone_source: TestRedStoneSource,
+}
+
+impl<C> WithTestRedStoneSource<C> {
+    pub fn new(inner: C, redstone_source: TestRedStoneSource) -> Self {
+        Self {
+            inner,
+            redstone_source,
+        }
+    }
+}
+
+impl<C: HasNearClient> HasNearClient for WithTestRedStoneSource<C> {
+    fn near_client(&self) -> &NearClient {
+        self.inner.near_client()
+    }
+}
+
+impl<C: ProvidesPythSource> ProvidesPythSource for WithTestRedStoneSource<C> {
+    type PythSource = C::PythSource;
+
+    fn pyth_source(&self) -> &Self::PythSource {
+        self.inner.pyth_source()
+    }
+}
+
+impl<C> ProvidesRedStoneSource for WithTestRedStoneSource<C> {
+    type RedStoneSource = TestRedStoneSource;
+
+    fn redstone_source(&self) -> &Self::RedStoneSource {
+        &self.redstone_source
+    }
+}

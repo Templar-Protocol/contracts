@@ -23,6 +23,7 @@
 
 use proptest::prelude::*;
 use templar_curator_primitives::policy::state::MarketConfig;
+use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
 use templar_soroban_runtime::{
     contract::{AllocationDelta, ContractConfig, CuratorVault, Delta},
     test_utils::{begin_allocating, finish_allocating, MemoryStorage},
@@ -65,6 +66,13 @@ fn create_prop_test_vault() -> PropTestVault {
     vault
         .policy_state_mut()
         .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .replace_supply_queue(
+            SupplyQueue::try_from_entries(vec![SupplyQueueEntry::new(0, 1).unwrap()], None)
+                .unwrap(),
+        )
         .unwrap();
     vault
 }

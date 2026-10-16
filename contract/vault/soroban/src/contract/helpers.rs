@@ -206,6 +206,19 @@ pub(crate) fn store_idle_resync_cooldown_ns(env: &Env, idle_resync_cooldown_ns: 
     );
 }
 
+pub(crate) fn load_max_nav_age_ns(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&VaultDataKey::MaxNavAgeNs)
+        .unwrap_or(SOROBAN_DEFAULT_MAX_NAV_AGE_NS)
+}
+
+pub(crate) fn store_max_nav_age_ns(env: &Env, max_nav_age_ns: u64) {
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::MaxNavAgeNs, &max_nav_age_ns);
+}
+
 pub(crate) fn virtual_offsets_locked(env: &Env) -> bool {
     env.storage()
         .instance()
@@ -301,10 +314,29 @@ pub(crate) fn apply_fee_change(
         max_rate,
     );
 
+    require_allowed_fee_recipients(env, &fees)?;
     runtime_to_contract(store_fees_spec(env, &fees))?;
     let storage = SorobanStorage::new(env);
     runtime_to_contract(storage.save_address(&performance_kernel, &performance_recipient))?;
     runtime_to_contract(storage.save_address(&management_kernel, &management_recipient))?;
+    Ok(())
+}
+
+/// Halborn FIND-009: fee shares must not accrue to the vault escrow pool or token contracts.
+pub(crate) fn require_allowed_fee_recipients(
+    env: &Env,
+    fees: &FeesSpec,
+) -> Result<(), ContractError> {
+    for address in [
+        env.current_contract_address(),
+        get_config_address(env, &VaultDataKey::AssetToken)?,
+        get_config_address(env, &VaultDataKey::ShareToken)?,
+    ] {
+        let kernel = kernel_address_from_sdk(env, &address);
+        if fees.performance.recipient == kernel || fees.management.recipient == kernel {
+            return Err(ContractError::InvalidInput);
+        }
+    }
     Ok(())
 }
 

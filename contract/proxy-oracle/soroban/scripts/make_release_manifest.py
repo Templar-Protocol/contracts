@@ -35,7 +35,7 @@ from release_artifacts import (
 )
 
 
-DEFAULT_TOOLCHAIN = "1.89.0"
+DEFAULT_TOOLCHAIN = "1.99.0"
 
 
 def remap_rustflags(source_root: Path) -> str:

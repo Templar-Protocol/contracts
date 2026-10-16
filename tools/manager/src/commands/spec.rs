@@ -4,8 +4,13 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
+use templar_gateway_oracle_updates_dispatch::{LazerSourceArgs, RedStoneSourceArgs};
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "inline command arguments avoid an extra heap allocation on every spec check"
+)]
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum SpecNs {
@@ -15,10 +20,38 @@ pub enum SpecNs {
     PrintSchema,
 }
 
+/// Input used to evaluate oracle prices during online preflight.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum PricesFrom {
+    /// Read verified Lazer/RedStone provider prices; other sources stay on chain.
+    #[default]
+    Provider,
+    /// Read stored adapter prices from chain.
+    Chain,
+}
+
+/// Invocation-local provider configuration, never persisted in a spec or plan.
+#[derive(Args, Debug)]
+pub struct PreflightPriceArgs {
+    /// Select verified provider prices or stored chain prices for preflight.
+    /// Provider failures never fall back to stored prices.
+    #[arg(long, value_enum, default_value_t = PricesFrom::Provider)]
+    pub(crate) prices_from: PricesFrom,
+
+    #[command(flatten)]
+    pub(crate) lazer: LazerSourceArgs,
+
+    #[command(flatten)]
+    pub(crate) redstone: RedStoneSourceArgs,
+}
+
 #[derive(Args, Debug)]
 pub struct Check {
     /// Path to the market spec.
     pub(crate) path: PathBuf,
+
+    #[command(flatten)]
+    pub(crate) prices: PreflightPriceArgs,
 
     /// Skip every check that reads the chain. The remaining checks need no
     /// network, so this is the form to run in CI.

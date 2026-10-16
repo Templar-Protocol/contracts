@@ -49,6 +49,21 @@ pub struct WritePricesArgs {
 }
 
 impl RedStoneOracleClient<'_> {
+    pub async fn get_prices_at(
+        &self,
+        args: WritePricesArgs,
+        block_hash: templar_gateway_types::CryptoHash,
+    ) -> crate::GatewayResult<templar_common::oracle::redstone::GetPrices> {
+        self.inner
+            .view_function_at(
+                self.contract_id.clone(),
+                "get_prices",
+                serde_json::to_vec(&args)?,
+                near_api::types::Reference::AtBlockHash(block_hash.0),
+            )
+            .await
+    }
+
     contract_views! {
         pub fn get_config(()) -> Config;
         pub fn read_price_data(ReadPriceDataArgs) -> HashMap<FeedId, FeedData>;

@@ -18,7 +18,7 @@ release_dir      := root + "/target/proxy-oracle-soroban"
 scripts_dir      := justfile_directory() + "/scripts"
 evidence_dir     := release_dir + "/evidence"
 manifest_path    := release_dir + "/release-manifest.json"
-soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
+soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.99.0")
 
 # =============================================================================
 # TEST

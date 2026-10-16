@@ -18,6 +18,7 @@ accounting maintenance, and TTL renewal.
 > - **Stellar runtime mechanics:** [`contract/vault/soroban/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/soroban/README.md)
 > - **Vault state machine:** [`contract/vault/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/README.md)
 > - **Stellar threat model:** [`contract/vault/soroban/STRIDE.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/soroban/STRIDE.md)
+> - **Upgrade runbook:** [`contract/vault/soroban/UPGRADING.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/soroban/UPGRADING.md)
 
 ## What a curator operates
 
@@ -92,21 +93,27 @@ can differ.
 
 Operational details:
 
-- **Checkpoint, not all-time high-water mark.** Stellar share-pricing paths
-  (`DepositWithMin`, `RefreshFees`, `ResyncIdleBalance`) first reconcile
-  `idle_assets` against the live asset-token balance, then reset the `fee_anchor`
-  to the reconciled total at the current ledger time. Profit is measured as
-  `current_AUM − anchor_AUM`; if AUM is flat or down, the performance fee is zero.
-  Because the anchor resets after each interaction, a recovery following a loss is
-  chargeable — this is "growth since the last checkpoint", not "above the all-time
-  peak". When fees are active, a deposit first crystallizes elapsed fees before
-  the post-deposit anchor is written, so deposit principal cannot erase accrued
-  fees.
+- **Checkpoint, not all-time high-water mark.** When any fee is configured and ledger time is
+  newer than the stored `fee_anchor`, or equal to it while an uncapped performance fee is
+  actually due against the checkpoint, `DepositWithMin`, `RefreshFees`, and `ResyncIdleBalance`
+  first crystallize the due management and performance fees, then restate any live-balance
+  mismatch as a capital flow: a positive delta raises `fee_anchor.total_assets` by exactly the
+  delta with the timestamp preserved, and a negative delta leaves both checkpoint fields
+  untouched so recovery from a loss is not recorded as profit. Reconciliation itself neither
+  lowers nor advances the checkpoint. A successful deposit rewrites the checkpoint to the
+  post-deposit total at deposit time, and later fee refreshes re-anchor to the then-current
+  recorded total under today's model. The checkpoint is therefore not an all-time high-water
+  mark and can move down when recorded AUM falls. Full per-share high-water-mark and
+  loss-recovery fee handling remains ENG-701 scope.
 - **Growth-rate cap** (`max_total_assets_growth_rate` internally and
   `--max-growth-rate-wad` in the CLI, optional). Caps how fast
   AUM is allowed to count for fee accrual:
   `effective_AUM = min(current, last × (1 + max_rate × dt/yr))`. Relaxing or
   removing this cap is timelocked.
+  Because a capped fee base is clamped back to the checkpoint at zero elapsed time, a gain booked
+  at the checkpoint ledger is not chargeable there. Absent an intervening deposit, whose success
+  rewrites the checkpoint to the post-deposit total by design, that gain stays accrued against the
+  preserved checkpoint and is charged by a later time-advanced refresh.
 - **Refresh order matters.** `curator refresh-fees` reconciles the live idle
   token balance, but it does not query every adapter. Refresh changed markets
   first, then crystallize fees against the resulting aggregate NAV.
@@ -152,6 +159,32 @@ contract/vault/soroban/.deploy-state/manifest.json
 It records contract IDs, constructor arguments, artifact hashes, initialization
 state, and successful transaction audit records. Treat it as operational state,
 back it up, and pass `--state` explicitly when operating more than one vault.
+
+### Artifact source and cache policy
+
+Normal deployment uses the fixed reviewed `soroban-v1.3.0-rc.1` catalog. Resolution is strict and
+ordered: a verified release-cache entry first, an exact-pin workspace output seeded into that
+cache second, and then the fixed GitHub release asset. Every byte is checked for the catalog's
+length and SHA-256. Corrupt cache entries and download failures stop the command; deployment
+never falls back to an implicit local build.
+
+The default cache root is `<platform-cache>/templar/soroban-vault-cli/artifacts`. Set a non-empty,
+absolute `TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE` path to use another writable root. In the published
+image, mount `/home/templar/.cache/templar/soroban-vault-cli/artifacts` as persistent storage. A
+normal deployment does not bundle WASM bytes in the executable or image.
+
+Local compilation is opt-in. Pass bare `--build` to the relevant deploy command when
+intentionally using checked-out source; it bypasses release cache/download and never writes
+built bytes into the release cache. The source-repository setting (`--contract-source-repo` or
+`SOROBAN_CONTRACT_SOURCE_REPO`) applies only to this explicit build path.
+
+The pinned tag and pins live in exactly one table
+(`tools/soroban-vault-cli/src/release_pin.rs`); swapping the pinned release
+is a pure data change to those rows. `governance submit-upgrade` defaults
+`--wasm-hash` to the pinned runtime hash, refuses a different hash unless
+`--allow-unpinned-wasm` is passed, and checks the hash is uploaded on the
+target network before submitting; if it is missing, run `deploy wasm vault`
+and resubmit.
 
 ## Deploy a Stellar vault stack
 
@@ -462,8 +495,29 @@ The accounting behavior differs by direction:
   vault token-balance delta matches the adapter's return value, and subtracts
   the realized amount. It does not refresh the adapter's remaining NAV.
 - `refresh-markets` reads `total_assets(asset)` for the selected routes and
-  replaces their stored principals. Run it after yield, loss, or a custodial NAV
-  report and before fee/share-rate decisions.
+  stages their new principals together. Each refreshed principal is checked
+  against its own market cap, and the sum of idle plus final staged external
+  assets is a checked add. A refresh that breaches either fails atomically with
+  `InvalidState` and changes nothing, including adapter transaction state. Run
+  it after yield, loss, or a custodial NAV report and before fee/share-rate
+  decisions.
+
+Cap groups do not gate refresh. Absolute and relative group caps are supply
+admission controls — they decide whether new supply may be deployed (against a
+frozen pre-allocation total), not whether a gain or loss the adapters already
+reported may be booked. A group principal can therefore sit above
+`min(absolute_cap, relative_cap × total_assets)` after a loss in a market
+outside the group, after a permissionless withdrawal shrinks the denominator, or
+after governance tightens a cap. That is honest accounting, not a bypass: while a
+group is over cap, `allocate-supply` into any of its markets is refused before
+any transfer, and `allocate-withdraw` keeps working until the principal falls
+back under the cap. Alert on a group that stays over cap and on repeated supply
+refusals rather than on a refresh that merely reports the exposure.
+
+Refresh records reported NAV without authenticating it, and markets left out of
+a refresh keep their stale stored NAV, so keep adapters vetted, monitor reported
+totals against the fixed market caps and against the group caps that still gate
+supply, and refresh all markets on a regular cadence.
 
 Two maintenance calls are permissionless even though they are grouped under
 `curator` in the CLI:
@@ -474,9 +528,12 @@ tmplr-soroban-vault curator refresh-fees
 ```
 
 `resync-idle` requires the vault to be idle and is rate-limited by the idle
-resync cooldown, which defaults to 120 seconds. `refresh-fees` reconciles the
-live idle balance and advances the fee checkpoint. Neither call substitutes for
-`refresh-markets` when adapter NAV has changed.
+resync cooldown, which defaults to 120 seconds. Both calls crystallize elapsed
+fees and reconcile the live idle balance under the checkpoint behavior
+described in the fee accounting section above. A `refresh-fees` call that mints
+nothing still re-anchors the checkpoint, but only when no live-balance mismatch
+is detected. Neither call substitutes for `refresh-markets` when adapter NAV
+has changed.
 
 ## Withdrawal operations
 

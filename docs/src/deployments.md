@@ -19,8 +19,9 @@ The signer is not a personal account: `registry.deploy` asserts the registry's
 owner, and a proxy spec additionally requires it to equal `governance.admin`,
 which the mainnet profiles set to the registry itself.
 
-`plan` reads the chain and writes a file; it sends nothing and takes no
-credential. `apply` sends what the file says.
+`plan` reads prices and chain configuration and writes a file; it sends nothing
+and takes no signing credential. Provider reads may need API credentials.
+`apply` sends what the file says.
 
 ## Why two steps
 
@@ -108,19 +109,58 @@ governance call that configures a price feed is dispatched detached: it reports
 success even when the oracle rejected the proxy, so deployed state is the only
 witness that a market can price anything.
 
+### Price inputs
+
+`spec check`, `market plan`, `market apply` and `market verify` default to
+`--prices-from provider`. For Lazer and RedStone sources, the gateway fetches
+signed provider data and asks the deployed adapter to verify it without writing.
+The preflight judges whether those selected inputs would produce usable prices
+on an on-demand push. Success is **not** proof that the prices currently stored
+on chain are usable, and neither planning nor applying a deployment pushes prices.
+
+Only source kinds used by the spec are constructed:
+
+- Lazer needs `--pyth-lazer-api-key` or `PYTH_LAZER_API_KEY`. Its websocket,
+  channel and payload-age options are available on these four commands.
+- RedStone needs Node.js on `PATH`, or an executable selected with
+  `--redstone-node-path` / `REDSTONE_NODE_PATH`. A RedStone-only spec needs no
+  Lazer key.
+- Pyth and LST sources always read chain state. Direct markets keep their
+  existing chain-only oracle checks. `spec check --offline` constructs no providers.
+
+Use `--prices-from chain` to judge stored adapter prices instead. Provider
+construction, fetch or verification failures are failed checks; they never
+fall back to stored values. `oracle.price.*` and `oracle.aggregate.*` retain
+their IDs and name provider, chain or mixed inputs in their details.
+
+Both modes additionally report `oracle.stored.{side}.{i}` for every configured
+source. A stored price within the asset's `max_age` (or the market's
+`price_maximum_age`) and clock-drift bound passes; stale, missing, unprojectable,
+future-drifted or unreadable storage warns. These diagnostics never gate the
+command. Chain mode can still fail independently when its selected stored
+prices cannot aggregate.
+
+`apply` uses this invocation's mode and provider configuration when rerunning
+preflight, not the plan's historical inputs. Its default remains provider even
+for a plan written with chain mode. Source options and credentials are not
+persisted in specs, plans or journals.
+
+Market plan schema remains 2, but plans containing `"status": "warned"` require
+a binary that understands that status; older binaries reject them.
+
 ### Reading the report
 
 Checks are printed to stderr as they run, grouped by what is being read, then
-summarized. The summary leads with the failures, in full, and lists what was
-skipped separately — a check that did not run proves nothing, and must never be
-counted as one that passed.
+summarized. The summary leads with FAILED checks, then WARNINGS, then SKIPPED.
+Warnings are non-gating diagnostics, not proofs of success. Warnings and skips
+are counted separately from passes; a skipped check proves nothing.
 
 ```
 → registry versions
   ok   registry.version.market          v1.3.0
   FAIL registry.version.oracle          `0.5.9` is not registered in v1.tmplr.near; the depl…
 
-5 check(s): 3 passed, 1 skipped, 1 FAILED
+5 check(s): 3 passed, 0 warned, 1 skipped, 1 FAILED
 
 FAILED
   registry.version.oracle
@@ -128,9 +168,9 @@ FAILED
 ```
 
 Colour is used only on a terminal, and `NO_COLOR` turns it off. `-q` silences
-the report. stdout stays the machine-readable channel throughout, so
-`spec check … >/dev/null` leaves the report alone and `… 2>/dev/null | jq`
-leaves the JSON alone.
+the per-check stream but retains the digest. stdout stays the machine-readable
+channel throughout, so `spec check … >/dev/null` leaves the report alone and
+`… 2>/dev/null | jq` leaves the JSON alone.
 
 `--skip-check <id>` suppresses one verdict — every other check still runs, and
 the report records what the skip suppressed, so an override stays reviewable
@@ -189,8 +229,8 @@ transaction, target code hash, every before/after view result, JSON diff, and
 check verdict. Reporter output, progress, diagnostics, and the digest go to
 stderr. Keep stdout dedicated to the report when piping it to review tooling.
 The completed replay is stamped into the same plan when no replay check fails.
-An apply-valid stamp requires every replay check to be non-skipped and passed;
-apply rejects stamps with skipped checks. The stamp binds the plan digest,
+An apply-valid stamp requires every replay check to have passed; apply rejects
+failed, warned or skipped proof checks. The stamp binds the plan digest,
 semantic complete-state digest, target code hash, and verdicts; it records the
 sandbox chain ID for review context.
 
@@ -243,49 +283,42 @@ This is a privileged authorization checklist:
 
 ## Upgrading a registry
 
-Registries released before 2.0.0 (`templar-alpha.near` on 0.1.0, `v1.tmplr.near` on 1.0.0,
-`user0.tmplr.near` on 1.1.0) have no `upgrade` method and no stored state version. Their first
-upgrade is one transaction the registry signs itself: deploy the new code, then `migrate` in the
-same receipt, so a failed migration reverts the deploy. Once it lands it cannot be undone, because
-the old code cannot read the migrated layout. From 2.0.0 on, the owner-only `upgrade` method
-replaces this path.
+Every live registry runs 2.0.0 or later and replaces its code through its owner-only `upgrade`,
+which deploys the new code and runs `migrate` in the same receipt, so a failed migration reverts
+the deploy. Once it lands it cannot be undone.
 
 ```sh
 tmplrmgr registry upgrade --registry-id <registry> \
-  --network mainnet --signer-id <registry> --sign-with keychain
+  --network mainnet --signer-id <owner> --sign-with keychain
 ```
 
-`--release <version>` picks a catalogued registry release; the newest is the default. The command
-submits nothing unless every check passes, and none can be skipped:
+`--release <version>` picks a catalogued registry release; the newest is the default.
+`--migrate-args-file <path>` passes the release's `state::Migration` chain to `migrate`; omit it
+when the stored state version is unchanged. The command submits nothing unless every check passes,
+and none can be skipped:
 
-- the deployed code hashes to a catalogued registry release whose NEP-330 version agrees, which
-  fixes the migration — the operator never chooses it;
-- the target WASM is a newer catalogued release with versioned state, verified against its pinned
-  sha256;
-- the signer is the registry, holding a full-access key, with the balance to stake the new code;
-- for a pre-1.1.0 registry, contract state is at most 3 MB. That migration rewrites every stored
-  code blob in one receipt, which may record at most 4 MB of storage proof, and mainnet's deeper
-  trie costs more proof than a sandbox shows. Prune with `registry remove-version` first;
+- the deployed code hashes to a catalogued registry release whose NEP-330 version agrees;
+- the target WASM is a catalogued release no older than the deployed one, verified against its
+  pinned sha256;
+- the signer is the registry's owner, holding a full-access key, and the registry has the balance
+  to stake the new code;
 - the exact planned transaction is replayed against the registry's complete, block-pinned state in
   a fresh sandbox. The replay must reproduce what mainnet serves, plan the same transaction,
   succeed within half the attached gas, and leave the registry on the new code at a current state
-  version with its owner, versions, code hashes and deployments unchanged, and its storage moved
-  only by what the migration writes — the views cannot see a lost blob or reserved name, storage
-  can;
+  version with its owner, versions (code hashes and availability) and deployments unchanged.
+  Without a migration its storage may move only by the code swap — the views cannot see a lost
+  blob or reserved name, storage can;
 - no name is still reserved by an unfinished deploy, whose finalize callback would otherwise run
-  against the new code (pre-1.1.0's does not exist there);
+  against the new code;
 - the account — code, keys and every storage entry, including writes not yet final — is byte for
   byte what was snapshotted, re-read just before submitting, with its balance no lower; and the
   signer plans the replayed transaction.
 
-After submitting, the same post-conditions are checked on chain. If the submission's outcome never
-comes back, nothing is verified: the transaction may still land, so read the registry's code hash
-and state version before doing anything else. `--print json --public-key <key>` runs every check
-against the key that will sign and prints the planned transaction instead of signing it; the checks
-hold only for the state they read, so sign it straight away or re-run. Like `patch export`, the
-snapshot needs an RPC that pages `view_state` past the stock 50 kB limit, such as FastNEAR's
+After submitting, the same post-conditions are checked on chain, with storage required to equal
+exactly what the replay measured. If the submission's outcome never comes back, nothing is
+verified: the transaction may still land, so read the registry's code hash and state version before
+doing anything else. `--print json --public-key <key>` runs every check against the key that will
+sign and prints the planned transaction instead of signing it; the checks hold only for the state
+they read, so sign it straight away or re-run. Like `patch export`, the snapshot needs an RPC that
+pages `view_state` past the stock 50 kB limit, such as FastNEAR's
 (`--rpc-url https://rpc.mainnet.fastnear.com`).
-
-The gateway caches each contract's reported version for up to an hour, so restart long-running
-gateway, relayer and `tmplrmgr` processes after upgrading a registry: a pre-1.1.0 registry's deploy
-method is renamed from `deploy_market` to `deploy`.

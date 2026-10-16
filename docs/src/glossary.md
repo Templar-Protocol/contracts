@@ -116,7 +116,7 @@ This glossary provides definitions for key terms used throughout the Templar Pro
 
 **RedStone**: A modular oracle network that delivers signed price data packages verified on-chain. Templar runs a RedStone adapter contract and uses RedStone feeds as an independent source alongside Pyth in its proxy oracles.
 
-**Registry**: A smart contract that manages deployment and versioning of market contracts within the Templar Protocol.
+**Registry**: A smart contract that manages deployment and versioning of the contracts Templar deploys — markets, proxy oracles and their governance, universal accounts and others.
 
 **Repay**: The action of returning borrowed assets plus interest to reduce or eliminate a borrower's debt.
 

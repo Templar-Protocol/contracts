@@ -4,9 +4,11 @@
 //! `contract/vault/kernel/src/actions/mod.rs`). All oracles are *failable
 //! properties* of the real functions (P1), not a re-implementation (P2):
 //!
-//! * `total_assets_for_fee_accrual` never reports a basis above current assets,
-//!   passes current assets through unchanged when uncapped, and stays at or
-//!   above the anchor once the rate cap engages on real growth.
+//! * `total_assets_for_fee_accrual` never reports a basis above current
+//!   assets, returns a zero basis when the anchor is zero in both capped and
+//!   uncapped modes, passes current assets through unchanged when uncapped
+//!   with a nonzero anchor, and stays at or above the anchor once the rate
+//!   cap engages on real growth.
 //! * The management- and performance-fee share calculations return zero in
 //!   their documented degenerate cases (zero fee / zero supply / no elapsed
 //!   time / no profit) and never panic.
@@ -64,7 +66,13 @@ fuzz_target!(|input: FeeMathInput| {
         capped <= cur,
         "fee-accrual basis ({capped}) exceeds current assets ({cur})",
     );
-    if max_rate.is_none() {
+    if anchor == 0 {
+        assert_eq!(
+            capped, 0,
+            "zero anchor must yield a zero fee-accrual basis in capped and uncapped modes"
+        );
+    }
+    if max_rate.is_none() && anchor != 0 {
         assert_eq!(
             capped, cur,
             "uncapped accrual must pass current assets through"

@@ -304,9 +304,9 @@ pub const YEAR_NS: u64 = 365 * 24 * 60 * 60 * 1_000_000_000;
 ///
 /// When `max_rate` is `Some`, limits the effective total_assets to
 /// `anchor_total_assets * (1 + max_rate * elapsed / YEAR)`. If the anchor
-/// asset value is zero, any positive current assets are treated as uncapped
-/// zero-anchor growth and excluded from fee accrual until the anchor is
-/// advanced by the caller.
+/// asset value is zero, capped and uncapped configurations both return zero,
+/// excluding zero-baseline growth from fee accrual until the caller advances
+/// the anchor.
 #[inline]
 #[must_use]
 pub fn total_assets_for_fee_accrual(
@@ -316,14 +316,14 @@ pub fn total_assets_for_fee_accrual(
     now_ns: u64,
     max_rate: Option<Wad>,
 ) -> u128 {
+    if anchor_total_assets == 0 {
+        return 0;
+    }
     let Some(max_rate) = max_rate else {
         return cur_total_assets;
     };
     if cur_total_assets <= anchor_total_assets || now_ns < anchor_timestamp_ns {
         return cur_total_assets;
-    }
-    if anchor_total_assets == 0 {
-        return 0;
     }
     let elapsed_ns = now_ns - anchor_timestamp_ns;
     if elapsed_ns == 0 {

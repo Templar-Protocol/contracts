@@ -7,14 +7,17 @@ use super::helpers::{
     adapter_for_market, address_from_alloc_string, addresses_from_alloc_strings, apply_fee_change,
     emit_admin_event, emit_alloc_event, emit_pause_state_event, ensure_governance_identity,
     ensure_sentinel_identity, extend_storage_ttl, get_config_address, governance_caller,
-    kernel_address_from_sdk, load_virtual_offsets, lock_virtual_offsets, migration_in_progress,
+    kernel_address_from_sdk, load_fees_spec, load_max_nav_age_ns, load_virtual_offsets,
+    lock_virtual_offsets, migration_in_progress, require_allowed_fee_recipients,
     require_contract_address, require_governance, require_governance_control_plane,
     require_sentinel, require_signed, require_wasm_or_account_address, sdk_string_to_alloc,
     set_config_address, set_migration_in_progress, store_fees_spec, store_idle_resync_cooldown_ns,
-    store_virtual_offsets, store_withdrawal_cooldown_ns, supply_adapter_for_market,
-    validate_and_rewrite_storage, virtual_offsets_locked, with_contract_vault_contract_error,
+    store_max_nav_age_ns, store_virtual_offsets, store_withdrawal_cooldown_ns,
+    supply_adapter_for_market, validate_and_rewrite_storage, virtual_offsets_locked,
+    with_contract_vault_contract_error,
 };
 use super::*;
+use crate::fungible_vault::reconcile_actual_idle_assets;
 use crate::storage::{SorobanStorage, Storage};
 use templar_curator_primitives::governance::Restrictions as GovernanceRestrictions;
 use templar_soroban_shared_types::{
@@ -22,12 +25,12 @@ use templar_soroban_shared_types::{
     I128Receipt, ReceiptAddress, RequestWithdrawReceipt, VaultCommand,
     GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
     GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
-    GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN, GOVERNANCE_CONFIG_KIND_SENTINEL,
-    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
-    GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, GOVERNANCE_POLICY_KIND_CAP,
-    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN, GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
+    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::{FeeAccrualAnchor, TimestampNs};
@@ -70,31 +73,27 @@ fn current_idle_assets(env: &Env) -> Result<u128, ContractError> {
     to_u128(client.balance(&env.current_contract_address()))
 }
 
-fn reconcile_current_idle_assets(
+fn reconcile_fees_and_current_idle_balance(
     env: &Env,
     vault: &mut ContractVault<'_>,
     now_ns: u64,
-) -> Result<(), RuntimeError> {
+) -> Result<(bool, bool), RuntimeError> {
+    if !vault.state()?.op_state.is_idle() {
+        return Err(RuntimeError::invalid_state(""));
+    }
+    // Crystallize elapsed fees, and any performance fee accrued against an
+    // equal-ledger gain, before the observed idle balance is reconciled. A
+    // donation or shortfall is credited only after accrual, so reconciliation
+    // can neither dilute the crystallization base nor lift the checkpoint past
+    // a fee that is already due.
+    let fees_refreshed = vault.fees_due_for_value_transfer(now_ns)?;
+    if fees_refreshed {
+        vault.refresh_fees(now_ns)?;
+    }
     let actual_idle_assets =
         current_idle_assets(env).map_err(|_| RuntimeError::storage_error(""))?;
-    let state = vault.state_mut()?;
-    reconcile_actual_idle_assets(state, actual_idle_assets, now_ns);
-    Ok(())
-}
-
-fn reconcile_current_idle_assets_while_idle(
-    env: &Env,
-    vault: &mut ContractVault<'_>,
-    now_ns: u64,
-) -> Result<(), RuntimeError> {
-    if !vault.state()?.op_state.is_idle() {
-        return Err(RuntimeError::invalid_state(""));
-    }
-    reconcile_current_idle_assets(env, vault, now_ns)?;
-    if !vault.state()?.op_state.is_idle() {
-        return Err(RuntimeError::invalid_state(""));
-    }
-    Ok(())
+    let idle_changed = reconcile_actual_idle_assets(vault.state_mut()?, actual_idle_assets);
+    Ok((idle_changed, fees_refreshed))
 }
 
 fn apply_curator_config(env: &Env, new_curator: soroban_sdk::Address) -> Result<(), ContractError> {
@@ -207,6 +206,13 @@ fn apply_idle_resync_cooldown_config(
     Ok(())
 }
 
+fn apply_max_nav_age_config(env: &Env, max_nav_age_ns: i128) -> Result<(), ContractError> {
+    let max_nav_age_ns = u64::try_from(max_nav_age_ns).map_err(|_| ContractError::InvalidInput)?;
+    store_max_nav_age_ns(env, max_nav_age_ns);
+    emit_admin_event(env, symbol_short!("s_maxnav"));
+    Ok(())
+}
+
 fn apply_supply_queue_policy(
     env: &Env,
     caller_kernel: Address,
@@ -264,6 +270,10 @@ fn apply_supply_queue_policy(
                 .map(|allowed| allowed.iter().any(|candidate| candidate == adapter))
                 .unwrap_or(false);
             if !allowed {
+                return Err(ContractError::InvalidInput);
+            }
+            // Halborn FIND-019: one adapter per market, else its position is counted once per market.
+            if bindings.iter().any(|(_, existing)| existing == adapter) {
                 return Err(ContractError::InvalidInput);
             }
             bindings.set(target_id, adapter);
@@ -525,6 +535,29 @@ fn apply_fees_policy(
     }
     let performance_recipient = accounts.get(0).ok_or(ContractError::InvalidInput)?;
     let management_recipient = accounts.get(1).ok_or(ContractError::InvalidInput)?;
+    // FIND-008: settle the window accrued under the current spec and recipients, then
+    // re-anchor so the new spec starts a clean window. Requires an idle vault.
+    let now_ns = ledger_timestamp_ns(env)?;
+    // A legacy spec whose recipient breaks the FIND-009 rule must not be paid one last
+    // window: skip crystallization and let the re-anchor below forfeit it.
+    let stored_recipients_allowed =
+        require_allowed_fee_recipients(env, &runtime_to_contract(load_fees_spec(env))?).is_ok();
+    let mut settle = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        if !vault.state()?.op_state.is_idle() {
+            return Err(RuntimeError::invalid_state(""));
+        }
+        if stored_recipients_allowed && vault.fees_due_for_value_transfer(now_ns)? {
+            vault.refresh_fees(now_ns)?;
+        }
+        let state = vault.state_mut()?;
+        // At the anchor's own ledger the anchor is already current; a capped same-ledger
+        // gain accrues no fee yet and must stay on it rather than be erased by a reset.
+        if now_ns > state.fee_anchor.timestamp_ns.as_u64() {
+            state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(now_ns));
+        }
+        vault.save_state()
+    };
+    with_contract_vault_contract_error(env, &mut settle)?;
     apply_fee_change(
         env,
         performance_fee_wad,
@@ -537,13 +570,18 @@ fn apply_fees_policy(
     Ok(())
 }
 
-fn normalize_fee_anchor(env: &Env) -> Result<(), ContractError> {
+fn normalize_migrated_state(env: &Env) -> Result<(), ContractError> {
     let mut storage = SorobanStorage::new(env);
     let Some(mut state) = storage.load_state()? else {
         return Ok(());
     };
     state.fee_anchor =
         FeeAccrualAnchor::new(state.total_assets, TimestampNs(ledger_timestamp_ns(env)?));
+
+    if load_virtual_offsets(env).1 > 0 && !state.withdraw_queue.is_empty() {
+        return Err(ContractError::InvalidState);
+    }
+
     storage.save_state(&state)?;
     Ok(())
 }
@@ -571,7 +609,23 @@ fn deposit_with_min_impl(
     let mut shares_minted = 0u128;
     let mut is_capitalized = false;
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        reconcile_current_idle_assets(env, vault, now_ns)?;
+        reconcile_fees_and_current_idle_balance(env, vault, now_ns)?;
+        // FIND-001: shares must not be priced against a stale external NAV, or a deposit
+        // just before a refresh captures yield that accrued before it.
+        if vault.state()?.external_assets > 0 {
+            let max_age_ns = load_max_nav_age_ns(env);
+            let refreshed_ns: Option<u64> =
+                env.storage().instance().get(&VaultDataKey::NavRefreshedNs);
+            // u64::MAX disables the gate; otherwise a never-refreshed NAV is stale.
+            let stale = match refreshed_ns {
+                _ if max_age_ns == u64::MAX => false,
+                None => true,
+                Some(refreshed_ns) => now_ns.saturating_sub(refreshed_ns) > max_age_ns,
+            };
+            if stale {
+                return Err(RuntimeError::invalid_state("stale nav"));
+            }
+        }
         let (caller_k, receiver_k) = vault.map_pair(env, &owner, &receiver)?;
         let result = vault.deposit(caller_k, receiver_k, assets_u128, min_shares_u128, now_ns)?;
         shares_minted = result.shares_minted;
@@ -621,19 +675,23 @@ fn request_withdraw_impl(
     })
 }
 
+/// Permissionless: crystallizes due fees and reconciles the observed idle balance.
+/// Halted while paused, matching `ResyncIdleBalance`.
 fn refresh_fees_impl(env: &Env) -> Result<(), ContractError> {
+    if SorobanStorage::new(env).is_paused() {
+        return Err(ContractError::EnforcedPause);
+    }
     let now_ns = ledger_timestamp_ns(env)?;
-
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        let anchor_before = vault.get_fee_anchor()?;
-        reconcile_current_idle_assets(env, vault, now_ns)?;
-        let anchor_after = vault.get_fee_anchor()?;
-        if anchor_before.timestamp_ns != anchor_after.timestamp_ns
-            && anchor_after.timestamp_ns.as_u64() == now_ns
-        {
-            return Ok(());
+        let (idle_changed, fees_refreshed) =
+            reconcile_fees_and_current_idle_balance(env, vault, now_ns)?;
+        if idle_changed {
+            vault.save_state()?;
         }
-        vault.refresh_fees(now_ns)
+        if !fees_refreshed && !idle_changed {
+            vault.refresh_fees(now_ns)?;
+        }
+        Ok(())
     };
     with_contract_vault_contract_error(env, &mut call)
 }
@@ -778,14 +836,21 @@ fn allocate_impl(
     supply: bool,
 ) -> Result<i128, ContractError> {
     require_signed(&caller);
-    let caller_kernel = kernel_address_from_sdk(env, &caller);
-    let mut preauth = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        vault.authorize(ActionKind::BeginAllocating, caller_kernel)
-    };
-    with_contract_vault_contract_error(env, &mut preauth)?;
     if amount <= 0 {
         return Err(ContractError::InvalidInput);
     }
+    let caller_kernel = kernel_address_from_sdk(env, &caller);
+    let amount_u128 = to_u128(amount)?;
+    let mut pre_allocation_total_assets: u128 = 0;
+    let mut preflight = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
+        vault.authorize(ActionKind::BeginAllocating, caller_kernel)?;
+        if supply {
+            pre_allocation_total_assets = vault.state()?.total_assets;
+            vault.validate_supply_admission(market, amount_u128, pre_allocation_total_assets)?;
+        }
+        Ok(())
+    };
+    with_contract_vault_contract_error(env, &mut preflight)?;
     let now_ns = ledger_timestamp_ns(env)?;
     let asset_token = get_config_address(env, &VaultDataKey::AssetToken)?;
     let asset_client = soroban_sdk::token::Client::new(env, &asset_token);
@@ -793,10 +858,10 @@ fn allocate_impl(
     let mut new_external: u128 = 0;
     let emitted_amount = if supply {
         let adapter = supply_adapter_for_market(env, market)?;
-        let amount_u128 = to_u128(amount)?;
         asset_client.transfer(&vault_address, &adapter, &amount);
         invoke_supply(env, &adapter, &asset_token, amount);
-        let observed_total_assets = to_u128(invoke_total_assets(env, &adapter, &asset_token))?;
+        let observed_total_assets =
+            valuation_to_u128(invoke_total_assets(env, &adapter, &asset_token));
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             let plan = vec![AllocationPlanEntry::new(market, amount_u128)];
@@ -807,6 +872,7 @@ fn allocate_impl(
                 observed_total_assets,
                 op_id,
                 now_ns,
+                pre_allocation_total_assets,
             )?;
             Ok(())
         };
@@ -824,6 +890,7 @@ fn allocate_impl(
             return Err(ContractError::InvalidState);
         }
         let realized_amount_u128 = to_u128(realized_amount)?;
+        let remaining_value = valuation_to_u128(invoke_total_assets(env, &adapter, &asset_token));
 
         let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
             let op_id = vault.begin_allocation_withdraw_internal(caller_kernel, market, now_ns)?;
@@ -831,6 +898,7 @@ fn allocate_impl(
                 caller_kernel,
                 market,
                 realized_amount_u128,
+                remaining_value,
                 op_id,
                 now_ns,
             )?;
@@ -860,7 +928,7 @@ fn refresh_markets_impl(
     for market in markets.iter() {
         let adapter = adapter_for_market(env, market)?;
         let total_assets = invoke_total_assets(env, &adapter, &asset_token);
-        refreshed_positions.push((market, to_u128(total_assets)?));
+        refreshed_positions.push((market, valuation_to_u128(total_assets)));
     }
 
     let mut markets_vec: Option<Vec<TargetId>> = Some(
@@ -875,6 +943,11 @@ fn refresh_markets_impl(
         let markets = markets_vec
             .take()
             .ok_or_else(|| RuntimeError::invalid_state(""))?;
+        let covers_all_principal = vault
+            .policy_state()
+            .principals()
+            .iter()
+            .all(|(market, principal)| *principal == 0 || markets.contains(market));
         let op_id = vault.begin_refreshing(caller_kernel, markets, now_ns)?;
         let result = vault.complete_refresh_with_positions(
             caller_kernel,
@@ -883,6 +956,11 @@ fn refresh_markets_impl(
             now_ns,
         )?;
         new_external = result.new_external_assets;
+        if covers_all_principal {
+            env.storage()
+                .instance()
+                .set(&VaultDataKey::NavRefreshedNs, &now_ns);
+        }
         Ok(())
     };
     with_contract_vault_contract_error(env, &mut call)?;
@@ -928,6 +1006,9 @@ fn set_governance_config_impl(
         }
         GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN => {
             apply_idle_resync_cooldown_config(env, required_i128(value_a)?)?
+        }
+        GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE => {
+            apply_max_nav_age_config(env, required_i128(value_a)?)?
         }
         _ => return Err(ContractError::InvalidInput),
     }
@@ -1103,7 +1184,13 @@ fn skim_impl(
     Ok(())
 }
 
+/// Permissionless by design: it only records the vault's own observed token balance, so
+/// liveness does not depend on a curator or allocator. The cooldown bounds call frequency
+/// and fees are crystallized before the balance is reconciled. Halted while paused.
 fn resync_idle_balance_impl(env: &Env) -> Result<(), ContractError> {
+    if SorobanStorage::new(env).is_paused() {
+        return Err(ContractError::EnforcedPause);
+    }
     let now_ns = ledger_timestamp_ns(env)?;
     let cooldown_ns = load_idle_resync_cooldown_ns(env);
     let last_key = VaultDataKey::IdleResyncLastNs;
@@ -1112,9 +1199,8 @@ fn resync_idle_balance_impl(env: &Env) -> Result<(), ContractError> {
         return Err(ContractError::InvalidState);
     }
     let mut call = |vault: &mut ContractVault<'_>| -> Result<(), RuntimeError> {
-        reconcile_current_idle_assets_while_idle(env, vault, now_ns)?;
-        vault.save_state()?;
-        Ok(())
+        reconcile_fees_and_current_idle_balance(env, vault, now_ns)?;
+        vault.save_state()
     };
     with_contract_vault_contract_error(env, &mut call)?;
     env.storage().instance().set(&last_key, &now_ns);
@@ -1614,7 +1700,7 @@ impl SorobanVaultContract {
         } else {
             let shares_u128 = to_u128(shares)?;
             to_i128(
-                convert_to_assets_bounded(
+                convert_to_redeem_assets_bounded(
                     &state,
                     &config,
                     shares_u128,
@@ -1681,10 +1767,13 @@ impl SorobanVaultContract {
 
         let owner_shares = share_balance(&env, &owner).max(0) as u128;
         let (max_withdraw_value, max_redeem_value) = if state.op_state.is_idle() && !config.paused {
-            let max_redeem_u128 =
-                owner_shares.min(convert_to_shares(&state, &config, state.idle_assets));
+            let max_redeem_u128 = owner_shares.min(convert_to_withdrawable_shares(
+                &state,
+                &config,
+                state.idle_assets,
+            ));
             let max_withdraw_u128 =
-                convert_to_assets(&state, &config, owner_shares).min(state.idle_assets);
+                convert_to_redeem_assets(&state, &config, owner_shares).min(state.idle_assets);
             (to_i128(max_withdraw_u128)?, to_i128(max_redeem_u128)?)
         } else {
             (0, 0)
@@ -1711,7 +1800,7 @@ impl SorobanVaultContract {
         } else {
             let assets_u128 = to_u128(assets)?;
             to_i128(
-                convert_to_shares_ceil_bounded(
+                convert_to_withdraw_shares_ceil_bounded(
                     &state,
                     &config,
                     assets_u128,
@@ -1770,9 +1859,11 @@ impl SorobanVaultContract {
             return Err(ContractError::InvalidState);
         }
 
-        normalize_fee_anchor(&env)?;
+        normalize_migrated_state(&env)?;
         runtime_to_contract(validate_and_rewrite_storage(&env))?;
         extend_storage_ttl(&env);
+        // Recipients stored before the FIND-009 guard must satisfy it before the vault resumes.
+        require_allowed_fee_recipients(&env, &runtime_to_contract(load_fees_spec(&env))?)?;
         set_migration_in_progress(&env, false);
         emit_admin_event(&env, symbol_short!("migrate"));
         Ok(())

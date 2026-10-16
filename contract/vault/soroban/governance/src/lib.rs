@@ -22,11 +22,11 @@ use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
     GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
-    GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, GOVERNANCE_POLICY_KIND_CAP,
-    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::math::wad::Wad;
 use templar_vault_kernel::{DurationNs, TimestampNs, DEFAULT_COOLDOWN_NS};
@@ -36,10 +36,13 @@ const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
 const MIN_TIMELOCK_NS: u64 = 0;
 const DAY_NS: u64 = 86_400_000_000_000;
 const MAX_TIMELOCK_NS: u64 = 30 * DAY_NS;
+const PROPOSAL_EXECUTION_WINDOW_NS: u64 = 7 * DAY_NS;
+const OTHER_APPROVAL_TTL_NS: u64 = 30 * DAY_NS;
 const MAX_PENDING_PROPOSALS: usize = 64;
 const PENDING_PAGE_SIZE: u64 = 16;
 const DEFAULT_WITHDRAWAL_COOLDOWN_NS: u64 = DEFAULT_COOLDOWN_NS;
 const DEFAULT_IDLE_RESYNC_COOLDOWN_NS: u64 = 120 * 1_000_000_000;
+const DEFAULT_MAX_NAV_AGE_NS: u64 = DAY_NS;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RevokerRole {
@@ -64,6 +67,7 @@ enum GovernanceActionKey {
     Fees,
     WithdrawalCooldown,
     IdleResyncCooldown,
+    MaxNavAge,
     Restrictions,
     Sentinel,
     Allocators,
@@ -93,6 +97,7 @@ impl GovernanceAction {
             Self::SetFees(_) => GovernanceActionKey::Fees,
             Self::SetWithdrawalCooldown(_) => GovernanceActionKey::WithdrawalCooldown,
             Self::SetIdleResyncCooldown(_) => GovernanceActionKey::IdleResyncCooldown,
+            Self::SetMaxNavAge(_) => GovernanceActionKey::MaxNavAge,
             Self::SetRestrictions(_, _) => GovernanceActionKey::Restrictions,
             Self::SetSentinel(_) => GovernanceActionKey::Sentinel,
             Self::SetAllocators(_) => GovernanceActionKey::Allocators,
@@ -173,6 +178,9 @@ impl SorobanVaultGovernanceContract {
             &DataKey::CurrentIdleResyncCooldownNs,
             &DEFAULT_IDLE_RESYNC_COOLDOWN_NS,
         );
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentMaxNavAgeNs, &DEFAULT_MAX_NAV_AGE_NS);
         env.storage()
             .instance()
             .set(&DataKey::CurrentRestrictionMode, &RestrictionMode::None);
@@ -265,6 +273,14 @@ impl SorobanVaultGovernanceContract {
             caller,
             GovernanceAction::SetIdleResyncCooldown(idle_resync_cooldown_ns),
         )
+    }
+
+    pub fn submit_set_max_nav_age(
+        env: Env,
+        caller: Address,
+        max_nav_age_ns: u64,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(env, caller, GovernanceAction::SetMaxNavAge(max_nav_age_ns))
     }
 
     pub fn submit_set_restrictions(
@@ -489,10 +505,7 @@ impl SorobanVaultGovernanceContract {
     /// consumed. Misuse can make approvals unverifiable or unsafe to execute.
     pub fn check_other(env: Env, key: Symbol, payload_hash: BytesN<32>) -> bool {
         extend_instance_ttl(&env);
-        env.storage()
-            .instance()
-            .get(&DataKey::ApprovedOther(key, payload_hash))
-            .unwrap_or(false)
+        other_approval_live(&env, &key, &payload_hash).unwrap_or(false)
     }
 
     pub fn consume_other(
@@ -504,18 +517,13 @@ impl SorobanVaultGovernanceContract {
         extend_instance_ttl(&env);
         require_vault_caller(&env, &caller)?;
 
-        let approved: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::ApprovedOther(key.clone(), payload_hash.clone()))
-            .unwrap_or(false);
-        if !approved {
+        if !other_approval_live(&env, &key, &payload_hash)? {
             return Err(GovernanceError::OtherNotApproved);
         }
 
         env.storage()
             .instance()
-            .remove(&DataKey::ApprovedOther(key, payload_hash));
+            .remove(&DataKey::ApprovedOtherUntil(key, payload_hash));
         Ok(())
     }
 
@@ -546,12 +554,41 @@ impl SorobanVaultGovernanceContract {
         Ok(removed)
     }
 
+    /// Revoke an already-approved opaque governance action by its exact
+    /// key/hash pair, before it is consumed or expires.
+    ///
+    /// Returns `OtherNotApproved` if no live approval exists for the pair.
+    pub fn revoke_other_approved(
+        env: Env,
+        caller: Address,
+        key: Symbol,
+        payload_hash: BytesN<32>,
+    ) -> Result<(), GovernanceError> {
+        extend_instance_ttl(&env);
+        require_revoke_kind(&env, &caller, GovernanceActionKind::Other)?;
+        if !other_approval_live(&env, &key, &payload_hash)? {
+            return Err(GovernanceError::OtherNotApproved);
+        }
+        env.storage()
+            .instance()
+            .remove(&DataKey::ApprovedOtherUntil(key, payload_hash));
+        Ok(())
+    }
+
     pub fn accept(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
 
         let now_ns = ledger_timestamp_ns(&env)?;
         let mut queue = load_queue(&env);
+        let expired = queue.iter().any(|entry| {
+            entry.value.id == proposal_id
+                && now_ns.0.saturating_sub(entry.ready_at_ns.0) > PROPOSAL_EXECUTION_WINDOW_NS
+        });
+        if expired {
+            // Returning an error reverts storage, so the entry stays queued; `revoke` clears it.
+            return Err(GovernanceError::ProposalExpired);
+        }
         let proposal = match queue.take_by_key(
             now_ns,
             &ProposalKey::ProposalId(proposal_id),
@@ -588,6 +625,15 @@ impl SorobanVaultGovernanceContract {
         }
         if matching > 1 {
             return Err(GovernanceError::DuplicatePending);
+        }
+
+        let expired = queue.iter().any(|entry| {
+            action_kind(&entry.value.action) == kind
+                && now_ns.0.saturating_sub(entry.ready_at_ns.0) > PROPOSAL_EXECUTION_WINDOW_NS
+        });
+        if expired {
+            // Returning an error reverts storage, so the entry stays queued; `revoke` clears it.
+            return Err(GovernanceError::ProposalExpired);
         }
 
         let proposal = match queue.take_by_key(now_ns, &kind, queued_proposal_kind) {
@@ -707,7 +753,14 @@ impl SorobanVaultGovernanceContract {
 
         let decision = decide_submission(&env, &action)?;
         let now_ns = ledger_timestamp_ns(&env)?;
-        let timelock_ns = DurationNs(load_timelocks(&env).get(timelock_kind_for_action(&action)));
+        let timelocks = load_timelocks(&env);
+        let mut timelock_ns = timelocks.get(timelock_kind_for_action(&action));
+        if let GovernanceAction::SetTimelock(kind, _) = &action {
+            // A decrease must wait for the longer of the changed kind's own
+            // delay and the timelock-config delay (Halborn FIND-022).
+            timelock_ns = timelock_ns.max(timelocks.get(*kind));
+        }
+        let timelock_ns = DurationNs(timelock_ns);
         let pending_key = action.pending_key();
         let mut queue = load_queue(&env);
         let replaces_existing = queue.has_pending_key(&pending_key, QueuedProposal::action_key);
@@ -775,6 +828,7 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
         GovernanceAction::SetFees(_) => GovernanceActionKind::Fees,
         GovernanceAction::SetWithdrawalCooldown(_) => GovernanceActionKind::WithdrawalCooldown,
         GovernanceAction::SetIdleResyncCooldown(_) => GovernanceActionKind::IdleResyncCooldown,
+        GovernanceAction::SetMaxNavAge(_) => GovernanceActionKind::MaxNavAge,
         GovernanceAction::SetRestrictions(_, _) => GovernanceActionKind::Restrictions,
         GovernanceAction::SetSentinel(_) => GovernanceActionKind::Sentinel,
         GovernanceAction::SetAllocators(_) => GovernanceActionKind::Allocators,
@@ -804,7 +858,8 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
         GovernanceAction::SetSupplyQueue(_) => TimelockKind::SupplyQueue,
         GovernanceAction::SetFees(_)
         | GovernanceAction::SetWithdrawalCooldown(_)
-        | GovernanceAction::SetIdleResyncCooldown(_) => TimelockKind::Fees,
+        | GovernanceAction::SetIdleResyncCooldown(_)
+        | GovernanceAction::SetMaxNavAge(_) => TimelockKind::Fees,
         GovernanceAction::SetRestrictions(_, _) => TimelockKind::Restrictions,
         GovernanceAction::SetSentinel(_) => TimelockKind::Sentinel,
         GovernanceAction::SetAllocators(_) => TimelockKind::Allocators,
@@ -981,6 +1036,17 @@ fn decide_submission(
             }
             Ok(TimelockDecision::Timelocked)
         }
+        GovernanceAction::SetMaxNavAge(proposed) => {
+            let current = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentMaxNavAgeNs)
+                .unwrap_or(DEFAULT_MAX_NAV_AGE_NS);
+            if current == *proposed {
+                return Err(GovernanceError::NoChange);
+            }
+            Ok(TimelockDecision::Timelocked)
+        }
         GovernanceAction::SetRestrictions(mode, accounts) => {
             let current_mode: RestrictionMode = env
                 .storage()
@@ -1100,17 +1166,24 @@ fn decide_submission(
         | GovernanceAction::Migrate
         | GovernanceAction::CancelMigration => Ok(TimelockDecision::Timelocked),
         GovernanceAction::Other(key, payload_hash) => {
-            let approved: bool = env
-                .storage()
-                .instance()
-                .get(&DataKey::ApprovedOther(key.clone(), payload_hash.clone()))
-                .unwrap_or(false);
-            if approved {
+            if other_approval_live(env, key, payload_hash)? {
                 return Err(GovernanceError::NoChange);
             }
             Ok(TimelockDecision::Timelocked)
         }
     }
+}
+
+fn other_approval_live(
+    env: &Env,
+    key: &Symbol,
+    payload_hash: &BytesN<32>,
+) -> Result<bool, GovernanceError> {
+    let until: Option<u64> = env.storage().instance().get(&DataKey::ApprovedOtherUntil(
+        key.clone(),
+        payload_hash.clone(),
+    ));
+    Ok(until.is_some_and(|until| ledger_timestamp_ns(env).is_ok_and(|now| now.0 <= until)))
 }
 
 fn to_wad(value: i128) -> Result<Wad, GovernanceError> {
@@ -1369,6 +1442,12 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 idle_resync_cooldown_ns,
             );
         }
+        GovernanceAction::SetMaxNavAge(max_nav_age_ns) => {
+            execute_vault_governance_action(env, &vault, action)?;
+            env.storage()
+                .instance()
+                .set(&DataKey::CurrentMaxNavAgeNs, max_nav_age_ns);
+        }
         GovernanceAction::SetRestrictions(mode, accounts) => {
             execute_vault_governance_action(env, &vault, action)?;
             env.storage()
@@ -1478,9 +1557,12 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
                 .set(&DataKey::TimelockNs, &timelocks.timelock_config_ns);
         }
         GovernanceAction::Other(key, payload_hash) => {
+            let until = ledger_timestamp_ns(env)?
+                .0
+                .saturating_add(OTHER_APPROVAL_TTL_NS);
             env.storage().instance().set(
-                &DataKey::ApprovedOther(key.clone(), payload_hash.clone()),
-                &true,
+                &DataKey::ApprovedOtherUntil(key.clone(), payload_hash.clone()),
+                &until,
             );
         }
     }
@@ -1591,6 +1673,15 @@ fn governance_payload_for_action(
                 primary: None,
                 many: None,
                 value_a: Some(i128::from(*idle_resync_cooldown_ns)),
+                value_b: None,
+            })
+        }
+        GovernanceAction::SetMaxNavAge(max_nav_age_ns) => {
+            Some(GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+                primary: None,
+                many: None,
+                value_a: Some(i128::from(*max_nav_age_ns)),
                 value_b: None,
             })
         }
@@ -1874,6 +1965,7 @@ fn can_revoke_kind(role: RevokerRole, kind: GovernanceActionKind) -> bool {
                 | GovernanceActionKind::Fees
                 | GovernanceActionKind::WithdrawalCooldown
                 | GovernanceActionKind::IdleResyncCooldown
+                | GovernanceActionKind::MaxNavAge
                 | GovernanceActionKind::Restrictions
                 | GovernanceActionKind::TimelockConfig
                 | GovernanceActionKind::Cap

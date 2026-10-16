@@ -346,17 +346,25 @@ mod contract_tests {
     use crate::contract::helpers::set_config_address;
     use crate::contract::*;
     use crate::convert::ledger_timestamp_ns;
-    use crate::effects::{AddressRegistrar, EffectContext, EffectInterpreter, EffectResult};
+    use crate::effects::{
+        AddressRegistrar, EffectContext, EffectInterpreter, EffectResult, SdkTokenAdapter,
+        Sep41Token,
+    };
     use crate::error::RuntimeError;
+    use crate::storage::SOROBAN_MAX_PENDING_WITHDRAWALS;
     use crate::storage::{SorobanStorage, Storage};
-    use crate::test_utils::{begin_allocating, finish_allocating, MemoryStorage};
+    use crate::test_utils::{
+        begin_allocating, finish_allocating, supply_queue_from_targets, MemoryStorage,
+    };
     use alloc::collections::BTreeMap;
     use alloc::string::{String as AllocString, ToString};
     use alloc::vec;
     use alloc::vec::Vec;
     use proptest::prelude::*;
+    use rstest::rstest;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env, String as SdkString, Symbol};
+    use templar_curator_primitives::policy::cap_group::CapGroupId;
     use templar_curator_primitives::policy::state::MarketConfig;
     use templar_curator_primitives::PolicyState;
     use templar_soroban_governance::SorobanVaultGovernanceContract;
@@ -364,7 +372,8 @@ mod contract_tests {
         DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus,
         GovernanceCommand, I128Receipt, ReceiptAddress, RequestWithdrawReceipt,
         RuntimeVersionResponse, VaultCommand, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
-        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+        GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+        GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, GOVERNANCE_POLICY_KIND_FEES,
         RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_PAUSE,
         RUNTIME_FEATURE_ACTION_RECOVERY, RUNTIME_FEATURE_ACTION_REFRESH_FEES,
         RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
@@ -373,6 +382,7 @@ mod contract_tests {
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::fee::FeeSlot;
     use templar_vault_kernel::math::wad::{Wad, YEAR_NS};
+    use templar_vault_kernel::{convert_to_assets, VaultConfig};
     use templar_vault_kernel::{
         FeeAccrualAnchor, FeesSpec, OpState, Restrictions, TimestampNs, VaultState,
         WithdrawingState, MIN_WITHDRAWAL_ASSETS,
@@ -399,6 +409,8 @@ mod contract_tests {
     #[derive(Clone, Debug, Default)]
     struct MockInterpreter {
         should_fail: bool,
+        /// Fail only `TransferAssets`, as a receiver that cannot accept the asset would.
+        fail_asset_transfers: bool,
         effects: Vec<KernelEffect>,
     }
 
@@ -406,6 +418,7 @@ mod contract_tests {
         fn new() -> Self {
             Self {
                 should_fail: false,
+                fail_asset_transfers: false,
                 effects: Vec::new(),
             }
         }
@@ -417,7 +430,10 @@ mod contract_tests {
             effect: &KernelEffect,
             _ctx: &EffectContext,
         ) -> EffectResult<()> {
-            if self.should_fail {
+            if self.should_fail
+                || (self.fail_asset_transfers
+                    && matches!(effect, KernelEffect::TransferAssets { .. }))
+            {
                 return Err(RuntimeError::effect_failed("mock interpreter failed"));
             }
             self.effects.push(effect.clone());
@@ -964,6 +980,10 @@ mod contract_tests {
             .set_market_config(0, MarketConfig::new(true, u128::MAX, None))
             .unwrap();
         vault.policy_state_mut().set_principal(0, 0).unwrap();
+        vault
+            .policy_state_mut()
+            .replace_supply_queue(supply_queue_from_targets(&[0], 1))
+            .unwrap();
 
         let result = vault
             .allocate(
@@ -981,6 +1001,272 @@ mod contract_tests {
         assert_eq!(state.external_assets, 500);
         assert_eq!(state.total_assets, 2_000);
         assert!(state.op_state.is_idle());
+    }
+
+    #[derive(Copy, Clone)]
+    enum SupplyExclusion {
+        Disabled,
+        Unqueued,
+        MarketCap,
+        GroupCap,
+    }
+
+    #[rstest]
+    #[case(1, 1, SupplyExclusion::Disabled)]
+    #[case(1_000, 1_000, SupplyExclusion::Unqueued)]
+    #[case(0, 1, SupplyExclusion::MarketCap)]
+    #[case(1_000, 1_001, SupplyExclusion::MarketCap)]
+    #[case(2_000, 1_001, SupplyExclusion::GroupCap)]
+    fn supply_exclusions_are_refused_before_allocation(
+        #[case] market_cap: u32,
+        #[case] amount: u32,
+        #[case] exclusion: SupplyExclusion,
+    ) {
+        let mut vault = create_exclusion_vault(&[(0, market_cap.max(1))], &[0]);
+        let amount = amount as u128;
+        match exclusion {
+            SupplyExclusion::Disabled => vault
+                .policy_state_mut()
+                .set_market_enabled(0, false)
+                .unwrap(),
+            SupplyExclusion::Unqueued => vault
+                .policy_state_mut()
+                .replace_supply_queue(supply_queue_from_targets(&[], 1))
+                .unwrap(),
+            SupplyExclusion::MarketCap => vault
+                .policy_state_mut()
+                .set_market_config(0, MarketConfig::new(true, market_cap as u128, None))
+                .unwrap(),
+            SupplyExclusion::GroupCap => {
+                let group_id = enroll_cap_group(&mut vault, "eng698-cap", &[0], &[2_000]);
+                vault
+                    .policy_state_mut()
+                    .set_cap_group_absolute_cap(group_id, Some(1_000));
+                vault
+                    .validate_supply_admission(0, amount, vault.state().unwrap().total_assets)
+                    .expect_err("cap-group headroom must refuse otherwise admissible supply");
+            }
+        }
+
+        let error = vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta { market: 0, amount }),
+            )
+            .expect_err("excluded supply must be refused");
+
+        assert_eq!(error, RuntimeError::InvalidState);
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.idle_assets, 2_000);
+        assert_eq!(state.external_assets, 0);
+        assert_eq!(state.total_assets, 2_000);
+        assert_eq!(vault.policy_state().principal_for(0), Some(0));
+    }
+
+    #[rstest]
+    #[case(3_000, 2_000, 1_001)]
+    #[case(3_000, 3_000, 1)]
+    fn cap_group_limits_are_enforced_against_cumulative_exposure(
+        #[case] absolute_cap: u32,
+        #[case] market_0_exposure: u32,
+        #[case] amount: u32,
+    ) {
+        let absolute_cap = absolute_cap as u128;
+        let market_0_exposure = market_0_exposure as u128;
+        let amount = amount as u128;
+        let mut vault = create_exclusion_vault(&[(0, 10_000), (1, 10_000)], &[0, 1]);
+        let cap_group_id = enroll_cap_group(&mut vault, "eng698-group", &[0, 1], &[10_000, 10_000]);
+        vault
+            .policy_state_mut()
+            .set_cap_group_absolute_cap(cap_group_id, Some(absolute_cap));
+        vault
+            .policy_state_mut()
+            .set_principal(0, market_0_exposure)
+            .unwrap();
+        set_test_assets(&mut vault, 4_000 - market_0_exposure, market_0_exposure);
+
+        let error = vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta { market: 1, amount }),
+            )
+            .expect_err("group exposure must be counted across every member market");
+
+        assert_eq!(error, RuntimeError::InvalidState);
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.idle_assets, 4_000 - market_0_exposure);
+        assert_eq!(state.external_assets, market_0_exposure);
+        assert_eq!(state.total_assets, 4_000);
+        assert_eq!(
+            vault.policy_state().principal_for(0),
+            Some(market_0_exposure)
+        );
+        assert_eq!(vault.policy_state().principal_for(1), Some(0));
+    }
+
+    #[test]
+    fn relative_cap_group_accepts_exact_boundary_and_rejects_excess() {
+        for (amount, accepted) in [(1_000, true), (1_001, false)] {
+            let mut vault = create_exclusion_vault(&[(0, 10_000), (1, 10_000)], &[0, 1]);
+            let cap_group_id =
+                enroll_cap_group(&mut vault, "eng698-relative", &[0, 1], &[10_000, 10_000]);
+            vault.policy_state_mut().set_cap_group_relative_cap(
+                cap_group_id,
+                Some(Wad::from(750_000_000_000_000_000u128)),
+            );
+            vault.policy_state_mut().set_principal(0, 2_000).unwrap();
+            set_test_assets(&mut vault, 2_000, 2_000);
+
+            let result = vault.allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta { market: 1, amount }),
+            );
+
+            assert_eq!(result.is_ok(), accepted, "amount {amount}");
+        }
+    }
+
+    #[test]
+    fn observed_final_principal_above_group_cap_is_rejected_without_commit() {
+        let mut vault = create_exclusion_vault(&[(0, 20_000), (1, 20_000)], &[0, 1]);
+        let cap_group_id =
+            enroll_cap_group(&mut vault, "eng698-observe", &[0, 1], &[20_000, 20_000]);
+        vault
+            .policy_state_mut()
+            .set_cap_group_absolute_cap(cap_group_id, Some(10_000));
+        vault.policy_state_mut().set_principal(0, 5_000).unwrap();
+        vault.policy_state_mut().set_principal(1, 5_000).unwrap();
+        set_test_assets(&mut vault, 1_000, 10_000);
+        let op_id = begin_allocating(&mut vault, caller(), vec![(0, 500)], 1_000).unwrap();
+
+        let error = vault
+            .complete_supply_allocation(
+                caller(),
+                0,
+                5_500,
+                op_id,
+                1_000,
+                vault.state().unwrap().total_assets,
+            )
+            .expect_err("observed group exposure must remain within its cap");
+
+        assert_eq!(error, RuntimeError::InvalidState);
+        assert!(vault.state().unwrap().op_state.is_allocating());
+        assert_eq!(vault.state().unwrap().external_assets, 10_000);
+        assert_eq!(vault.policy_state().principal_for(0), Some(5_000));
+        assert_eq!(vault.policy_state().principal_for(1), Some(5_000));
+    }
+
+    #[test]
+    fn supply_exclusion_preserves_withdrawal_allocation() {
+        let mut vault = create_exclusion_vault(&[(0, 10_000)], &[0]);
+        vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta {
+                    market: 0,
+                    amount: 500,
+                }),
+            )
+            .unwrap();
+        vault.policy_state_mut().set_market_cap(0, 0).unwrap();
+        vault
+            .policy_state_mut()
+            .set_market_enabled(0, false)
+            .unwrap();
+
+        let error = vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta {
+                    market: 0,
+                    amount: 100,
+                }),
+            )
+            .expect_err("excluded supply must be refused");
+        assert_eq!(error, RuntimeError::InvalidState);
+
+        vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Withdraw(Delta {
+                    market: 0,
+                    amount: 500,
+                }),
+            )
+            .expect("withdrawal must remain available for existing exposure");
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.idle_assets, 2_000);
+        assert_eq!(state.external_assets, 0);
+        assert_eq!(vault.policy_state().principal_for(0), Some(0));
+    }
+
+    fn caller() -> templar_vault_kernel::Address {
+        templar_vault_kernel::Address([3u8; 32])
+    }
+
+    fn set_test_assets(
+        vault: &mut CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter>,
+        idle_assets: u128,
+        external_assets: u128,
+    ) {
+        let state = vault.state_mut().unwrap();
+        state.idle_assets = idle_assets;
+        state.external_assets = external_assets;
+        state.total_assets = idle_assets + external_assets;
+    }
+
+    fn create_exclusion_vault(
+        market_caps: &[(u32, u32)],
+        queue: &[u32],
+    ) -> CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter> {
+        let mut vault = create_test_vault();
+        vault
+            .deposit(
+                templar_vault_kernel::Address([1u8; 32]),
+                templar_vault_kernel::Address([2u8; 32]),
+                if queue.len() > 1 { 4_000 } else { 2_000 },
+                0,
+                100,
+            )
+            .unwrap();
+        for (market, market_cap) in market_caps {
+            vault
+                .policy_state_mut()
+                .set_market_config(*market, MarketConfig::new(true, *market_cap as u128, None))
+                .unwrap();
+        }
+        vault
+            .policy_state_mut()
+            .replace_supply_queue(supply_queue_from_targets(queue, 1))
+            .unwrap();
+        vault
+    }
+
+    fn enroll_cap_group(
+        vault: &mut CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter>,
+        group_id: &str,
+        markets: &[u32],
+        caps: &[u128],
+    ) -> CapGroupId {
+        let cap_group_id = CapGroupId::try_from(group_id).unwrap();
+        let policy = vault.policy_state_mut();
+        policy.ensure_cap_group(cap_group_id.clone());
+        for (index, market) in markets.iter().enumerate() {
+            policy
+                .set_market_config(
+                    *market,
+                    MarketConfig::new(true, caps[index], Some(cap_group_id.clone())),
+                )
+                .unwrap();
+        }
+        policy
+            .replace_supply_queue(supply_queue_from_targets(markets, 1))
+            .unwrap();
+        cap_group_id
     }
 
     #[test]
@@ -1021,7 +1307,7 @@ mod contract_tests {
         let op_id = begin_allocating(&mut vault, caller, vec![(0, 500)], 1_000).unwrap();
 
         let error = vault
-            .complete_supply_allocation(caller, 0, 1_501, op_id, 1_000)
+            .complete_supply_allocation(caller, 0, 1_501, op_id, 1_000, 2_000)
             .expect_err("supply callback must not over-report the active step");
 
         assert_eq!(error, RuntimeError::InvalidState);
@@ -1058,6 +1344,68 @@ mod contract_tests {
 
         let stale_sync = vault.sync_external_assets(caller, op_id + 1, 4_000, 1_000);
         assert!(stale_sync.is_err());
+    }
+
+    /// Vault with 10_000 deposited and deployed to market 0, whose recorded principal (10_000)
+    /// is stale against the adapter's actual value.
+    fn vault_with_stale_market_principal(
+    ) -> CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter> {
+        let mut vault = create_test_vault();
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+        vault
+            .deposit(owner, receiver, 10_000, 0, 100)
+            .expect("deposit should seed shares");
+        vault
+            .policy_state_mut()
+            .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+            .unwrap();
+        vault.policy_state_mut().set_principal(0, 10_000).unwrap();
+        set_test_assets(&mut vault, 0, 10_000);
+        vault
+    }
+
+    #[test]
+    fn test_full_withdraw_from_yielding_market_recognizes_yield_as_gain() {
+        // FIND-020: a full exit's realized amount includes yield not yet reflected in
+        // principal. The exit must not underflow, and the yield is NAV gain (fee anchor
+        // untouched, so the performance fee applies), not an idle inflow that moves the anchor.
+        let mut vault = vault_with_stale_market_principal();
+        let anchor_before = vault.state().unwrap().fee_anchor;
+
+        let op_id = vault
+            .begin_allocation_withdraw_internal(caller(), 0, 1_000)
+            .unwrap();
+        vault
+            .complete_withdraw_allocation(caller(), 0, 10_500, 0, op_id, 1_000)
+            .expect("a full exit carrying surplus yield must not underflow");
+
+        let state = vault.state().unwrap();
+        assert_eq!(vault.policy_state().principal_for(0), Some(0));
+        assert_eq!(state.external_assets, 0);
+        assert_eq!(state.idle_assets, 10_500);
+        assert_eq!(state.total_assets, 10_500);
+        assert_eq!(state.fee_anchor, anchor_before);
+    }
+
+    #[test]
+    fn test_partial_withdraw_above_stale_principal_keeps_observed_remainder() {
+        // A withdrawal larger than the stale principal must not zero the principal while the
+        // adapter still holds value; otherwise NAV freshness (FIND-001) would skip the market.
+        let mut vault = vault_with_stale_market_principal();
+
+        let op_id = vault
+            .begin_allocation_withdraw_internal(caller(), 0, 1_000)
+            .unwrap();
+        vault
+            .complete_withdraw_allocation(caller(), 0, 11_000, 1_000, op_id, 1_000)
+            .unwrap();
+
+        let state = vault.state().unwrap();
+        assert_eq!(vault.policy_state().principal_for(0), Some(1_000));
+        assert_eq!(state.external_assets, 1_000);
+        assert_eq!(state.idle_assets, 11_000);
+        assert_eq!(state.total_assets, 12_000);
     }
 
     #[test]
@@ -1142,6 +1490,491 @@ mod contract_tests {
         assert_eq!(vault.policy_state().principal_for(0), Some(999));
     }
 
+    #[rstest]
+    // Cap groups gate new supply. An observation the adapters actually report is booked even
+    // when it leaves the group above its absolute or relative cap. Distinct markets are staged
+    // independently, and a repeated market observation retains its last value.
+    #[case::absolute_boundary([1_000, 1_000, 0], vec![(0, 2_000)], false)]
+    #[case::absolute_over_cap([1_000, 1_000, 0], vec![(0, 2_001)], false)]
+    #[case::prospective_relative_boundary([500, 500, 0], vec![(0, 1_000)], true)]
+    #[case::prospective_relative_over_cap([500, 500, 0], vec![(0, 1_001)], true)]
+    #[case::outside_group_loss_boundary([1_000, 1_000, 1_000], vec![(2, 334)], true)]
+    #[case::outside_group_loss_over_cap([1_000, 1_000, 1_000], vec![(2, 333)], true)]
+    #[case::rebalance_increase_first(
+        [1_000, 2_000, 0],
+        vec![(0, 2_000), (1, 1_000)],
+        false
+    )]
+    #[case::rebalance_decrease_first(
+        [1_000, 2_000, 0],
+        vec![(1, 1_000), (0, 2_000)],
+        false
+    )]
+    #[case::rebalance_over_cap_increase_first(
+        [1_000, 2_000, 0],
+        vec![(0, 2_001), (1, 1_000)],
+        false
+    )]
+    #[case::rebalance_over_cap_decrease_first(
+        [1_000, 2_000, 0],
+        vec![(1, 1_000), (0, 2_001)],
+        false
+    )]
+    #[case::downward_to_boundary([2_500, 1_000, 0], vec![(0, 2_000)], false)]
+    #[case::downward_still_over_cap([2_500, 1_000, 0], vec![(0, 2_001)], false)]
+    #[case::duplicate_final_boundary(
+        [1_000, 1_000, 0],
+        vec![(0, 2_001), (0, 2_000)],
+        false
+    )]
+    #[case::duplicate_final_over_cap(
+        [1_000, 1_000, 0],
+        vec![(0, 2_000), (0, 2_001)],
+        false
+    )]
+    fn test_complete_refresh_records_final_cap_group_principals(
+        #[case] initial_principals: [u128; 3],
+        #[case] observations: Vec<(u32, u128)>,
+        #[case] relative_cap: bool,
+    ) {
+        let mut vault = create_test_vault();
+        let group_id = enroll_cap_group(&mut vault, "refresh-cap", &[0, 1], &[10_000; 2]);
+        vault
+            .policy_state_mut()
+            .set_market_config(2, MarketConfig::new(true, 10_000, None))
+            .unwrap();
+        if relative_cap {
+            vault.policy_state_mut().set_cap_group_relative_cap(
+                group_id.clone(),
+                Some(Wad::from(600_000_000_000_000_000u128)),
+            );
+        } else {
+            vault
+                .policy_state_mut()
+                .set_cap_group_absolute_cap(group_id.clone(), Some(3_000));
+        }
+        for (market, principal) in initial_principals.iter().enumerate() {
+            vault
+                .policy_state_mut()
+                .set_principal(market as u32, *principal)
+                .unwrap();
+        }
+        set_test_assets(&mut vault, 1_000, initial_principals.iter().sum());
+
+        // The plan contains each market once, even when observations repeat it.
+        let mut plan = Vec::new();
+        for (market, _) in &observations {
+            if !plan.contains(market) {
+                plan.push(*market);
+            }
+        }
+        let markets_refreshed = plan.len() as u32;
+        let op_id = vault.begin_refreshing(caller(), plan, 1_500).unwrap();
+
+        let result = vault
+            .complete_refresh_with_positions(caller(), &observations, op_id, 1_600)
+            .expect("refresh must book observed exposure even when a group cap is exceeded");
+
+        let mut final_principals = initial_principals;
+        for (market, principal) in observations {
+            final_principals[market as usize] = principal;
+        }
+        let external_assets: u128 = final_principals.iter().sum();
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(result.markets_refreshed, markets_refreshed);
+        assert_eq!(state.idle_assets, 1_000);
+        assert_eq!(state.external_assets, external_assets);
+        assert_eq!(state.total_assets, 1_000 + external_assets);
+        for (market, principal) in final_principals.iter().enumerate() {
+            assert_eq!(
+                vault.policy_state().principal_for(market as u32),
+                Some(*principal)
+            );
+        }
+        let group = vault.policy_state().cap_groups().get(&group_id).unwrap();
+        assert_eq!(group.principal, final_principals[0] + final_principals[1]);
+        let policy_tuple = |policy: &PolicyState| {
+            (
+                crate::storage::encode_markets(policy.markets()),
+                crate::storage::encode_principals(policy.principals()),
+                crate::storage::encode_cap_groups(policy.cap_groups()),
+                crate::storage::encode_policy_locks(policy.leases()),
+                crate::storage::encode_supply_queue(policy.supply_queue()),
+            )
+        };
+        let persisted = vault.storage.load_policy_state().unwrap().unwrap();
+        assert_eq!(
+            policy_tuple(&persisted),
+            policy_tuple(vault.policy_state()),
+            "the booked policy must be the persisted policy"
+        );
+    }
+
+    #[test]
+    fn test_complete_refresh_per_market_cap_breach_rolls_back_state_and_policy() {
+        // The refusal that survives is the per-market ceiling. It must leave the state blob,
+        // the in-memory policy and the persisted policy byte-identical.
+        let mut vault = create_test_vault();
+        let group_id = enroll_cap_group(&mut vault, "refresh-cap", &[0, 1], &[2_000, 10_000]);
+        vault
+            .policy_state_mut()
+            .set_cap_group_absolute_cap(group_id, Some(10_000));
+        vault.policy_state_mut().set_principal(0, 1_000).unwrap();
+        set_test_assets(&mut vault, 1_000, 1_000);
+        let initial_policy = vault.policy_state().clone();
+        vault.storage.save_policy_state(&initial_policy).unwrap();
+        let policy_tuple = |policy: &PolicyState| {
+            (
+                crate::storage::encode_markets(policy.markets()),
+                crate::storage::encode_principals(policy.principals()),
+                crate::storage::encode_cap_groups(policy.cap_groups()),
+                crate::storage::encode_policy_locks(policy.leases()),
+                crate::storage::encode_supply_queue(policy.supply_queue()),
+            )
+        };
+        let policy_before = policy_tuple(&initial_policy);
+
+        let op_id = vault.begin_refreshing(caller(), vec![0, 1], 1_500).unwrap();
+        let state_before = crate::storage::encode_state_blob(vault.state().unwrap());
+
+        let error = vault
+            .complete_refresh_with_positions(caller(), &[(0, 2_001)], op_id, 1_600)
+            .expect_err("an observation above its own market cap must be refused");
+
+        assert_eq!(error, RuntimeError::InvalidState);
+        assert!(vault.state().unwrap().op_state.is_refreshing());
+        assert_eq!(
+            crate::storage::encode_state_blob(vault.state().unwrap()),
+            state_before
+        );
+        assert_eq!(
+            crate::storage::encode_state_blob(&vault.storage.load_state().unwrap().unwrap()),
+            state_before
+        );
+        assert_eq!(policy_tuple(vault.policy_state()), policy_before);
+        let persisted = vault.storage.load_policy_state().unwrap().unwrap();
+        assert_eq!(policy_tuple(&persisted), policy_before);
+    }
+
+    #[test]
+    fn test_complete_refresh_books_outside_group_loss_and_redemption_prices_updated_nav() {
+        // A market outside the cap group loses 10_000. The untouched group is then above its
+        // relative cap, which used to refuse the refresh and strand the vault at a stale NAV.
+        let mut vault = create_test_vault();
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+        let group_id = enroll_cap_group(&mut vault, "loss-group", &[0, 1], &[10_000; 2]);
+        vault
+            .policy_state_mut()
+            .set_market_config(2, MarketConfig::new(true, 10_000, None))
+            .unwrap();
+        vault.policy_state_mut().set_cap_group_relative_cap(
+            group_id.clone(),
+            Some(Wad::from(600_000_000_000_000_000u128)),
+        );
+        vault
+            .deposit(owner, receiver, 40_000, 0, 100)
+            .expect("deposit should seed shares");
+        for market in 0..3 {
+            vault
+                .policy_state_mut()
+                .set_principal(market, 10_000)
+                .unwrap();
+        }
+        set_test_assets(&mut vault, 10_000, 30_000);
+        assert_eq!(vault.state().unwrap().total_shares, 40_000);
+
+        let op_id = vault
+            .begin_refreshing(caller(), vec![0, 1, 2], 200)
+            .unwrap();
+        let result = vault
+            .complete_refresh_with_positions(
+                caller(),
+                &[(0, 10_000), (1, 10_000), (2, 0)],
+                op_id,
+                300,
+            )
+            .expect("the honest outside-group loss must be booked");
+
+        let state = vault.state().unwrap();
+        assert_eq!(result.markets_refreshed, 3);
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.idle_assets, 10_000);
+        assert_eq!(state.external_assets, 20_000);
+        assert_eq!(state.total_assets, 30_000);
+        assert_eq!(vault.policy_state().principal_for(2), Some(0));
+        let group = vault.policy_state().cap_groups().get(&group_id).unwrap();
+        assert_eq!(group.principal, 20_000);
+        assert_eq!(group.cap.effective_cap(state.total_assets), 18_000);
+
+        let request_time: u64 = 400;
+        vault
+            .request_withdraw(owner, receiver, 10_000, 0, request_time)
+            .expect("withdrawal should queue at the refreshed NAV");
+        let expected_assets = {
+            let (_, head) = vault
+                .state()
+                .unwrap()
+                .withdraw_queue
+                .head()
+                .expect("withdrawal queued");
+            head.expected_assets
+        };
+        assert_eq!(
+            expected_assets, 7_500,
+            "10_000 shares must price at 0.75 assets, not at the stale 1.00 NAV"
+        );
+
+        let exec_time = request_time
+            .saturating_add(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
+            .saturating_add(1);
+        let crate::contract::ExecuteWithdrawResult::Payout { completed, .. } = vault
+            .execute_withdraw(caller(), exec_time)
+            .expect("idle liquidity should settle the withdrawal")
+        else {
+            panic!("execute_withdraw should complete a payout");
+        };
+        assert_eq!(completed.assets_out, 7_500);
+        let state = vault.state().unwrap();
+        assert_eq!(state.idle_assets, 2_500);
+        assert_eq!(state.total_assets, 22_500);
+        assert_eq!(state.total_shares, 30_000);
+    }
+
+    /// FIND-015: a queue head whose receiver cannot accept the asset settles as a failed
+    /// payout (escrow refunded, nothing burned, head dequeued) instead of erroring out and
+    /// wedging every withdrawal behind it.
+    #[test]
+    fn test_idle_payout_transfer_failure_refunds_escrow_and_dequeues_head() {
+        let mut vault = create_test_vault();
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let poisoned_receiver = templar_vault_kernel::Address([2u8; 32]);
+        let second_owner = templar_vault_kernel::Address([3u8; 32]);
+        vault.deposit(owner, owner, 10_000, 0, 100).unwrap();
+        vault
+            .deposit(second_owner, second_owner, 10_000, 0, 100)
+            .unwrap();
+        vault
+            .request_withdraw(owner, poisoned_receiver, 10_000, 0, 200)
+            .unwrap();
+        vault
+            .request_withdraw(second_owner, second_owner, 10_000, 0, 200)
+            .unwrap();
+        let exec_time = 200 + SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1;
+
+        vault.interpreter.fail_asset_transfers = true;
+        let crate::contract::ExecuteWithdrawResult::Payout { completed, .. } = vault
+            .execute_withdraw(caller(), exec_time)
+            .expect("a failed transfer must settle, not error")
+        else {
+            panic!("execute_withdraw should settle the head");
+        };
+        assert_eq!(completed.request_id, 0);
+        assert_eq!(completed.assets_out, 0);
+        assert_eq!(completed.shares_burned, 0);
+
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.withdraw_queue.head().map(|(id, _)| id), Some(1));
+        assert_eq!(state.total_shares, 20_000);
+        assert_eq!(state.idle_assets, 20_000);
+        assert!(vault.interpreter.effects.iter().any(|e| matches!(
+            e,
+            KernelEffect::TransferShares { to, shares: 10_000, .. } if *to == owner
+        )));
+        assert!(!vault
+            .interpreter
+            .effects
+            .iter()
+            .any(|e| matches!(e, KernelEffect::BurnShares { .. })));
+
+        // the queue is live again: the next head pays out normally
+        vault.interpreter.fail_asset_transfers = false;
+        let crate::contract::ExecuteWithdrawResult::Payout { completed, .. } =
+            vault.execute_withdraw(caller(), exec_time).unwrap()
+        else {
+            panic!("second head should pay out");
+        };
+        assert_eq!(completed.request_id, 1);
+        assert_eq!(completed.assets_out, 10_000);
+        assert!(vault.state().unwrap().withdraw_queue.head().is_none());
+    }
+
+    /// The SAC adapter reports a failed transfer as an error instead of trapping.
+    #[test]
+    fn test_sdk_token_adapter_transfer_failure_is_an_error() {
+        use soroban_sdk::testutils::Address as _;
+        let env = Env::default();
+        env.mock_all_auths();
+        let asset = env
+            .register_stellar_asset_contract_v2(SdkAddress::generate(&env))
+            .address();
+        let from = SdkAddress::generate(&env);
+        let to = SdkAddress::generate(&env);
+        let adapter = SdkTokenAdapter::new(&env, &asset);
+        assert_eq!(
+            adapter.transfer(&from, &to, 1),
+            Err(RuntimeError::EffectFailed)
+        );
+    }
+
+    #[test]
+    fn test_complete_refresh_after_idle_withdrawal_over_relative_cap() {
+        // A permissionless idle payout shrinks total assets while group exposure stays put, so
+        // the concentration rises above the relative cap on its own. A later refresh that
+        // reports the very same principals must still succeed.
+        let mut vault = create_test_vault();
+        let owner = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([2u8; 32]);
+        let group_id = enroll_cap_group(&mut vault, "concentration", &[0, 1], &[10_000; 2]);
+        vault
+            .policy_state_mut()
+            .set_market_config(2, MarketConfig::new(true, 10_000, None))
+            .unwrap();
+        vault.policy_state_mut().set_cap_group_relative_cap(
+            group_id.clone(),
+            Some(Wad::from(600_000_000_000_000_000u128)),
+        );
+        vault
+            .deposit(owner, receiver, 40_000, 0, 100)
+            .expect("deposit should seed shares");
+        for market in 0..3 {
+            vault
+                .policy_state_mut()
+                .set_principal(market, 10_000)
+                .unwrap();
+        }
+        set_test_assets(&mut vault, 10_000, 30_000);
+        assert_eq!(vault.state().unwrap().total_shares, 40_000);
+
+        let request_time: u64 = 200;
+        vault
+            .request_withdraw(owner, receiver, 10_000, 0, request_time)
+            .unwrap();
+        let exec_time = request_time
+            .saturating_add(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
+            .saturating_add(1);
+        let crate::contract::ExecuteWithdrawResult::Payout { completed, .. } = vault
+            .execute_withdraw(caller(), exec_time)
+            .expect("idle payout should settle")
+        else {
+            panic!("execute_withdraw should complete a payout");
+        };
+        assert_eq!(completed.assets_out, 10_000);
+
+        let state = vault.state().unwrap();
+        assert_eq!(state.idle_assets, 0);
+        assert_eq!(state.external_assets, 30_000);
+        assert_eq!(state.total_assets, 30_000);
+        assert_eq!(state.total_shares, 30_000);
+        let group = vault.policy_state().cap_groups().get(&group_id).unwrap();
+        assert_eq!(group.principal, 20_000);
+        assert_eq!(group.cap.effective_cap(state.total_assets), 18_000);
+
+        let op_id = vault
+            .begin_refreshing(caller(), vec![0, 1, 2], 1_000)
+            .unwrap();
+        let result = vault
+            .complete_refresh_with_positions(
+                caller(),
+                &[(0, 10_000), (1, 10_000), (2, 10_000)],
+                op_id,
+                1_100,
+            )
+            .expect("an unchanged observation must refresh while the group is over cap");
+
+        assert_eq!(result.markets_refreshed, 3);
+        assert_eq!(result.new_external_assets, 30_000);
+        let state = vault.state().unwrap();
+        assert!(state.op_state.is_idle());
+        assert_eq!(state.total_assets, 30_000);
+        assert_eq!(state.external_assets, 30_000);
+        for market in 0..3 {
+            assert_eq!(vault.policy_state().principal_for(market), Some(10_000));
+        }
+        assert_eq!(
+            vault
+                .policy_state()
+                .cap_groups()
+                .get(&group_id)
+                .unwrap()
+                .principal,
+            20_000
+        );
+    }
+
+    #[test]
+    fn test_complete_refresh_over_cap_still_gates_new_supply() {
+        // Booking exposure must not widen the gate: the group that just breached its absolute
+        // cap still refuses extra supply and still permits exposure-reducing withdrawals.
+        let mut vault = create_test_vault();
+        let group_id = enroll_cap_group(&mut vault, "supply-gate", &[0, 1], &[10_000; 2]);
+        vault
+            .policy_state_mut()
+            .set_cap_group_absolute_cap(group_id.clone(), Some(3_000));
+        vault.policy_state_mut().set_principal(0, 2_000).unwrap();
+        vault.policy_state_mut().set_principal(1, 1_000).unwrap();
+        set_test_assets(&mut vault, 1_000, 3_000);
+
+        let op_id = vault.begin_refreshing(caller(), vec![0], 1_500).unwrap();
+        vault
+            .complete_refresh_with_positions(caller(), &[(0, 2_001)], op_id, 1_600)
+            .expect("the observed growth must be booked");
+        assert_eq!(
+            vault
+                .policy_state()
+                .cap_groups()
+                .get(&group_id)
+                .unwrap()
+                .principal,
+            3_001
+        );
+
+        let error = vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta {
+                    market: 1,
+                    amount: 1,
+                }),
+            )
+            .expect_err("a breached group must refuse any further supply");
+        assert_eq!(error, RuntimeError::InvalidState);
+        assert_eq!(vault.state().unwrap().external_assets, 3_001);
+
+        vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Withdraw(Delta {
+                    market: 1,
+                    amount: 500,
+                }),
+            )
+            .expect("reducing exposure must stay permitted");
+        assert_eq!(vault.state().unwrap().external_assets, 2_501);
+        assert_eq!(
+            vault
+                .policy_state()
+                .cap_groups()
+                .get(&group_id)
+                .unwrap()
+                .principal,
+            2_501
+        );
+
+        vault
+            .allocate(
+                caller(),
+                &AllocationDelta::Supply(Delta {
+                    market: 1,
+                    amount: 1,
+                }),
+            )
+            .expect("headroom restored by the withdrawal must admit supply again");
+        assert_eq!(vault.state().unwrap().external_assets, 2_502);
+    }
+
     #[test]
     fn test_complete_refresh_allows_adapter_reported_decrease_within_cap() {
         let mut vault = create_test_vault();
@@ -1191,6 +2024,10 @@ mod contract_tests {
             .set_market_config(0, MarketConfig::new(true, u128::MAX, None))
             .unwrap();
         vault.policy_state_mut().set_principal(0, 0).unwrap();
+        vault
+            .policy_state_mut()
+            .replace_supply_queue(supply_queue_from_targets(&[0], 1))
+            .unwrap();
         vault
             .allocate(
                 caller,
@@ -1678,6 +2515,122 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_fee_change_rejects_vault_and_token_recipients() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance,
+                asset.clone(),
+                share.clone(),
+                17,
+                29,
+            )
+            .unwrap();
+
+            let vault = env.current_contract_address();
+            let other = SdkAddress::generate(&env);
+
+            // Halborn FIND-009: the vault escrow pool and token contracts cannot
+            // hold fee recipients.
+            let invalid = [
+                (vault.clone(), other.clone()),
+                (other.clone(), vault.clone()),
+                (share.clone(), other.clone()),
+                (other.clone(), asset.clone()),
+            ];
+            for (perf_recipient, mgmt_recipient) in invalid {
+                assert_eq!(
+                    apply_fee_change(&env, 0, perf_recipient, 0, mgmt_recipient, None),
+                    Err(crate::error::ContractError::InvalidInput)
+                );
+            }
+
+            let perf_recipient = SdkAddress::generate(&env);
+            let mgmt_recipient = SdkAddress::generate(&env);
+            assert_eq!(
+                apply_fee_change(
+                    &env,
+                    0,
+                    perf_recipient.clone(),
+                    0,
+                    mgmt_recipient.clone(),
+                    None,
+                ),
+                Ok(())
+            );
+
+            let fees = load_fees_spec(&env).unwrap();
+            assert_eq!(
+                fees.performance.recipient,
+                kernel_address_from_sdk(&env, &perf_recipient)
+            );
+            assert_eq!(
+                fees.management.recipient,
+                kernel_address_from_sdk(&env, &mgmt_recipient)
+            );
+        });
+    }
+
+    /// A recipient stored before the FIND-009 guard existed blocks `migrate`, which keeps the
+    /// migration flag set until governance stores a valid recipient pair.
+    #[test]
+    fn test_migrate_rejects_stored_vault_fee_recipient() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                17,
+                29,
+            )
+            .unwrap();
+            let vault_kernel = kernel_address_from_sdk(&env, &env.current_contract_address());
+            let legacy = FeesSpec::new(
+                FeeSlot::new(Wad::one() / 8, templar_vault_kernel::Address([8u8; 32])),
+                FeeSlot::new(Wad::one() / 16, vault_kernel),
+                None,
+            );
+            store_fees_spec(&env, &legacy).unwrap();
+            set_migration_in_progress(&env, true);
+
+            assert_eq!(
+                SorobanVaultContract::migrate(env.clone(), governance.clone()),
+                Err(crate::error::ContractError::InvalidInput)
+            );
+            assert!(migration_in_progress(&env));
+        });
+        // the test host allows one authorization per contract frame
+        env.as_contract(&contract_id, || {
+            let perf = SdkAddress::generate(&env);
+            let mgmt = SdkAddress::generate(&env);
+            apply_fee_change(&env, 0, perf, 0, mgmt, None).unwrap();
+            SorobanVaultContract::migrate(env.clone(), governance).unwrap();
+            assert!(!migration_in_progress(&env));
+        });
+    }
+
+    #[test]
     fn test_loads_virtual_offsets_from_storage() {
         use soroban_sdk::testutils::Address as _;
 
@@ -1939,6 +2892,149 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_set_max_nav_age_updates_contract_storage() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+                    primary: None,
+                    many: None,
+                    value_a: Some(5_000),
+                    value_b: None,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                env.storage().instance().get(&VaultDataKey::MaxNavAgeNs),
+                Some(5_000u64)
+            );
+        });
+    }
+
+    #[test]
+    fn test_set_max_nav_age_rejects_negative_value() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            let err = execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+                    primary: None,
+                    many: None,
+                    value_a: Some(-1),
+                    value_b: None,
+                },
+            )
+            .expect_err("negative max nav age must be rejected");
+
+            assert_eq!(err, crate::error::ContractError::InvalidInput);
+            assert_eq!(
+                crate::contract::helpers::load_max_nav_age_ns(&env),
+                SOROBAN_DEFAULT_MAX_NAV_AGE_NS
+            );
+        });
+    }
+
+    /// A vault holding external assets that has never been fully refreshed must reject
+    /// deposits under a finite NAV-age limit even at a small ledger time, and accept them
+    /// when the limit is `u64::MAX`.
+    #[test]
+    fn test_deposit_rejects_never_refreshed_nav() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let depositor = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        soroban_sdk::token::StellarAssetClient::new(&env, &asset).mint(&depositor, &1_000);
+        let deposit = VaultCommand::DepositWithMin {
+            owner: sdk_text(&depositor),
+            receiver: sdk_text(&depositor),
+            assets: 1_000,
+            min_shares_out: 0,
+        };
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            SorobanStorage::new(&env)
+                .save_state(&VaultState {
+                    total_assets: 1_000,
+                    total_shares: 1_000,
+                    external_assets: 1_000,
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!(!env.storage().instance().has(&VaultDataKey::NavRefreshedNs));
+
+            let err = execute_command(&env, &deposit).expect_err("never-refreshed NAV is stale");
+            assert_eq!(err, crate::error::ContractError::InvalidState);
+
+            crate::contract::helpers::store_max_nav_age_ns(&env, u64::MAX);
+            execute_command(&env, &deposit).unwrap();
+        });
+    }
+
+    #[test]
     fn test_resync_idle_balance_uses_configured_cooldown() {
         use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
 
@@ -1985,6 +3081,457 @@ mod contract_tests {
                 ..Default::default()
             });
             execute_command(&env, &VaultCommand::ResyncIdleBalance).unwrap();
+        });
+    }
+
+    /// FIND-008: a fee change settles the window accrued under the old spec to the old
+    /// recipient and re-anchors, so the new rate and recipient only apply going forward.
+    #[test]
+    fn test_fee_change_settles_accrued_fees_under_old_spec() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let old_perf = soroban_sdk::Address::generate(&env);
+        let old_mgmt = soroban_sdk::Address::generate(&env);
+        let new_perf = soroban_sdk::Address::generate(&env);
+        let new_mgmt = soroban_sdk::Address::generate(&env);
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+        let fees_policy = |perf_wad: i128, perf: &SdkAddress, mgmt: &SdkAddress| {
+            GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_FEES,
+                target_ids: None,
+                mode: None,
+                accounts: Some(alloc::vec![sdk_text(perf), sdk_text(mgmt)]),
+                market_id: None,
+                cap_group_id: None,
+                value: Some(perf_wad),
+                value_b: Some(0),
+                value_c: None,
+            }
+        };
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize_with_full_config(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share.clone(),
+                0,
+                0,
+                SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+                10,
+            )
+            .unwrap();
+            // 10% performance fee to old_perf
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy(100_000_000_000_000_000, &old_perf, &old_mgmt),
+            )
+            .unwrap();
+            // a 500 gain accrued since the anchor, not yet crystallized
+            SorobanStorage::new(&env)
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_000,
+                    idle_assets: 1_500,
+                    fee_anchor: FeeAccrualAnchor::new(1_000, TimestampNs(1_000_000_000)),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+        env.ledger().with_mut(|li| li.timestamp = 2);
+
+        env.as_contract(&contract_id, || {
+            // switch to 50% performance fee and new recipients
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy(500_000_000_000_000_000, &new_perf, &new_mgmt),
+            )
+            .unwrap();
+
+            // 10% of the 500 gain: fee_assets 50, shares = 50 * 1000 / 1450 = 34, to old_perf
+            assert_eq!(share_client.balance(&old_perf), 34);
+            assert_eq!(share_client.balance(&new_perf), 0);
+            let state = SorobanStorage::new(&env).load_state().unwrap().unwrap();
+            assert_eq!(state.total_shares, 1_034);
+            assert_eq!(
+                state.fee_anchor,
+                FeeAccrualAnchor::new(1_500, TimestampNs(2_000_000_000))
+            );
+
+            // the new spec starts from a clean window: nothing more is due
+            execute_command(&env, &VaultCommand::RefreshFees).unwrap();
+            assert_eq!(share_client.balance(&new_perf), 0);
+            assert_eq!(
+                SorobanStorage::new(&env)
+                    .load_state()
+                    .unwrap()
+                    .unwrap()
+                    .total_shares,
+                1_034
+            );
+        });
+    }
+
+    fn fees_policy_cmd(
+        perf_wad: i128,
+        perf: &SdkAddress,
+        mgmt: &SdkAddress,
+        max_growth_rate_wad: Option<i128>,
+    ) -> GovernanceCommand {
+        GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_FEES,
+            target_ids: None,
+            mode: None,
+            accounts: Some(alloc::vec![sdk_text(perf), sdk_text(mgmt)]),
+            market_id: None,
+            cap_group_id: None,
+            value: Some(perf_wad),
+            value_b: Some(0),
+            value_c: max_growth_rate_wad,
+        }
+    }
+
+    /// A fee change is rejected while the vault is not idle and leaves the stored spec intact.
+    #[test]
+    fn test_fee_change_rejected_when_not_idle() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let perf = soroban_sdk::Address::generate(&env);
+        let mgmt = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            let before = load_fees_spec(&env).unwrap();
+            let mut storage = SorobanStorage::new(&env);
+            let mut state = storage.load_state().unwrap().unwrap();
+            state.op_state = OpState::Refreshing(templar_vault_kernel::RefreshingState {
+                op_id: 1,
+                plan: alloc::vec![0],
+                index: 0,
+            });
+            storage.save_state(&state).unwrap();
+
+            let err = execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy_cmd(100_000_000_000_000_000, &perf, &mgmt, None),
+            )
+            .expect_err("fee change must wait for an idle vault");
+            assert_eq!(err, crate::error::ContractError::InvalidState);
+            assert_eq!(load_fees_spec(&env).unwrap(), before);
+        });
+    }
+
+    /// With no fee due (zero old fees), the change still re-anchors once the ledger has
+    /// moved, so the window elapsed before the change is never charged at the new rate.
+    #[test]
+    fn test_fee_change_reanchors_when_no_fee_due() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let perf = soroban_sdk::Address::generate(&env);
+        let mgmt = soroban_sdk::Address::generate(&env);
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+            // zero fees; a 500 gain sits above a stale anchor
+            SorobanStorage::new(&env)
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_000,
+                    idle_assets: 1_500,
+                    fee_anchor: FeeAccrualAnchor::new(1_000, TimestampNs(1_000_000_000)),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+        env.ledger().with_mut(|li| li.timestamp = 2);
+        env.as_contract(&contract_id, || {
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy_cmd(500_000_000_000_000_000, &perf, &mgmt, None),
+            )
+            .unwrap();
+            let state = SorobanStorage::new(&env).load_state().unwrap().unwrap();
+            assert_eq!(state.total_shares, 1_000);
+            assert_eq!(
+                state.fee_anchor,
+                FeeAccrualAnchor::new(1_500, TimestampNs(2_000_000_000))
+            );
+            // the pre-change gain is not charged at the new 50% rate
+            execute_command(&env, &VaultCommand::RefreshFees).unwrap();
+            assert_eq!(share_client.balance(&perf), 0);
+        });
+    }
+
+    /// A legacy spec paying the vault itself (written before FIND-009) is not paid one last
+    /// window on a fee change: nothing is minted and the elapsed window is forfeited.
+    #[test]
+    fn test_fee_change_skips_settlement_to_disallowed_legacy_recipient() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let perf = soroban_sdk::Address::generate(&env);
+        let mgmt = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            let vault_kernel = kernel_address_from_sdk(&env, &env.current_contract_address());
+            store_fees_spec(
+                &env,
+                &FeesSpec::new(
+                    FeeSlot::new(Wad::one() / 10, vault_kernel),
+                    FeeSlot::new(Wad::zero(), vault_kernel),
+                    None,
+                ),
+            )
+            .unwrap();
+            // a 500 gain sits above the anchor, so the legacy 10% fee would be due
+            SorobanStorage::new(&env)
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_000,
+                    idle_assets: 1_500,
+                    fee_anchor: FeeAccrualAnchor::new(1_000, TimestampNs(1_000_000_000)),
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+        env.ledger().with_mut(|li| li.timestamp = 2);
+        env.as_contract(&contract_id, || {
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy_cmd(100_000_000_000_000_000, &perf, &mgmt, None),
+            )
+            .unwrap();
+            let state = SorobanStorage::new(&env).load_state().unwrap().unwrap();
+            assert_eq!(state.total_shares, 1_000);
+            assert_eq!(
+                state.fee_anchor,
+                FeeAccrualAnchor::new(1_500, TimestampNs(2_000_000_000))
+            );
+            assert_eq!(
+                load_fees_spec(&env).unwrap().performance.recipient,
+                kernel_address_from_sdk(&env, &perf)
+            );
+        });
+    }
+
+    /// A capped gain booked at the anchor's own ledger accrues no fee yet; a same-ledger fee
+    /// change must keep the anchor so the gain stays in the capped accrual base.
+    #[test]
+    fn test_fee_change_preserves_capped_same_ledger_gain() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let perf = soroban_sdk::Address::generate(&env);
+        let mgmt = soroban_sdk::Address::generate(&env);
+        let cap = Some(100_000_000_000_000_000);
+        let anchor = FeeAccrualAnchor::new(1_000, TimestampNs(1_000_000_000));
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy_cmd(100_000_000_000_000_000, &perf, &mgmt, cap),
+            )
+            .unwrap();
+            SorobanStorage::new(&env)
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_000,
+                    idle_assets: 1_500,
+                    fee_anchor: anchor,
+                    ..Default::default()
+                })
+                .unwrap();
+        });
+        // the test host allows one authorization per contract frame
+        env.as_contract(&contract_id, || {
+            // same ledger as the anchor: change the rate, keep the cap
+            execute_governance_command(
+                &env,
+                &governance,
+                &fees_policy_cmd(200_000_000_000_000_000, &perf, &mgmt, cap),
+            )
+            .unwrap();
+            let state = SorobanStorage::new(&env).load_state().unwrap().unwrap();
+            assert_eq!(state.total_shares, 1_000);
+            assert_eq!(
+                state.fee_anchor, anchor,
+                "capped same-ledger gain must stay anchored"
+            );
+        });
+    }
+
+    #[test]
+    fn test_resync_idle_balance_rejected_while_paused() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize_with_full_config(
+                env.clone(),
+                curator,
+                governance,
+                asset,
+                share,
+                0,
+                0,
+                SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+                10,
+            )
+            .unwrap();
+
+            SorobanStorage::new(&env).set_paused(true);
+            let err = execute_command(&env, &VaultCommand::ResyncIdleBalance)
+                .expect_err("resync must be halted while paused");
+            assert_eq!(err, crate::error::ContractError::EnforcedPause);
+            // a rejected call must not consume the cooldown window
+            assert!(!env
+                .storage()
+                .instance()
+                .has(&VaultDataKey::IdleResyncLastNs));
+
+            SorobanStorage::new(&env).set_paused(false);
+            execute_command(&env, &VaultCommand::ResyncIdleBalance).unwrap();
+        });
+    }
+
+    #[test]
+    fn test_refresh_fees_rejected_while_paused() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize_with_full_config(
+                env.clone(),
+                curator,
+                governance,
+                asset,
+                share,
+                0,
+                0,
+                SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+                10,
+            )
+            .unwrap();
+
+            SorobanStorage::new(&env).set_paused(true);
+            let err = execute_command(&env, &VaultCommand::RefreshFees)
+                .expect_err("refresh fees must be halted while paused");
+            assert_eq!(err, crate::error::ContractError::EnforcedPause);
+
+            SorobanStorage::new(&env).set_paused(false);
+            execute_command(&env, &VaultCommand::RefreshFees).unwrap();
         });
     }
 
@@ -2280,6 +3827,359 @@ mod contract_tests {
                 templar_vault_kernel::TimestampNs(ledger_timestamp_ns(&env).expect("timestamp"))
             );
         });
+    }
+
+    type FeeVault = CuratorVault<MemoryStorage, TestPermissiveAuth, MockInterpreter>;
+
+    const FEE_REQUEST_OWNER: templar_vault_kernel::Address =
+        templar_vault_kernel::Address([10u8; 32]);
+    const MANAGEMENT_RECIPIENT: templar_vault_kernel::Address =
+        templar_vault_kernel::Address([7u8; 32]);
+    const PERFORMANCE_RECIPIENT: templar_vault_kernel::Address =
+        templar_vault_kernel::Address([8u8; 32]);
+
+    fn fee_config(management: bool, performance: bool) -> FeesSpec {
+        FeesSpec::new(
+            if performance {
+                FeeSlot::new(Wad::one() / 5, PERFORMANCE_RECIPIENT)
+            } else {
+                FeeSlot::zero()
+            },
+            if management {
+                FeeSlot::new(Wad::one() / 20, MANAGEMENT_RECIPIENT)
+            } else {
+                FeeSlot::zero()
+            },
+            None,
+        )
+    }
+
+    fn fee_vault(
+        management: bool,
+        performance: bool,
+        virtual_shares: u128,
+        virtual_assets: u128,
+    ) -> FeeVault {
+        let state = VaultState {
+            total_assets: if performance { 20_000 } else { 10_000 },
+            total_shares: 10_000,
+            idle_assets: if performance { 20_000 } else { 10_000 },
+            fee_anchor: FeeAccrualAnchor::new(10_000, TimestampNs(0)),
+            ..Default::default()
+        };
+        let config = test_config()
+            .with_fees(fee_config(management, performance))
+            .with_virtual_offsets(virtual_shares, virtual_assets);
+        let mut vault = CuratorVault::new(
+            config,
+            MemoryStorage::with_state(state),
+            TestPermissiveAuth,
+            MockInterpreter::new(),
+        );
+        vault.load_state().expect("load fee vault state");
+        vault
+    }
+
+    fn kernel_config(fees: FeesSpec, virtual_shares: u128, virtual_assets: u128) -> VaultConfig {
+        VaultConfig {
+            fees,
+            min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
+            withdrawal_cooldown_ns: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+            max_pending_withdrawals: SOROBAN_MAX_PENDING_WITHDRAWALS,
+            paused: false,
+            virtual_shares,
+            virtual_assets,
+        }
+    }
+
+    fn recipient_mints(vault: &FeeVault, recipient: templar_vault_kernel::Address) -> u128 {
+        vault
+            .interpreter
+            .effects
+            .iter()
+            .filter_map(|effect| match effect {
+                KernelEffect::MintShares { owner, shares } if *owner == recipient => Some(*shares),
+                _ => None,
+            })
+            .sum()
+    }
+
+    fn recorded_asset_payout(vault: &FeeVault) -> bool {
+        vault.interpreter.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                KernelEffect::BurnShares { .. } | KernelEffect::TransferAssets { .. }
+            )
+        })
+    }
+
+    #[test]
+    fn test_explicit_refresh_before_request_matches_request_side_refresh() {
+        for (management, performance) in [(true, false), (false, true), (true, true)] {
+            for (virtual_shares, virtual_assets) in [(0u128, 0u128), (100u128, 200u128)] {
+                let mut explicit =
+                    fee_vault(management, performance, virtual_shares, virtual_assets);
+                let mut implicit =
+                    fee_vault(management, performance, virtual_shares, virtual_assets);
+                let pre = implicit.state().unwrap().clone();
+                let config = kernel_config(
+                    fee_config(management, performance),
+                    virtual_shares,
+                    virtual_assets,
+                );
+                explicit
+                    .refresh_fees(YEAR_NS)
+                    .expect("explicit refresh succeeds");
+                let explicit_request = explicit
+                    .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, YEAR_NS)
+                    .expect("request after explicit refresh succeeds");
+                let implicit_request = implicit
+                    .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, YEAR_NS)
+                    .expect("request without explicit refresh succeeds");
+                assert_eq!(explicit_request.request_id, implicit_request.request_id);
+                let state = implicit.state().unwrap();
+                assert_eq!(explicit.state().unwrap(), state);
+                let (request_id, queued) = state.withdraw_queue.head().expect("queued request");
+                assert_eq!(request_id, implicit_request.request_id);
+                assert_eq!(queued.escrow_shares, implicit_request.shares_escrowed);
+                assert!(queued.expected_assets < convert_to_assets(&pre, &config, 5_000));
+                let management_mint = recipient_mints(&implicit, MANAGEMENT_RECIPIENT);
+                let performance_mint = recipient_mints(&implicit, PERFORMANCE_RECIPIENT);
+                assert_eq!(
+                    management_mint,
+                    recipient_mints(&explicit, MANAGEMENT_RECIPIENT)
+                );
+                assert_eq!(
+                    performance_mint,
+                    recipient_mints(&explicit, PERFORMANCE_RECIPIENT)
+                );
+                assert_eq!(management_mint > 0, management);
+                assert_eq!(performance_mint > 0, performance);
+                assert_eq!(
+                    management_mint + performance_mint,
+                    state.total_shares - pre.total_shares
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_request_withdraw_at_anchor_timestamp_crystallizes_performance_fee() {
+        // ENG-699: a gain booked at the fee anchor timestamp must not allow
+        // a same-timestamp withdrawal request to price against the pre-fee
+        // rate. The kernel forces fee crystallization before the request is
+        // recorded, so fee shares are minted and the queued claim is priced
+        // post-fee for both zero and nonzero virtual offsets.
+        for (virtual_shares, virtual_assets) in [(0u128, 0u128), (100u128, 200u128)] {
+            let mut vault = fee_vault(false, true, virtual_shares, virtual_assets);
+            let pre = vault.state().unwrap().clone();
+            let config = kernel_config(fee_config(false, true), virtual_shares, virtual_assets);
+            assert_eq!(
+                pre.fee_anchor.timestamp_ns,
+                templar_vault_kernel::TimestampNs(0)
+            );
+
+            let request = vault
+                .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, 0)
+                .expect("same-timestamp request must succeed after forced crystallization");
+
+            assert!(recipient_mints(&vault, PERFORMANCE_RECIPIENT) > 0);
+            let state = vault.state().unwrap();
+            assert_eq!(state.fee_anchor.total_assets, pre.total_assets);
+            assert!(state.total_shares > pre.total_shares);
+
+            let (request_id, queued) = state.withdraw_queue.head().expect("queued request");
+            assert_eq!(request_id, request.request_id);
+            assert_eq!(queued.escrow_shares, request.shares_escrowed);
+            assert!(queued.expected_assets < convert_to_assets(&pre, &config, 5_000));
+        }
+    }
+
+    #[test]
+    fn test_request_withdraw_at_anchor_timestamp_preserves_capped_gain_anchor() {
+        // With a growth-rate cap configured, the equal-time gain accrues no
+        // fee, so the anchor must stay in place and the request must not be
+        // repriced at the pre-fee-to-capped-gain rate uncharged. A later
+        // time-advanced refresh still crystallizes the capped fee from the
+        // preserved anchor.
+        let performance = FeeSlot::new(Wad::one() / 5, PERFORMANCE_RECIPIENT);
+        let fees = FeesSpec::new(performance, FeeSlot::zero(), Some(Wad::one() / 5));
+        let state = VaultState {
+            total_assets: 20_000,
+            total_shares: 10_000,
+            idle_assets: 20_000,
+            fee_anchor: FeeAccrualAnchor::new(10_000, templar_vault_kernel::TimestampNs(0)),
+            ..Default::default()
+        };
+        let config = kernel_config(fees, 0, 0);
+        let mut vault = CuratorVault::new(
+            test_config().with_fees(fees),
+            MemoryStorage::with_state(state),
+            TestPermissiveAuth,
+            MockInterpreter::new(),
+        );
+        vault.load_state().expect("load capped vault state");
+        let pre = vault.state().unwrap().clone();
+
+        vault
+            .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, 0)
+            .expect("capped equal-time request succeeds without crystallization");
+
+        assert_eq!(recipient_mints(&vault, PERFORMANCE_RECIPIENT), 0);
+        let state = vault.state().unwrap();
+        assert_eq!(state.fee_anchor.total_assets, pre.fee_anchor.total_assets);
+        assert_eq!(state.fee_anchor.timestamp_ns, pre.fee_anchor.timestamp_ns);
+        let (_, queued) = state.withdraw_queue.head().expect("queued request");
+        assert_eq!(
+            queued.expected_assets,
+            convert_to_assets(&pre, &config, 5_000)
+        );
+
+        vault
+            .refresh_fees(YEAR_NS)
+            .expect("capped refresh after elapsed time must succeed");
+        assert!(recipient_mints(&vault, PERFORMANCE_RECIPIENT) > 0);
+        let state = vault.state().unwrap();
+        assert_eq!(state.fee_anchor.total_assets, 20_000);
+        assert_eq!(
+            state.fee_anchor.timestamp_ns,
+            templar_vault_kernel::TimestampNs(YEAR_NS)
+        );
+    }
+
+    #[test]
+    fn test_request_withdraw_enforces_minimum_and_slippage_after_fees() {
+        let config = kernel_config(fee_config(false, true), 0, 0);
+        let mut control = fee_vault(false, true, 0, 0);
+        control
+            .refresh_fees(YEAR_NS)
+            .expect("explicit refresh succeeds");
+        let post = control.state().unwrap().clone();
+        assert_eq!(convert_to_assets(&post, &config, 501), 901);
+        assert_eq!(
+            convert_to_assets(&post, &config, 556),
+            MIN_WITHDRAWAL_ASSETS
+        );
+
+        for (shares, min_assets_out) in [
+            (501u128, 0u128),
+            (556u128, 0u128),
+            (5_000u128, 10_000u128),
+            (5_000u128, 9_000u128),
+        ] {
+            let mut vault = fee_vault(false, true, 0, 0);
+            let pre_request = vault.state().unwrap().clone();
+            let result = vault.request_withdraw(
+                FEE_REQUEST_OWNER,
+                FEE_REQUEST_OWNER,
+                shares,
+                min_assets_out,
+                YEAR_NS,
+            );
+            if convert_to_assets(&post, &config, shares) < min_assets_out
+                || convert_to_assets(&post, &config, shares) < MIN_WITHDRAWAL_ASSETS
+            {
+                assert!(result.is_err());
+                assert!(vault.state().unwrap().withdraw_queue.head().is_none());
+                assert!(!vault
+                    .interpreter
+                    .effects
+                    .iter()
+                    .any(|effect| matches!(effect, KernelEffect::TransferShares { .. })));
+                assert_eq!(
+                    vault.state().unwrap().total_shares,
+                    pre_request.total_shares
+                );
+                assert_eq!(vault.state().unwrap().fee_anchor, pre_request.fee_anchor);
+            } else {
+                result.expect("valid post-fee request succeeds");
+                assert_eq!(
+                    vault
+                        .state()
+                        .unwrap()
+                        .withdraw_queue
+                        .head()
+                        .expect("queued request")
+                        .1
+                        .expected_assets,
+                    convert_to_assets(&post, &config, shares),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_request_withdraw_advances_anchor_when_fee_floors_to_zero() {
+        let mut vault = fee_vault(true, false, 0, 0);
+        vault
+            .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, 1)
+            .expect("request succeeds when pro-rated fee floors to zero");
+        assert_eq!(recipient_mints(&vault, MANAGEMENT_RECIPIENT), 0);
+        let state = vault.state().unwrap();
+        assert_eq!(state.total_shares, 10_000);
+        assert_eq!(
+            state.fee_anchor,
+            FeeAccrualAnchor::new(10_000, TimestampNs(1))
+        );
+        assert_eq!(
+            state
+                .withdraw_queue
+                .head()
+                .expect("queued request")
+                .1
+                .expected_assets,
+            5_000
+        );
+    }
+
+    #[test]
+    fn test_all_supply_request_preserves_fee_recipient_backing() {
+        let config = kernel_config(fee_config(true, false), 0, 0);
+        let mut control = fee_vault(true, false, 0, 0);
+        control
+            .refresh_fees(YEAR_NS)
+            .expect("explicit refresh succeeds");
+        assert!(recipient_mints(&control, MANAGEMENT_RECIPIENT) > 0);
+        let post = control.state().unwrap().clone();
+        assert!(post.total_shares > 10_000);
+
+        let mut vault = fee_vault(true, false, 0, 0);
+        let request = vault
+            .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 10_000, 0, YEAR_NS)
+            .expect("all-supply request succeeds after fee crystallization");
+        let state = vault.state().unwrap();
+        assert_eq!(state.total_shares, post.total_shares);
+        assert_eq!(state.withdraw_queue.len(), 1);
+        let (request_id, queued) = state.withdraw_queue.head().expect("queued request");
+        assert_eq!(queued.escrow_shares, 10_000);
+        assert_eq!(
+            queued.expected_assets,
+            convert_to_assets(&post, &config, 10_000)
+        );
+        assert_eq!(request_id, request.request_id);
+        let recipient_shares = recipient_mints(&vault, MANAGEMENT_RECIPIENT);
+        assert!(recipient_shares > 0);
+        let recipient_backing = convert_to_assets(&post, &config, recipient_shares);
+        assert!(recipient_backing > 0);
+        assert!(queued.expected_assets + recipient_backing <= state.total_assets);
+    }
+
+    #[test]
+    fn test_queued_request_remains_fixed_while_fees_continue_accruing() {
+        let mut vault = fee_vault(true, false, 0, 0);
+        vault
+            .request_withdraw(FEE_REQUEST_OWNER, FEE_REQUEST_OWNER, 5_000, 0, YEAR_NS)
+            .expect("request succeeds after fee crystallization");
+        let queue_before = vault.state().unwrap().withdraw_queue.clone();
+        let mint_before = recipient_mints(&vault, MANAGEMENT_RECIPIENT);
+
+        // ENG-697: post-request fees credit recipients but do not settle this claim.
+        vault
+            .refresh_fees(2 * YEAR_NS)
+            .expect("post-request crystallization succeeds");
+        assert!(recipient_mints(&vault, MANAGEMENT_RECIPIENT) > mint_before);
+        assert_eq!(vault.state().unwrap().withdraw_queue, queue_before);
+        assert!(!recorded_asset_payout(&vault));
     }
 
     #[test]
@@ -3606,7 +5506,7 @@ mod market_tests {
 
 mod storage_tests {
     use crate::contract::helpers::{
-        get_config_address, set_config_address, set_migration_in_progress,
+        get_config_address, set_config_address, set_migration_in_progress, store_virtual_offsets,
     };
     use crate::contract::{adapter_for_market, supply_adapter_for_market, SorobanVaultContract};
     use crate::error::{ContractError, RuntimeError};
@@ -3614,14 +5514,14 @@ mod storage_tests {
         SorobanStorage, SorobanStorageKey, Storage, SOROBAN_MAX_PENDING_WITHDRAWALS,
         SOROBAN_MAX_RESTRICTION_ADDRESSES,
     };
-    use crate::test_utils::{fuzz_api, MemoryStorage};
+    use crate::test_utils::{fuzz_api, supply_queue_from_targets, MemoryStorage};
     use alloc::string::{String as AllocString, ToString};
     use rstest::{fixture, rstest};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address as SdkAddress, Bytes, Env, Symbol, Vec as SdkVec};
     use templar_curator_primitives::policy::cap_group::{CapGroup, CapGroupId, CapGroupRecord};
     use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
-    use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueEntry};
+
     use templar_curator_primitives::PolicyState;
     use templar_soroban_governance::SorobanVaultGovernanceContract;
     use templar_soroban_shared_types::{
@@ -3642,16 +5542,6 @@ mod storage_tests {
             .expect("valid address")
     }
 
-    fn supply_queue_from_ids(ids: &[u32]) -> SupplyQueue {
-        SupplyQueue::try_from_entries(
-            ids.iter()
-                .map(|target_id| SupplyQueueEntry::new(*target_id, 100).unwrap())
-                .collect(),
-            None,
-        )
-        .unwrap()
-    }
-
     fn policy_state_with_supply_queue(ids: &[u32]) -> PolicyState {
         let mut policy_state = PolicyState::default();
         for target_id in ids {
@@ -3660,7 +5550,7 @@ mod storage_tests {
                 .unwrap();
         }
         policy_state
-            .replace_supply_queue(supply_queue_from_ids(ids))
+            .replace_supply_queue(supply_queue_from_targets(ids, 100))
             .unwrap();
         policy_state
     }
@@ -3693,6 +5583,21 @@ mod storage_tests {
 
     fn adapter_contract(env: &Env) -> SdkAddress {
         env.register(SorobanVaultContract, ())
+    }
+
+    // Adapter whose valuation is permanently negative (underwater position).
+    mod negative_valuation {
+        use soroban_sdk::{contract, contractimpl, Address, Env};
+
+        #[contract]
+        pub struct NegativeAdapter;
+
+        #[contractimpl]
+        impl NegativeAdapter {
+            pub fn total_assets(_env: Env, _asset: Address) -> i128 {
+                -1
+            }
+        }
     }
 
     fn account_address(env: &Env) -> SdkAddress {
@@ -4146,6 +6051,118 @@ mod storage_tests {
                     .instance()
                     .get::<_, bool>(&soroban_sdk::symbol_short!("migrate")),
                 None
+            );
+        });
+    }
+    #[test]
+    fn migrate_rejects_existing_queue_with_virtual_assets() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                100,
+                200,
+            )
+            .unwrap();
+            store_virtual_offsets(&env, 100, 200);
+
+            let pending = PendingWithdrawal::new(
+                KernelAddress([1u8; 32]),
+                KernelAddress([2u8; 32]),
+                10_000,
+                9_599,
+                TimestampNs(0),
+            );
+            let mut state = VaultState {
+                total_assets: 10_000,
+                idle_assets: 10_000,
+                total_shares: 10_526,
+                withdraw_queue: WithdrawQueue::with_state([(0, pending)], 0, 1),
+                ..Default::default()
+            };
+            state.fee_anchor = FeeAccrualAnchor::new(10_000, TimestampNs(0));
+            let mut storage = SorobanStorage::new(&env);
+            Storage::save_state(&mut storage, &state).unwrap();
+            set_migration_in_progress(&env, true);
+
+            assert_eq!(
+                SorobanVaultContract::migrate(env.clone(), governance.clone()),
+                Err(ContractError::InvalidState)
+            );
+
+            let persisted = Storage::load_state(&storage).unwrap().unwrap();
+            assert_eq!(
+                persisted
+                    .withdraw_queue
+                    .head()
+                    .expect("queued request")
+                    .1
+                    .expected_assets,
+                9_599
+            );
+        });
+    }
+
+    #[test]
+    fn migrate_allows_existing_queue_with_only_virtual_shares() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                100,
+                200,
+            )
+            .unwrap();
+            store_virtual_offsets(&env, 200, 0);
+
+            let pending = PendingWithdrawal::new(
+                KernelAddress([1u8; 32]),
+                KernelAddress([2u8; 32]),
+                10_000,
+                9_599,
+                TimestampNs(0),
+            );
+            let mut state = VaultState {
+                total_assets: 10_000,
+                idle_assets: 10_000,
+                total_shares: 10_526,
+                withdraw_queue: WithdrawQueue::with_state([(0, pending)], 0, 1),
+                ..Default::default()
+            };
+            state.fee_anchor = FeeAccrualAnchor::new(10_000, TimestampNs(0));
+            let mut storage = SorobanStorage::new(&env);
+            Storage::save_state(&mut storage, &state).unwrap();
+            set_migration_in_progress(&env, true);
+
+            SorobanVaultContract::migrate(env.clone(), governance).unwrap();
+            assert_eq!(
+                Storage::load_state(&storage)
+                    .unwrap()
+                    .unwrap()
+                    .withdraw_queue
+                    .head()
+                    .expect("queued request")
+                    .1
+                    .expected_assets,
+                9_599
             );
         });
     }
@@ -4746,6 +6763,166 @@ mod storage_tests {
     }
 
     #[test]
+    fn test_refresh_writes_down_negative_adapter_valuation_to_zero() {
+        use templar_soroban_shared_types::{I128Receipt, VaultCommand};
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+        let allocator = SdkAddress::generate(&env);
+        let negative_adapter = env.register(negative_valuation::NegativeAdapter, ());
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+            store_allowed_adapters(&env, &[negative_adapter.clone()]);
+            store_test_adapter_bindings(&env, &[(1, negative_adapter.clone())]);
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = PolicyState::default();
+            policy_state
+                .set_market_config(1, MarketConfig::new(true, 1_000, None))
+                .unwrap();
+            policy_state.set_principal(1, 1_000).unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            let mut state = storage.load_state().unwrap().unwrap();
+            state.idle_assets = 0;
+            state.external_assets = 1_000;
+            state.total_assets = 1_000;
+            state.total_shares = 1_000;
+            storage.save_state(&state).unwrap();
+        });
+
+        execute_governance_command(
+            &env,
+            &contract_id,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+                primary: None,
+                many: Some(alloc::vec![sdk_text(&allocator)]),
+                value_a: None,
+                value_b: None,
+            },
+        );
+
+        let payload = Bytes::from_slice(
+            &env,
+            &VaultCommand::RefreshMarkets {
+                caller: sdk_text(&allocator),
+                markets: alloc::vec![1u32],
+            }
+            .encode(),
+        );
+        let receipt = env
+            .as_contract(&contract_id, || {
+                SorobanVaultContract::execute(env.clone(), payload)
+            })
+            .unwrap();
+        assert_eq!(
+            I128Receipt::decode(&receipt.to_alloc_vec())
+                .expect("decode i128 receipt")
+                .value,
+            0
+        );
+
+        env.as_contract(&contract_id, || {
+            let storage = SorobanStorage::new(&env);
+            let state = storage.load_state().unwrap().unwrap();
+            assert_eq!(state.external_assets, 0);
+            assert_eq!(state.total_assets, 0);
+            let reloaded = Storage::load_policy_state(&storage).unwrap().unwrap();
+            assert_eq!(reloaded.principal_for(1), Some(0));
+        });
+    }
+
+    #[test]
+    fn test_governance_supply_queue_rejects_adapter_bound_to_another_market() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let governance = SdkAddress::generate(&env);
+        let adapter_for_market_one = adapter_contract(&env);
+
+        env.as_contract(&contract_id, || {
+            initialize_governance_test_contract(&env, &governance);
+            let mut storage = SorobanStorage::new(&env);
+            let mut policy_state = policy_state_with_supply_queue(&[1]);
+            policy_state
+                .set_market_config(2, MarketConfig::new(true, 100, None))
+                .unwrap();
+            Storage::save_policy_state(&mut storage, &policy_state).unwrap();
+            store_allowed_adapters(&env, &[adapter_for_market_one.clone()]);
+            store_test_adapter_bindings(&env, &[(1, adapter_for_market_one.clone())]);
+
+            let duplicate_payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1, 2]),
+                    mode: None,
+                    accounts: Some(alloc::vec![
+                        sdk_text(&adapter_for_market_one),
+                        sdk_text(&adapter_for_market_one),
+                    ]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+            assert_eq!(
+                SorobanVaultContract::execute_governance(
+                    env.clone(),
+                    governance.clone(),
+                    duplicate_payload,
+                ),
+                Err(ContractError::InvalidInput)
+            );
+            assert_eq!(
+                adapter_for_market(&env, 2),
+                Err(ContractError::InvalidInput)
+            );
+        });
+
+        env.as_contract(&contract_id, || {
+            let idempotent_payload = Bytes::from_slice(
+                &env,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+                    target_ids: Some(alloc::vec![1]),
+                    mode: None,
+                    accounts: Some(alloc::vec![sdk_text(&adapter_for_market_one)]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: None,
+                    value_b: None,
+                    value_c: None,
+                }
+                .encode(),
+            );
+            SorobanVaultContract::execute_governance(
+                env.clone(),
+                governance.clone(),
+                idempotent_payload,
+            )
+            .unwrap();
+            assert_eq!(adapter_for_market(&env, 1).unwrap(), adapter_for_market_one);
+        });
+    }
+
+    #[test]
     fn test_governance_rejects_new_supply_queue_market_without_adapter() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
@@ -5221,7 +7398,7 @@ mod storage_tests {
             assert_eq!(adapter_for_market(&env, 2).unwrap(), adapter_for_market_two);
 
             policy_state
-                .replace_supply_queue(supply_queue_from_ids(&[2, 1]))
+                .replace_supply_queue(supply_queue_from_targets(&[2, 1], 100))
                 .unwrap();
             Storage::save_policy_state(&mut storage, &policy_state).unwrap();
 
@@ -5275,7 +7452,7 @@ mod storage_tests {
 
             for permutation in permutations {
                 policy_state
-                    .replace_supply_queue(supply_queue_from_ids(&permutation))
+                    .replace_supply_queue(supply_queue_from_targets(&permutation, 100))
                     .unwrap();
                 Storage::save_policy_state(&mut storage, &policy_state).unwrap();
                 for (market, adapter) in expected.iter() {
@@ -6715,5 +8892,74 @@ mod storage_tests {
             (&governance, &Bytes::from_slice(&env, &[0xff])).into_val(&env),
         );
         assert_eq!(err, Err(Ok(crate::error::ContractError::InvalidInput)));
+    }
+}
+
+#[cfg(test)]
+mod fee_anchor_capital_flow_tests {
+    use crate::fungible_vault::reconcile_actual_idle_assets;
+    use templar_vault_kernel::{
+        AllocatingState, FeeAccrualAnchor, OpState, TimestampNs, VaultState,
+    };
+
+    fn idle_state() -> VaultState {
+        VaultState {
+            total_assets: 1_000,
+            total_shares: 1_000,
+            idle_assets: 1_000,
+            fee_anchor: FeeAccrualAnchor::new(1_200, TimestampNs(42)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reconciliation_restates_balances_and_never_replaces_the_checkpoint() {
+        // A one-unit inflow restates both balances and raises the checkpoint by exactly that
+        // inflow. Whole-anchor replacement would write 1_001 and clobber the timestamp.
+        let mut state = idle_state();
+        assert!(reconcile_actual_idle_assets(&mut state, 1_001));
+        assert_eq!((state.idle_assets, state.total_assets), (1_001, 1_001));
+        assert_eq!(
+            state.fee_anchor,
+            FeeAccrualAnchor::new(1_201, TimestampNs(42))
+        );
+
+        // A shortfall restates both balances and leaves the checkpoint above the corrected total,
+        // so recovery is not recorded as profit. Replacement would drop it to 999.
+        let mut state = idle_state();
+        assert!(reconcile_actual_idle_assets(&mut state, 999));
+        assert_eq!((state.idle_assets, state.total_assets), (999, 999));
+        assert_eq!(
+            state.fee_anchor,
+            FeeAccrualAnchor::new(1_200, TimestampNs(42))
+        );
+
+        // Inflow addition saturates the checkpoint instead of panicking.
+        let mut state = idle_state();
+        state.fee_anchor = FeeAccrualAnchor::new(u128::MAX, TimestampNs(42));
+        assert!(reconcile_actual_idle_assets(&mut state, 5_000));
+        assert_eq!(
+            state.fee_anchor,
+            FeeAccrualAnchor::new(u128::MAX, TimestampNs(42))
+        );
+
+        // A matching balance and a non-idle vault are both left untouched.
+        let mut matched = idle_state();
+        assert!(!reconcile_actual_idle_assets(&mut matched, 1_000));
+        let mut allocating = idle_state();
+        allocating.op_state = OpState::Allocating(AllocatingState {
+            op_id: 7,
+            index: 0,
+            remaining: 1,
+            plan: alloc::vec![],
+        });
+        assert!(!reconcile_actual_idle_assets(&mut allocating, 1_001));
+        for state in [matched, allocating] {
+            assert_eq!((state.idle_assets, state.total_assets), (1_000, 1_000));
+            assert_eq!(
+                state.fee_anchor,
+                FeeAccrualAnchor::new(1_200, TimestampNs(42))
+            );
+        }
     }
 }

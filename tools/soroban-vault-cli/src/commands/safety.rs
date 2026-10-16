@@ -143,6 +143,18 @@ fn governance_safety_diff<E: CommandExecutor>(
                 ),
             ],
         },
+        GovernanceCommand::SubmitSetGovernance {
+            new_governance, ..
+        } => SafetyDiff {
+            title: "governance cutover".to_string(),
+            lines: vec![
+                format!("governance: {governance} -> {new_governance}"),
+                format!(
+                    "current governance admin: {}",
+                    view_or_unavailable(stellar, governance, "admin", Vec::new())
+                ),
+            ],
+        },
         _ => return Ok(None),
     };
     Ok(Some(diff))
