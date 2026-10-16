@@ -957,6 +957,7 @@ def atomic_write(
 def invalidate_release_evidence() -> None:
     MANIFEST_PATH.unlink(missing_ok=True)
     EVIDENCE_PATH.unlink(missing_ok=True)
+    EVIDENCE_PATH.with_name("dry-run.txt").unlink(missing_ok=True)
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group()

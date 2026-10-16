@@ -38,12 +38,15 @@ from release_artifacts import (
 DEFAULT_TOOLCHAIN = "1.99.0"
 
 
-def remap_rustflags(source_root: Path) -> str:
+def remap_rustflags(source_root: Path, cargo_home: Path) -> str:
+    prefixes = (
+        ("/nix/store", "/nix-store"),
+        (str(cargo_home), "/cargo"),
+        (str(source_root), "/workspace"),
+    )
     return " ".join(
-        (
-            f"--remap-path-prefix {source_root}=/workspace",
-            "--remap-path-prefix /nix/store=/nix-store",
-        )
+        f"--remap-path-prefix {host}={stable}"
+        for host, stable in sorted(prefixes, key=lambda pair: len(pair[0]))
     )
 
 
@@ -64,8 +67,10 @@ def build_environment(toolchain: str, source_root: Path = ROOT) -> dict[str, str
         for name, value in os.environ.items()
         if name not in dropped_rustflag_variables
     }
+    cargo_home = Path(environment.get("CARGO_HOME", Path.home() / ".cargo")).resolve()
+    environment["CARGO_HOME"] = str(cargo_home)
     environment["RUSTUP_TOOLCHAIN"] = toolchain
-    environment["CARGO_BUILD_RUSTFLAGS"] = remap_rustflags(source_root)
+    environment["CARGO_BUILD_RUSTFLAGS"] = remap_rustflags(source_root, cargo_home)
     return environment
 
 
@@ -94,18 +99,20 @@ def build_one(
     ]
     if optimize:
         command.append("--optimize")
+    environment = build_environment(toolchain, source_root)
     run_text(
         command,
         cwd=source_root,
-        env=build_environment(toolchain, source_root),
+        env=environment,
     )
     output = output_directory / artifact.wasm
     payload = read_single_link_file(output, f"{artifact.slug} build output")
-    if str(source_root).encode() in payload:
-        fail(
-            f"{artifact.slug}: Wasm embeds the host path {source_root}; "
-            "the build is not reproducible"
-        )
+    for host_path in (str(source_root), environment["CARGO_HOME"]):
+        if host_path.encode() in payload:
+            fail(
+                f"{artifact.slug}: Wasm embeds the host path {host_path}; "
+                "the build is not reproducible"
+            )
     return output
 
 

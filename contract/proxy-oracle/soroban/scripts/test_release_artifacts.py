@@ -423,10 +423,6 @@ class BuildEnvironmentTests(unittest.TestCase):
             environment = generator.build_environment("1.89.0", Path("/src"))
         self.assertNotIn("RUSTFLAGS", environment)
         self.assertNotIn("CARGO_ENCODED_RUSTFLAGS", environment)
-        self.assertEqual(
-            environment["CARGO_BUILD_RUSTFLAGS"],
-            generator.remap_rustflags(Path("/src")),
-        )
         self.assertIn("/src=/workspace", environment["CARGO_BUILD_RUSTFLAGS"])
         self.assertEqual(environment["RUSTUP_TOOLCHAIN"], "1.89.0")
 
@@ -528,6 +524,29 @@ class OrchestrationTests(unittest.TestCase):
                     artifact, Path(raw), "1.89.0", optimize=True
                 )
 
+    def test_build_rejects_host_paths_in_wasm(self) -> None:
+        artifact = catalog.ARTIFACTS[0]
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source_root = root / "source"
+            cargo_home = root / "cargo"
+            output_directory = root / "output"
+            output_directory.mkdir()
+            for host_path in (source_root, cargo_home):
+                with (
+                    self.subTest(host_path=host_path),
+                    mock.patch.dict(os.environ, {"CARGO_HOME": str(cargo_home)}),
+                    mock.patch.object(generator, "run_text"),
+                ):
+                    (output_directory / artifact.wasm).write_bytes(
+                        WASM_PREFIX + str(host_path).encode()
+                    )
+                    with self.assertRaises(ValueError):
+                        generator.build_one(
+                            artifact, output_directory, "1.99.0",
+                            optimize=True, source_root=source_root,
+                        )
+
     def test_stellar_version_metadata_parses_one_cli_invocation(self) -> None:
         output = (
             "stellar 25.2.0 (commit)\n"
@@ -577,9 +596,11 @@ class OrchestrationTests(unittest.TestCase):
             evidence_path = (
                 release_directory / "evidence/artifact-validation.txt"
             )
+            dry_run_path = evidence_path.with_name("dry-run.txt")
             evidence_path.parent.mkdir()
             manifest_path.write_text("{}")
             evidence_path.write_text("artifact validation: PASS\n")
+            dry_run_path.write_text("artifact validation: PASS\n")
             with mock.patch.object(
                 generator, "RELEASE_DIR", release_directory
             ), mock.patch.object(
@@ -616,6 +637,7 @@ class OrchestrationTests(unittest.TestCase):
                     generator.release("1.89.0")
             self.assertFalse(manifest_path.exists())
             self.assertFalse(evidence_path.exists())
+            self.assertFalse(dry_run_path.exists())
 
     def test_over_budget_output_fails_shared_inspection_path(self) -> None:
         artifact = catalog.Artifact("tiny", "tiny", 4, "runtime_v1")

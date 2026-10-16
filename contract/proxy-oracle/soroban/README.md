@@ -5,7 +5,6 @@ Aggregates external SEP-40 price feeds into a normalized, exponent-form cache. A
 The runtime is **not** itself a SEP-40 contract. It exposes:
 
 - `refresh(asset)` — pull one asset's source prices, aggregate through `templar-proxy-oracle-kernel`, apply freshness + breakers, and write the resulting status to its cache. A failed or blocked refresh replaces an accepted cache, so readers fail closed. A candidate with a non-advancing publication timestamp is still evaluated by breakers; if accepted, the cache retains the latest source-time aggregate and `RefreshEvaluated` records the candidate when it differs. The only path that performs source IO.
-  This is the only source-IO path.
 - `aggregated_latest(asset) -> Option<NormalizedPrice>` — the most recently
   accepted source-time aggregate `{ mantissa, expo, timestamp }`, or `None`
   after its persisted acceptance deadline or any terminal cache status. Later

@@ -32,9 +32,11 @@ just -f $JF release-gate     # clean tracked tree only
 inherit untracked checkout Cargo configuration; `TMPDIR` must be outside the
 checkout too. It builds and optimizes each of the five artifacts once, publishes
 the optimized files, writes the schema-4 manifest last, and validates without
-rebuilding. A failed build or validation removes stale manifest/PASS evidence. `validate-release` takes no
-paths: it validates only the canonical manifest and artifacts under
-`target/proxy-oracle-soroban/`.
+rebuilding. Build attempts invalidate the manifest and both validation reports;
+each validation command clears its own prior report before checking.
+Checkout and Cargo-home paths are remapped to stable prefixes, and Wasms retaining
+either host prefix are rejected. `validate-release` takes no paths: it validates
+only the canonical manifest and artifacts under `target/proxy-oracle-soroban/`.
 `dry-run` uses the same schema-4 validation and prints upload templates for all
 five artifacts. It performs no network or transaction simulation and broadcasts
 nothing.
