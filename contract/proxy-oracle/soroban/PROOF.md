@@ -77,7 +77,7 @@ Set `history_len` ≥ the largest lookback any installed breaker needs. Guard th
 ## Demonstration
 
 ```bash
-cargo test -p templar-proxy-oracle-soroban-contract --features testutils blend_exploit
+just test-fast -p templar-proxy-oracle-kernel blend_exploit
 ```
 
 | Scenario | Expected outcome |

@@ -135,6 +135,10 @@ jobs:
               - 'tools/tools-common/**'
             soroban:
               - '.github/workflows/test.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'justfile'
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
               - 'contract/proxy-oracle/soroban/**'
@@ -313,6 +317,9 @@ jobs:
 
       - name: Enforce proxy-oracle Soroban size budgets
         run: just -f contract/proxy-oracle/soroban/justfile size-check
+
+      - name: Test proxy-oracle Soroban release scripts
+        run: just -f contract/proxy-oracle/soroban/justfile test-scripts
 
       - name: Check curator-primitives (default)
         run: cargo check -p templar-curator-primitives
