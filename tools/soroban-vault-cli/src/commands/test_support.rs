@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs, sync::Mutex};
+use std::{collections::BTreeMap, fs, path::PathBuf, sync::Mutex};
 
 use sha2::{Digest, Sha256};
 use templar_soroban_shared_types::{
@@ -11,7 +11,8 @@ use crate::{
         AdapterArgs, AdapterCommand, ArtifactName, Cli, Commands, CuratorArgs, CuratorCommand,
         DeployArgs, DeployCommand, DeployCuratorProxyArgs, DeployPlanCommand, DeployStackArgs,
         ExtendTtlArgs, GovernanceArgs, GovernanceCommand, GovernanceSubmitAndWaitCommand,
-        ShareTokenArgs, ShareTokenCommand, UserArgs, UserCommand, DEFAULT_CONTRACT_SOURCE_REPO,
+        ShareTokenArgs, ShareTokenCommand, UpgradeArgs, UpgradeCommand, UserArgs, UserCommand,
+        DEFAULT_CONTRACT_SOURCE_REPO,
     },
     manifest::{ContractRecord, Manifest},
     stellar::{CommandExecutor, CommandOutput, Stellar},
@@ -36,6 +37,27 @@ use super::{
 };
 
 const ACCOUNT: &str = "GBRFSXJNPLMYJV7EBFTBZT2PU6KN5WWPX3UKHDAAQQT7BNS7QTFCS3AY";
+
+/// Points this test thread's release cache at `path` and restores the previous
+/// value on drop. Thread-local, so parallel tests never share or race on it.
+struct CacheEnvGuard {
+    previous: Option<PathBuf>,
+}
+
+impl CacheEnvGuard {
+    fn set(path: &std::path::Path) -> Self {
+        let previous =
+            crate::artifacts::TEST_CACHE_ROOT.with(|root| root.replace(Some(path.to_path_buf())));
+        Self { previous }
+    }
+}
+
+impl Drop for CacheEnvGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        crate::artifacts::TEST_CACHE_ROOT.with(|root| *root.borrow_mut() = previous);
+    }
+}
 const CONTRACT: &str = "CDY3B7IXFN5L4OY4UFFS2FA4MAQWJZLJD76LW37S7HFVWRS3RPQ2SIXX";
 const OTHER_CONTRACT: &str = "CBTLODGACWPBEZIDGHDLYQPGZDZRK4ITXHCET7EVPYAPP42CPIUDBUTK";
 const ASSET_CONTRACT: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
@@ -106,6 +128,14 @@ impl CommandExecutor for RecordingExecutor {
             };
             return Ok(CommandOutput {
                 stdout: stdout.to_string(),
+                stderr: String::new(),
+            });
+        }
+        if args.iter().any(|arg| arg == "proxy_view") {
+            return Ok(CommandOutput {
+                stdout: format!(
+                    "[[[null,\"{CONTRACT}\",null,null],[null,null,null],[null,null,null,null],null],null,[null,null,null]]"
+                ),
                 stderr: String::new(),
             });
         }
@@ -436,7 +466,7 @@ fn test_deploy_stack_args(admin: &str) -> DeployStackArgs {
         blend_pools: Vec::new(),
         custodians: Vec::new(),
         adapter_admin: None,
-        build: false,
+        build: true,
         force_new: false,
     }
 }
@@ -475,6 +505,8 @@ fn write_fake_curator_proxy_wasm(root: &std::path::Path) {
     fs::write(path, "curator proxy").expect("write wasm");
 }
 
+#[path = "tests/cutover.rs"]
+mod cutover;
 #[path = "tests/deploy/adapters.rs"]
 mod deploy_adapters;
 #[path = "tests/deploy/curator_proxy.rs"]
@@ -499,5 +531,7 @@ mod governance;
 mod output;
 #[path = "tests/ttl.rs"]
 mod ttl;
+#[path = "tests/upgrade.rs"]
+mod upgrade;
 #[path = "tests/vault_ops.rs"]
 mod vault_ops;

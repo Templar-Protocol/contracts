@@ -71,6 +71,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
             false,
             args.accept_decimals_mismatch,
             None,
+            &args.prices,
             &mut reporter,
         ),
         async move {
@@ -212,6 +213,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         // so the mismatch is reported rather than refused.
         true,
         deployed_oracle.as_ref(),
+        &args.prices,
         &mut reporter,
     )
     .await?;

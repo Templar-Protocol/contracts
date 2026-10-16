@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Deposits are rejected (`InvalidState`) while the vault holds external assets and no
+  `RefreshMarkets` covering every market with principal ran within the governance-configurable
+  `MaxNavAge` window (default 24 h; kind 10), so shares are not priced against a stale NAV
+  (Halborn FIND-001).
+- A negative adapter valuation is written down to zero on refresh and supply observation
+  instead of aborting the call with `InvalidInput` (Halborn FIND-013).
+- A governance fee change now settles fees accrued under the previous spec to the previous
+  recipients and re-anchors, so the new rate and recipients apply only going forward. The
+  change requires an idle vault (Halborn FIND-008).
+- Fee recipients may no longer be the vault itself or its asset/share token contracts; such a
+  change is rejected with `InvalidInput`, and `migrate` rejects a previously stored conflicting
+  recipient the same way before clearing the migration flag. A fee change replacing such a
+  stored recipient forfeits the accrued window instead of minting it to that recipient
+  (Halborn FIND-009).
+- A queued withdrawal whose receiver cannot accept the asset (no or deauthorized trustline)
+  now settles as a failed payout: escrow is refunded, nothing is burned, the head is
+  dequeued, and `ExecuteWithdraw` returns `Completed` with zero `assets_out` — an expected
+  outcome of a failed payout, not a zero-progress defect. Operators seeing such a receipt
+  should follow the README guidance: alert and unblock the receiver's trustline before the
+  user re-requests. Previously the SAC transfer trapped and the queue was wedged behind
+  that head. The token adapter uses `try_transfer` and reports failures as `EffectFailed`
+  (Halborn FIND-015).
+- `SetSupplyQueue` rejects binding an adapter that is already bound to a different market, so one
+  adapter position can no longer be counted once per market (Halborn FIND-019).
+- A market withdrawal no longer underflows when it realizes more than the recorded principal.
+  The withdrawal observes the adapter's remaining value, marks the market at
+  `realized + remaining` as a refresh would (recognizing any gain for the performance fee),
+  then keeps the observed remainder as principal (Halborn FIND-020).
+
+## [1.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.1...templar-soroban-runtime-v1.2.0) - 2026-10-14
+
+### Added
+
+- *(soroban)* claim BLND emissions from blend adapter position (FIND-027)
+
+### Changed
+
+- *(soroban-vault)* share supply cap enforcement
+- *(vault)* share checked fee accrual math
+
+### Documentation
+
+- *(soroban)* note why adapter error code 8 is retired
+
+### Fixed
+
+- *(soroban-vault)* enforce allocation exposure caps (ENG-698)
+- *(soroban-vault)* enforce refresh exposure caps
+- *(soroban-vault)* record NAV beyond supply admission caps
+- *(soroban-vault)* crystallize queued withdrawal fees (ENG-699)
+- *(vault)* crystallize fees before redemptions
+- *(soroban-vault)* crystallize fees before idle reconciliation (ENG-700)
+- *(vault)* crystallize fees before idle reconciliation
+- *(soroban-vault)* accrue same-ledger fees before reconciliation
+- *(soroban)* drop unreachable reserve staleness check in blend adapter
+- *(soroban)* halt idle-balance resync while paused (FIND-007)
+- *(soroban)* halt RefreshFees while paused
+
+### Performance
+
+- *(soroban-vault)* fit rebased runtime under host limit
+
+### Fixed
+
+- `ResyncIdleBalance` and `RefreshFees` are rejected with `EnforcedPause` while the vault is
+  paused; a rejected resync does not consume the resync cooldown (Halborn FIND-007).
+
 ## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-runtime-v1.1.0...templar-soroban-runtime-v1.1.1) - 2026-10-01
 
 ### Fixed

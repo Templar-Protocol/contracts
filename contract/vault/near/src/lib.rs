@@ -316,6 +316,7 @@ impl Contract {
             fees,
             refresh_cooldown_ns,
             idle_resync_cooldown_ns,
+            max_nav_age_ns: _,
             withdrawal_cooldown_ns,
         } = configuration;
 
@@ -1074,6 +1075,7 @@ impl Contract {
             restrictions: self.gate.restrictions.clone(),
             refresh_cooldown_ns: Some(self.refresh_cooldown_ns.into()),
             idle_resync_cooldown_ns: Some(self.idle_resync_cooldown_ns.into()),
+            max_nav_age_ns: None,
             withdrawal_cooldown_ns: Some(self.withdrawal_cooldown_ns.into()),
         }
     }

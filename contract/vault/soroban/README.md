@@ -12,6 +12,9 @@ This crate is the Soroban executor layer for the shared vault kernel. It owns:
 - RBAC/auth enforcement via `require_auth()` + shared `ActionKind`
 - execution of `KernelEffect`s against Soroban token contracts
 
+To upgrade a deployed vault to a new release, follow
+[UPGRADING.md](UPGRADING.md) before touching governance or WASM.
+
 Governance timelock/orchestration lives in the dedicated `contract/vault/soroban/governance`
 contract. The runtime still applies canonical governance state changes. Vault-bound governance
 actions cross the contract boundary via `execute_governance(env, caller, payload)`, where the

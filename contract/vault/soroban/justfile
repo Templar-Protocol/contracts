@@ -48,7 +48,7 @@ wasm_analysis_dir := root + "/target/wasm-analysis"
 optimized_wasm := wasm_dir + "/templar_soroban_runtime.wasm"
 deploy_wasm := optimized_wasm
 remap_rustflags := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
-soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
+soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.99.0")
 default_wasm := optimized_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.wasm"
 custodial_adapter_wasm := wasm_dir + "/templar_soroban_custodial_adapter.wasm"

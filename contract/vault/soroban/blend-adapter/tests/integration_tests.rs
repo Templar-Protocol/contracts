@@ -9,9 +9,9 @@ use blend_contract_sdk::{
 };
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, BytesN as _},
+    testutils::{Address as _, BytesN as _, Ledger as _},
     token::StellarAssetClient,
-    Address, BytesN, Env, String,
+    vec, Address, BytesN, Env, String,
 };
 use templar_soroban_blend_adapter::{BlendAdapterContract, BlendAdapterContractClient};
 
@@ -163,6 +163,24 @@ fn total_assets_returns_correct_value_after_supply() {
     );
 }
 
+/// Valuation must not depend on recent pool activity: Blend's `get_reserve` accrues the
+/// reserve to the current ledger, so a quiet pool still reports a current position.
+#[test]
+fn total_assets_works_after_long_quiet_period() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (pool, _pool_client, asset, asset_admin, _deployer) = setup_blend_pool(&env);
+    let vault = register_dummy_contract(&env);
+    let (adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
+    let supply_amount: i128 = 10_000_000_000;
+    asset_admin.mint(&adapter, &supply_amount);
+    client.supply(&vault, &asset, &supply_amount);
+
+    jump(&env, 30 * 24 * 60 * 60);
+
+    assert!(client.total_assets(&asset) >= supply_amount - 1);
+}
+
 #[test]
 fn total_assets_without_position_returns_zero() {
     let env = Env::default();
@@ -277,4 +295,100 @@ fn full_supply_withdraw_cycle() {
     // Blend removes the supply-map entry after a complete exit. Absence means
     // zero exposure, so the adapter must remain readable after withdrawing all.
     assert_eq!(client.total_assets(&asset), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Emissions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn claim_emissions_routes_blnd_to_recipient() {
+    let env = Env::default();
+    env.cost_estimate().budget().reset_unlimited();
+    env.mock_all_auths();
+    let deployer = Address::generate(&env);
+    let blnd = env
+        .register_stellar_asset_contract_v2(deployer.clone())
+        .address();
+    let usdc = env
+        .register_stellar_asset_contract_v2(deployer.clone())
+        .address();
+    let blend = BlendFixture::deploy(&env, &deployer, &blnd, &usdc);
+    let asset = env
+        .register_stellar_asset_contract_v2(deployer.clone())
+        .address();
+
+    let pool_addr = blend.pool_factory.deploy(
+        &deployer,
+        &String::from_str(&env, "test"),
+        &BytesN::<32>::random(&env),
+        &Address::generate(&env),
+        &1_000_000,
+        &4,
+        &10_000_000,
+    );
+    let pool_client = pool::Client::new(&env, &pool_addr);
+    pool_client.queue_set_reserve(&asset, &default_reserve_config());
+    pool_client.set_reserve(&asset);
+    // all pool emissions go to suppliers of reserve 0 (token id 0 * 2 + 1)
+    pool_client.set_emissions_config(&vec![
+        &env,
+        pool::ReserveEmissionMetadata {
+            res_index: 0,
+            res_type: 1,
+            share: 1_0000000,
+        },
+    ]);
+    blend
+        .backstop
+        .deposit(&deployer, &pool_addr, &500_000_000_000);
+    pool_client.set_status(&3);
+    pool_client.update_status();
+    blend.backstop.add_reward(&pool_addr, &None);
+
+    let vault = register_dummy_contract(&env);
+    let (adapter, admin, client) = setup_adapter(&env, &pool_addr, &vault);
+    let amount: i128 = 10_000_000_000;
+    StellarAssetClient::new(&env, &asset).mint(&adapter, &amount);
+    client.supply(&vault, &asset, &amount);
+
+    // start emissions; the backstop's first distributions only sync with the emitter
+    for _ in 0..3 {
+        blend.emitter.distribute();
+        blend.backstop.distribute();
+        jump(&env, 7 * 24 * 60 * 60);
+    }
+    blend.emitter.distribute();
+    assert!(blend.backstop.distribute() > 0);
+    pool_client.gulp_emissions();
+    jump(&env, 24 * 60 * 60);
+
+    let treasury = register_dummy_contract(&env);
+    let claimed = client.claim_emissions(&admin, &vec![&env, 1u32], &treasury);
+    assert!(claimed > 0, "adapter position should have accrued BLND");
+    assert_eq!(
+        soroban_sdk::token::Client::new(&env, &blnd).balance(&treasury),
+        claimed
+    );
+    // supply interest accounting is untouched by the claim
+    assert!((client.total_assets(&asset) - amount).abs() <= 1);
+}
+
+#[test]
+fn claim_emissions_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (pool, _pool_client, _asset, _asset_admin, _deployer) = setup_blend_pool(&env);
+    let vault = register_dummy_contract(&env);
+    let (_adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
+
+    let result = client.try_claim_emissions(&vault, &vec![&env, 1u32], &vault);
+    assert!(result.is_err(), "vault must not be able to claim emissions");
+}
+
+fn jump(env: &Env, seconds: u64) {
+    env.ledger().with_mut(|li| {
+        li.timestamp += seconds;
+        li.sequence_number += (seconds / 5) as u32;
+    });
 }

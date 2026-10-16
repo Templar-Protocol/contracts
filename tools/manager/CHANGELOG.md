@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compare and serialize derived numeric fields on the same Decimal grid as parsed thresholds so fractional equality, inclusive filters, and emitted-value thresholds are consistent.
 - Reject USD valuations when any configured source transformation fails instead of accepting a partial-source proxy fallback.
 
+## [0.8.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.7.0...templar-manager-v0.8.0) - 2026-10-14
+
+### Added
+
+- *(manager)* registry upgrade with a sandbox-replayed, unskippable preflight (ENG-780) ([#651](https://github.com/Templar-Protocol/contracts/pull/651))
+- *(manager)* [**breaking**] use verified provider prices in preflight (ENG-777) ([#660](https://github.com/Templar-Protocol/contracts/pull/660))
+
+### Changed
+
+- *(gateway)* [**breaking**] drop single-field read result wrappers (ENG-772) ([#648](https://github.com/Templar-Protocol/contracts/pull/648))
+- *(gateway)* drop pre-2.0.0 registry support ([#657](https://github.com/Templar-Protocol/contracts/pull/657))
+
 ## [0.7.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.6.0...templar-manager-v0.7.0) - 2026-10-01
 
 ### Added

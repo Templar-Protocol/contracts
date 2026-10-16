@@ -49,6 +49,7 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
         false,
         args.accept_decimals_mismatch,
         deployed_proxy.as_ref(),
+        &args.prices,
         &mut reporter,
     )
     .await?;

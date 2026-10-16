@@ -20,7 +20,9 @@ pub use entrypoints::SorobanVaultContract;
 pub use types::*;
 
 use crate::auth::{ActionKind, AuthAdapter};
-use crate::convert::{ledger_timestamp_ns, runtime_to_contract, to_i128, to_u128};
+use crate::convert::{
+    ledger_timestamp_ns, runtime_to_contract, to_i128, to_u128, valuation_to_u128,
+};
 use crate::effects::{
     AddressRegistrar, EffectContext, EffectInterpreter, EffectSummary, SdkTokenAdapter,
     ShareTokenAdapter, SorobanEffectInterpreter,
@@ -60,6 +62,7 @@ use crate::storage::SOROBAN_MAX_PENDING_WITHDRAWALS;
 pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
 pub const SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS: u64 = DEFAULT_COOLDOWN_NS;
 pub const SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS: u64 = 120 * 1_000_000_000;
+pub const SOROBAN_DEFAULT_MAX_NAV_AGE_NS: u64 = 86_400_000_000_000;
 const MIGRATION_FLAG_KEY: soroban_sdk::Symbol = symbol_short!("migrate");
 
 pub(crate) fn decode_command(payload: &Bytes) -> Result<VaultCommand, ContractError> {

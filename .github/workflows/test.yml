@@ -135,6 +135,10 @@ jobs:
               - 'tools/tools-common/**'
             soroban:
               - '.github/workflows/test.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'justfile'
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
               - 'contract/proxy-oracle/soroban/**'
@@ -293,7 +297,7 @@ jobs:
           targets: wasm32-unknown-unknown,wasm32v1-none
 
       - name: Install Soroban build toolchain
-        run: rustup toolchain install 1.89.0 --profile minimal --target wasm32-unknown-unknown --target wasm32v1-none
+        run: rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown --target wasm32v1-none
 
       - name: Install tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
@@ -313,6 +317,9 @@ jobs:
 
       - name: Enforce proxy-oracle Soroban size budgets
         run: just -f contract/proxy-oracle/soroban/justfile size-check
+
+      - name: Test proxy-oracle Soroban release scripts
+        run: just -f contract/proxy-oracle/soroban/justfile test-scripts
 
       - name: Check curator-primitives (default)
         run: cargo check -p templar-curator-primitives

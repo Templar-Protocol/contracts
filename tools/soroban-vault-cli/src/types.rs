@@ -213,6 +213,27 @@ fn decimal_to_raw(value: &str, decimals: u32) -> Result<i128, String> {
     }
 }
 
+/// Formats raw base units as a display amount with `decimals` places,
+/// trimming trailing fractional zeros (`12_500_000` at 7 decimals is `1.25`).
+/// Beyond 38 decimals (the limit `decimal_to_raw` enforces) it prints `<raw>e-<decimals>`
+/// instead of padding, so a hostile decimals value cannot force a huge allocation.
+pub fn raw_to_decimal(raw: i128, decimals: u32) -> String {
+    if decimals > 38 {
+        return format!("{raw}e-{decimals}");
+    }
+    let digits = raw.unsigned_abs().to_string();
+    let decimals = decimals as usize;
+    let padded = format!("{digits:0>width$}", width = decimals + 1);
+    let (whole, fraction) = padded.split_at(padded.len() - decimals);
+    let fraction = fraction.trim_end_matches('0');
+    let sign = if raw < 0 { "-" } else { "" };
+    if fraction.is_empty() {
+        format!("{sign}{whole}")
+    } else {
+        format!("{sign}{whole}.{fraction}")
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct AddressStr(String);
 
@@ -347,6 +368,7 @@ impl FromStr for GovernanceActionKindArg {
             "other" => GovernanceActionKind::Other,
             "withdrawalcooldown" => GovernanceActionKind::WithdrawalCooldown,
             "idleresynccooldown" => GovernanceActionKind::IdleResyncCooldown,
+            "maxnavage" => GovernanceActionKind::MaxNavAge,
             _ => return Err(format!("unknown governance action kind: {value}")),
         };
         Ok(Self(kind))
@@ -377,6 +399,7 @@ impl fmt::Display for GovernanceActionKindArg {
             GovernanceActionKind::Other => "Other",
             GovernanceActionKind::WithdrawalCooldown => "WithdrawalCooldown",
             GovernanceActionKind::IdleResyncCooldown => "IdleResyncCooldown",
+            GovernanceActionKind::MaxNavAge => "MaxNavAge",
         })
     }
 }
@@ -623,6 +646,21 @@ mod tests {
             .expect("amount")
             .to_raw(2)
             .is_err());
+    }
+
+    #[test]
+    fn raw_amount_formats_in_display_units() {
+        assert_eq!(raw_to_decimal(12_500_000, 7), "1.25");
+        assert_eq!(raw_to_decimal(1_000_000_000, 7), "100");
+        assert_eq!(raw_to_decimal(5, 7), "0.0000005");
+        assert_eq!(raw_to_decimal(-5_000_000, 7), "-0.5");
+        assert_eq!(raw_to_decimal(0, 7), "0");
+        assert_eq!(raw_to_decimal(42, 0), "42");
+        assert_eq!(raw_to_decimal(5, u32::MAX), "5e-4294967295");
+        assert_eq!(
+            raw_to_decimal(i128::MIN, 7),
+            "-17014118346046923173168730371588.4105728"
+        );
     }
 
     #[test]

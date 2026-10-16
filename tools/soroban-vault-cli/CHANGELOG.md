@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(soroban-cli)* resolve the fixed `soroban-v1.3.0-rc.1` seven-asset catalog through an exact-length,
+  SHA-256-verified release cache and fixed GitHub asset URLs
+
+- *(soroban-cli)* `governance submit-upgrade` now defaults `--wasm-hash` to the pinned
+  release runtime hash, refuses unpinned hashes without `--allow-unpinned-wasm`, and
+  verifies the hash is uploaded on the target network before submitting
+
+- *(soroban-cli)* `user deposit` prints the amount in display units (with base units and the
+  decimals used) before signing, asks for confirmation on an interactive terminal unless `--yes`,
+  and refuses `--assets` unless the decimals of the vault's own asset token can be read and match
+  `--asset-decimals` (a manifest `asset_token` that disagrees with the vault is refused as stale;
+  `--assets-raw` is unaffected)
+
+- *(soroban-cli)* `governance submit-skim` refuses the vault's own asset or share token, which the
+  vault rejects on execution (skim only recovers foreign tokens), and fails closed when those token
+  ids cannot be determined
+
+### Changed
+
+- *(soroban-cli)* normal deployment now uses release/cache/workspace-seed precedence and fails
+  closed instead of compiling implicitly
+- *(soroban-cli)* persist the verified artifact cache in the operator image while retaining source,
+  Rust toolchains, and `target` for explicit `--build`
+- *(soroban-cli)* `upgrade confirm-governance-cutover` now requires the vault's on-chain governance
+  binding to equal the pending governance before promoting (unreadable bindings fail closed), and
+  validates the target against the pending record's recorded admin and WASM hash instead of
+  re-deriving them from the current governance or the manifest pin
+- *(soroban-cli)* `upgrade preflight` keeps the governance-queue check unverifiable when proposals
+  cannot be decoded, honors `--allow-unverifiable` (Blocking findings still fail), and `deploy
+  governance` dry-runs run the same input validation as real deployments
+
+### Migration
+
+- *(soroban-cli)* pass bare `--build` to opt into checked-out-source compilation; the former
+  implicit-build default and `--build false` form are no longer supported
+- *(soroban-cli)* configure a custom cache root with the non-empty
+  `TEMPLAR_SOROBAN_VAULT_ARTIFACT_CACHE` environment variable
+
+
 ## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-vault-cli-v0.1.0...templar-soroban-vault-cli-v0.2.0) - 2026-08-03
 
 ### Added

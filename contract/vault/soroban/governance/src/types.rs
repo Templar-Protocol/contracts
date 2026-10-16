@@ -13,7 +13,7 @@ pub(crate) enum DataKey {
     NextProposalId,
     PendingPageIndex,
     PendingPage(u64),
-    ApprovedOther(Symbol, BytesN<32>),
+    ApprovedOtherUntil(Symbol, BytesN<32>),
     CurrentPaused,
     CurrentFees,
     CurrentRestrictionMode,
@@ -29,6 +29,7 @@ pub(crate) enum DataKey {
     KnownCapGroupMembership(u32),
     CurrentWithdrawalCooldownNs,
     CurrentIdleResyncCooldownNs,
+    CurrentMaxNavAgeNs,
 }
 
 #[contracttype]
@@ -78,6 +79,7 @@ pub enum GovernanceActionKind {
     Other,
     WithdrawalCooldown,
     IdleResyncCooldown,
+    MaxNavAge,
 }
 
 #[contracttype]
@@ -127,7 +129,7 @@ impl Timelocks {
         }
     }
 
-    pub(crate) fn get(self, kind: TimelockKind) -> u64 {
+    pub(crate) fn get(&self, kind: TimelockKind) -> u64 {
         match kind {
             TimelockKind::Admin => self.admin_ns,
             TimelockKind::Pause => self.pause_ns,
@@ -245,6 +247,7 @@ pub enum GovernanceAction {
     Other(Symbol, BytesN<32>),
     SetWithdrawalCooldown(u64),
     SetIdleResyncCooldown(u64),
+    SetMaxNavAge(u64),
 }
 
 #[contracttype]
@@ -308,4 +311,5 @@ pub enum GovernanceError {
     TimelockOutOfBounds = 9,
     OtherNotApproved = 10,
     Abdicated = 11,
+    ProposalExpired = 12,
 }

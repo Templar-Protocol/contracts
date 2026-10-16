@@ -256,6 +256,8 @@ pub struct VaultConfiguration {
     pub idle_resync_cooldown_ns: Option<U64>,
     /// Optional cooldown (ns) before a withdrawal can be executed; defaults to 1 hour when `None`.
     pub withdrawal_cooldown_ns: Option<U64>,
+    /// Optional maximum NAV age (ns) accepted for deposits; Soroban-only, ignored by the NEAR vault.
+    pub max_nav_age_ns: Option<U64>,
 }
 
 /// A single market allocation delta specifying a market and an amount in underlying asset units.

@@ -191,6 +191,28 @@ pub(in crate::commands) fn print_response(response: &Response, cli: &Cli) -> any
             print_governance_proposal(proposal);
             println!("Raw: {}", proposal.raw);
         }
+        Response::UpgradePreflight(result) => {
+            println!(
+                "Upgrade preflight for {}: runtime {}",
+                result.vault, result.report.runtime_version
+            );
+            for finding in &result.report.findings {
+                println!(
+                    "[{}] {}: {}",
+                    finding.status.as_label(),
+                    finding.check,
+                    finding.detail
+                );
+            }
+            println!(
+                "Result: {}",
+                if result.report.ok {
+                    "ok"
+                } else {
+                    "ok (unverifiable checks allowed)"
+                }
+            );
+        }
         Response::GovernanceAcceptReady(result) => {
             if result.accepted.is_empty() {
                 println!("Accepted proposals: none");

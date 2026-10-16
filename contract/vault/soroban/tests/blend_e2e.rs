@@ -4,7 +4,7 @@ use blend_contract_sdk::{
 };
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, BytesN as _},
+    testutils::{Address as _, BytesN as _, Ledger as _},
     token::StellarAssetClient,
     Address, Bytes, BytesN, Env, String,
 };
@@ -19,7 +19,7 @@ use templar_soroban_runtime::{
 use templar_soroban_shared_types::{
     DepositReceipt, GovernanceCommand, I128Receipt, VaultCommand,
     GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
 fn address_wire(address: &Address) -> AllocString {
@@ -180,6 +180,8 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         .address();
     let adapter_admin = Address::generate(&env);
     let adapter = env.register(BlendAdapterContract, (&adapter_admin, &vault, &pool));
+    let adapter2_admin = Address::generate(&env);
+    let adapter2 = env.register(BlendAdapterContract, (&adapter2_admin, &vault, &pool));
     let asset_client = soroban_sdk::token::Client::new(&env, &asset);
     let proxy = VaultProxy::new(&env);
 
@@ -206,6 +208,9 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         policy_state
             .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
             .unwrap();
+        policy_state
+            .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+            .unwrap();
         storage.save_policy_state(&policy_state).unwrap();
     });
     env.as_contract(&vault, || {
@@ -215,7 +220,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             &GovernanceCommand::SetGovernanceConfig {
                 kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
                 primary: None,
-                many: Some(vec![address_wire(&adapter)]),
+                many: Some(vec![address_wire(&adapter), address_wire(&adapter2)]),
                 value_a: None,
                 value_b: None,
             },
@@ -228,9 +233,9 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             &governance,
             &GovernanceCommand::SetGovernancePolicy {
                 kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
-                target_ids: Some(vec![0u32]),
+                target_ids: Some(vec![0u32, 1u32]),
                 mode: None,
-                accounts: Some(vec![address_wire(&adapter)]),
+                accounts: Some(vec![address_wire(&adapter), address_wire(&adapter2)]),
                 market_id: None,
                 cap_group_id: None,
                 value: None,
@@ -360,6 +365,113 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
     let b_tokens_after_withdraw = positions_after_withdraw.supply.get(0).unwrap_or(0);
     assert!(b_tokens_after_withdraw > 0);
     assert!(b_tokens_after_withdraw < b_tokens_after_supply);
+
+    // second market holds principal so a partial refresh can be exercised below
+    env.as_contract(&vault, || {
+        execute_command(
+            &env,
+            &VaultCommand::Allocate {
+                caller: address_wire(&allocator),
+                market: 1,
+                amount: 1_000_000_000,
+                supply: true,
+            },
+        )
+    })
+    .unwrap();
+
+    // FIND-001: with external assets held, deposits need a full refresh within the NAV window.
+    env.ledger().with_mut(|li| li.timestamp += 86_401);
+    asset_admin.mint(&user, &1_000);
+    let deposit = VaultCommand::DepositWithMin {
+        owner: address_wire(&user),
+        receiver: address_wire(&user),
+        assets: 1_000,
+        min_shares_out: 0,
+    };
+    let stale = env.as_contract(&vault, || execute_command(&env, &deposit));
+    assert_eq!(
+        stale.unwrap_err(),
+        templar_soroban_runtime::ContractError::InvalidState
+    );
+
+    // the window is governance-configurable: kind 10 (MaxNavAge), u64::MAX disables the gate
+    env.as_contract(&vault, || {
+        execute_governance_command(
+            &env,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+                primary: None,
+                many: None,
+                value_a: Some(i128::from(u64::MAX)),
+                value_b: None,
+            },
+        )
+    })
+    .unwrap();
+    assert!(
+        env.as_contract(&vault, || execute_command(&env, &deposit))
+            .unwrap()
+            > 0
+    );
+    asset_admin.mint(&user, &1_000);
+    // reset to the default window and the deposit reverts again until the refresh
+    env.as_contract(&vault, || {
+        execute_governance_command(
+            &env,
+            &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_MAX_NAV_AGE,
+                primary: None,
+                many: None,
+                value_a: Some(86_400_000_000_000i128),
+                value_b: None,
+            },
+        )
+    })
+    .unwrap();
+    let stale_again = env.as_contract(&vault, || execute_command(&env, &deposit));
+    assert_eq!(
+        stale_again.unwrap_err(),
+        templar_soroban_runtime::ContractError::InvalidState
+    );
+
+    // partial refresh (market 0 only) leaves market 1's principal unrefreshed, so NAV is not stamped
+    env.as_contract(&vault, || {
+        execute_command(
+            &env,
+            &VaultCommand::RefreshMarkets {
+                caller: address_wire(&allocator),
+                markets: vec![0u32],
+            },
+        )
+    })
+    .unwrap();
+    let stale_partial = env.as_contract(&vault, || execute_command(&env, &deposit));
+    assert_eq!(
+        stale_partial.unwrap_err(),
+        templar_soroban_runtime::ContractError::InvalidState
+    );
+
+    // full refresh covering every market with principal (0 and 1) stamps NAV; no pool activity
+    // since the jump: Blend's get_reserve accrues to the current ledger, so
+    // the adapter's reserve staleness check does not block the refresh
+    env.as_contract(&vault, || {
+        execute_command(
+            &env,
+            &VaultCommand::RefreshMarkets {
+                caller: address_wire(&allocator),
+                markets: vec![0u32, 1u32],
+            },
+        )
+    })
+    .unwrap();
+    assert!(
+        env.as_contract(&vault, || execute_command(&env, &deposit))
+            .unwrap()
+            > 0
+    );
 }
 
 #[test]

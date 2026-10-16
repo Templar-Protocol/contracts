@@ -492,6 +492,45 @@ async fn batch_fulfillment_partial(#[future(awt)] harness: SandboxHarness) -> Re
     Ok(())
 }
 
+/// Exercise a 15-resolution batch under WASM metering and require the
+/// proportional finalizer gas budget to settle every full-withdrawal cleanup.
+#[rstest]
+#[tokio::test]
+async fn finalize_gas_covers_large_batch(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    const BATCH: u32 = 15;
+    const DEPOSIT: u128 = 10_000;
+
+    let market = harness.deploy_full_market().await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let mut users = Vec::with_capacity(BATCH as usize);
+    for index in 0..BATCH {
+        let user = harness.create_user(&format!("gas-{index}")).await?;
+        harness.fund_user(&user, &market).await?;
+        harness.supply(&user, &market, DEPOSIT).await?;
+        harness
+            .create_supply_withdrawal_request(&user, &market, DEPOSIT)
+            .await?;
+        users.push(user);
+    }
+
+    harness
+        .execute_next_supply_withdrawal_request(&users[0], &market, Some(BATCH))
+        .await?;
+
+    assert_eq!(queue(&harness, &market).await?, (0, 0));
+    for user in users {
+        assert!(
+            harness
+                .get_supply_position(&market, &user.0)
+                .await?
+                .is_none(),
+            "the finalizer must settle and clean up every full withdrawal",
+        );
+    }
+
+    Ok(())
+}
+
 #[rstest]
 #[tokio::test]
 async fn measure_gas(#[future(awt)] harness: SandboxHarness) -> Result<()> {
