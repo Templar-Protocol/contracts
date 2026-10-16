@@ -386,6 +386,142 @@ fn claim_emissions_rejects_non_admin() {
     assert!(result.is_err(), "vault must not be able to claim emissions");
 }
 
+// ---------------------------------------------------------------------------
+// Templar Blend fork: `get_reserve` returns a `ReserveConfig` with an extra
+// `min_position` field that the upstream SDK type cannot decode.
+// ---------------------------------------------------------------------------
+
+#[soroban_sdk::contracttype]
+#[derive(Clone)]
+pub struct ForkReserveConfig {
+    pub index: u32,
+    pub decimals: u32,
+    pub c_factor: u32,
+    pub l_factor: u32,
+    pub util: u32,
+    pub max_util: u32,
+    pub r_base: u32,
+    pub r_one: u32,
+    pub r_two: u32,
+    pub r_three: u32,
+    pub reactivity: u32,
+    pub supply_cap: i128,
+    pub min_position: i128,
+    pub enabled: bool,
+}
+
+#[soroban_sdk::contracttype]
+#[derive(Clone)]
+pub struct ForkReserveData {
+    pub d_rate: i128,
+    pub b_rate: i128,
+    pub ir_mod: i128,
+    pub b_supply: i128,
+    pub d_supply: i128,
+    pub backstop_credit: i128,
+    pub last_time: u64,
+}
+
+#[soroban_sdk::contracttype]
+#[derive(Clone)]
+pub struct ForkReserve {
+    pub asset: Address,
+    pub config: ForkReserveConfig,
+    pub data: ForkReserveData,
+    pub scalar: i128,
+}
+
+const FORK_INDEX: u32 = 2;
+const FORK_B_RATE: i128 = 1_100_000_000_000; // 1.1 with 12 decimals
+const FORK_B_TOKENS: i128 = 20_000_000_000;
+
+#[contract]
+struct MockForkPool;
+
+#[contractimpl]
+impl MockForkPool {
+    pub fn get_reserve(_env: Env, asset: Address) -> ForkReserve {
+        ForkReserve {
+            asset,
+            config: ForkReserveConfig {
+                index: FORK_INDEX,
+                decimals: 7,
+                c_factor: 0,
+                l_factor: 0,
+                util: 0,
+                max_util: 0,
+                r_base: 0,
+                r_one: 0,
+                r_two: 0,
+                r_three: 0,
+                reactivity: 0,
+                supply_cap: i128::MAX,
+                min_position: 1_000_000_000,
+                enabled: true,
+            },
+            data: ForkReserveData {
+                d_rate: 1_000_000_000_000,
+                b_rate: FORK_B_RATE,
+                ir_mod: 0,
+                b_supply: FORK_B_TOKENS,
+                d_supply: 0,
+                backstop_credit: 0,
+                last_time: 0,
+            },
+            scalar: 10_000_000,
+        }
+    }
+
+    pub fn get_positions(env: Env, _address: Address) -> pool::Positions {
+        pool::Positions {
+            liabilities: soroban_sdk::Map::new(&env),
+            collateral: soroban_sdk::Map::new(&env),
+            supply: soroban_sdk::map![&env, (FORK_INDEX, FORK_B_TOKENS)],
+        }
+    }
+}
+
+#[test]
+fn total_assets_reads_templar_fork_reserve_shape() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let pool = env.register(MockForkPool, ());
+    let vault = register_dummy_contract(&env);
+    let (_adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
+    let asset = Address::generate(&env);
+
+    assert_eq!(
+        client.total_assets(&asset),
+        FORK_B_TOKENS * FORK_B_RATE / 1_000_000_000_000
+    );
+}
+
+#[contract]
+struct MockMalformedPool;
+
+#[contractimpl]
+impl MockMalformedPool {
+    pub fn get_reserve(_env: Env, _asset: Address) -> u32 {
+        7
+    }
+}
+
+#[test]
+fn total_assets_rejects_a_non_map_reserve() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let pool = env.register(MockMalformedPool, ());
+    let vault = register_dummy_contract(&env);
+    let (_adapter, _admin, client) = setup_adapter(&env, &pool, &vault);
+
+    assert_eq!(
+        client.try_total_assets(&Address::generate(&env)),
+        Err(Ok(
+            templar_soroban_blend_adapter::AdapterError::InvalidInput
+        ))
+    );
+}
+
 fn jump(env: &Env, seconds: u64) {
     env.ledger().with_mut(|li| {
         li.timestamp += seconds;
