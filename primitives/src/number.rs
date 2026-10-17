@@ -382,7 +382,12 @@ impl Decimal {
     }
 
     fn epsilon_round(repr: U512) -> U512 {
-        (repr + (Self::REPR_EPSILON >> 1)) & !(Self::REPR_EPSILON - 1)
+        let (rounded, overflowed) = repr.overflowing_add(Self::REPR_EPSILON >> 1);
+        if overflowed {
+            U512::MAX
+        } else {
+            rounded & !(Self::REPR_EPSILON - 1)
+        }
     }
 
     fn fractional_part_to_dec_string(&self, precision: usize, round_up: bool) -> (String, bool) {
@@ -759,6 +764,35 @@ mod tests {
         d /= Decimal::from(u128::pow(2, 64));
         d /= Decimal::from(u128::pow(2, 64));
         d.to_u128_floor().unwrap()
+    }
+
+    #[rstest]
+    #[case(0, 0)]
+    #[case(3, 0)]
+    #[case(4, 8)]
+    #[case(7, 8)]
+    #[case(8, 8)]
+    #[case(11, 8)]
+    #[case(12, 16)]
+    fn epsilon_round_normal_and_tie(#[case] repr: u64, #[case] expected: u64) {
+        assert_eq!(Decimal::epsilon_round(U512::from(repr)), U512::from(expected));
+    }
+
+    #[test]
+    fn epsilon_round_last_non_overflowing_repr() {
+        assert_eq!(Decimal::epsilon_round(U512::MAX - 4), U512::MAX - 7);
+    }
+
+    #[rstest]
+    #[case(0)]
+    #[case(1)]
+    #[case(2)]
+    #[case(3)]
+    fn epsilon_round_saturates_overflow(#[case] distance_from_max: u64) {
+        assert_eq!(
+            Decimal::epsilon_round(U512::MAX - distance_from_max),
+            U512::MAX,
+        );
     }
 
     #[rstest]
