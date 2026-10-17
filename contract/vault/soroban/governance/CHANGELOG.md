@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-governance-v1.0.1...templar-soroban-governance-v1.0.2) - 2026-10-17
+
+### Fixed
+
+- *(soroban)* bound Other approvals and proposal execution; honor per-kind timelock decrease (FIND-024, FIND-026, FIND-022) ([#667](https://github.com/Templar-Protocol/contracts/pull/667))
+- *(soroban)* reject deposits against stale external NAV (FIND-001) ([#665](https://github.com/Templar-Protocol/contracts/pull/665))
+
 ### Changed
 
 - Accepted `Other` approvals expire 30 days after acceptance (`check_other`, `consume_other`

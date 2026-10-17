@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-spec-v0.6.0...templar-gateway-methods-spec-v0.6.1) - 2026-10-17
+
+### Added
+
+- *(manager)* add typed live fleet queries ([#681](https://github.com/Templar-Protocol/contracts/pull/681))
+
 ### Added
 
 - Add opt-in `oracle.resolvePriceAllSources`, reusing the `ResolvePrice` input shape while requiring every effective proxy source and the resolved price to be positive and usable.
