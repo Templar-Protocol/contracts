@@ -168,6 +168,11 @@ pub enum Command {
         #[command(subcommand)]
         command: SpecNs,
     },
+    /// Query live fleets with typed filters, relationships, and indicative USD values.
+    Query {
+        #[command(subcommand)]
+        command: crate::query::QueryNs,
+    },
     /// Invoke a gateway read method by its full RPC name with raw JSON params.
     Read(GenericMethodCall),
     /// Invoke a gateway write method by its full RPC name with raw JSON params.

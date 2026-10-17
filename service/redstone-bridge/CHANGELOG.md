@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Route bridge subprocess diagnostics to stderr so gateway/CLI consumers retain machine-readable stdout.
+
 ## [0.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-redstone-bridge-v0.1.0...templar-redstone-bridge-v0.1.1) - 2026-08-03
 
 ### Added

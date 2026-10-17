@@ -13274,6 +13274,7 @@ dependencies = [
  "templar-universal-account",
  "tokio",
  "wasmparser 0.244.0",
+ "wiremock",
  "zstd 0.13.3",
 ]
 
