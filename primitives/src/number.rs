@@ -775,7 +775,10 @@ mod tests {
     #[case(11, 8)]
     #[case(12, 16)]
     fn epsilon_round_normal_and_tie(#[case] repr: u64, #[case] expected: u64) {
-        assert_eq!(Decimal::epsilon_round(U512::from(repr)), U512::from(expected));
+        assert_eq!(
+            Decimal::epsilon_round(U512::from(repr)),
+            U512::from(expected)
+        );
     }
 
     #[test]
