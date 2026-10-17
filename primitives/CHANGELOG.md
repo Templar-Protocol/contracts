@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Propose saturating `Decimal::epsilon_round` at `U512::MAX` on rounding overflow; existing parser results are unchanged because its fractional input is bounded to 128 bits.
+
 ## [0.1.2](https://github.com/Templar-Protocol/contracts/compare/templar-primitives-v0.1.1...templar-primitives-v0.1.2) - 2026-08-24
 
 ### Fixed
