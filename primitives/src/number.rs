@@ -210,8 +210,13 @@ impl Decimal {
     /// Rounds to the nearest multiple of eight representation units, with ties
     /// rounded up and overflow saturated at [`Self::MAX`]. This is allocation-free,
     /// monotonic, and idempotent; parsed values are unchanged.
+    ///
+    /// The overflow guard stays here to keep the audited parser helper unchanged.
     #[must_use]
     pub fn quantize(self) -> Self {
+        if self.repr > U512::MAX - (Self::REPR_EPSILON >> 1) {
+            return Self::MAX;
+        }
         Self {
             repr: Self::epsilon_round(self.repr),
         }
@@ -394,12 +399,7 @@ impl Decimal {
     }
 
     fn epsilon_round(repr: U512) -> U512 {
-        let (rounded, overflowed) = repr.overflowing_add(Self::REPR_EPSILON >> 1);
-        if overflowed {
-            U512::MAX
-        } else {
-            rounded & !(Self::REPR_EPSILON - 1)
-        }
+        (repr + (Self::REPR_EPSILON >> 1)) & !(Self::REPR_EPSILON - 1)
     }
 
     fn fractional_part_to_dec_string(&self, precision: usize, round_up: bool) -> (String, bool) {
