@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-vault-cli-v0.2.0...templar-soroban-vault-cli-v0.2.1) - 2026-10-17
+
+### Added
+
+- *(soroban-cli)* deploy verified pinned release artifacts
+- *(soroban-cli)* upgrade preflight, governance cutover guard, and deploy governance
+- *(soroban-cli)* pin soroban-v1.3.0-rc.1 and default cutover guard to release hash
+- *(soroban-cli)* show deposit amount in display units before signing
+
+### Changed
+
+- *(soroban-cli)* apply ponytail gate
+
+### Documentation
+
+- *(soroban-cli)* document skim guard and deposit summary
+
+### Fixed
+
+- *(soroban)* reject deposits against stale external NAV (FIND-001) ([#665](https://github.com/Templar-Protocol/contracts/pull/665))
+- *(soroban-cli)* preflight and cutover guards fail closed on real chain state
+- *(soroban-cli)* refuse governance writes when manifest governance differs from vault binding
+- *(soroban-cli)* refuse mismatched governance_pending reuse in deploy governance
+- *(soroban-cli)* preflight blocks any pending governance proposal
+- *(soroban-cli)* address review on upgrade tooling
+- *(soroban-cli)* isolate test cache root per thread; cover undecodable proposals
+- *(soroban-cli)* refuse submit-skim of the vault's asset or share token
+- *(soroban-cli)* make the preflight external-assets check mirror the stale-NAV gate
+
 ### Added
 
 - *(soroban-cli)* resolve the fixed `soroban-v1.3.0-rc.1` seven-asset catalog through an exact-length,

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.7](https://github.com/Templar-Protocol/contracts/compare/templar-vault-client-v1.2.6...templar-vault-client-v1.2.7) - 2026-10-17
+
+### Fixed
+
+- *(soroban)* reject deposits against stale external NAV (FIND-001) ([#665](https://github.com/Templar-Protocol/contracts/pull/665))
+
 ## [1.2.2](https://github.com/Templar-Protocol/contracts/compare/templar-vault-client-v1.2.1...templar-vault-client-v1.2.2) - 2026-08-03
 
 ### Added

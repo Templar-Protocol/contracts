@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/Templar-Protocol/contracts/compare/templar-redstone-bridge-v0.1.5...templar-redstone-bridge-v0.1.6) - 2026-10-17
+
+### Added
+
+- *(manager)* add typed live fleet queries ([#681](https://github.com/Templar-Protocol/contracts/pull/681))
+
 ### Fixed
 
 - Route bridge subprocess diagnostics to stderr so gateway/CLI consumers retain machine-readable stdout.
