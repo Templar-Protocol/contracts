@@ -4,6 +4,7 @@ mod context;
 mod dispatch;
 mod mpc;
 mod proxy;
+mod query;
 mod report;
 mod resolve;
 mod spec;

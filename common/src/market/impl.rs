@@ -418,7 +418,8 @@ impl Market {
 #[error("This account does not earn static yield")]
 pub struct UnknownAccount;
 
-fn usage_ratio(active: BorrowAssetAmount, borrowed: BorrowAssetAmount) -> Decimal {
+/// Borrowed-to-active principal ratio, zero for empty balances and capped at one.
+pub fn usage_ratio(active: BorrowAssetAmount, borrowed: BorrowAssetAmount) -> Decimal {
     if active.is_zero() || borrowed.is_zero() {
         Decimal::ZERO
     } else if borrowed >= active {

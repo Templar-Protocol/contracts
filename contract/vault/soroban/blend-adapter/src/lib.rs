@@ -3,8 +3,8 @@
 use soroban_sdk::{
     address_payload::AddressPayload,
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    BytesN, Env, IntoVal, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, vec,
+    Address, BytesN, Env, IntoVal, Map, Symbol, TryFromVal, Val, Vec,
 };
 use stellar_contract_utils::upgradeable::{self, Upgradeable};
 
@@ -243,14 +243,12 @@ impl BlendAdapterContract {
     pub fn total_assets(env: Env, asset: Address) -> Result<i128, AdapterError> {
         extend_instance_ttl(&env);
         let pool = get_pool(&env)?;
-        let client = PoolClient::new(&env, &pool);
-        let reserve = client.get_reserve(&asset);
-        let positions = client.get_positions(&env.current_contract_address());
-        let index = reserve.config.index;
+        let (index, b_rate) = reserve_index_and_b_rate(&env, &pool, &asset)?;
+        let positions = PoolClient::new(&env, &pool).get_positions(&env.current_contract_address());
         // Blend omits zero-valued positions from its sparse supply map.
         let b_tokens = positions.supply.get(index).unwrap_or(0);
         b_tokens
-            .checked_mul(reserve.data.b_rate)
+            .checked_mul(b_rate)
             .and_then(|value| value.checked_div(SCALAR_12))
             .ok_or(AdapterError::ArithmeticOverflow)
     }
@@ -321,6 +319,37 @@ impl Upgradeable for BlendAdapterContract {
         e.events()
             .publish((symbol_short!("upgrade"), operator), new_wasm_hash);
     }
+}
+
+/// Reads `config.index` and `data.b_rate` from the pool's `get_reserve` result as a map, so the
+/// adapter works with both upstream Blend pools and the Templar fork. The fork's
+/// `ReserveConfig` carries an extra `min_position` field; decoding the full struct with the
+/// upstream SDK type traps on the field-count mismatch.
+fn reserve_index_and_b_rate(
+    env: &Env,
+    pool: &Address,
+    asset: &Address,
+) -> Result<(u32, i128), AdapterError> {
+    let reserve: Val = env.invoke_contract(
+        pool,
+        &Symbol::new(env, "get_reserve"),
+        vec![env, asset.into_val(env)],
+    );
+    let reserve =
+        Map::<Symbol, Val>::try_from_val(env, &reserve).map_err(|_| AdapterError::InvalidInput)?;
+    let field = |map: &Map<Symbol, Val>, key: &str| map.get(Symbol::new(env, key));
+    let section = |key: &str| {
+        field(&reserve, key)
+            .and_then(|val| Map::<Symbol, Val>::try_from_val(env, &val).ok())
+            .ok_or(AdapterError::InvalidInput)
+    };
+    let index = field(&section("config")?, "index")
+        .and_then(|val| u32::try_from_val(env, &val).ok())
+        .ok_or(AdapterError::InvalidInput)?;
+    let b_rate = field(&section("data")?, "b_rate")
+        .and_then(|val| i128::try_from_val(env, &val).ok())
+        .ok_or(AdapterError::InvalidInput)?;
+    Ok((index, b_rate))
 }
 
 fn get_address(env: &Env, key: DataKey) -> Result<Address, AdapterError> {

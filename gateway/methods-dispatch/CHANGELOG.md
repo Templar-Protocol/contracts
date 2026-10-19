@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Resolve `oracle.resolvePriceAllSources` through the canonical supplied-price resolver, rejecting missing, failed, nonpositive, or unconvertible proxy sources without changing ordinary resolver fallback.
+
 ## [0.6.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-dispatch-v0.5.1...templar-gateway-methods-dispatch-v0.6.0) - 2026-10-14
 
 ### Added

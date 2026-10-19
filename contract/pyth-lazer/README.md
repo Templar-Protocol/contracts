@@ -4,7 +4,8 @@ A push-style NEAR oracle that ingests [Pyth Lazer](https://docs.pyth.network/laz
 payloads and re-serves them by their native Lazer `u32` feed id. It is **Lazer-native**: consume it
 by wrapping it in a **proxy oracle** as a `Lazer` source (addressed by feed id), not by pointing a
 market/proxy `Pyth` source directly at it. The proxy-oracle owns the `PriceIdentifier ↔ feed_id`
-mapping.
+mapping. The Soroban counterpart is `contract/proxy-oracle/soroban/pyth-lazer-source-contract`,
+which delegates signature verification to Pyth's on-chain Stellar contract.
 
 > **Naming:** Pyth now markets this product as **Pyth Pro** (formerly Pyth Lazer). We standardize on
 > **Pyth Lazer** / `lazer` internally.
@@ -26,10 +27,12 @@ them via the feed-id view methods.
 | `templar-pyth-lazer-verifier` | `verifier/` | Chain-agnostic verify + parse. No `near-sdk`. |
 | `templar-pyth-lazer-adapter-contract` | `contract/` | NEAR cdylib: storage, governance, feed-id views. |
 
-The verifier wraps a forked, slimmed [`pyth-lazer-protocol`](https://github.com/Templar-Protocol/pyth-lazer-public/tree/feat/protocol-slim-build)
-(pinned by `rev = "10aebfd0075887e9784f9fb65ef28ddbadb57139"` on the `feat/protocol-slim-build`
-branch, `default-features = false`) for the wire format and adds the trust checks an on-chain
-adapter needs.
+The verifier wraps the workspace-pinned, slimmed
+[`pyth-lazer-protocol`](https://github.com/Templar-Protocol/pyth-lazer-public)
+fork with `default-features = false` for the wire format and adds the trust checks an on-chain
+adapter needs. The root `Cargo.toml` declaration and `Cargo.lock` resolved source are the
+authoritative dependency pins; this README intentionally does not duplicate a branch, tag, or
+revision that can become stale.
 
 ## Governance
 

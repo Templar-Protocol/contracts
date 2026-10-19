@@ -82,6 +82,143 @@ This generates detailed reports on function execution costs, snapshot iteration 
 
 Anyone can reproduce the core health checks with view calls. Examples use [`near-cli-rs`](./notes.md#contract-interaction-syntax).
 
+### Live Fleet Queries
+
+`tmplrmgr query` scans markets, proxy oracles, or proxy-oracle governance contracts
+through typed gateway reads. It never signs transactions or updates oracle storage.
+Use `--network mainnet` explicitly; the CLI defaults to testnet.
+
+```bash
+tmplrmgr query fields markets
+tmplrmgr query fields proxy-oracles
+tmplrmgr query fields proxy-governance
+tmplrmgr query assets
+
+tmplrmgr --network mainnet query markets --registry-id v1.tmplr.near \
+  --filter 'collateral_asset = BTC' \
+  --filter 'borrow_asset = USDC' \
+  --filter 'borrow_apr >= 10%' \
+  --include oracle.governance \
+  --sort borrowed --descending
+```
+
+Registry records discover candidate account IDs only; current contract kinds
+are read with bounded concurrency. Confirmed deleted accounts are skipped without
+making the scan incomplete; failed classifications and live, unrecognized
+contracts remain visible.
+The `version` field always comes from the running contract's NEP-330 metadata,
+never the registry's original version key. Alternatively, repeat
+`--account-id <account>` to query specific accounts instead of a registry.
+
+Filters have exactly three whitespace-separated terms: `field operator value`.
+Repeat `--filter` for AND; there is no boolean-expression language. Numeric and
+version fields support `=`, `!=`, `<`, `<=`, `>`, and `>=`; identity and kind fields
+support equality and inequality only. Versions compare numeric
+`major.minor.patch` components. APR and utilization accept `10%` or `0.1`;
+USD and token amounts use plain nonnegative decimals, without currency symbols
+or scientific notation.
+Numeric predicates, sorting, and output use the same fixed-point quantization as
+parsed decimal text, so emitted values can be reused as thresholds and derived
+amounts respect equality and inclusive bounds without approximate comparisons.
+
+| Fields | Meaning |
+| --- | --- |
+| `id`, `kind`, `version` | Live contract identity, kind, and version |
+| `borrow_asset`, `collateral_asset` | Complete canonical NEP-141/NEP-245 identities |
+| `borrow_apr`, `usage_ratio` | Current snapshot APR and market utilization |
+| `borrowed`, `supplied` | Decimal-adjusted borrowed and active supplied principal |
+| `borrowed_usd`, `supplied_usd` | Fresh indicative USD values of those principal amounts |
+
+Fields and kind values use `snake_case`, matching gateway JSON (`proxy_oracle`,
+`proxy_governance`). CLI subcommands and flags retain their usual hyphenated names.
+Defaults return all non-USD root fields, including market metrics. Metrics share
+one cached snapshot read per returned market. Use `--select id,version` for a
+minimal projection; filtering and sorting can still require other reads.
+`--include oracle.governance` adds the default fields at each relationship along
+that path. Repeat `--include` or separate paths with commas. `--usd` adds the two
+USD fields to market output; it does not implicitly expand relationships.
+Explicit USD filters, sorting, or selection also enable the required valuation.
+Non-USD filters run before USD filters. Output-only reads run after `--limit`.
+`--concurrency` bounds ordinary contract reads (default 8, maximum 32).
+USD dependency discovery, adapter verification, and price resolution use separate
+batches with fixed concurrency 8.
+`--limit` applies after filtering, sorting, and mapping, not to registry discovery.
+
+Asset aliases are explicit sets of exact identities, discoverable through
+`query assets`; aliases are case-insensitive, while exact identities remain
+case-sensitive. BTC, WBTC, hemiBTC, and SolvBTC are distinct. USDC includes
+several explicitly catalogued wrappers. Unknown assets remain queryable by their
+full `nep141:<contract>` or `nep245:<contract>:<token-id>` identity. Token-reported
+symbols and shared oracle feeds do not silently establish asset equivalence.
+
+Relationships compose through dotted paths:
+
+- Market `oracle`: the configured oracle, including legacy direct oracles.
+- Proxy `governance`: its owner, only when identified as governance and pointing
+  back to that proxy. Plain/self-owned accounts do not imply governance.
+- Governance `oracle`: its governed proxy.
+
+```bash
+# Return markets whose configured proxy is at or below this current version.
+tmplrmgr --network mainnet query markets --registry-id v1.tmplr.near \
+  --filter 'oracle.kind = proxy_oracle' \
+  --filter 'oracle.version <= 0.4.1' \
+  --include oracle.governance
+
+# Return distinct governing contracts for BTC-collateral markets.
+tmplrmgr --network mainnet query markets --registry-id v1.tmplr.near \
+  --filter 'collateral_asset = BTC' \
+  --map oracle.governance --include oracle
+```
+
+Filters and sorting refer to the root type and run before mapping. Selection,
+inclusion, and `--usd` refer to the mapped type when mapping is present.
+Each returned object includes its `id`, including selected relationships.
+Missing relations do not produce mapped rows. Related reads are cached by
+account and operation; paths are limited to 16 relationship edges.
+
+Dotted query paths describe nested JSON, not literal dotted keys. For example,
+`oracle.version` appears inside the `oracle` object, accessible through
+`jq '.rows[].oracle.version'`. Unrequested relationships are omitted; requested
+absent relationships are `null`. An unavailable field on a known related account
+is `null` within its object rather than making that whole relationship absent.
+Expansion follows only requested paths, never every edge of a relationship cycle.
+
+USD valuation fetches fresh signed Lazer/RedStone payloads, verifies them through
+the deployed adapters, then resolves the proxy's configured price and
+transformations from supplied inputs. Requests are deduplicated across the scan.
+Every required source, including its transformation, must yield a positive,
+representable price and satisfy the market's maximum age. The query uses
+`oracle.resolvePriceAllSources` so a failed transformation cannot be hidden by a
+healthy fallback source. There is no partial-source valuation, stored-price
+fallback, or stablecoin peg assumption.
+Lazer requires `PYTH_LAZER_API_KEY` or `--pyth-lazer-api-key` only when
+used. RedStone requires its Node.js bridge/runtime; provider options appear in
+`query markets --help`. Classic Pyth-backed dependencies currently have no
+verified provider preview and therefore produce unavailable USD values.
+Token decimals must be 0–38; price exponents must be -38–115.
+
+Borrowed principal includes in-flight borrowing, but not accrued borrower
+interest or fees. Active supplied principal includes currently activatable
+incoming deposits, not total supplier claims. Utilization is borrowed/active
+principal, zero if either is zero, and capped at one. Neither USD field is TVL.
+Fresh indicative valuations do not assert that the proxy's cached price or
+circuit breakers would permit a transaction.
+
+Results are JSON: `scanned` counts registry candidates of all kinds (or explicitly
+requested accounts), including deleted accounts skipped during classification.
+`matched` counts roots of the requested kind surviving all filters, and `rows`
+contains the selected output.
+Selected field values, including numbers, are strings. Missing values are `null`,
+never zero; they match no predicate, including `!=`, and sort last in either
+direction. Account ID breaks sort ties deterministically.
+
+This is a best-effort live scan, not a block-pinned snapshot. Failed reads remain
+visible in `failures` and set `complete: false`; a partial scan exits successfully,
+so automation must inspect `complete`. Invalid arguments and failed registry
+discovery exit nonzero. Unknown/non-numeric live versions are unavailable rather
+than replaced by registry versions.
+
 ### Market Status
 
 ```bash

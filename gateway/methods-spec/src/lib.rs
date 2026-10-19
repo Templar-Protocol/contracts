@@ -130,6 +130,7 @@ macro_rules! for_each_read_method {
         $callback!($crate::universal_account::GetKey);
         $callback!($crate::oracle::GetPriceResolutionDependencies);
         $callback!($crate::oracle::ResolvePrice);
+        $callback!($crate::oracle::ResolvePriceAllSources);
         $callback!($crate::oracle::ResolvePrices);
         $callback!($crate::oracle::GetPrice);
         $callback!($crate::oracle::GetPrices);
