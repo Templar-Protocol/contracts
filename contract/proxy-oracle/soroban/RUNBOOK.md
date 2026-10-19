@@ -199,6 +199,12 @@ the `--action` JSON).
 `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`):
 
 ```json
+{"SetProxy": [{"Other":"BTC"}, {
+  "sources": [{"oracle":"<SRC1>","asset":{"Other":"BTC"}},
+              {"oracle":"<SRC2>","asset":{"Other":"BTC"}},
+              {"oracle":"<SRC3>","asset":{"Other":"BTC"}},
+              {"oracle":"<SRC4>","asset":{"Other":"BTC"}}],
+  "min_sources": 3, "max_age_secs": 120, "max_clock_drift_secs": 0 }]}
 {"SetProxy": [{"Other":"XLM"}, {
   "sources": [
     {"oracle":"CAFJZQWSED6YAWZU3GWRTOCNPPCGBN32L7QV43XX5LZLFTK6JLN34DLN",
@@ -236,6 +242,19 @@ Any changed `SetProxy` policy clears accepted history and cache.
 Freshness/cache-only changes retain breaker state; changing the ordered
 `(oracle, asset)` pairs or `min_sources` also clears breakers. `RemoveProxy`
 clears all state.
+
+**Feeds a Blend pool reads: set `max_clock_drift_secs` to 0.** The pool reads this proxy
+through the pool oracle adapter, which rounds timestamps down to its resolution, so a
+future-dated price that falls in the current bucket passes the pool's own future-date check
+(with a resolution of one second, the pool's check still applies). With a non-zero drift, a
+source sample published ahead of ledger time can become the newest history entry. The proxy
+reads its age as zero until the clock catches up, so `refresh` keeps marking its cache
+current, and the pool keeps pricing on that one sample for up to `max_clock_drift_secs`
+while the market moves (Guardian L-05). At 0 the freshness filter
+rejects any sample published after the current ledger. A cross-chain sample stamped ahead
+of the Stellar ledger close time is skipped for that refresh and accepted once ledger time
+passes it, usually within one ledger. Check this value on every `SetProxy` for an asset a
+pool prices.
 
 **Breakers** — configure the set, add a breaker, then enforce it:
 
