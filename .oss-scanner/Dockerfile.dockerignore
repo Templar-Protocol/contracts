@@ -1,0 +1,6 @@
+# BuildKit uses this file instead of the root .dockerignore when it builds .oss-scanner/Dockerfile.
+# The root file hides script/, audits/, docs/, .github/ and the .env examples from the release
+# images. The scanner needs them: script/ runs the test gates, audits/ lists the known issues, and
+# docs/ and .github/ describe the trust model and how CI builds and tests. The scanner builds from a
+# fresh clone, so there are no local secrets to hide.
+target/
