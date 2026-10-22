@@ -309,6 +309,7 @@ Provider status pages: [Pyth Network Price Feeds](https://insights.pyth.network/
 
 - **NEAR Network**: [NEAR Status](https://status.near.org/)
 - **NEAR Intents** (cross-chain deposits and withdrawals): [NEAR Intents Status](https://status.near-intents.org/)
+- **Chain Signatures** (MPC signing network): [live operator set and threshold](https://mpc.nearone.org/operators.html); see [Chain Signatures MPC Network](./security-overview.md#chain-signatures-mpc-network)
 - **Pyth Network**: [Pyth Network Status](https://status.pyth.network/)
 
 Templar's cross-chain collateral and stablecoin flows depend on NEAR infrastructure: NEAR Intents, the Omnibridge, Chain Signatures (the MPC network), and nearcore itself. The security audits of those dependencies (nearcore assessments by Trail of Bits and Sigma Prime; NEAR Intents reviews by Hacken, Guvenkaya, zkSecurity, and Aurora Labs; Omnibridge audit reports; and the NEAR One reports on the MPC Chain Signatures network) are collected in the [NEAR dependency audits folder](https://drive.google.com/drive/folders/1_6MPZLrWxLTWpCi5caYC2IWKP-8sW1uP?usp=sharing). Contingency procedures for a dependency incident are in the [emergency runbooks](https://github.com/Templar-Protocol/blend-contracts-v2/tree/main/docs/emergency-runbooks).

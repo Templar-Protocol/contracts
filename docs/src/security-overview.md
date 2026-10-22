@@ -12,6 +12,7 @@ Templar Protocol is built on a defence-in-depth model: immutable, isolated marke
 - **Real-time monitoring** of markets, proxy oracles, and vaults with [Hypernative](https://www.hypernative.io/) and custom alerts, a [public alerts channel](https://t.me/+CcqXyt01lsljZmQx), and a [live risk dashboard](https://data.templarfi.org/).
 - **AI security-focused code scanning** (Octane, Almanax, GPT Cyber) alongside nightly formal proofs and fuzzing in CI.
 - **2-of-3 DAO multisig** for every mutable NEAR component; timelocks and immediate actions follow each component's policy (proxy oracle governance is timelocked per method, the registry uses two-step finalization, and breaker operation is immediate). Stellar vaults are governed per vault by a governance admin, curator, and Sentinel under configurable timelocks. See [Protocol Governance](./governance.md).
+- **Threshold MPC for cross-chain signing**: NEAR Chain Signatures needs 11 of 16 independent operators to sign, all 16 run in Intel TDX TEEs, and the set is growing toward 30. See [Chain Signatures MPC Network](#chain-signatures-mpc-network).
 - **Hardened frontend and DNS**.
 
 ## Audits and Formal Verification
@@ -40,6 +41,58 @@ Beyond the external engagements, verification runs continuously inside the repos
 ### Dependency Audits
 
 Templar's cross-chain flows rely on NEAR infrastructure that is audited independently of Templar: NEAR Intents (deposits and withdrawals), the Omnibridge, Chain Signatures (the MPC network), and nearcore. Those reports are collected in the [NEAR dependency audits folder](https://drive.google.com/drive/folders/1_6MPZLrWxLTWpCi5caYC2IWKP-8sW1uP?usp=sharing): nearcore assessments by Trail of Bits and Sigma Prime; NEAR Intents reviews by Hacken, Guvenkaya, zkSecurity, and Aurora Labs; Omnibridge audit reports; and the NEAR One reports on the MPC Chain Signatures network. Contingency procedures for a dependency incident are part of the [incident response](#incident-response) runbooks.
+
+## Chain Signatures MPC Network
+
+[NEAR Chain Signatures](https://docs.near.org/chain-abstraction/chain-signatures) is the multi-party computation (MPC) network that signs the cross-chain transactions behind NEAR Intents and the Omnibridge. It is also the network behind [DAO-approved MPC signing](./governance.md#dao-approved-mpc-signing). No single party holds a private key. Each key is split into shares across independent operators, and a signature is valid only when a threshold of them cooperate. NEAR One describes the network's structure and security model in the [NEAR MPC Network & Security Overview](https://mpc.nearone.org/overview.html).
+
+### Current threshold and operators
+
+As of 22 October 2026, the signer contract [`v1.signer`](https://nearblocks.io/address/v1.signer) on NEAR mainnet reports:
+
+- **Threshold: 11 of 16.** At least 11 of the 16 operators must cooperate to produce a signature.
+- **Operators: 16** independent entities.
+- **TEE: 16 of 16** operators run their node in a verified Intel TDX trusted execution environment, which prevents an operator from reading its own key share.
+- **Target: 30 operators.** Near One's stated goal is to scale the network to 30 nodes without reducing performance ([Advancing Chain Signatures: What's Next?](https://www.near.org/blog/advancing-chain-signatures-whats-next)).
+
+| Operator | NEAR account |
+|---|---|
+| Astrostakers | `astrostakers-mainnet.near` |
+| Aurora | `multichain-mainnet-aurora.near` |
+| Bitwise | `bitwise-mpc01.near` |
+| Everstake | `everstake-mpc-1.near` |
+| Greenfield | `greenfield-mpc01.near` |
+| HashKey Cloud | `hashkeympc.near` |
+| Klever | `klever-nearmpc-01.near` |
+| Luganodes | `mpc-lgns.near` |
+| MPCH | `mpch-01.near` |
+| Nansen | `nansen-ai-mpc.near` |
+| Natsai | `natsai-mpc.near` |
+| Near One | `n1-multichain.near` |
+| Node Monster | `nodemonster.near` |
+| Sovereign | `svrn-01.near` |
+| Stakin | `stakin-mpc.near` |
+| Staking4all | `near-mpc-staking4all-01.near` |
+
+This table is a snapshot. The [live operator page](https://mpc.nearone.org/operators.html) reads the current set from the contract and is authoritative.
+
+### What the threshold means
+
+- **Safety**: an attacker must control at least 11 operators to sign a transaction or to reconstruct a key. Shares held by fewer than 11 operators reveal nothing about the key. With TEEs, operators also cannot extract their own shares to collude outside the network.
+- **Liveness**: signing continues while at least 11 operators are online, so up to 5 can be offline at once. If 6 or more are offline, new signatures fail until enough operators return. A failed signature delays withdrawals and cross-chain settlement; it does not expose a key or move funds.
+- **Key generation**: keys are created by a fully distributed key generation protocol with no trusted dealer, so the full private key never exists on any machine.
+- **Governance**: adding or removing an operator, or changing the threshold, requires an on-chain vote by the existing operators, followed by a resharing of the keys to the new set. No single party, including Templar or NEAR One, can change the set alone.
+- **Audits**: Trail of Bits has audited the signer contract and network, the distributed key generation protocol, robust threshold ECDSA, and confidential key derivation. Reports are in [`near/mpc/audits`](https://github.com/near/mpc/tree/main/audits).
+
+### Verify the current set yourself
+
+The threshold and participant set are public on-chain. Query the `state` method of `v1.signer`:
+
+```bash
+near contract call-function as-read-only v1.signer state json-args {} network-config mainnet now
+```
+
+While the network is in its `Running` state, the result lists the participants under `Running.parameters.participants` and the threshold under `Running.parameters.threshold`. The same call is available in the [explorer](https://nearblocks.io/address/v1.signer/contract/methods).
 
 ## Smart Contract Architecture
 
