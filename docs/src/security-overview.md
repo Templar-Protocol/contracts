@@ -53,7 +53,7 @@ As of 22 October 2026, the signer contract [`v1.signer`](https://nearblocks.io/a
 - **Threshold: 11 of 16.** At least 11 of the 16 operators must cooperate to produce a signature.
 - **Operators: 16** independent entities.
 - **TEE: 16 of 16** operators run their node in a verified Intel TDX trusted execution environment, which prevents an operator from reading its own key share.
-- **Target: 30 operators.** The operator set is growing toward 30 nodes.
+- **Target: 30 operators.** Near One's stated goal is to scale the network to 30 nodes without reducing performance ([Advancing Chain Signatures: What's Next?](https://www.near.org/blog/advancing-chain-signatures-whats-next)).
 
 | Operator | NEAR account |
 |---|---|
