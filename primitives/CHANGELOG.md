@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/Templar-Protocol/contracts/compare/templar-primitives-v0.1.2...templar-primitives-v0.1.3) - 2026-10-24
+
+### Added
+
+- *(manager)* add typed live fleet queries ([#681](https://github.com/Templar-Protocol/contracts/pull/681))
+
 ### Added
 
 - Add allocation-free, monotonic, saturating `Decimal::quantize` for comparisons on the decimal parser's representation grid without changing arithmetic or serialization. Keep full-range overflow handling in the new method, leaving the audited parser rounding helper unchanged.
