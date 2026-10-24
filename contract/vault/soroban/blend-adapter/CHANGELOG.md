@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-blend-adapter-v1.1.0...templar-soroban-blend-adapter-v1.1.1) - 2026-10-24
+
+### Fixed
+
+- *(soroban)* read Blend reserve fields by name in the blend adapter
+
 ### Fixed
 
 - `total_assets` reads only `config.index` and `data.b_rate` from the pool's `get_reserve`

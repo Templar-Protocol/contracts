@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/Templar-Protocol/contracts/compare/templar-relayer-v0.5.0...templar-relayer-v0.5.1) - 2026-10-24
+
+### Fixed
+
+- *(relayer)* bump Node to 24.22.1 for CVE-2026-111497 ([#686](https://github.com/Templar-Protocol/contracts/pull/686))
+
 ## [0.5.0](https://github.com/Templar-Protocol/contracts/compare/templar-relayer-v0.4.1...templar-relayer-v0.5.0) - 2026-10-14
 
 ### Changed
