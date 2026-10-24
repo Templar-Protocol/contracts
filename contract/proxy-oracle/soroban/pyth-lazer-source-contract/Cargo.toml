@@ -23,6 +23,7 @@ templar-proxy-oracle-soroban-common = { path = "../common" }
 
 [dev-dependencies]
 hex-literal.workspace = true
+proptest = "1.4"
 rstest.workspace = true
 soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
 

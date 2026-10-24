@@ -102,6 +102,30 @@ requires soroban-sdk 26.1 and therefore Rust ≥ 1.91) and pinned by commit, whi
 `templar/stellar-sdk-0.4.0-soroban25` also points at. Swap to the crates.io release once the
 workspace toolchain moves.
 
+Verification of the feed updater (`pyth-lazer-source-contract/src`):
+
+- `kani_proofs.rs` — Kani proves, over every input, that the admission rule
+  stores a feed exactly when it carries a positive price, an exponent and an
+  update time inside the inclusive window, publishes strictly after the stored
+  price, and is servable, and that what it stores is the verified feed
+  unchanged; that the ingest window equals exact arithmetic around ledger
+  time and a validated freshness config cannot overflow it; that a registry is
+  accepted exactly when it lists 1–64 strictly increasing ids; and that the
+  feed-id key is the id's canonical decimal, so distinct feeds never share a
+  key. Servability is `normalized_to_sep40` from the audited common crate; the
+  admission proof holds for any servability rule.
+- `proptests.rs` — the real contract against a reference model over generated
+  sequences of pushes, clock moves, freshness/registry/verifier changes, epoch
+  resets and unauthorized owner calls, comparing stored prices, the raw price
+  map, the push event and every SEP-40 read after each step; and arbitrary,
+  bit-flipped, truncated and extended payloads, which must fail without a write
+  or store only admitted prices. `PROPTEST_CASES` scales a run.
+
+```bash
+cargo kani -p templar-proxy-oracle-soroban-pyth-lazer-source-contract
+PROPTEST_CASES=4096 just test-fast -p templar-proxy-oracle-soroban-pyth-lazer-source-contract --features testutils proptests
+```
+
 ## ProxyOracleBatcher
 
 Stateless, ownerless. `refresh_many(oracle, assets)`,
