@@ -13874,6 +13874,7 @@ name = "templar-proxy-oracle-soroban-pyth-lazer-source-contract"
 version = "0.1.0"
 dependencies = [
  "hex-literal",
+ "proptest",
  "pyth-lazer-stellar-sdk",
  "rstest",
  "soroban-sdk",
