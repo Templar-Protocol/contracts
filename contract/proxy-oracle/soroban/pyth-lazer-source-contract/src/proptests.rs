@@ -23,7 +23,8 @@ use std::{collections::BTreeMap, vec::Vec as StdVec};
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{Address as _, EnvTestConfig, Events as _, Ledger as _},
-    Address, BytesN, Env, Event as _, Map, Vec,
+    xdr::{ScErrorCode, ScErrorType},
+    Address, BytesN, Env, Error, Event as _, IntoVal, Map, Val, Vec,
 };
 
 use super::*;
@@ -497,32 +498,52 @@ impl World {
         self.model.prices.clear();
     }
 
+    /// An owner entrypoint called without the owner's authorization traps at
+    /// `require_auth`, which the host reports to the caller as
+    /// `Error(Context, InvalidAction)`. Every call's arguments would otherwise
+    /// succeed, and `upgrade` gets the zero hash, which past a missing auth
+    /// check returns the contract's own `InvalidInput` instead, so dropping
+    /// any auth check changes the result.
     fn unauthorized(&mut self, call: &AdminCall) {
-        self.env.mock_auths(&[]);
-        let failed = match call {
-            AdminCall::Freshness => self
-                .source
-                .try_set_freshness(&FreshnessConfig {
+        let env = &self.env;
+        let (function, args): (&str, Vec<Val>) = match call {
+            AdminCall::Freshness => (
+                "set_freshness",
+                (FreshnessConfig {
                     max_age_secs: 1,
                     max_clock_drift_secs: 0,
-                })
-                .is_err(),
-            AdminCall::Registry => self
-                .source
-                .try_set_supported_feed_ids(&Vec::from_array(&self.env, [UNIVERSE[0]]))
-                .is_err(),
-            AdminCall::Verification => self
-                .source
-                .try_set_verification_config(&Address::generate(&self.env), &LazerChannel::RealTime)
-                .is_err(),
-            AdminCall::ResetEpoch => self.source.try_reset_verification_epoch().is_err(),
-            AdminCall::Upgrade => self
-                .source
-                .try_upgrade(&BytesN::from_array(&self.env, &[7; 32]), &self.owner)
-                .is_err(),
+                },)
+                    .into_val(env),
+            ),
+            AdminCall::Registry => (
+                "set_supported_feed_ids",
+                (Vec::from_array(env, [UNIVERSE[0]]),).into_val(env),
+            ),
+            AdminCall::Verification => (
+                "set_verification_config",
+                (env.register(MockVerifier, ()), LazerChannel::RealTime).into_val(env),
+            ),
+            AdminCall::ResetEpoch => ("reset_verification_epoch", ().into_val(env)),
+            AdminCall::Upgrade => (
+                "upgrade",
+                (BytesN::from_array(env, &[0; 32]), self.owner.clone()).into_val(env),
+            ),
         };
-        self.env.mock_all_auths();
-        assert!(failed, "{call:?} ran without the owner's authorization");
+        env.mock_auths(&[]);
+        let result = env.try_invoke_contract::<Val, Error>(
+            &self.source.address,
+            &Symbol::new(env, function),
+            args,
+        );
+        env.mock_all_auths();
+        assert_eq!(
+            result.err(),
+            Some(Ok(Error::from_type_and_code(
+                ScErrorType::Context,
+                ScErrorCode::InvalidAction
+            ))),
+            "{call:?} without the owner's authorization"
+        );
     }
 
     fn apply(&mut self, step: &Step) {
