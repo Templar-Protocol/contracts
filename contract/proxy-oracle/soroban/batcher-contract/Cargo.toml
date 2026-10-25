@@ -16,7 +16,7 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
-templar-proxy-oracle-soroban-common = { path = "../common" }
+templar-proxy-oracle-soroban-common.workspace = true
 
 [lints]
 workspace = true
