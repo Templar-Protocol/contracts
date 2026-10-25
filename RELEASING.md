@@ -157,7 +157,7 @@ registry either.
 ## Contract WASM artifacts
 
 A **contract that `contract/artifacts` catalogues** gets its canonical WASM cut
-on request, for a version you intend to deploy. Two kinds are catalogued, and
+when its version is released. Two kinds are catalogued, and
 each is built by the recipe its kind already uses: NEAR contracts in the pinned
 NEP-330 image, and the five contracts of the Soroban proxy-oracle stack —
 `soroban-proxy-oracle`, `soroban-proxy-governance`, `soroban-sep40-adapter`,
@@ -168,16 +168,24 @@ that justfile pins and refuses a WASM embedding a host path. A tag naming
 anything else — a released library of either stack, say — is skipped, which is an
 expected state rather than an error.
 
-1. Merge your work as normal, then merge the Release PR. That tags the version
-   and builds nothing.
+1. Merge your work as normal, then merge the Release PR. That tags the versions
+   and builds nothing — then the Release job's *Dispatch the release WASM
+   builds* step asks the artifact resolver about each tag it just cut, and
+   dispatches [`release-artifacts.yml`](.github/workflows/release-artifacts.yml)
+   for every tag naming a catalogued artifact. Tags that name no artifact — the
+   library and service crates bumped along with them — are skipped silently, and
+   a dispatch that fails fails the release job visibly.
 
-2. For each version you are shipping, run `just release-wasm <tag>`. That
-   dispatches [`release-artifacts.yml`](.github/workflows/release-artifacts.yml),
-   which builds the contract **at that tag's commit** with the recipe for its
-   kind, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
+2. Each dispatch builds the contract **at that tag's commit** with the recipe for
+   its kind, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
    GitHub Release, and hands over one catalog row — the version, the tag, the
    asset, and the digest and byte length of the bytes it just built, each
-   recorded as observed.
+   recorded as observed. Nothing else is needed for a normal release.
+
+   `just release-wasm <tag>` remains for naming a tag by hand: to rebuild or
+   backfill one, or to recover a tag the automation could not dispatch (see the
+   cutoffs below). It is the same dispatch, and a replay is harmless —
+   `release-artifacts.yml` never replaces a published asset.
 
 3. Each of those builds finishing fires
    [`catalog-pr.yml`](.github/workflows/catalog-pr.yml), which commits every row
@@ -199,24 +207,31 @@ job itself fails, fix it and re-run it from the Actions tab (`workflow_dispatch`
 is enabled for exactly this) — nothing needs recording by hand as long as the
 rows are still live, which they are for seven days.
 
-### Why the WASM is not cut by the tag
+### Why the tag does not build its own WASM
+
+The build is *dispatched* for the tag, never fired *by* it. GitHub reads a
+`workflow_dispatch` file from the ref the dispatch names, and the tags
+release-plz pushes do not start `push: tags` workflows at all — so the Release
+job dispatches `release-artifacts.yml` against `dev`, naming the tag, and the
+workflow checks the tag out and builds there.
 
 release-plz bumps a crate whose dependencies moved, so releasing a library
 releases every contract that links it: `templar-common` 1.4.1 tagged nine
-contracts, four of which had no change to shipped code at all. Those bytes are
-not redundant — NEP-330 embeds the version and commit, so every rebuild differs
-— which is exactly why they cannot be deduplicated after the fact and must
-simply not be built.
+contracts, four of which had no change to shipped code at all. Every one of
+those that is catalogued still gets its WASM: the bytes are not redundant —
+NEP-330 embeds the version and commit, so every rebuild differs — and
+`{name}@{version}#{sha}`, the immutable-asset rule, and the digest pin all
+depend on version→bytes being a function. Suppressing the version bump instead
+would be worse: two byte-sets would share one version.
 
-Suppressing the version bump instead would be worse: two byte-sets would share
-one version, and `{name}@{version}#{sha}`, the immutable-asset rule, and the
-digest pin all depend on version→bytes being a function.
-
-So **a release tag with no WASM is an expected state**, and the newest catalogued
-release is expected to lag the newest tag. `just release-wasm-status <tag>` answers
-whether a given one has been built. Nothing is lost by waiting: the tag is
-permanent and the build reproducible, so a version built months later yields the
-same bytes.
+What the release job does *not* build are the tags that name no artifact. So
+**a release tag with no WASM is an expected state**, not a gap: the library and
+service crates bumped alongside the contracts keep none, and a catalogued tag
+stays unbuilt only if its dispatch failed. `just release-wasm-status <tag>`
+answers whether a given one has been built. Nothing is lost if it must be
+dispatched again by hand: the tag is permanent and the build reproducible, so a
+version built later yields the same bytes, and a replay never replaces the
+asset.
 
 One cutoff: `just release-wasm` resolves the tag by running the resolver *from
 that tag's checkout*, so it only reaches tags cut after `--resolve` landed
@@ -241,8 +256,9 @@ up front. A `Cargo.toml` bump cannot assert one, because bumps and releases
 routinely diverge — market's crate version reached 1.4.0 while 1.3.0 was the
 newest release, and registry reached 1.2.1 against a released 1.1.0. Only CI,
 after the fact, can write the entry: a reproducible build's digest cannot be
-known until the build exists. Choosing *which* versions get a WASM is the one
-deliberate step.
+known until the build exists. The release job dispatches every catalogued tag
+automatically, so *which* versions get a WASM is decided entirely by the
+catalog, never by hand.
 
 A catalogued entry is the **canonical build for a released version** — the bytes
 CI built at that tag and published. It is not a claim that they run on any
