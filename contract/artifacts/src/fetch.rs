@@ -11,8 +11,12 @@
 //!
 //! ```text
 //! ${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}}/templar-contract-artifacts
-//!   └── near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
+//!   ├── near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
+//!   └── soroban/<cargo_target_name>/<version>/<cargo_target_name>.wasm
 //! ```
+//!
+//! The two trees are separate because a NEAR and a Soroban contract share
+//! neither toolchain nor bytes, and their stems could otherwise collide.
 //!
 //! The cache is shared across worktrees and needs no locking: an entry deleted
 //! mid-fetch is re-downloaded. `TEMPLAR_ARTIFACT_OFFLINE=1` restricts lookups to
@@ -30,7 +34,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{sha256_hex, ArtifactId, ArtifactRelease};
+use crate::{sha256_hex, ArtifactId, ArtifactRelease, ReleaseArtifact, SorobanArtifactId};
 
 /// Repository whose GitHub Releases host the artifact assets.
 const RELEASE_REPO: &str = "Templar-Protocol/contracts";
@@ -59,7 +63,7 @@ pub enum FetchError {
          Historical versions live in contract/artifacts/releases/."
     )]
     UnknownRelease {
-        artifact: ArtifactId,
+        artifact: ReleaseArtifact,
         version: String,
         catalogued: String,
     },
@@ -69,7 +73,7 @@ pub enum FetchError {
          is set. Run `just artifacts-fetch` with network access, or unset it."
     )]
     Offline {
-        artifact: ArtifactId,
+        artifact: ReleaseArtifact,
         version: String,
     },
 
@@ -98,7 +102,7 @@ pub enum FetchError {
          catalog records {expected}. Refusing the bytes."
     )]
     LengthMismatch {
-        artifact: ArtifactId,
+        artifact: ReleaseArtifact,
         version: String,
         url: String,
         expected: usize,
@@ -110,7 +114,7 @@ pub enum FetchError {
          catalog pins {expected}. Refusing the bytes."
     )]
     HashMismatch {
-        artifact: ArtifactId,
+        artifact: ReleaseArtifact,
         version: String,
         url: String,
         expected: String,
@@ -154,8 +158,11 @@ pub fn cache_root() -> Result<PathBuf, FetchError> {
     Ok(base.join(CACHE_DIR))
 }
 
-/// Every release the catalog knows about. `prefetch_all` writes exactly this
-/// set.
+/// Every NEAR release the catalog knows about. `prefetch_all` writes exactly
+/// this set.
+///
+/// Deliberately not the Soroban stack: this cache is warmed for the NEAR test
+/// and gateway paths, which can deploy none of those contracts.
 fn catalogued() -> impl Iterator<Item = (ArtifactId, &'static str)> {
     ArtifactId::ALL.into_iter().flat_map(|artifact| {
         artifact
@@ -166,16 +173,28 @@ fn catalogued() -> impl Iterator<Item = (ArtifactId, &'static str)> {
     })
 }
 
+/// Which family directory one release's bytes live under.
+fn family(artifact: ReleaseArtifact) -> &'static str {
+    match artifact {
+        ReleaseArtifact::Near(_) => "near",
+        ReleaseArtifact::Soroban(_) => "soroban",
+    }
+}
+
 /// Directory holding one release's bytes, relative to an explicit root.
-fn entry_dir(root: &Path, artifact: ArtifactId, version: &str) -> PathBuf {
-    root.join("near")
-        .join(artifact.metadata().cargo_target_name)
+fn entry_dir(root: &Path, artifact: ReleaseArtifact, version: &str) -> PathBuf {
+    root.join(family(artifact))
+        .join(artifact.cargo_target_name())
         .join(version)
 }
 
 /// Where a given release's bytes are cached.
 pub fn cache_path(artifact: ArtifactId, version: &str) -> Result<PathBuf, FetchError> {
-    let target = artifact.metadata().cargo_target_name;
+    cache_path_for(ReleaseArtifact::Near(artifact), version)
+}
+
+fn cache_path_for(artifact: ReleaseArtifact, version: &str) -> Result<PathBuf, FetchError> {
+    let target = artifact.cargo_target_name();
     Ok(entry_dir(&cache_root()?, artifact, version).join(format!("{target}.wasm")))
 }
 
@@ -192,19 +211,21 @@ pub fn asset_url(release: &ArtifactRelease) -> String {
 /// The catalog is compile-time constant, so this cannot serve bytes a fresh read
 /// would reject. Without it every `GetArtifact` re-reads and re-hashes several
 /// hundred KB.
-type Memo = Mutex<HashMap<(ArtifactId, &'static str), Arc<[u8]>>>;
+type Memo = Mutex<HashMap<(ReleaseArtifact, &'static str), Arc<[u8]>>>;
 
 fn memo() -> &'static Memo {
     static MEMO: OnceLock<Memo> = OnceLock::new();
     MEMO.get_or_init(Default::default)
 }
 
-/// Bytes of whichever catalogued release hashes to `sha256`.
+/// Bytes of whichever NEAR catalogued release hashes to `sha256`.
 ///
 /// The digest-keyed entry point to [`released_bytes`], for a caller that knows a wasm's hash but
 /// not which release it is — reading `code_hash` off a registry, say. Returns
 /// [`FetchError::UncataloguedDigest`] when nothing matches, which is a routine outcome: it means
-/// the bytes were never released and must come from wherever the caller found the hash.
+/// the bytes were never released and must come from wherever the caller found the hash. A
+/// Soroban release's digest is absent by construction: a registry holds only NEAR code, which is
+/// the only thing that ever asks this way.
 pub async fn released_bytes_by_sha256(sha256: &[u8; 32]) -> Result<Vec<u8>, FetchError> {
     let Some((artifact, release)) = crate::release_by_sha256(sha256) else {
         return Err(FetchError::UncataloguedDigest {
@@ -218,12 +239,27 @@ pub async fn released_bytes_by_sha256(sha256: &[u8; 32]) -> Result<Vec<u8>, Fetc
 ///
 /// Verified against the catalog's SHA-256 pin before being cached or returned.
 pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u8>, FetchError> {
-    let metadata = artifact.metadata();
-    let Some(release) = metadata.release(version) else {
+    released(ReleaseArtifact::Near(artifact), version).await
+}
+
+/// The same, for a contract of the Soroban proxy-oracle stack.
+///
+/// The verification is identical because the record is: a Soroban release row
+/// carries the same tag, asset, digest and length, so the same refusal of
+/// unreviewed bytes applies.
+pub async fn released_soroban_bytes(
+    artifact: SorobanArtifactId,
+    version: &str,
+) -> Result<Vec<u8>, FetchError> {
+    released(ReleaseArtifact::Soroban(artifact), version).await
+}
+
+async fn released(artifact: ReleaseArtifact, version: &str) -> Result<Vec<u8>, FetchError> {
+    let Some(release) = artifact.releases().iter().find(|r| r.version == version) else {
         return Err(FetchError::UnknownRelease {
             artifact,
             version: version.to_owned(),
-            catalogued: metadata
+            catalogued: artifact
                 .releases()
                 .iter()
                 .map(|release| release.version)
@@ -240,7 +276,7 @@ pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u
         return Ok(bytes.to_vec());
     }
 
-    let path = cache_path(artifact, version)?;
+    let path = cache_path_for(artifact, version)?;
     // A cached file that no longer matches its pin is treated as a corrupt
     // cache entry, not as evidence of tampering: re-download and let the
     // verification below decide.
@@ -288,7 +324,7 @@ pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u
 }
 
 /// Keep verified bytes for the rest of the process, returning them unchanged.
-fn remember(key: (ArtifactId, &'static str), bytes: Vec<u8>) -> Vec<u8> {
+fn remember(key: (ReleaseArtifact, &'static str), bytes: Vec<u8>) -> Vec<u8> {
     if let Ok(mut memo) = memo().lock() {
         memo.insert(key, Arc::from(bytes.as_slice()));
     }
@@ -480,6 +516,27 @@ mod tests {
             .expect_err("mocks are never released");
         assert!(
             matches!(error, FetchError::UnknownRelease { .. }),
+            "{error}"
+        );
+    }
+
+    /// The two catalogs cannot serve each other. Nothing of the Soroban stack
+    /// has been recorded yet, so this version asks for bytes no row describes —
+    /// and the refusal names a Soroban artifact, which is what would change if
+    /// the lookup ever read the NEAR table or the two keys collided.
+    #[tokio::test]
+    async fn a_soroban_version_is_sought_only_in_the_soroban_catalog() {
+        let error = released_soroban_bytes(SorobanArtifactId::LazerSource, "9.9.9")
+            .await
+            .expect_err("no Soroban release is catalogued yet");
+        assert!(
+            matches!(
+                error,
+                FetchError::UnknownRelease {
+                    artifact: ReleaseArtifact::Soroban(SorobanArtifactId::LazerSource),
+                    ..
+                }
+            ),
             "{error}"
         );
     }

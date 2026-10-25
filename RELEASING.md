@@ -156,19 +156,25 @@ registry either.
 
 ## Contract WASM artifacts
 
-A **NEAR contract that `contract/artifacts` catalogues** gets its canonical WASM
-cut on request, for a version you intend to deploy. Soroban contracts are tagged
-and released like any Tier B crate but get no WASM asset: the catalog is
-NEAR-only, and `release-artifacts.yml` exits cleanly on a tag it does not
-recognise.
+A **contract that `contract/artifacts` catalogues** gets its canonical WASM cut
+on request, for a version you intend to deploy. Two kinds are catalogued, and
+each is built by the recipe its kind already uses: NEAR contracts in the pinned
+NEP-330 image, and the five contracts of the Soroban proxy-oracle stack —
+`soroban-proxy-oracle`, `soroban-proxy-governance`, `soroban-sep40-adapter`,
+`soroban-lazer-source`, `soroban-batcher` — by `just optimize-<slug>` from
+`contract/proxy-oracle/soroban/justfile`, which runs `stellar contract build
+--locked --profile release-soroban-checked --optimize` under the Rust channel
+that justfile pins and refuses a WASM embedding a host path. A tag naming
+anything else — a released library of either stack, say — is skipped, which is an
+expected state rather than an error.
 
 1. Merge your work as normal, then merge the Release PR. That tags the version
    and builds nothing.
 
 2. For each version you are shipping, run `just release-wasm <tag>`. That
    dispatches [`release-artifacts.yml`](.github/workflows/release-artifacts.yml),
-   which builds the contract in the pinned NEP-330 Docker image **at that tag's
-   commit**, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
+   which builds the contract **at that tag's commit** with the recipe for its
+   kind, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
    GitHub Release, and hands over one catalog row — the version, the tag, the
    asset, and the digest and byte length of the bytes it just built, each
    recorded as observed.
@@ -220,6 +226,15 @@ buildable, just not through the recipe — check the tag out and follow the rebu
 under [Why the build happens in CI, at the
 tag](#why-the-build-happens-in-ci-at-the-tag), then hand the digest and byte
 length to `record-release`.
+
+The same cutoff has a second, younger instance: the Soroban proxy-oracle stack is
+catalogued only from [#688](https://github.com/Templar-Protocol/contracts/pull/688),
+so a Soroban tag cut before it merged names nothing the resolver knows and cannot be built by
+the recipe — `just release-wasm` refuses it. Those tags are buildable the same
+way: check the tag out, run its `just optimize-<slug>`, and note the digest and
+byte length. Record them from a checkout that *contains* #688 — the tag's own
+`record-release` predates the `soroban-`-prefixed keys and would reject the
+artifact argument — with the exact tag, asset, digest and length.
 
 Note what still does *not* happen: nothing asks a developer to declare a release
 up front. A `Cargo.toml` bump cannot assert one, because bumps and releases

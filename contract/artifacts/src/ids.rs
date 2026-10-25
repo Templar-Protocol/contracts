@@ -245,23 +245,198 @@ pub fn release_by_sha256(sha256: &[u8; 32]) -> Option<(ArtifactId, &'static Arti
     })
 }
 
+/// Whether `tag` is a release-plz tag of `package`: the name, then a
+/// separator rather than more of a longer name.
+fn tag_names_package(tag: &str, package: &str) -> bool {
+    tag.strip_prefix(package)
+        .is_some_and(|rest| rest.starts_with(|c: char| !c.is_ascii_alphanumeric()))
+}
+
+/// The candidate whose package `tag` names, the longest package name winning so
+/// a name that prefixes another cannot claim its tags. One matcher for both
+/// catalogs, so their tie-breaking cannot diverge.
+fn longest_package_match<T>(
+    tag: &str,
+    candidates: impl IntoIterator<Item = T>,
+    package_name: impl Fn(&T) -> &'static str,
+) -> Option<T> {
+    candidates
+        .into_iter()
+        .filter(|candidate| tag_names_package(tag, package_name(candidate)))
+        .max_by_key(|candidate| package_name(candidate).len())
+}
+
 /// Which catalogued artifact a release tag belongs to.
 ///
 /// Only asked of a tag release-plz just created; an existing release's tag is
 /// recorded in `releases/`, never reconstructed. So a lenient prefix match
 /// suffices — it must identify the package, not round-trip.
 ///
-/// `None` means "not a NEAR artifact" (a Soroban tag), not "failed".
+/// `None` means "not a NEAR artifact" (a Soroban tag), not "failed". For a
+/// Soroban tag see [`ReleaseArtifact::from_release_tag`].
 pub fn artifact_from_release_tag(tag: &str) -> Option<ArtifactId> {
-    ArtifactId::ALL
-        .into_iter()
-        .filter(|artifact| {
-            tag.strip_prefix(artifact.metadata().package_name)
-                .is_some_and(|rest| rest.starts_with(|c: char| !c.is_ascii_alphanumeric()))
-        })
-        // Longest package name wins, so a name that prefixes another cannot
-        // claim its tags.
-        .max_by_key(|artifact| artifact.metadata().package_name.len())
+    longest_package_match(tag, ArtifactId::ALL, |artifact| {
+        artifact.metadata().package_name
+    })
+}
+
+/// A contract of the Soroban proxy-oracle stack that is released as a WASM.
+///
+/// Not an [`ArtifactId`]: that enum is the gateway's wire type and what every
+/// NEAR consumer (`workspace-loader`, `prebuild-test-contracts`, the gateway's
+/// artifact listing) iterates, none of which can build or deploy these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SorobanArtifactId {
+    ProxyOracle,
+    ProxyGovernance,
+    Sep40Adapter,
+    LazerSource,
+    Batcher,
+}
+
+impl SorobanArtifactId {
+    pub const ALL: [Self; 5] = [
+        Self::ProxyOracle,
+        Self::ProxyGovernance,
+        Self::Sep40Adapter,
+        Self::LazerSource,
+        Self::Batcher,
+    ];
+
+    /// The catalog key: the first column of a `releases/` row and the prefix of
+    /// its file name. `soroban-`-prefixed so it cannot meet a NEAR key.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ProxyOracle => "soroban-proxy-oracle",
+            Self::ProxyGovernance => "soroban-proxy-governance",
+            Self::Sep40Adapter => "soroban-sep40-adapter",
+            Self::LazerSource => "soroban-lazer-source",
+            Self::Batcher => "soroban-batcher",
+        }
+    }
+
+    pub fn metadata(self) -> &'static SorobanArtifactMetadata {
+        match self {
+            Self::ProxyOracle => &SOROBAN_PROXY_ORACLE_METADATA,
+            Self::ProxyGovernance => &SOROBAN_PROXY_GOVERNANCE_METADATA,
+            Self::Sep40Adapter => &SOROBAN_SEP40_ADAPTER_METADATA,
+            Self::LazerSource => &SOROBAN_LAZER_SOURCE_METADATA,
+            Self::Batcher => &SOROBAN_BATCHER_METADATA,
+        }
+    }
+
+    fn from_release_tag(tag: &str) -> Option<Self> {
+        longest_package_match(tag, Self::ALL, |artifact| artifact.metadata().package_name)
+    }
+}
+
+impl fmt::Display for SorobanArtifactId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SorobanArtifactId {
+    type Err = ArtifactParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let key = s.to_ascii_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|id| id.as_str() == key || id.metadata().package_name == s)
+            .ok_or_else(|| ArtifactParseError::Unknown(s.to_owned()))
+    }
+}
+
+/// Canonical metadata for one Soroban proxy-oracle contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SorobanArtifactMetadata {
+    pub id: SorobanArtifactId,
+    /// Cargo package name as declared in the package's `Cargo.toml`.
+    pub package_name: &'static str,
+    /// The package name with dashes replaced by underscores: the stem of the
+    /// WASM `stellar contract build` emits, and of the release asset.
+    pub cargo_target_name: &'static str,
+    /// Source path relative to the workspace root.
+    pub source_path: &'static str,
+}
+
+impl SorobanArtifactMetadata {
+    /// Every released version, **oldest first**, from `releases/`.
+    pub fn releases(&self) -> &'static [ArtifactRelease] {
+        soroban_releases_for(self.id)
+    }
+}
+
+/// An artifact a release can be cut for, whichever toolchain builds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReleaseArtifact {
+    Near(ArtifactId),
+    Soroban(SorobanArtifactId),
+}
+
+impl ReleaseArtifact {
+    /// Which catalogued artifact a release-plz tag belongs to, NEAR or Soroban.
+    pub fn from_release_tag(tag: &str) -> Option<Self> {
+        artifact_from_release_tag(tag)
+            .map(Self::Near)
+            .or_else(|| SorobanArtifactId::from_release_tag(tag).map(Self::Soroban))
+    }
+
+    pub fn package_name(self) -> &'static str {
+        match self {
+            Self::Near(id) => id.metadata().package_name,
+            Self::Soroban(id) => id.metadata().package_name,
+        }
+    }
+
+    pub fn cargo_target_name(self) -> &'static str {
+        match self {
+            Self::Near(id) => id.metadata().cargo_target_name,
+            Self::Soroban(id) => id.metadata().cargo_target_name,
+        }
+    }
+
+    pub fn source_path(self) -> &'static str {
+        match self {
+            Self::Near(id) => id.metadata().source_path,
+            Self::Soroban(id) => id.metadata().source_path,
+        }
+    }
+
+    pub fn releases(self) -> &'static [ArtifactRelease] {
+        match self {
+            Self::Near(id) => id.metadata().releases(),
+            Self::Soroban(id) => id.metadata().releases(),
+        }
+    }
+
+    /// The one place a new release's asset gets its name; existing releases
+    /// have theirs recorded in `releases/`.
+    pub fn asset_name(self, version: impl fmt::Display) -> String {
+        format!("{}-{version}.wasm", self.cargo_target_name())
+    }
+}
+
+impl fmt::Display for ReleaseArtifact {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Near(id) => id.fmt(formatter),
+            Self::Soroban(id) => id.fmt(formatter),
+        }
+    }
+}
+
+/// A catalog key as `record-release` and a `releases/` row spell it. NEAR
+/// first, so no existing spelling can change meaning.
+impl FromStr for ReleaseArtifact {
+    type Err = ArtifactParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse()
+            .map(Self::Near)
+            .or_else(|_| s.parse().map(Self::Soroban))
+    }
 }
 
 /// Return the full catalog of every known contract artifact.
@@ -372,3 +547,34 @@ static MOCK_RECEIVER_METADATA: ArtifactMetadata = entry!(
 static MOCK_SIGNER_METADATA: ArtifactMetadata =
     entry!(MockSigner, "mock-signer", "mock_signer", "mock/signer");
 static MOCK_DAO_METADATA: ArtifactMetadata = entry!(MockDao, "mock-dao", "mock_dao", "mock/dao");
+
+static SOROBAN_PROXY_ORACLE_METADATA: SorobanArtifactMetadata = SorobanArtifactMetadata {
+    id: SorobanArtifactId::ProxyOracle,
+    package_name: "templar-proxy-oracle-soroban-contract",
+    cargo_target_name: "templar_proxy_oracle_soroban_contract",
+    source_path: "contract/proxy-oracle/soroban/contract",
+};
+static SOROBAN_PROXY_GOVERNANCE_METADATA: SorobanArtifactMetadata = SorobanArtifactMetadata {
+    id: SorobanArtifactId::ProxyGovernance,
+    package_name: "templar-proxy-oracle-soroban-governance-contract",
+    cargo_target_name: "templar_proxy_oracle_soroban_governance_contract",
+    source_path: "contract/proxy-oracle/soroban/governance-contract",
+};
+static SOROBAN_SEP40_ADAPTER_METADATA: SorobanArtifactMetadata = SorobanArtifactMetadata {
+    id: SorobanArtifactId::Sep40Adapter,
+    package_name: "templar-proxy-oracle-soroban-sep40-adapter-contract",
+    cargo_target_name: "templar_proxy_oracle_soroban_sep40_adapter_contract",
+    source_path: "contract/proxy-oracle/soroban/sep40-adapter-contract",
+};
+static SOROBAN_LAZER_SOURCE_METADATA: SorobanArtifactMetadata = SorobanArtifactMetadata {
+    id: SorobanArtifactId::LazerSource,
+    package_name: "templar-proxy-oracle-soroban-pyth-lazer-source-contract",
+    cargo_target_name: "templar_proxy_oracle_soroban_pyth_lazer_source_contract",
+    source_path: "contract/proxy-oracle/soroban/pyth-lazer-source-contract",
+};
+static SOROBAN_BATCHER_METADATA: SorobanArtifactMetadata = SorobanArtifactMetadata {
+    id: SorobanArtifactId::Batcher,
+    package_name: "templar-proxy-oracle-soroban-batcher-contract",
+    cargo_target_name: "templar_proxy_oracle_soroban_batcher_contract",
+    source_path: "contract/proxy-oracle/soroban/batcher-contract",
+};

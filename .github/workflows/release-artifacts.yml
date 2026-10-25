@@ -1,9 +1,11 @@
 name: Release Artifacts
 
 # Cuts a contract's canonical WASM — the only way a release blob is produced.
-# Invoked per version being shipped, via `just release-wasm <tag>`: build in the
-# pinned NEP-330 image at that tag's commit, upload it to the GitHub Release, and
-# hand the catalog row — tag, asset, digest, length — to `catalog-pr.yml`.
+# Invoked per version being shipped, via `just release-wasm <tag>`: build it at
+# that tag's commit with the recipe its kind uses — the pinned NEP-330 image for
+# NEAR, the proxy-oracle Soroban recipe for the Soroban stack — upload it to the
+# GitHub Release, and hand the catalog row — tag, asset, digest, length — to
+# `catalog-pr.yml`.
 # Why the build happens at the tag, why it is not fired by the tag, and why the
 # record lands a commit later are in "Contract WASM artifacts" in RELEASING.md.
 
@@ -61,8 +63,9 @@ jobs:
           REF_NAME: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          # Exit 2 = not a catalogued NEAR artifact (a Soroban tag, say);
-          # 1 = a genuine failure. A skip must not look like a broken lookup.
+          # Exit 2 = not a catalogued artifact at all — a released library of the
+          # Soroban stack, say; 1 = a genuine failure. A skip must not look like
+          # a broken lookup.
           #
           # clap also exits 2 on a usage error, and this file is read from the
           # default branch while the checkout is the tag — so a tag whose
@@ -88,23 +91,76 @@ jobs:
             echo "build=true"
           } >> "$GITHUB_OUTPUT"
 
+      # Only the NEAR recipe needs cargo-near; the Soroban stack is built by
+      # `stellar contract build`, which the proxy-oracle justfile drives.
       - name: Install cargo-near
-        if: steps.catalog.outputs.build == 'true'
+        if: steps.catalog.outputs.build == 'true' && steps.catalog.outputs.kind != 'soroban'
         uses: ./.github/actions/cargo-near
 
-      - name: Build reproducibly at the tag
+      - name: Install just
+        if: steps.catalog.outputs.build == 'true' && steps.catalog.outputs.kind == 'soroban'
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
+        with:
+          tool: just
+
+      - name: Install the pinned Soroban Rust toolchain
+        if: steps.catalog.outputs.build == 'true' && steps.catalog.outputs.kind == 'soroban'
+        run: |
+          set -euo pipefail
+          # Read from the justfile rather than copied here: the release recipe
+          # and the toolchain it builds with must not be able to drift apart.
+          toolchain=$(just -f contract/proxy-oracle/soroban/justfile --evaluate |
+            sed -n 's/^soroban_rust_toolchain := "\(.*\)"$/\1/p')
+          if [ -z "$toolchain" ]; then
+            echo "::error::the proxy-oracle justfile names no soroban_rust_toolchain." >&2
+            exit 1
+          fi
+          rustup toolchain install "$toolchain" --profile minimal \
+            --target wasm32-unknown-unknown --target wasm32v1-none
+
+      # The same version the Soroban job of test.yml installs, inside the range
+      # `scripts/release_artifacts.py` accepts. SHA-pinned like every other
+      # action here.
+      - name: Install stellar CLI
+        if: steps.catalog.outputs.build == 'true' && steps.catalog.outputs.kind == 'soroban'
+        uses: stellar/stellar-cli@60f7458e7ecffddf2f2d91dc6d0d2db4fab03ecc
+        with:
+          version: 26.0.0
+
+      # One step for both kinds, so publishing and recording below are the same
+      # two steps whatever was built: they cite this step's outputs, and a
+      # record's digest must be the one this job produced.
+      - name: Build the release WASM at the tag
         id: build
         if: steps.catalog.outputs.build == 'true'
         env:
+          KIND: ${{ steps.catalog.outputs.kind }}
+          PACKAGE: ${{ steps.catalog.outputs.package }}
           SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
           TARGET: ${{ steps.catalog.outputs.target }}
           VERSION: ${{ steps.catalog.outputs.version }}
           ASSET: ${{ steps.catalog.outputs.asset }}
         run: |
           set -euo pipefail
-          cargo near build reproducible-wasm --manifest-path "${SOURCE_PATH}/Cargo.toml"
+          if [ "${KIND:-}" = soroban ]; then
+            # The recipe its own release gate runs: `stellar contract build
+            # --locked --profile release-soroban-checked --optimize` under the
+            # pinned channel, refusing a WASM that embeds a host path. The slug
+            # is that tooling's own key for the package — asked of it, so this
+            # file holds no second list of these contracts to drift.
+            slug=$(python3 contract/proxy-oracle/soroban/scripts/release_artifacts.py |
+              awk -F'\t' -v package="$PACKAGE" '$2 == package { print $1 }')
+            if [ -z "$slug" ]; then
+              echo "::error::${PACKAGE} is not in the proxy-oracle Soroban release catalog." >&2
+              exit 1
+            fi
+            just -f contract/proxy-oracle/soroban/justfile "optimize-${slug//_/-}"
+            built="target/proxy-oracle-soroban/wasm/${TARGET}.optimized.wasm"
+          else
+            cargo near build reproducible-wasm --manifest-path "${SOURCE_PATH}/Cargo.toml"
+            built="target/near/${TARGET}/${TARGET}.wasm"
+          fi
 
-          built="target/near/${TARGET}/${TARGET}.wasm"
           mkdir -p dist
           cp "$built" "dist/${ASSET}"
           (cd dist && sha256sum ./*.wasm > checksums.txt)

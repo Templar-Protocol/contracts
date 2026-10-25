@@ -8,11 +8,15 @@ use std::{collections::BTreeMap, fmt::Write as _, path::Path};
 
 const SOURCE: &str = "releases";
 const COLUMNS: usize = 6;
+/// Rows for the Soroban proxy-oracle stack. Their keys are `soroban-`-prefixed
+/// precisely so this one test separates them from the NEAR catalog.
+const SOROBAN_PREFIX: &str = "soroban-";
 
 fn main() {
     println!("cargo:rerun-if-changed={SOURCE}");
 
     let mut by_artifact: BTreeMap<String, Vec<Release>> = BTreeMap::new();
+    let mut by_soroban_artifact: BTreeMap<String, Vec<Release>> = BTreeMap::new();
 
     let dir = std::fs::read_dir(SOURCE).unwrap_or_else(|e| panic!("{SOURCE}: {e}"));
     for entry in dir {
@@ -34,23 +38,75 @@ fn main() {
             path.display(),
         );
         let release = parse(&path);
-        by_artifact
-            .entry(pascal_case(&release.artifact))
-            .or_default()
-            .push(release);
+        // An unknown key in either table pascal-cases onto a variant that does
+        // not exist, so the generated match fails to compile and names the row
+        // that caused it — the same protection for both catalogs.
+        let (table, variant) = match release.artifact.strip_prefix(SOROBAN_PREFIX) {
+            None => (&mut by_artifact, pascal_case(&release.artifact)),
+            Some(key) => (&mut by_soroban_artifact, pascal_case(key)),
+        };
+        table.entry(variant).or_default().push(release);
     }
 
-    let mut generated = String::from(
-        "// @generated from releases/ by build.rs — do not edit.\n\
-         pub(crate) fn releases_for(id: ArtifactId) -> &'static [ArtifactRelease] {\n\
-         \x20   match id {\n",
+    let mut generated = String::from("// @generated from releases/ by build.rs — do not edit.\n");
+    write_lookup(
+        &mut generated,
+        "releases_for",
+        "ArtifactId",
+        &mut by_artifact,
     );
-    for (variant, releases) in &mut by_artifact {
+    write_lookup(
+        &mut generated,
+        "soroban_releases_for",
+        "SorobanArtifactId",
+        &mut by_soroban_artifact,
+    );
+
+    let Some(out_dir) = std::env::var_os("OUT_DIR") else {
+        panic!("OUT_DIR is unset; cargo always provides it to a build script")
+    };
+    let out = Path::new(&out_dir).join("releases.rs");
+    std::fs::write(&out, generated).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+}
+
+/// One catalog's release lookup. An artifact absent from the directory has
+/// never been released, and a catalog with no rows at all is the same answer
+/// for every id — written as one, so the generated code stays what clippy asks
+/// for rather than a match on a wildcard.
+fn write_lookup(
+    generated: &mut String,
+    function: &str,
+    enum_name: &str,
+    table: &mut BTreeMap<String, Vec<Release>>,
+) {
+    if table.is_empty() {
+        writeln!(
+            generated,
+            "pub(crate) fn {function}(_: {enum_name}) -> &'static [ArtifactRelease] {{\n\
+             \x20   &[]\n\
+             }}\n",
+        )
+        .expect("writing to a String");
+        return;
+    }
+
+    // The wildcard covers ids with no row — for NEAR that is every mock, and
+    // for Soroban it is any contract not yet released. Once the catalog holds
+    // a row for every variant rustc calls it unreachable, and a build script's
+    // output is linted as part of the crate: allow it here, or the catalog PR
+    // that records the last release is the run that finds out.
+    write!(
+        generated,
+        "#[allow(unreachable_patterns)]\npub(crate) fn {function}(id: {enum_name}) -> \
+         &'static [ArtifactRelease] {{\n\x20   match id {{\n",
+    )
+    .expect("writing to a String");
+    for (variant, releases) in table {
         // `read_dir` order is unspecified and `current()` is the last entry, so
         // the ordering has to be imposed rather than inherited.
         releases.sort_by_key(|release| version_key(&release.version));
 
-        write!(generated, "        ArtifactId::{variant} => &[").expect("writing to a String");
+        write!(generated, "        {enum_name}::{variant} => &[").expect("writing to a String");
         for release in releases {
             write!(
                 generated,
@@ -66,14 +122,7 @@ fn main() {
         }
         generated.push_str("],\n");
     }
-    // Artifacts absent from the directory have never been released.
     generated.push_str("        _ => &[],\n    }\n}\n");
-
-    let Some(out_dir) = std::env::var_os("OUT_DIR") else {
-        panic!("OUT_DIR is unset; cargo always provides it to a build script")
-    };
-    let out = Path::new(&out_dir).join("releases.rs");
-    std::fs::write(&out, generated).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
 }
 
 struct Release {

@@ -7,10 +7,15 @@ Templar Protocol smart contracts.
 
 - **Artifact IDs** — a single source of truth for every deployable contract in
   the workspace (production contracts and mock/test contracts) via
-  `ArtifactId::ALL`.
-- **Metadata** — Cargo package name, `target/near` directory name, and
+  `ArtifactId::ALL`, and separately for the contracts of the Soroban
+  proxy-oracle stack via `SorobanArtifactId::ALL`. Two types, not one list:
+  every NEAR consumer — `workspace-loader`, the prebuild helper, the gateway's
+  artifact listing — iterates the first and can build or deploy none of the
+  second, and their catalog keys (`soroban-*`) cannot meet a NEAR one.
+- **Metadata** — Cargo package name, build-output name (`target/near` directory
+  for NEAR, the WASM stem `stellar contract build` emits for Soroban), and
   workspace-relative source path for each artifact through infallible
-  `ArtifactId::metadata()` lookup.
+  `ArtifactId::metadata()` / `SorobanArtifactId::metadata()` lookup.
 - **Version-key helpers** — format and hash helpers matching the
   `{package}@{version}#{sha256_hex}` convention from `templar-tools-common`.
 - **Byte-loading** — two mutually independent features for obtaining
@@ -72,10 +77,14 @@ accounts running them, which is why their releases name the source account.
 
 ```rust
 // Requires: features = ["fetch"]
-use templar_contract_artifacts::{fetch, ArtifactId};
+use templar_contract_artifacts::{fetch, ArtifactId, SorobanArtifactId};
 
 // A specific historical release, for upgrade tests.
 let old = fetch::released_bytes(ArtifactId::UniversalAccount, "0.2.0").await?;
+
+// A release of the Soroban proxy-oracle stack, verified against the same kind
+// of pin — once CI has recorded one, `record-release` refuses to rewrite it.
+let lazer = fetch::released_soroban_bytes(SorobanArtifactId::LazerSource, "0.1.0").await?;
 ```
 
 ### The cache
@@ -84,8 +93,11 @@ Bytes are cached outside the repository so every worktree shares one copy:
 
 ```text
 ${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}}/templar-contract-artifacts
-  └── near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
+  ├── near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
+  └── soroban/<cargo_target_name>/<version>/<cargo_target_name>.wasm
 ```
+
+Two trees, because the two stacks share neither toolchain nor bytes.
 
 | Command | Does |
 |---|---|
@@ -148,16 +160,20 @@ just release-wasm-status templar-market-contract-v1.5.0
 ```
 
 That dispatches `.github/workflows/release-artifacts.yml`, which builds the WASM
-reproducibly at the tag and uploads it; `catalog-pr.yml` then adds one file under
+at the tag with the recipe for its kind — the pinned NEP-330 image for a NEAR
+contract, `just optimize-<slug>` from `contract/proxy-oracle/soroban/justfile`
+for a Soroban one — and uploads it; `catalog-pr.yml` then adds one file under
 `releases/` for every artifact awaiting a record, on one shared PR. Until that PR
 merges, `fetch` will not serve the version — an unrecorded release has no
 reviewed hash to check downloaded bytes against.
 
 A release tag with no WASM is an expected state, not a gap: most versions are
-bumped by a dependency release and never deployed. Any of them can be built later
-from its tag for identical bytes — though `just release-wasm` itself only reaches
-tags cut after `--resolve` landed (#528); older ones must be built from a checkout
-of the tag and recorded with `record-release`.
+bumped by a dependency release and never deployed, and neither stack's libraries
+have a WASM to cut. Any of them can be built later from its tag for identical
+bytes — though `just release-wasm` itself only reaches tags cut after `--resolve`
+landed (#528), and refuses Soroban tags cut before this stack was catalogued.
+Build those from a checkout of the tag, and record them with `record-release`
+from a checkout that has the `soroban-` keys, which the tag's own copy lacks.
 
 Why the build happens at the tag, why the tag does not trigger it, and why the
 catalog row necessarily lands one commit later are explained in
@@ -183,6 +199,8 @@ Seconds, no contract builds:
 | `mocks_are_never_released` | a mock that acquired a release |
 | `internal_crates_are_excluded_from_releases` | a crate whose manifest forbids publishing that release-plz would still tag |
 | `no_tier_can_reach_a_registry` | `release-plz.toml` losing the one setting that defers crates.io |
+| `soroban_rows_name_the_asset_their_package_builds` | a Soroban row whose tag or asset drifted from what its release recipe publishes |
+| `the_two_catalogs_cannot_share_a_key` | a catalog key that would be read into the other stack's release list |
 
 Each file's own shape — column count, canonical artifact, version and length
 spelling, URL-safe tag and asset, digest, and agreement with its filename — is
@@ -247,5 +265,6 @@ artifact: templar_contract_artifacts::ArtifactId,
 
 ## Artifact list
 
-See `ArtifactId::ALL` in `src/ids.rs` — the catalog is the single source of
-truth, and a table here would have no drift check behind it.
+See `ArtifactId::ALL` and `SorobanArtifactId::ALL` in `src/ids.rs` — the
+catalog is the single source of truth, and a table here would have no drift
+check behind it.

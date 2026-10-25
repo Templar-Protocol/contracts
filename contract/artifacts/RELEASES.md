@@ -10,9 +10,12 @@ artifact  version  tag  asset  sha256  length
 Appended to by CI when a release tag is cut — never edited by hand. `tag` and
 `asset` are recorded as observed rather than derived, and `length` is the
 asset's size in bytes, which is what lets a deposit be sized without
-downloading it; see `ArtifactRelease` in `src/ids.rs`. Everything here was
-recovered from code actually deployed on NEAR mainnet, each tag pointing at the
-commit its WASM names in NEP-330 metadata.
+downloading it; see `ArtifactRelease` in `src/ids.rs`. Every row here so far is
+a NEAR contract's, recovered from code actually deployed on NEAR mainnet, each
+tag pointing at the commit its WASM names in NEP-330 metadata. Rows for the
+Soroban proxy-oracle stack carry the same columns and are checked the same way;
+their keys are `soroban-`-prefixed, which is how `build.rs` keeps the two
+catalogs apart.
 
 `build.rs` reads this directory, validates every row, and compiles the
 catalog. Filenames are for uniqueness and browsing only: each file is

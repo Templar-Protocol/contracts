@@ -10,17 +10,23 @@
 //! cargo run -p templar-contract-artifacts --features clap --bin record-release -- \
 //!   proxy-oracle 0.3.0 templar-proxy-oracle-near-contract-v0.3.0 \
 //!   templar_proxy_oracle_near_contract-0.3.0.wasm <sha256> <length>
+//!
+//! # Or a contract of the Soroban proxy-oracle stack, whose key is prefixed:
+//! cargo run -p templar-contract-artifacts --features clap --bin record-release -- \
+//!   soroban-lazer-source 0.1.0 templar-proxy-oracle-soroban-pyth-lazer-source-contract-v0.1.0 \
+//!   templar_proxy_oracle_soroban_pyth_lazer_source_contract-0.1.0.wasm <sha256> <length>
 //! ```
 
 use std::process::ExitCode;
 
 use clap::Parser;
-use templar_contract_artifacts::ArtifactId;
+use templar_contract_artifacts::ReleaseArtifact;
 
 #[derive(Debug, Parser)]
 struct Args {
-    /// Catalogued artifact the release belongs to.
-    artifact: ArtifactId,
+    /// Catalogued artifact the release belongs to: a NEAR key, or one of the
+    /// `soroban-`-prefixed keys of the proxy-oracle stack.
+    artifact: ReleaseArtifact,
 
     /// Version released, as the crate's Cargo.toml states it.
     version: String,
@@ -121,6 +127,7 @@ fn record(args: &Args) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use templar_contract_artifacts::ArtifactId;
 
     fn args(version: &str, tag: &str, asset: &str) -> Args {
         Args::try_parse_from([
@@ -141,6 +148,46 @@ mod tests {
             let error = record(&args(version, "t", "a.wasm"))
                 .expect_err("should be rejected before touching releases/");
             assert!(error.contains("escape the releases directory"), "{error}");
+        }
+    }
+
+    /// The one place a Soroban release enters the catalog is this CLI, so the
+    /// key is accepted here — and only a catalogued one is, since the row's
+    /// name is the lookup key `build.rs` later routes on.
+    #[test]
+    fn only_a_catalogued_artifact_of_either_kind_is_accepted() {
+        for (artifact, expected) in [
+            ("proxy-oracle", "proxy-oracle"),
+            ("soroban-lazer-source", "soroban-lazer-source"),
+            (
+                "templar-proxy-oracle-soroban-batcher-contract",
+                "soroban-batcher",
+            ),
+        ] {
+            let args = Args::try_parse_from([
+                "record-release",
+                artifact,
+                "0.1.0",
+                "t",
+                "a.wasm",
+                &"a".repeat(64),
+                "1",
+            ])
+            .unwrap_or_else(|error| panic!("{artifact} should be accepted: {error}"));
+            assert_eq!(args.artifact.to_string(), expected);
+        }
+
+        for artifact in ["soroban-lazer", "soroban-nonesuch", "proxy-oracle-near"] {
+            Args::try_parse_from([
+                "record-release",
+                artifact,
+                "0.1.0",
+                "t",
+                "a.wasm",
+                &"a".repeat(64),
+                "1",
+            ])
+            .expect_err("no such catalogued artifact");
         }
     }
 

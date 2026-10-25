@@ -7,7 +7,7 @@ use std::{
 
 use clap::Parser;
 
-use crate::{workspace_loader, ArtifactId, ArtifactMetadata};
+use crate::{workspace_loader, ArtifactId, ArtifactMetadata, ReleaseArtifact};
 
 mod scheduler;
 use scheduler::prebuild_all;
@@ -49,7 +49,12 @@ struct Args {
     /// `target`, `asset`) for a CI step to append to
     /// `$GITHUB_OUTPUT`.
     ///
-    /// Exit codes carry the outcome: `0` resolved, `2` not a catalogued NEAR
+    /// A tag naming a contract of the Soroban proxy-oracle stack is resolved
+    /// like a NEAR one, and additionally carries `kind=soroban`: the lines for
+    /// a NEAR tag are exactly what they have always been, so a caller written
+    /// against the NEAR recipe reads an absent `kind` as "the NEAR recipe".
+    ///
+    /// Exit codes carry the outcome: `0` resolved, `2` not a catalogued
     /// artifact, `1` failure — so a failed lookup cannot masquerade as an
     /// intentional skip and green a release with no WASM.
     #[arg(long, value_name = "TAG", conflicts_with_all = ["check", "artifacts"])]
@@ -68,22 +73,22 @@ pub fn main() -> ExitCode {
     let args = Args::parse();
 
     if let Some(tag) = &args.resolve {
-        let Some(artifact) = crate::artifact_from_release_tag(tag) else {
+        let Some(artifact) = ReleaseArtifact::from_release_tag(tag) else {
             println!("{SKIP_SENTINEL}");
-            eprintln!("{tag} names no catalogued NEAR artifact");
+            eprintln!("{tag} names no catalogued WASM artifact");
             return ExitCode::from(EXIT_NOT_CATALOGUED);
         };
-        let metadata = artifact.metadata();
 
         // Observed, not guessed: release-plz set this crate's Cargo.toml
-        // version immediately before creating the tag.
+        // version immediately before creating the tag. Both catalogs describe
+        // packages of this workspace, so one metadata read answers either.
         let version = match workspace_loader::get_metadata(&args.workspace_root).map(|workspace| {
-            workspace_loader::find_package(&workspace, metadata.package_name)
+            workspace_loader::find_package(&workspace, artifact.package_name())
                 .map(|package| package.version.clone())
         }) {
             Ok(Some(version)) => version,
             Ok(None) => {
-                eprintln!("{} is not in the workspace", metadata.package_name);
+                eprintln!("{} is not in the workspace", artifact.package_name());
                 return ExitCode::FAILURE;
             }
             Err(error) => {
@@ -103,20 +108,14 @@ pub fn main() -> ExitCode {
                 "{} {version} is not `major.minor.patch`; the artifact catalog \
                  cannot record it, so this release would produce bytes no \
                  consumer could verify",
-                metadata.package_name,
+                artifact.package_name(),
             );
             return ExitCode::FAILURE;
         }
 
-        // The catalog key, and the name of the file `record-release` writes.
-        println!("artifact={artifact}");
-        println!("package={}", metadata.package_name);
-        println!("version={version}");
-        println!("source_path={}", metadata.source_path);
-        println!("target={}", metadata.cargo_target_name);
-        // The one place a new release's asset gets its name; existing releases
-        // have theirs recorded in `releases/`.
-        println!("asset={}-{version}.wasm", metadata.cargo_target_name);
+        for line in resolve_lines(artifact, &version.to_string()) {
+            println!("{line}");
+        }
         return ExitCode::SUCCESS;
     }
 
@@ -136,6 +135,27 @@ pub fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(()) => ExitCode::FAILURE,
     }
+}
+
+/// The `$GITHUB_OUTPUT` lines one resolved tag produces. Kept apart from `main`
+/// so the naming contract is a value a test can assert rather than a process's
+/// stdout: a NEAR tag's six lines, unchanged; a Soroban tag's, plus `kind`.
+fn resolve_lines(artifact: ReleaseArtifact, version: &str) -> Vec<String> {
+    let mut lines = vec![
+        // The catalog key, and the name of the file `record-release` writes.
+        format!("artifact={artifact}"),
+        format!("package={}", artifact.package_name()),
+        format!("version={version}"),
+        format!("source_path={}", artifact.source_path()),
+        format!("target={}", artifact.cargo_target_name()),
+        format!("asset={}", artifact.asset_name(version)),
+    ];
+    // Printed only where the NEAR recipe cannot build the tag, so that adding
+    // the Soroban stack cannot disturb what the existing NEAR path emits.
+    if matches!(artifact, ReleaseArtifact::Soroban(_)) {
+        lines.push("kind=soroban".to_owned());
+    }
+    lines
 }
 
 /// Report every selected artifact missing from `target/near`.
