@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.8.0...templar-manager-v0.8.1) - 2026-10-25
+
+### Added
+
+- *(manager)* add typed live fleet queries ([#681](https://github.com/Templar-Protocol/contracts/pull/681))
+
 ### Added
 
 - Query live markets, proxy oracles, and governance contracts with typed snake_case filters, nested results, non-USD defaults, relationship inclusion/mapping, explicit asset aliases, and opt-in fresh indicative USD principal values.

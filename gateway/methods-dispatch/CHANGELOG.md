@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-dispatch-v0.6.0...templar-gateway-methods-dispatch-v0.6.1) - 2026-10-25
+
+### Added
+
+- *(manager)* add typed live fleet queries ([#681](https://github.com/Templar-Protocol/contracts/pull/681))
+
 ### Added
 
 - Resolve `oracle.resolvePriceAllSources` through the canonical supplied-price resolver, rejecting missing, failed, nonpositive, or unconvertible proxy sources without changing ordinary resolver fallback.

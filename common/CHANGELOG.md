@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-common-v2.2.0...templar-common-v2.3.0) - 2026-10-25
+
+### Added
+
+- *(manager)* add typed live fleet queries ([#681](https://github.com/Templar-Protocol/contracts/pull/681))
+
+### Fixed
+
+- *(soroban)* reject deposits against stale external NAV (FIND-001) ([#665](https://github.com/Templar-Protocol/contracts/pull/665))
+
 ### Added
 
 - Expose the market's existing utilization calculation for consistent off-chain reporting.
