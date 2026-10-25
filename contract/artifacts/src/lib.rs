@@ -250,4 +250,34 @@ mod tests {
         assert!(parsed.get("releases").is_none());
         assert_eq!(meta.releases()[0].version, "1.0.0");
     }
+
+    /// A generated lookup always ends in a wildcard arm — for NEAR that is how
+    /// the mocks get an empty list — and once the catalog holds a row for every
+    /// variant rustc calls that arm unreachable, which `-D warnings` turns into
+    /// a build failure on the run that records the last release. The guard
+    /// reads what the build script actually emitted, because that is what ships
+    /// and what gets linted; a generated match without its allowance below has
+    /// a date with the catalog PR.
+    #[test]
+    fn a_generated_match_carries_its_wildcard_allowance() {
+        const ALLOW: &str = "#[allow(unreachable_patterns)]";
+        let generated = std::fs::read_to_string(concat!(env!("OUT_DIR"), "/releases.rs"))
+            .expect("build.rs writes the lookup beside this crate's sources");
+        let lines: Vec<&str> = generated.lines().collect();
+
+        let mut matches = 0;
+        for (index, line) in lines.iter().enumerate() {
+            if line.trim() != "match id {" {
+                continue;
+            }
+            matches += 1;
+            assert!(
+                index >= 2 && lines[index - 2] == ALLOW,
+                "generated lookup at line {} has a wildcard arm without {ALLOW}; \
+                 it stops compiling the day its last artifact is released",
+                index + 1
+            );
+        }
+        assert!(matches > 0, "no generated lookup to guard");
+    }
 }

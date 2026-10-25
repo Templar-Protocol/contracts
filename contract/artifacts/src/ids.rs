@@ -252,6 +252,20 @@ fn tag_names_package(tag: &str, package: &str) -> bool {
         .is_some_and(|rest| rest.starts_with(|c: char| !c.is_ascii_alphanumeric()))
 }
 
+/// The candidate whose package `tag` names, the longest package name winning so
+/// a name that prefixes another cannot claim its tags. One matcher for both
+/// catalogs, so their tie-breaking cannot diverge.
+fn longest_package_match<T>(
+    tag: &str,
+    candidates: impl IntoIterator<Item = T>,
+    package_name: impl Fn(&T) -> &'static str,
+) -> Option<T> {
+    candidates
+        .into_iter()
+        .filter(|candidate| tag_names_package(tag, package_name(candidate)))
+        .max_by_key(|candidate| package_name(candidate).len())
+}
+
 /// Which catalogued artifact a release tag belongs to.
 ///
 /// Only asked of a tag release-plz just created; an existing release's tag is
@@ -261,12 +275,9 @@ fn tag_names_package(tag: &str, package: &str) -> bool {
 /// `None` means "not a NEAR artifact" (a Soroban tag), not "failed". For a
 /// Soroban tag see [`ReleaseArtifact::from_release_tag`].
 pub fn artifact_from_release_tag(tag: &str) -> Option<ArtifactId> {
-    ArtifactId::ALL
-        .into_iter()
-        .filter(|artifact| tag_names_package(tag, artifact.metadata().package_name))
-        // Longest package name wins, so a name that prefixes another cannot
-        // claim its tags.
-        .max_by_key(|artifact| artifact.metadata().package_name.len())
+    longest_package_match(tag, ArtifactId::ALL, |artifact| {
+        artifact.metadata().package_name
+    })
 }
 
 /// A contract of the Soroban proxy-oracle stack that is released as a WASM.
@@ -315,13 +326,7 @@ impl SorobanArtifactId {
     }
 
     fn from_release_tag(tag: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .filter(|artifact| tag_names_package(tag, artifact.metadata().package_name))
-            // Longest package name wins, as for NEAR: no released Soroban
-            // package prefixes another today, and this is what keeps that from
-            // ever silently stealing a tag.
-            .max_by_key(|artifact| artifact.metadata().package_name.len())
+        longest_package_match(tag, Self::ALL, |artifact| artifact.metadata().package_name)
     }
 }
 

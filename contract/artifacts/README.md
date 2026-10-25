@@ -171,9 +171,9 @@ A release tag with no WASM is an expected state, not a gap: most versions are
 bumped by a dependency release and never deployed, and neither stack's libraries
 have a WASM to cut. Any of them can be built later from its tag for identical
 bytes — though `just release-wasm` itself only reaches tags cut after `--resolve`
-landed (#528), and Soroban tags only from the PR that catalogued this stack;
-older ones must be built from a checkout of the tag and recorded with
-`record-release`.
+landed (#528), and refuses Soroban tags cut before this stack was catalogued.
+Build those from a checkout of the tag, and record them with `record-release`
+from a checkout that has the `soroban-` keys, which the tag's own copy lacks.
 
 Why the build happens at the tag, why the tag does not trigger it, and why the
 catalog row necessarily lands one commit later are explained in

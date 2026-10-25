@@ -229,11 +229,12 @@ length to `record-release`.
 
 The same cutoff has a second, younger instance: the Soroban proxy-oracle stack is
 catalogued only from [#688](https://github.com/Templar-Protocol/contracts/pull/688),
-so a Soroban
-tag cut before it merged names nothing the resolver knows and cannot be built by
-the recipe. Those tags are buildable the same way — check the tag out, run its
-`just optimize-<slug>`, and hand the digest and byte length to `record-release`
-with the `soroban-`-prefixed key.
+so a Soroban tag cut before it merged names nothing the resolver knows and cannot be built by
+the recipe — `just release-wasm` refuses it. Those tags are buildable the same
+way: check the tag out, run its `just optimize-<slug>`, and note the digest and
+byte length. Record them from a checkout that *contains* #688 — the tag's own
+`record-release` predates the `soroban-`-prefixed keys and would reject the
+artifact argument — with the exact tag, asset, digest and length.
 
 Note what still does *not* happen: nothing asks a developer to declare a release
 up front. A `Cargo.toml` bump cannot assert one, because bumps and releases

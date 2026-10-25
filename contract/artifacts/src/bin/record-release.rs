@@ -20,7 +20,7 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use templar_contract_artifacts::{ArtifactId, ReleaseArtifact};
+use templar_contract_artifacts::ReleaseArtifact;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -127,6 +127,7 @@ fn record(args: &Args) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use templar_contract_artifacts::ArtifactId;
 
     fn args(version: &str, tag: &str, asset: &str) -> Args {
         Args::try_parse_from([

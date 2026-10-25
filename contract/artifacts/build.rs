@@ -90,10 +90,15 @@ fn write_lookup(
         return;
     }
 
+    // The wildcard covers ids with no row — for NEAR that is every mock, and
+    // for Soroban it is any contract not yet released. Once the catalog holds
+    // a row for every variant rustc calls it unreachable, and a build script's
+    // output is linted as part of the crate: allow it here, or the catalog PR
+    // that records the last release is the run that finds out.
     write!(
         generated,
-        "pub(crate) fn {function}(id: {enum_name}) -> &'static [ArtifactRelease] {{\n\
-         \x20   match id {{\n",
+        "#[allow(unreachable_patterns)]\npub(crate) fn {function}(id: {enum_name}) -> \
+         &'static [ArtifactRelease] {{\n\x20   match id {{\n",
     )
     .expect("writing to a String");
     for (variant, releases) in table {

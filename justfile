@@ -260,19 +260,38 @@ release-wasm +tags:
             continue
         fi
 
-        # Exit code only, and answered by the local worktree rather than the tag
-        # — so a package renamed since the tag reads as uncatalogued here even
-        # though CI, checking the tag out, would resolve it.
+        # Answered by the local worktree rather than the tag — so a package
+        # renamed since the tag reads as uncatalogued here even though CI,
+        # checking the tag out, would resolve it.
         status=0
-        err=$(cargo run --quiet -p templar-contract-artifacts \
+        resolved=$(cargo run --quiet -p templar-contract-artifacts \
             --features workspace-loader,clap --bin prebuild-test-contracts -- \
-            --resolve "$tag" 2>&1 >/dev/null) || status=$?
+            --resolve "$tag" 2>&1) || status=$?
         if [ "$status" -eq 2 ]; then
             echo "${tag}: names no catalogued WASM artifact" >&2
             exit 1
         elif [ "$status" -ne 0 ]; then
-            printf '%s\n' "$err" >&2
+            printf '%s\n' "$resolved" >&2
             exit "$status"
+        fi
+
+        # The other half of that asymmetry: the workflow resolves the tag from
+        # the tag's own checkout, where a Soroban tag cut before the catalog
+        # landed (#688) names nothing and skips green with no WASM built. Only
+        # this side knows the tag IS catalogued, so only this side can tell a
+        # pre-catalog tag from an uncatalogued one. Here is where it stops, and
+        # RELEASING.md already routes such tags to building at the tag.
+        if grep -Fxq kind=soroban <<<"$resolved"; then
+            # Captured, not piped into `grep -q`: under `pipefail` the early
+            # exit turns a present tag into a missing one.
+            tag_ids=$(git show "${tag}:contract/artifacts/src/ids.rs" 2>/dev/null || true)
+            if ! grep -qF SorobanArtifactId <<<"$tag_ids"; then
+                echo "${tag}: predates the Soroban catalog (#688); its own checkout" \
+                    "resolves no artifact for it." >&2
+                echo "${tag}: check the tag out, run its 'just optimize-<slug>', and" \
+                    "record it by hand — see 'Contract WASM artifacts' in RELEASING.md." >&2
+                exit 1
+            fi
         fi
         pending+=("$tag")
     done
