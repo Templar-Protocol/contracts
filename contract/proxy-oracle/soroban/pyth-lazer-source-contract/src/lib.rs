@@ -178,8 +178,16 @@ pub struct SourceUpgraded {
 /// The SEP-40 key a Lazer feed is served under: its id as a decimal symbol.
 /// Hand-rolled because `format!` would link `core::fmt` into a 32 KiB wasm budget.
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::expect_used)]
+#[allow(clippy::expect_used)]
 pub fn feed_asset(env: &Env, feed_id: u32) -> Asset {
+    let (digits, start) = decimal_digits(feed_id);
+    let text = core::str::from_utf8(&digits[start..]).expect("ascii digits");
+    Asset::Other(Symbol::new(env, text))
+}
+
+/// `feed_id` in canonical decimal, right-aligned: the digits are `buffer[start..]`.
+#[allow(clippy::cast_possible_truncation)]
+fn decimal_digits(feed_id: u32) -> ([u8; 10], usize) {
     let mut digits = [0_u8; 10];
     let mut start = digits.len();
     let mut rest = feed_id;
@@ -191,8 +199,56 @@ pub fn feed_asset(env: &Env, feed_id: u32) -> Asset {
             break;
         }
     }
-    let text = core::str::from_utf8(&digits[start..]).expect("ascii digits");
-    Asset::Other(Symbol::new(env, text))
+    (digits, start)
+}
+
+/// A verified feed reduced to the properties admission reads.
+#[derive(Clone, Copy)]
+struct FeedFields {
+    mantissa: Option<i64>,
+    exponent: Option<i16>,
+    publish_time_us: Option<u64>,
+}
+
+/// The price a registered feed stores, or `None` when it is skipped. It must
+/// carry a positive price, an exponent and an update time inside the
+/// inclusive window, publish strictly after the stored price, and be
+/// `servable` as [`served`] would hand it to `lastprice`: a scale that
+/// collapses to zero at our decimals would store and report success while
+/// `lastprice` returned nothing, so storing means servable.
+fn admit_feed(
+    feed: FeedFields,
+    (oldest_allowed_us, latest_allowed_us): (u64, u64),
+    stored_time_us: Option<u64>,
+    servable: impl FnOnce(&NormalizedPrice) -> bool,
+) -> Option<StoredPrice> {
+    let (Some(mantissa), Some(exponent), Some(publish_time_us)) =
+        (feed.mantissa, feed.exponent, feed.publish_time_us)
+    else {
+        return None;
+    };
+    if mantissa <= 0
+        || publish_time_us < oldest_allowed_us
+        || publish_time_us > latest_allowed_us
+        || stored_time_us.is_some_and(|current| publish_time_us <= current)
+    {
+        return None;
+    }
+    let candidate = StoredPrice {
+        mantissa,
+        expo: i32::from(exponent),
+        publish_time_us,
+    };
+    servable(&served(&candidate)).then_some(candidate)
+}
+
+/// The kernel-form price `lastprice` serves for a stored feed, at second precision.
+fn served(stored: &StoredPrice) -> NormalizedPrice {
+    NormalizedPrice {
+        mantissa: stored.mantissa,
+        expo: stored.expo,
+        timestamp: stored.publish_time_us / MICROS_PER_SEC,
+    }
 }
 
 #[contract]
@@ -254,47 +310,24 @@ impl PythLazerSource {
             if !supported.contains(feed.feed_id) {
                 continue;
             }
-            let (Some(mantissa), Some(exponent), Some(publish_time_us)) =
-                (feed.price, feed.exponent, feed.feed_update_timestamp)
-            else {
+            let stored_time_us = prices.get(feed.feed_id).map(|price| price.publish_time_us);
+            let Some(price) = admit_feed(
+                FeedFields {
+                    mantissa: feed.price,
+                    exponent: feed.exponent,
+                    publish_time_us: feed.feed_update_timestamp,
+                },
+                (oldest_allowed_us, latest_allowed_us),
+                stored_time_us,
+                |normalized| normalized_to_sep40(normalized, config.decimals).is_ok(),
+            ) else {
                 continue;
             };
-            let stored_time_us = prices.get(feed.feed_id).map(|price| price.publish_time_us);
-            if mantissa <= 0
-                || publish_time_us < oldest_allowed_us
-                || publish_time_us > latest_allowed_us
-                || stored_time_us.is_some_and(|current| publish_time_us <= current)
-            {
-                continue;
-            }
-            let expo = i32::from(exponent);
-            // A feed whose scale collapses to zero at our decimals would store
-            // and report success while `lastprice` returned nothing — so
-            // storing means servable.
-            if normalized_to_sep40(
-                &NormalizedPrice {
-                    mantissa,
-                    expo,
-                    timestamp: publish_time_us / MICROS_PER_SEC,
-                },
-                config.decimals,
-            )
-            .is_err()
-            {
-                continue;
-            }
-            prices.set(
-                feed.feed_id,
-                StoredPrice {
-                    mantissa,
-                    expo,
-                    publish_time_us,
-                },
-            );
             updated.feed_ids.push_back(feed.feed_id);
-            updated.mantissas.push_back(mantissa);
-            updated.expos.push_back(expo);
-            updated.publish_times_us.push_back(publish_time_us);
+            updated.mantissas.push_back(price.mantissa);
+            updated.expos.push_back(price.expo);
+            updated.publish_times_us.push_back(price.publish_time_us);
+            prices.set(feed.feed_id, price);
             stored += 1;
         }
         if stored != 0 {
@@ -478,12 +511,7 @@ impl PriceFeedTrait for PythLazerSource {
         extend_instance_ttl(&env);
         let feed_id = supported_feed_id_for_asset(&env, &asset)?;
         let stored = load_prices(&env).get(feed_id)?;
-        let normalized = NormalizedPrice {
-            mantissa: stored.mantissa,
-            expo: stored.expo,
-            timestamp: stored.publish_time_us / MICROS_PER_SEC,
-        };
-        normalized_to_sep40(&normalized, load_config(&env).decimals).ok()
+        normalized_to_sep40(&served(&stored), load_config(&env).decimals).ok()
     }
 }
 
@@ -519,17 +547,27 @@ fn freshness_bounds(
 }
 
 fn validate_supported_feed_ids(feed_ids: &Vec<u32>) -> Result<(), LazerSourceError> {
-    if feed_ids.is_empty() || feed_ids.len() > MAX_SUPPORTED_FEEDS {
-        return Err(LazerSourceError::InvalidInput);
+    if is_valid_feed_registry(feed_ids.len(), feed_ids.iter()) {
+        Ok(())
+    } else {
+        Err(LazerSourceError::InvalidInput)
+    }
+}
+
+/// A registry holds 1..=`MAX_SUPPORTED_FEEDS` ids in strictly increasing
+/// order, so its ids are unique and every set has one canonical list.
+fn is_valid_feed_registry(len: u32, feed_ids: impl IntoIterator<Item = u32>) -> bool {
+    if len == 0 || len > MAX_SUPPORTED_FEEDS {
+        return false;
     }
     let mut previous: Option<u32> = None;
-    for feed_id in feed_ids.iter() {
+    for feed_id in feed_ids {
         if previous.is_some_and(|last| last >= feed_id) {
-            return Err(LazerSourceError::InvalidInput);
+            return false;
         }
         previous = Some(feed_id);
     }
-    Ok(())
+    true
 }
 
 #[allow(clippy::expect_used)]
@@ -599,3 +637,9 @@ fn start_new_epoch(env: &Env, config: Config) -> Result<(), LazerSourceError> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod proptests;
+
+#[cfg(kani)]
+mod kani_proofs;
