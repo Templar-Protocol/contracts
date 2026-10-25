@@ -17,10 +17,10 @@ testutils = ["soroban-sdk/testutils"]
 [dependencies]
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 stellar-access = "0.7.1"
-templar-primitives = { path = "../../../../primitives", default-features = false }
+templar-primitives = { path = "../../../../primitives", version = "0.1.2", default-features = false }
 templar-proxy-oracle-governance-kernel.workspace = true
-templar-proxy-oracle-soroban-common = { path = "../common" }
-templar-proxy-oracle-soroban-governance-common = { path = "../governance-common" }
+templar-proxy-oracle-soroban-common.workspace = true
+templar-proxy-oracle-soroban-governance-common.workspace = true
 
 [dev-dependencies]
 soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }

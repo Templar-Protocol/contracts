@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
-templar-primitives = { path = "../../../../primitives", default-features = false }
+templar-primitives = { path = "../../../../primitives", version = "0.1.2", default-features = false }
 
 [dev-dependencies]
 rstest.workspace = true

@@ -19,9 +19,9 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 stellar-access = "0.7.1"
 stellar-macros = "0.7.1"
-templar-primitives = { path = "../../../../primitives", default-features = false, features = ["serde"] }
-templar-proxy-oracle-kernel = { path = "../../kernel", features = ["serde"] }
-templar-proxy-oracle-soroban-common = { path = "../common" }
+templar-primitives = { path = "../../../../primitives", version = "0.1.2", default-features = false, features = ["serde"] }
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
+templar-proxy-oracle-soroban-common.workspace = true
 
 [dev-dependencies]
 soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
