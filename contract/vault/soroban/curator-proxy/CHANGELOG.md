@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-curator-proxy-soroban-v1.1.0...templar-curator-proxy-soroban-v1.1.1) - 2026-10-25
+
+### Fixed
+
+- *(soroban)* bound Other approvals and proposal execution; honor per-kind timelock decrease (FIND-024, FIND-026, FIND-022) ([#667](https://github.com/Templar-Protocol/contracts/pull/667))
+- *(soroban)* reject deposits against stale external NAV (FIND-001) ([#665](https://github.com/Templar-Protocol/contracts/pull/665))
+
 ## [1.1.0](https://github.com/Templar-Protocol/contracts/compare/templar-curator-proxy-soroban-v1.0.0...templar-curator-proxy-soroban-v1.1.0) - 2026-08-03
 
 ### Added
