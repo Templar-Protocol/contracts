@@ -39,6 +39,7 @@ jobs:
     permissions:
       contents: write # create tags and GitHub Releases
       pull-requests: read # release-plz checks for an existing release PR
+      actions: write # dispatch release-artifacts.yml for released contracts
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -76,6 +77,61 @@ jobs:
           git tag --force release-baseline "$GITHUB_SHA"
           git push --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}" \
             refs/tags/release-baseline
+
+      # Cuts the canonical WASM for each contract this run released. The
+      # dispatch comes from here because tags release-plz pushes do not start
+      # `push: tags` workflows, and `release-artifacts.yml` is dispatch-only
+      # anyway (see "Contract WASM artifacts" in RELEASING.md).
+      #
+      # Ordered after the baseline step on purpose: a failed dispatch fails the
+      # job, and must not leave the baseline unadvanced for a release that has
+      # already been cut.
+      - uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
+        if: steps.release.outputs.releases_created == 'true'
+        with:
+          tool: just
+
+      - name: Dispatch the release WASM builds
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          RELEASES: ${{ steps.release.outputs.releases }}
+          # `actions: write` on this job's own token starts the run; the PAT is
+          # not needed, and is kept out of a step that only calls `gh`.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+
+            # release-plz made this tag through the API after the checkout, so
+            # `just release-wasm` cannot see it until it is fetched.
+            if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              git fetch --no-tags \
+                "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" \
+                "refs/tags/${tag}:refs/tags/${tag}"
+            fi
+
+            # The predicate `just release-wasm` and `release-artifacts.yml` both
+            # use. Exit 2 with the sentinel is a released library or service —
+            # skipped silently; anything else non-zero is a real failure, and
+            # clap's own exit 2 (a usage error) lacks the sentinel.
+            status=0
+            resolved=$(cargo run --quiet -p templar-contract-artifacts \
+              --features workspace-loader,clap --bin prebuild-test-contracts -- \
+              --resolve "$tag") || status=$?
+            if [ "$status" -eq 2 ] && [ "$resolved" = "skip=not-catalogued" ]; then
+              echo "${tag}: no catalogued WASM artifact; not dispatching."
+              continue
+            elif [ "$status" -ne 0 ]; then
+              echo "::error::${tag} cannot be resolved against the artifact catalog." >&2
+              exit "$status"
+            fi
+
+            # Dispatches against `dev`, and no-ops for a tag already recorded.
+            # A replay is also harmless in the workflow: it never `--clobber`s,
+            # so an asset already published with identical bytes is left alone.
+            just release-wasm "$tag"
+          done < <(jq -r '.[].tag' <<<"$RELEASES")
 
   release-plz-pr:
     name: Release PR
