@@ -26,7 +26,8 @@ mod workspace_loader;
 
 pub use ids::{
     artifact_catalog, artifact_from_release_tag, release_by_sha256, ArtifactId, ArtifactMetadata,
-    ArtifactParseError, ArtifactRelease,
+    ArtifactParseError, ArtifactRelease, ReleaseArtifact, SorobanArtifactId,
+    SorobanArtifactMetadata,
 };
 #[cfg(feature = "workspace-loader")]
 pub use workspace_loader::{

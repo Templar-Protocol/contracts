@@ -268,7 +268,7 @@ release-wasm +tags:
             --features workspace-loader,clap --bin prebuild-test-contracts -- \
             --resolve "$tag" 2>&1 >/dev/null) || status=$?
         if [ "$status" -eq 2 ]; then
-            echo "${tag}: names no catalogued NEAR WASM artifact" >&2
+            echo "${tag}: names no catalogued WASM artifact" >&2
             exit 1
         elif [ "$status" -ne 0 ]; then
             printf '%s\n' "$err" >&2

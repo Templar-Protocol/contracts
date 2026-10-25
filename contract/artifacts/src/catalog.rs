@@ -7,7 +7,7 @@
 //! question, answered by rebuilding at its tag in
 //! `.github/workflows/release-artifacts.yml`.
 
-use crate::ArtifactId;
+use crate::{ArtifactId, ArtifactRelease, ReleaseArtifact, SorobanArtifactId};
 
 /// The converse does not hold: a real contract with no releases simply has no
 /// version anyone has chosen to cut a WASM for yet.
@@ -31,26 +31,84 @@ fn mocks_are_never_released() {
 #[test]
 fn releases_ascend_by_version() {
     for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
-        let versions = artifact
-            .releases()
-            .iter()
-            .map(|release| {
-                // `build.rs` rejects any spelling this cannot parse.
-                semver::Version::parse(release.version).unwrap_or_else(|error| {
-                    panic!(
-                        "{}: release {} is not valid semver: {error}",
-                        artifact.package_name, release.version,
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
+        assert_ascending(artifact.package_name, artifact.releases());
+    }
+    for artifact in SorobanArtifactId::ALL.iter().map(|id| id.metadata()) {
+        assert_ascending(artifact.package_name, artifact.releases());
+    }
+}
 
+fn assert_ascending(package_name: &str, releases: &[ArtifactRelease]) {
+    let versions = releases
+        .iter()
+        .map(|release| {
+            // `build.rs` rejects any spelling this cannot parse.
+            semver::Version::parse(release.version).unwrap_or_else(|error| {
+                panic!(
+                    "{package_name}: release {} is not valid semver: {error}",
+                    release.version,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        versions.is_sorted_by(|a, b| a < b),
+        "{package_name}'s releases are not in strictly ascending version order: {:?}. \
+         `current()` would not be the newest release.",
+        versions.iter().map(ToString::to_string).collect::<Vec<_>>(),
+    );
+}
+
+/// A Soroban row must describe the asset its package's release build publishes.
+///
+/// `build.rs` checks every row's shape but has no access to the catalog, so it
+/// cannot know the package name; and `fetch` reads the tag and asset straight
+/// off the row, so a row whose naming drifted describes bytes nothing serves.
+/// The recipe that produces them is `contract/proxy-oracle/soroban/justfile`.
+#[test]
+fn soroban_rows_name_the_asset_their_package_builds() {
+    for id in SorobanArtifactId::ALL {
+        let metadata = id.metadata();
+        for release in metadata.releases() {
+            assert_eq!(
+                release.tag,
+                format!("{}-v{}", metadata.package_name, release.version),
+                "{} {} is tagged outside release-plz's `{{package}}-v{{version}}` form",
+                metadata.package_name,
+                release.version,
+            );
+            assert_eq!(
+                release.asset,
+                ReleaseArtifact::Soroban(id).asset_name(release.version),
+                "{} {} names an asset the release build does not publish",
+                metadata.package_name,
+                release.version,
+            );
+        }
+    }
+}
+
+/// The two catalogs cannot meet. `build.rs` routes rows on the `soroban-`
+/// prefix alone, so a NEAR key wearing it would compile into a
+/// `SorobanArtifactId` variant that does not exist, and a bare Soroban key
+/// would join a NEAR artifact's release list.
+#[test]
+fn the_two_catalogs_cannot_share_a_key() {
+    use std::str::FromStr;
+
+    for id in ArtifactId::ALL {
         assert!(
-            versions.is_sorted_by(|a, b| a < b),
-            "{}'s releases are not in strictly ascending version order: {:?}. \
-             `current()` would not be the newest release.",
-            artifact.package_name,
-            versions.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            !id.as_str().starts_with("soroban-"),
+            "{} would be read as a Soroban row",
+            id.as_str(),
+        );
+    }
+    for id in SorobanArtifactId::ALL {
+        assert!(
+            ArtifactId::from_str(id.as_str()).is_err(),
+            "{} would join a NEAR artifact's release list",
+            id.as_str(),
         );
     }
 }
