@@ -1440,13 +1440,20 @@ fn invalid_config_freshness_bounds_are_capped() {
 
 #[test]
 fn invalid_config_too_few_sources() {
-    for num_sources in 0..3 {
-        assert_set_proxy_rejected(
-            num_sources,
-            num_sources.max(1),
-            ContractError::TooFewSources,
-        );
-    }
+    assert_set_proxy_rejected(0, 1, ContractError::TooFewSources);
+}
+
+#[test]
+fn single_source_quorum_of_one_is_accepted_and_prices() {
+    let (env, proxy, source, asset) = setup();
+    let mut config = proxy.get_proxy(&asset).unwrap();
+    config.sources = Vec::from_array(&env, [config.sources.get(0).unwrap()]);
+    config.min_sources = 1;
+    proxy.set_proxy(&asset, &config);
+
+    source.set_price(&asset, &5_000_000_000_i128, &100_u64);
+    proxy.refresh(&asset);
+    assert!(legacy_lastprice(&proxy, &asset).is_some());
 }
 
 #[test]

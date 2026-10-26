@@ -219,7 +219,7 @@ the `--action` JSON).
 }]}
 ```
 
-Configure 3–16 distinct oracle addresses and `min_sources ∈ [3, n]`.
+Configure 1–16 distinct oracle addresses and `min_sources ∈ [1, n]`.
 `max_age_secs` is capped at seven days, `max_clock_drift_secs` at one hour, and
 both are required. Reflector keys by symbol, RedStone by SAC address, and Lazer
 by feed id. One window filters every source, so it has to clear the slowest:

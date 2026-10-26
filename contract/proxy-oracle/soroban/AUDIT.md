@@ -87,8 +87,9 @@ keepers / refresh bots, and monitoring infrastructure.
 
 ## Safety topics
 
-**Oracle manipulation.** `set_proxy` requires 3–16 distinct oracle addresses,
-`min_sources` in `[3, sources.len()]`, and both freshness bounds. `refresh`
+**Oracle manipulation.** `set_proxy` requires 1–16 distinct oracle addresses,
+`min_sources` in `[1, sources.len()]`, and both freshness bounds. A single-source
+proxy (`min_sources = 1`) has no cross-check against a compromised source. `refresh`
 drops stale or future-dated sources before aggregation and fails closed if its
 per-asset storage is missing. Breakers require governance proposals to
 add/update/remove; manual trips require the `ManualTripper` role.
