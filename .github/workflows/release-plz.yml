@@ -100,6 +100,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Parse every tag before dispatching any: a `jq` failure in a process
+          # substitution would not stop the loop, and the step would pass having
+          # dispatched none or some of them.
+          tags=$(jq -r '.[] | .tag // error("release entry has no tag")' <<<"$RELEASES")
           while read -r tag; do
             [ -n "$tag" ] || continue
 
@@ -131,7 +135,7 @@ jobs:
             # A replay is also harmless in the workflow: it never `--clobber`s,
             # so an asset already published with identical bytes is left alone.
             just release-wasm "$tag"
-          done < <(jq -r '.[].tag' <<<"$RELEASES")
+          done <<<"$tags"
 
   release-plz-pr:
     name: Release PR

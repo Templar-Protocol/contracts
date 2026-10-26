@@ -226,12 +226,15 @@ would be worse: two byte-sets would share one version.
 
 What the release job does *not* build are the tags that name no artifact. So
 **a release tag with no WASM is an expected state**, not a gap: the library and
-service crates bumped alongside the contracts keep none, and a catalogued tag
-stays unbuilt only if its dispatch failed. `just release-wasm-status <tag>`
-answers whether a given one has been built. Nothing is lost if it must be
-dispatched again by hand: the tag is permanent and the build reproducible, so a
-version built later yields the same bytes, and a replay never replaces the
-asset.
+service crates bumped alongside the contracts keep none. A catalogued tag stays
+unbuilt if its dispatch failed, or if the dispatched `release-artifacts.yml` run
+failed during checkout, build, or upload — the Release job only starts that run
+and cannot see how it ends, so check the artifact run for each dispatched tag.
+`just release-wasm-status <tag>` answers whether a given one has been built; once
+the failure is fixed, dispatch the tag again with `just release-wasm <tag>`.
+Nothing is lost by dispatching again: the tag is permanent and the build
+reproducible, so a version built later yields the same bytes, and a replay never
+replaces the asset.
 
 One cutoff: `just release-wasm` resolves the tag by running the resolver *from
 that tag's checkout*, so it only reaches tags cut after `--resolve` landed
