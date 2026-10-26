@@ -13800,7 +13800,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-soroban-batcher-contract"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "soroban-sdk",
  "templar-proxy-oracle-soroban-common",
@@ -13808,7 +13808,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-soroban-common"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "rstest",
  "soroban-sdk",
@@ -13817,7 +13817,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-soroban-contract"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "postcard",
  "soroban-sdk",
@@ -13830,7 +13830,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-soroban-governance-common"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "soroban-sdk",
  "templar-primitives",
@@ -13840,7 +13840,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-soroban-governance-contract"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "soroban-sdk",
  "stellar-access",
@@ -13871,7 +13871,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-soroban-pyth-lazer-source-contract"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex-literal",
  "proptest",
@@ -13885,7 +13885,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-soroban-sep40-adapter-contract"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "soroban-sdk",
  "stellar-access",
