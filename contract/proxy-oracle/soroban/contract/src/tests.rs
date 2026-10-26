@@ -1453,7 +1453,9 @@ fn single_source_quorum_of_one_is_accepted_and_prices() {
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.refresh(&asset);
-    assert!(legacy_lastprice(&proxy, &asset).is_some());
+    let price = legacy_lastprice(&proxy, &asset).unwrap();
+    assert_eq!(price.price, 5_000_000_000);
+    assert_eq!(price.timestamp, 100);
 }
 
 #[test]

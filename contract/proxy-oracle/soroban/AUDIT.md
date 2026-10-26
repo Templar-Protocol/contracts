@@ -55,7 +55,9 @@ keepers / refresh bots, and monitoring infrastructure.
 - The governance owner key is a secure multisig/process outside this boundary.
 - Reflector and RedStone SEP-40 contracts report correct prices and timestamps.
 - Pyth's Lazer verifier accepts only payloads signed by Pyth's trusted signer set;
-  a compromised signer is a Pyth-side failure, bounded on our side by quorum.
+  a compromised signer is a Pyth-side failure, bounded on our side by quorum only
+  when `min_sources` is at least 2. A one-source quorum (`min_sources = 1`)
+  aggregates whichever single fresh source answers, with no cross-check.
 - Ledger timestamps are accurate within Soroban's resolution; extreme clock skew
   is out of model. A source's own reported timestamp is trusted once the
   freshness filter admits it, and becomes the history's monotonic head.
@@ -88,8 +90,9 @@ keepers / refresh bots, and monitoring infrastructure.
 ## Safety topics
 
 **Oracle manipulation.** `set_proxy` requires 1–16 distinct oracle addresses,
-`min_sources` in `[1, sources.len()]`, and both freshness bounds. A single-source
-proxy (`min_sources = 1`) has no cross-check against a compromised source. `refresh`
+`min_sources` in `[1, sources.len()]`, and both freshness bounds. A one-source
+quorum (`min_sources = 1`), whether one source is configured or several, has no
+cross-check against a compromised source. `refresh`
 drops stale or future-dated sources before aggregation and fails closed if its
 per-asset storage is missing. Breakers require governance proposals to
 add/update/remove; manual trips require the `ManualTripper` role.
