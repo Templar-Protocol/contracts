@@ -236,12 +236,15 @@ Nothing is lost by dispatching again: the tag is permanent and the build
 reproducible, so a version built later yields the same bytes, and a replay never
 replaces the asset.
 
-One cutoff: `just release-wasm` resolves the tag by running the resolver *from
+One cutoff: the dispatched `release-artifacts.yml` run resolves the tag *from
 that tag's checkout*, so it only reaches tags cut after `--resolve` landed
 ([#528](https://github.com/Templar-Protocol/contracts/pull/528)). Dispatching an
-older one fails rather than silently publishing nothing. Those tags are still
-buildable, just not through the recipe — check the tag out and follow the rebuild
-under [Why the build happens in CI, at the
+older one fails rather than silently publishing nothing. `just release-wasm`
+itself runs the resolver from the current worktree, so the current branch's
+catalog decides what it dispatches: a package renamed or removed since the tag
+was cut is refused there even when the tag names a catalogued artifact. Either
+kind of tag is still buildable, just not through the recipe — check the tag out
+and follow the rebuild under [Why the build happens in CI, at the
 tag](#why-the-build-happens-in-ci-at-the-tag), then hand the digest and byte
 length to `record-release`.
 
