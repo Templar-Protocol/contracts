@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-soroban-contract-v0.1.3...templar-proxy-oracle-soroban-contract-v0.1.4) - 2026-10-26
+
+### Added
+
+- *(proxy-oracle)* accept a single-source quorum on Soroban ([#692](https://github.com/Templar-Protocol/contracts/pull/692))
+
 ## [0.1.2](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-soroban-contract-v0.1.1...templar-proxy-oracle-soroban-contract-v0.1.2) - 2026-08-24
 
 ### Fixed
