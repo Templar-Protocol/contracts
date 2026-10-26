@@ -13298,7 +13298,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-oracle-updates-dispatch"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13367,7 +13367,7 @@ dependencies = [
 
 [[package]]
 name = "templar-gateway-service"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "actix",
  "anyhow",
@@ -13555,7 +13555,7 @@ dependencies = [
 
 [[package]]
 name = "templar-manager"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13942,7 +13942,7 @@ dependencies = [
 
 [[package]]
 name = "templar-redstone-bridge"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",
@@ -13977,7 +13977,7 @@ dependencies = [
 
 [[package]]
 name = "templar-relayer"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/Templar-Protocol/contracts/compare/templar-relayer-v0.5.1...templar-relayer-v0.6.0) - 2026-10-26
+
+### Added
+
+- *(gateway)* [**breaking**] authenticate RedStone fetches via SDK 1.0 ([#697](https://github.com/Templar-Protocol/contracts/pull/697))
+
 ## [0.5.1](https://github.com/Templar-Protocol/contracts/compare/templar-relayer-v0.5.0...templar-relayer-v0.5.1) - 2026-10-25
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-redstone-bridge-v0.1.6...templar-redstone-bridge-v0.2.0) - 2026-10-26
+
+### Added
+
+- *(gateway)* [**breaking**] authenticate RedStone fetches via SDK 1.0 ([#697](https://github.com/Templar-Protocol/contracts/pull/697))
+
 ## [0.1.6](https://github.com/Templar-Protocol/contracts/compare/templar-redstone-bridge-v0.1.5...templar-redstone-bridge-v0.1.6) - 2026-10-25
 
 ### Added
