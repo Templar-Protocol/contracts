@@ -282,7 +282,7 @@ pub(crate) fn redstone_source(
     args: &RedStoneSourceArgs,
 ) -> anyhow::Result<WithRedStoneSource<GatewayContext>> {
     Ok(GatewayContextBuilder::new(base)
-        .with_redstone_source(&args.redstone_node_path)?
+        .with_redstone_source(&args.build()?)?
         .build())
 }
 

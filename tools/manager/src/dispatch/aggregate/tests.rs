@@ -296,6 +296,8 @@ fn invocation() -> (CliContext, PreflightPriceArgs) {
         "5000",
         "--redstone-node-path",
         "/nonexistent-eng777-node",
+        "--redstone-api-key",
+        "test-redstone-key",
     ])
     .unwrap();
     let ctx = crate::context::build_context(&cli).unwrap();
@@ -347,6 +349,21 @@ async fn only_used_provider_kinds_are_constructed_independently() {
         .to_string()
         .contains("pyth-lazer-api-key"));
     assert!(providers.fetch(&redstone()).await.is_err());
+}
+
+#[tokio::test]
+async fn redstone_provider_requires_api_key() {
+    let (ctx, mut args) = invocation();
+    args.redstone.redstone_api_key = None;
+    let providers = Providers::new(&ctx, &spec(vec![redstone()]), &args);
+    assert!(providers
+        .redstone
+        .as_ref()
+        .unwrap()
+        .as_ref()
+        .unwrap_err()
+        .to_string()
+        .contains("redstone-api-key"));
 }
 
 #[tokio::test]

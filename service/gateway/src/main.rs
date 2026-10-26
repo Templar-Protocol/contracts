@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let (network, archival_network) = config.build_networks()?;
     let context = GatewayContext::builder(network)
         .with_pyth_source(sources.pyth_hermes_url)
-        .with_redstone_source(&sources.redstone_node_path)
+        .with_redstone_source(&sources.redstone)
         .map_err(anyhow::Error::from)?
         .with_lazer_source(sources.lazer)
         .build();

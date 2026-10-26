@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
 import z from "zod";
 
+// Mirrors the data services in the SDK's bundled oracle registry.
 const DataServiceId = z.literal([
   "redstone-primary-demo",
-  "redstone-main-demo",
-  "redstone-avalanche-demo",
-  "redstone-arbitrum-demo",
-  "redstone-avalanche-prod",
   "redstone-primary-prod",
-  "redstone-arbitrum-prod",
   "redstone-fast-demo",
-  "redstone-megaeth-testnet",
+  "redstone-megaeth-demo",
+  "redstone-megaeth-prod",
   "redstone-perun-demo-1",
+  "redstone-hip3-demo",
+  "redstone-hip3-prod",
 ]);
 
 const stringToInt = z.codec(z.string().regex(z.regexes.integer), z.int(), {
@@ -44,4 +43,14 @@ export function parseArgs(argv: string[]): Args {
   }
 
   return Args.decode(argsObj);
+}
+
+const API_KEY_ENV = "REDSTONE_API_KEY";
+
+export function parseApiKey(env: NodeJS.ProcessEnv): string {
+  return z
+    .string(`${API_KEY_ENV} must be set`)
+    .trim()
+    .min(1, `${API_KEY_ENV} must not be empty`)
+    .parse(env[API_KEY_ENV]);
 }

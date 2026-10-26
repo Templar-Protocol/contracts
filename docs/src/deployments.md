@@ -122,9 +122,10 @@ Only source kinds used by the spec are constructed:
 
 - Lazer needs `--pyth-lazer-api-key` or `PYTH_LAZER_API_KEY`. Its websocket,
   channel and payload-age options are available on these four commands.
-- RedStone needs Node.js on `PATH`, or an executable selected with
-  `--redstone-node-path` / `REDSTONE_NODE_PATH`. A RedStone-only spec needs no
-  Lazer key.
+- RedStone needs `--redstone-api-key` or `REDSTONE_API_KEY` for RedStone's
+  authenticated oracle gateway, and Node.js on `PATH` or an executable selected
+  with `--redstone-node-path` / `REDSTONE_NODE_PATH`. A RedStone-only spec needs
+  no Lazer key, and a Lazer-only spec needs no RedStone key.
 - Pyth and LST sources always read chain state. Direct markets keep their
   existing chain-only oracle checks. `spec check --offline` constructs no providers.
 

@@ -177,6 +177,8 @@ impl Fixture {
                 .node_path()
                 .to_str()
                 .expect("UTF-8 fixture path"),
+            "--redstone-api-key",
+            "unused-redstone-key",
         ])
         .map(str::to_owned)
         .collect()

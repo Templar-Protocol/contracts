@@ -86,11 +86,15 @@ impl From<IpcResponseResult> for Result<String, String> {
     }
 }
 
-#[tracing::instrument(skip(kill))]
+/// Read by the JS bridge; passed through the environment so the key stays out of argv.
+const API_KEY_ENV: &str = "REDSTONE_API_KEY";
+
+#[tracing::instrument(skip(api_key, kill))]
 fn start_bridge(
     node: &Path,
     bridge: &Path,
     socket: &Path,
+    api_key: &str,
     kill: watch::Sender<()>,
 ) -> Result<JoinHandle<()>, std::io::Error> {
     let mut cmd = Command::new(node);
@@ -99,6 +103,7 @@ fn start_bridge(
     cmd.arg(socket);
     cmd.arg("--data-service-id");
     cmd.arg("redstone-primary-prod");
+    cmd.env(API_KEY_ENV, api_key);
     cmd.kill_on_drop(true);
     // IPC uses the socket; child stdout is diagnostic, not the caller's result.
     cmd.stdout(std::io::stderr());
@@ -256,20 +261,30 @@ impl Bridge {
     ///
     /// Writes the compiled bundle to a temporary file and spawns a Node.js
     /// process. The temp file is cleaned up when the `Bridge` is dropped.
+    /// `api_key` authenticates against RedStone's oracle gateway.
     ///
     /// # Errors
     ///
     /// Returns an error if the temp file cannot be written.
-    pub fn new(node_path: &Path, kill: watch::Sender<()>) -> Result<Self, BridgeError> {
+    pub fn new(
+        node_path: &Path,
+        api_key: &str,
+        kill: watch::Sender<()>,
+    ) -> Result<Self, BridgeError> {
         let bundle_path = gen_temp_file_path("templar_redstone_bundle", "js");
         std::fs::write(&bundle_path, BRIDGE_BUNDLE).map_err(BridgeError::WriteBundle)?;
 
         let socket_path = gen_temp_file_path("templar_redstone_bridge", "sock");
         let bridge_send = start_messenger(socket_path.as_ref(), kill.clone())
             .map_err(BridgeError::StartMessenger)?;
-        let bridge_process =
-            start_bridge(node_path, bundle_path.as_ref(), socket_path.as_ref(), kill)
-                .map_err(BridgeError::StartBridge)?;
+        let bridge_process = start_bridge(
+            node_path,
+            bundle_path.as_ref(),
+            socket_path.as_ref(),
+            api_key,
+            kill,
+        )
+        .map_err(BridgeError::StartBridge)?;
 
         Ok(Self {
             _cleanup: Arc::new(Cleanup {

@@ -47,9 +47,7 @@ use templar_gateway_methods_spec::{
     proxy_oracle_governance, pyth, redstone, ref_finance, registry, storage, token, tx,
     universal_account, vault,
 };
-use templar_gateway_oracle_updates_dispatch::{
-    GatewayContextBuilderOracleExt, RedStoneBridgeClient, WithPythSource,
-};
+use templar_gateway_oracle_updates_dispatch::{GatewayContextBuilderOracleExt, WithPythSource};
 use templar_gateway_oracle_updates_spec::oracle as oracle_updates;
 use templar_gateway_store::MemoryStore;
 use templar_gateway_testing::{SandboxHarness, TestController, TEST_FINALITY_POLICY};
@@ -108,8 +106,7 @@ impl TestStack {
     /// the network.
     async fn start_with_lazer(pyth_hermes_url: Url, lazer_source: FakeLazerSource) -> Result<Self> {
         let harness = SandboxHarness::start().await?;
-        let redstone_source =
-            TestRedStoneSource::Live(RedStoneBridgeClient::new(std::path::Path::new("node"))?);
+        let redstone_source = TestRedStoneSource(Ok(oracle_tests::REDSTONE_VALID_PAYLOAD.to_vec()));
         Self::start_with_sources(harness, pyth_hermes_url, lazer_source, redstone_source).await
     }
 

@@ -288,7 +288,7 @@ fn update_lazer_collects_repeated_feed_ids() {
 
 /// Explicit provider literals override ambient environment without racing other
 /// clap tests by mutating process-wide variables.
-const PREFLIGHT_SOURCE_FLAGS: [&str; 10] = [
+const PREFLIGHT_SOURCE_FLAGS: [&str; 12] = [
     "--pyth-lazer-api-key",
     "preflight-token",
     "--pyth-lazer-ws-url",
@@ -299,6 +299,8 @@ const PREFLIGHT_SOURCE_FLAGS: [&str; 10] = [
     "1234",
     "--redstone-node-path",
     "/fixture/node",
+    "--redstone-api-key",
+    "preflight-redstone-key",
 ];
 
 const PREFLIGHT_COMMANDS: [&[&str]; 4] = [
@@ -382,6 +384,7 @@ fn preflight_commands_select_price_mode_and_provider_flags(
             prices.redstone.redstone_node_path,
             std::path::Path::new("/fixture/node")
         );
+        assert!(prices.redstone.redstone_api_key.is_some());
     }
 }
 

@@ -378,6 +378,9 @@ async fn init_relayer_app(
     let rpc_url = harness.network.rpc_endpoints[0].url.to_string();
     let chain_id = NEAR_TESTNET_CHAIN_ID.to_string();
     let pow_difficulty = POW_DIFFICULTY.to_string();
+    // Only the `requires_network_*` RedStone test fetches with it.
+    let redstone_api_key =
+        std::env::var("REDSTONE_API_KEY").unwrap_or_else(|_| "unused-redstone-key".to_owned());
 
     let app = App::new_with_finality_policy_and_signers(
         Configuration::parse_from([
@@ -410,6 +413,8 @@ async fn init_relayer_app(
             // The relayer hosts the gateway's Lazer source, so a Lazer API key is required.
             "--pyth-lazer-api-key",
             "test-token",
+            "--redstone-api-key",
+            &redstone_api_key,
         ]),
         watch::Sender::default(),
         templar_gateway_testing::TEST_FINALITY_POLICY,

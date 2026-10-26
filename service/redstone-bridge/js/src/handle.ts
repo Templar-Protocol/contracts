@@ -7,6 +7,7 @@ import {
 
 export default async function handle(
   args: Args,
+  apiKey: string,
   request: Request,
 ): Promise<Response> {
   try {
@@ -23,6 +24,7 @@ export default async function handle(
           authorizedSigners: getSignersForDataServiceId(
             args["authorized-signers"] ?? args["data-service-id"],
           ),
+          authenticatedGateways: [{ apiKey }],
         });
 
         return {
@@ -33,12 +35,20 @@ export default async function handle(
       }
     }
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    console.error("Unknown error", e);
+    const message = describeError(e);
+    console.error("Fetch failed:", message);
     return {
       id: request.id,
       status: "failure",
       message,
     };
   }
+}
+
+// Never log a raw SDK error: axios errors carry request headers, including x-api-key.
+function describeError(e: unknown): string {
+  if (e instanceof AggregateError) {
+    return `${e.message}: ${e.errors.map(describeError).join("; ")}`;
+  }
+  return e instanceof Error ? e.message : String(e);
 }

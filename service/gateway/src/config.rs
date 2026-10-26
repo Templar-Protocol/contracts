@@ -397,7 +397,11 @@ mod tests {
         Err("unsupported Pyth Lazer channel")
     )]
     fn lazer_config_validation(#[case] extra_args: &[&str], #[case] expected: Result<(), &str>) {
-        let mut args = vec!["templar-gateway-service"];
+        let mut args = vec![
+            "templar-gateway-service",
+            "--redstone-api-key",
+            "redstone-secret",
+        ];
         args.extend_from_slice(extra_args);
         let config = Config::try_parse_from(args).expect("config should parse");
 
@@ -414,6 +418,30 @@ mod tests {
                     .build(Network::Testnet.hermes_url())
                     .expect_err("invalid Lazer config should fail");
                 assert!(error.to_string().contains(expected_msg));
+            }
+        }
+    }
+
+    #[rstest]
+    #[case::present(&["--redstone-api-key", "redstone-secret"], Ok(()))]
+    #[case::blank(&["--redstone-api-key", "  "], Err("RedStone API key must not be empty"))]
+    fn redstone_config_validation(#[case] extra_args: &[&str], #[case] expected: Result<(), &str>) {
+        let mut args = vec![
+            "templar-gateway-service",
+            "--pyth-lazer-api-key",
+            "secret-token",
+        ];
+        args.extend_from_slice(extra_args);
+        let config = Config::try_parse_from(args).expect("config should parse");
+        let built = config.oracle_sources.build(Network::Testnet.hermes_url());
+
+        match expected {
+            Ok(()) => {
+                built.expect("valid RedStone config should build");
+            }
+            Err(expected_msg) => {
+                let error = built.expect_err("invalid RedStone config should fail");
+                assert!(error.to_string().contains(expected_msg), "{error}");
             }
         }
     }
