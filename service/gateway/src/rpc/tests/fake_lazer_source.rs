@@ -115,10 +115,7 @@ impl<C> ProvidesLazerSource for WithFakeLazerSource<C> {
 }
 
 #[derive(Debug, Clone)]
-pub enum TestRedStoneSource {
-    Live(templar_gateway_oracle_updates_dispatch::RedStoneBridgeClient),
-    Fixture(Result<Vec<u8>, TestRedStoneError>),
-}
+pub struct TestRedStoneSource(pub Result<Vec<u8>, TestRedStoneError>);
 
 #[derive(Debug, Clone, Error)]
 #[error("{0}")]
@@ -129,14 +126,8 @@ impl OraclePayloadSource for TestRedStoneSource {
     type PriceId = templar_common::oracle::redstone::FeedId;
     type Error = TestRedStoneError;
 
-    async fn fetch_payload(&self, ids: &[Self::PriceId]) -> Result<Vec<u8>, Self::Error> {
-        match self {
-            Self::Live(source) => source
-                .fetch_payload(ids)
-                .await
-                .map_err(|error| TestRedStoneError(error.to_string())),
-            Self::Fixture(result) => result.clone(),
-        }
+    async fn fetch_payload(&self, _ids: &[Self::PriceId]) -> Result<Vec<u8>, Self::Error> {
+        self.0.clone()
     }
 }
 

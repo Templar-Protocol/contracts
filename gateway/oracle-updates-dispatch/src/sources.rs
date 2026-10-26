@@ -1,13 +1,11 @@
 //! In-process oracle payload source configuration and the layered context an
 //! oracle-updates client/dispatch plans against.
 
-use std::path::PathBuf;
-
 use templar_gateway_core::{GatewayContext, GatewayContextBuilder, GatewayResult};
 
 use crate::{
-    GatewayContextBuilderOracleExt as _, LazerSourceConfig, WithLazerSource, WithPythSource,
-    WithRedStoneSource,
+    GatewayContextBuilderOracleExt as _, LazerSourceConfig, RedStoneSourceConfig, WithLazerSource,
+    WithPythSource, WithRedStoneSource,
 };
 
 /// The layered gateway context: the base context plus the in-process Pyth,
@@ -20,8 +18,8 @@ pub type OracleUpdatesContext = WithLazerSource<WithRedStoneSource<WithPythSourc
 pub struct OracleSourceConfig {
     /// Pyth Hermes API URL.
     pub pyth_hermes_url: url::Url,
-    /// Path to the Node.js interpreter (or equivalent) that runs the RedStone bridge.
-    pub redstone_node_path: PathBuf,
+    /// RedStone bridge source configuration.
+    pub redstone: RedStoneSourceConfig,
     /// Pyth Pro/Lazer websocket source configuration.
     pub lazer: LazerSourceConfig,
 }
@@ -36,7 +34,7 @@ pub fn build_oracle_updates_context(
 ) -> GatewayResult<OracleUpdatesContext> {
     Ok(GatewayContextBuilder::new(base)
         .with_pyth_source(sources.pyth_hermes_url)
-        .with_redstone_source(&sources.redstone_node_path)?
+        .with_redstone_source(&sources.redstone)?
         .with_lazer_source(sources.lazer)
         .build())
 }
@@ -53,7 +51,7 @@ mod args {
     use url::Url;
 
     use super::OracleSourceConfig;
-    use crate::{LazerSourceConfig, LazerSubscriptionConfig};
+    use crate::{LazerSourceConfig, LazerSubscriptionConfig, RedStoneSourceConfig};
 
     /// CLI surface for the in-process Pyth Hermes payload source.
     #[derive(Args, Debug, Clone)]
@@ -85,6 +83,27 @@ mod args {
             default_value = "node"
         )]
         pub redstone_node_path: PathBuf,
+
+        /// API key for RedStone's authenticated oracle gateway.
+        ///
+        /// Optional at parse time so a consumer that never builds a RedStone source needn't
+        /// supply it; [`RedStoneSourceArgs::build`] rejects its absence.
+        #[arg(long = "redstone-api-key", env = "REDSTONE_API_KEY")]
+        pub redstone_api_key: Option<RedactedString>,
+    }
+
+    impl RedStoneSourceArgs {
+        /// Validate and assemble the runtime [`RedStoneSourceConfig`].
+        ///
+        /// # Errors
+        /// Returns an error when the API key is absent or blank.
+        pub fn build(&self) -> anyhow::Result<RedStoneSourceConfig> {
+            let api_key = self.redstone_api_key.clone().ok_or_else(|| {
+                anyhow::anyhow!("missing --redstone-api-key (or REDSTONE_API_KEY)")
+            })?;
+            RedStoneSourceConfig::new(self.redstone_node_path.clone(), api_key)
+                .map_err(anyhow::Error::from)
+        }
     }
 
     /// CLI surface for the in-process Pyth Pro/Lazer websocket payload source.
@@ -166,12 +185,12 @@ mod args {
         /// [`PythSourceArgs::hermes_url`].
         ///
         /// # Errors
-        /// Returns an error if the Lazer websocket configuration is invalid — see
-        /// [`LazerSourceArgs::build`].
+        /// Returns an error if the RedStone or Lazer configuration is invalid — see
+        /// [`RedStoneSourceArgs::build`] and [`LazerSourceArgs::build`].
         pub fn build(&self, hermes_default: Url) -> anyhow::Result<OracleSourceConfig> {
             Ok(OracleSourceConfig {
                 pyth_hermes_url: self.pyth.hermes_url(hermes_default),
-                redstone_node_path: self.redstone.redstone_node_path.clone(),
+                redstone: self.redstone.build()?,
                 lazer: self.lazer.build()?,
             })
         }

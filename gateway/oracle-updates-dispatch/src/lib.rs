@@ -16,7 +16,9 @@ pub use lazer_client::{
     LazerClientError, LazerPayloadSource, LazerResult, LazerSourceConfig, LazerSubscriptionConfig,
 };
 pub use pyth_client::{PythClientError, PythHttpClient, PythResult};
-pub use redstone_client::{RedStoneBridgeClient, RedStoneBridgeError, RedStoneResult};
+pub use redstone_client::{
+    RedStoneBridgeClient, RedStoneBridgeError, RedStoneResult, RedStoneSourceConfig,
+};
 pub use source_provider_impl::{ProvidesLazerSource, ProvidesPythSource, ProvidesRedStoneSource};
 pub use sources::{build_oracle_updates_context, OracleSourceConfig, OracleUpdatesContext};
 #[cfg(feature = "clap")]

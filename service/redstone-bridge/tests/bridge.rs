@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::{env, path::PathBuf};
 
@@ -42,10 +42,14 @@ use std::path::Path;
 use templar_redstone_bridge::{Bridge, BridgeError};
 use tokio::sync::watch;
 
+fn live_api_key() -> String {
+    env::var("REDSTONE_API_KEY").expect("live RedStone tests need REDSTONE_API_KEY")
+}
+
 #[tokio::test]
 async fn requires_network_single_feed() {
     let (kill, _) = watch::channel(());
-    let bridge = Bridge::new(Path::new("node"), kill).unwrap();
+    let bridge = Bridge::new(Path::new("node"), &live_api_key(), kill).unwrap();
 
     let payload = bridge.fetch(vec!["BTC".into()]).await.unwrap();
     assert!(!payload.is_empty());
@@ -54,7 +58,7 @@ async fn requires_network_single_feed() {
 #[tokio::test]
 async fn requires_network_multiple_feeds() {
     let (kill, _) = watch::channel(());
-    let bridge = Bridge::new(Path::new("node"), kill).unwrap();
+    let bridge = Bridge::new(Path::new("node"), &live_api_key(), kill).unwrap();
 
     let payload = bridge
         .fetch(vec!["BTC".into(), "ETH".into()])
@@ -66,7 +70,7 @@ async fn requires_network_multiple_feeds() {
 #[tokio::test]
 async fn requires_network_sequential_requests() {
     let (kill, _) = watch::channel(());
-    let bridge = Bridge::new(Path::new("node"), kill).unwrap();
+    let bridge = Bridge::new(Path::new("node"), &live_api_key(), kill).unwrap();
 
     let first = bridge.fetch(vec!["BTC".into()]).await.unwrap();
     let second = bridge.fetch(vec!["ETH".into()]).await.unwrap();
@@ -80,7 +84,7 @@ async fn requires_network_sequential_requests() {
 #[tokio::test]
 async fn exits_when_killed() {
     let (kill, _) = watch::channel(());
-    let bridge = Bridge::new(Path::new("node"), kill.clone()).unwrap();
+    let bridge = Bridge::new(Path::new("node"), "unused-api-key", kill.clone()).unwrap();
 
     kill.send(()).unwrap();
 
@@ -94,7 +98,7 @@ async fn exits_when_killed() {
 #[tokio::test]
 async fn invalid_node_path() {
     let (kill, _) = watch::channel(());
-    let error = Bridge::new(Path::new("/nonexistent/node"), kill).unwrap_err();
+    let error = Bridge::new(Path::new("/nonexistent/node"), "unused-api-key", kill).unwrap_err();
     assert!(
         matches!(error, BridgeError::StartBridge(_)),
         "expected StartBridge error, got: {error:?}"

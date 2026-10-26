@@ -1,11 +1,9 @@
-use std::path::Path;
-
 use templar_gateway_core::{GatewayContextBuilder, GatewayError, HasNearClient, NearClient};
 use url::Url;
 
 use crate::{
     LazerPayloadSource, LazerSourceConfig, ProvidesLazerSource, ProvidesPythSource,
-    ProvidesRedStoneSource, PythHttpClient, RedStoneBridgeClient,
+    ProvidesRedStoneSource, PythHttpClient, RedStoneBridgeClient, RedStoneSourceConfig,
 };
 
 #[derive(Debug, Clone)]
@@ -31,7 +29,7 @@ pub trait GatewayContextBuilderOracleExt<C>: Sized {
 
     fn with_redstone_source(
         self,
-        redstone_node_path: impl AsRef<Path>,
+        config: &RedStoneSourceConfig,
     ) -> Result<GatewayContextBuilder<WithRedStoneSource<C>>, GatewayError>;
 
     fn with_lazer_source(
@@ -50,9 +48,9 @@ impl<C> GatewayContextBuilderOracleExt<C> for GatewayContextBuilder<C> {
 
     fn with_redstone_source(
         self,
-        redstone_node_path: impl AsRef<Path>,
+        config: &RedStoneSourceConfig,
     ) -> Result<GatewayContextBuilder<WithRedStoneSource<C>>, GatewayError> {
-        let redstone_source = RedStoneBridgeClient::new(redstone_node_path.as_ref())
+        let redstone_source = RedStoneBridgeClient::new(config)
             .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
         Ok(self.map(|inner| WithRedStoneSource {
             inner,

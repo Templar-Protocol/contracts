@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { Args, parseArgs } from "./args.ts";
+import { Args, parseApiKey, parseArgs } from "./args.ts";
 
 describe("argument parsing", () => {
   test("empty default", () => {
@@ -56,16 +56,16 @@ describe("argument parsing", () => {
   test("all options", () => {
     const expected: Args = {
       socket: "mysocket",
-      "data-service-id": "redstone-main-demo",
+      "data-service-id": "redstone-megaeth-prod",
       "unique-signers-count": 100,
       "wait-for-all-gateways-time-ms": 888,
       "max-timestamp-deviation-ms": 2,
-      "authorized-signers": "redstone-megaeth-testnet",
+      "authorized-signers": "redstone-megaeth-demo",
     };
 
     expect(
       parseArgs(
-        "--socket mysocket --data-service-id redstone-main-demo --unique-signers-count 100 --wait-for-all-gateways-time-ms 888 --max-timestamp-deviation-ms 2 --authorized-signers redstone-megaeth-testnet".split(
+        "--socket mysocket --data-service-id redstone-megaeth-prod --unique-signers-count 100 --wait-for-all-gateways-time-ms 888 --max-timestamp-deviation-ms 2 --authorized-signers redstone-megaeth-demo".split(
           " ",
         ),
       ),
@@ -89,4 +89,23 @@ describe("argument parsing", () => {
   test("invalid value: data service id", () => {
     expect(() => parseArgs("--data-service-id 1".split(" "))).toThrow();
   });
+
+  test("data service removed from the SDK registry", () => {
+    expect(() =>
+      parseArgs("--data-service-id redstone-arbitrum-prod".split(" ")),
+    ).toThrow();
+  });
+});
+
+describe("api key", () => {
+  test("present", () => {
+    expect(parseApiKey({ REDSTONE_API_KEY: "secret" })).toBe("secret");
+  });
+
+  test.each([{}, { REDSTONE_API_KEY: "" }, { REDSTONE_API_KEY: "  " }])(
+    "missing or blank: %o",
+    (env) => {
+      expect(() => parseApiKey(env)).toThrow("REDSTONE_API_KEY");
+    },
+  );
 });

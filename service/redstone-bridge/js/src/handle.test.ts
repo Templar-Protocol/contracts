@@ -29,7 +29,7 @@ describe("handle requests", () => {
       params: ["ETH", "BTC", "CETES", "USTRY"],
     };
 
-    const res = await handle(args, req);
+    const res = await handle(args, "test-api-key", req);
 
     expect(res.id).toBe(1059);
     expect(res.status).toBe("success");
@@ -41,9 +41,36 @@ describe("handle requests", () => {
     const bytes = Buffer.from(res.data, "hex");
     expect(bytes.length).toBeGreaterThan(0);
 
-    // Ensure the mocked SDK function was called.
-    expect(
-      (requestRedstonePayload as unknown as jest.Mock).mock.calls.length,
-    ).toBeGreaterThan(0);
+    expect(requestRedstonePayload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dataServiceId: "redstone-primary-prod",
+        dataPackagesIds: ["ETH", "BTC", "CETES", "USTRY"],
+        authenticatedGateways: [{ apiKey: "test-api-key" }],
+      }),
+    );
+  });
+
+  test("failure flattens nested errors", async () => {
+    (requestRedstonePayload as unknown as jest.Mock).mockImplementationOnce(
+      async () => {
+        throw new AggregateError(
+          [new Error("Request failed with status code 403")],
+          "requestDataPackages failed",
+        );
+      },
+    );
+
+    const res = await handle(parseArgs([]), "test-api-key", {
+      id: 7,
+      method: "fetch",
+      params: ["BTC"],
+    });
+
+    expect(res).toEqual({
+      id: 7,
+      status: "failure",
+      message:
+        "requestDataPackages failed: Request failed with status code 403",
+    });
   });
 });

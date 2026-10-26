@@ -193,7 +193,8 @@ representable price and satisfy the market's maximum age. The query uses
 healthy fallback source. There is no partial-source valuation, stored-price
 fallback, or stablecoin peg assumption.
 Lazer requires `PYTH_LAZER_API_KEY` or `--pyth-lazer-api-key` only when
-used. RedStone requires its Node.js bridge/runtime; provider options appear in
+used. RedStone requires `REDSTONE_API_KEY` or `--redstone-api-key` and its
+Node.js bridge/runtime only when used; provider options appear in
 `query markets --help`. Classic Pyth-backed dependencies currently have no
 verified provider preview and therefore produce unavailable USD values.
 Token decimals must be 0–38; price exponents must be -38–115.
