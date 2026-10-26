@@ -156,13 +156,13 @@ pub const MAX_SOURCE_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_CLOCK_DRIFT_SECS: u64 = 60 * 60;
 
 pub fn validate_proxy_config(config: &ProxyConfig) -> Result<(), ContractError> {
-    if config.sources.len() < 3 {
+    if config.sources.is_empty() {
         return Err(ContractError::TooFewSources);
     }
     if config.sources.len() > MAX_SOURCES_PER_PROXY {
         return Err(ContractError::TooManySources);
     }
-    if config.min_sources < 3 || config.min_sources > config.sources.len() {
+    if config.min_sources == 0 || config.min_sources > config.sources.len() {
         return Err(ContractError::InvalidInput);
     }
     let (Some(max_age_secs), Some(max_clock_drift_secs)) =

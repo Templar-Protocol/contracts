@@ -139,7 +139,7 @@ renew target instance and code entries.
 
 ## Operational notes
 
-- Configure 3–16 sources; `min_sources` must be in `[3, sources.len()]`. Invalid quorum is rejected.
+- Configure 1–16 sources; `min_sources` must be in `[1, sources.len()]`. Invalid quorum is rejected. One source with `min_sources = 1` is accepted for feeds with a single provider; it has no cross-check, so prefer several independent sources where they exist.
 - `refresh(asset)` is the only source-IO path; all reads are storage-only.
 - Manage breakers with the governed `add_breaker` / `remove_breaker` / `rearm` / `set_enforced`. Inert params and insufficient history are rejected; `MonotonicRun` requires zero sampling, while a `CumulativeChange` baseline is intentionally rebased only by remove → successful refresh → add. Any change to an asset's config clears its cache and history; changing the ordered `(oracle, asset)` pairs or `min_sources` additionally clears its breaker set, so configure and add breakers again after a source migration. Every persisted breaker set is semantically valid. An invalid stored set is unreachable; recover from genuine corruption with `remove_proxy` → `set_proxy`.
 - Manual-trip metadata is event-only, capped at 1024 bytes, not stored in breaker state.
