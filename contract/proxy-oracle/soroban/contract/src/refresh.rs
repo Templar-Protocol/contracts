@@ -13,7 +13,7 @@ use templar_proxy_oracle_soroban_common::{
 
 use crate::{
     codes::{blocked_reason_code, resolve_error_code},
-    conversion::{kernel_price_to_normalized, kernel_proxy_from_config, source_price_to_kernel},
+    conversion::{kernel_price_to_normalized, source_price_to_kernel},
     events::{publish_breaker_events, publish_refresh_event},
     storage::{
         cache_price, commit_history_update, load_breakers, prepare_history_update, store_breakers,
@@ -57,8 +57,9 @@ fn compute_refresh(env: &Env, asset: &Asset, now: Nanoseconds) -> RefreshComputa
     let Ok(mut breakers) = load_breakers(env, asset) else {
         return RefreshComputation::terminal(RefreshStatus::ResolveFailed(STORAGE_FAILED_CODE));
     };
-    let mut prices = AllocVec::with_capacity(config.sources.len() as usize);
-    for source in config.sources.iter() {
+    let proxy = config.to_kernel();
+    let mut prices = AllocVec::with_capacity(proxy.sources().len());
+    for source in proxy.sources() {
         prices.push(source_kernel_price(env, source, &expected_base));
     }
     if prices.iter().all(Option::is_none) {
@@ -71,7 +72,7 @@ fn compute_refresh(env: &Env, asset: &Asset, now: Nanoseconds) -> RefreshComputa
         );
     }
 
-    let outcome = match kernel_proxy_from_config(&config).resolve(&mut breakers, prices, now) {
+    let outcome = match proxy.resolve(&mut breakers, prices, now) {
         Ok(outcome) => outcome,
         Err(error) => {
             return RefreshComputation::terminal(RefreshStatus::ResolveFailed(resolve_error_code(
@@ -149,13 +150,16 @@ fn status_to_cached(status: &RefreshStatus) -> Option<CachedStatus> {
     }
 }
 
-fn source_kernel_price(env: &Env, source: SourceConfig, expected_base: &Asset) -> Option<Price> {
+fn source_kernel_price(env: &Env, source: &SourceConfig, expected_base: &Asset) -> Option<Price> {
     let client = PriceFeedClient::new(env, &source.oracle);
     let base = client.try_base().ok()?.ok()?;
     if &base != expected_base {
         return None;
     }
     let decimals = client.try_decimals().ok()?.ok()?;
+    if decimals != source.expected_decimals {
+        return None;
+    }
     let price = client.try_lastprice(&source.asset).ok()?.ok()??;
     source_price_to_kernel(price, decimals).ok()
 }

@@ -33,11 +33,26 @@ History length can be configured up to 32 entries, and at most 16 breakers may b
 
 ## Operations
 
-Proxy and circuit-breaker configuration changes are proposal-governed. Configure the proxy and breaker history before installing breakers, then add breakers with explicit monotonic IDs. Governance proposals may be created, executed, or cancelled by an account holding the role required for that operation; `Role::Admin` is the global governance role and may act on any proposal.
+Proxy and circuit-breaker configuration changes are proposal-governed. Configure the proxy and breaker history before installing breakers, then add breakers with explicit monotonic IDs. Creation and execution require the operation's current role or `Role::Admin`; cancellation is restricted to the creator or current Admin. A creator may cancel without retaining the action role. Revocation purges the creator's queued proposals only where their remaining roles no longer authorize the operation under the current method policy. Delegates may fill 63 of the 64 pending slots; Admin retains access to the final slot, without a scheduling-fairness guarantee.
 
 An `Operation` is either **reflexive** — mutating the governance contract's own state (`SetReflexiveTtl`, `SetTargetDefault`, `SetMethodPolicy`, `SetRole`, `SelfUpgrade`) — or a **`TargetFunctionCall`**: a generic `(method_name, args, attached_deposit, gas)` call dispatched to the governed proxy oracle. Every proxy/circuit-breaker action is a target call to the matching `admin_*` method; adding a new one needs **no governance-contract upgrade** — an unlisted method is dispatchable immediately under `default_target`, and a `SetMethodPolicy` entry is needed only to grant it a non-default timelock or role. Governance treats the target payload as opaque bytes — semantic validation of the payload happens at the proxy oracle's `admin_*` method (and so fails only at execution, after the timelock), not at proposal-create time. Only this operation shape is accepted on the wire: pre-restructure JSON is rejected rather than converted, because the old typed variants carried their own authorization (`AdminFunctionCall` was Admin-only whatever it called) and reinterpreting them under the method-driven policy would create proposals with different privileges than the sender intended. Upgrade clients alongside the contract. The manager CLI keeps typed subcommands (`set-proxy`, `add-circuit-breaker`, …) that build the generic form client-side and still catch malformed input locally.
 
 Proposals can be submitted through either of two entrypoints, which differ only in how their arguments are encoded: `create_proposal(id, operation, requested_ttl)` takes JSON and returns the stored `Proposal`, while `create_proposal_borsh` takes the same three arguments borsh-encoded and returns nothing (read the body back with `get_proposal`). Authorization, TTL resolution, create-time validation and the `Created` event are shared, so the two are interchangeable. Borsh arguments are `CreateProposalArgs`, exported from `governance-common` so a client encodes the wire shape as a type rather than reproducing an argument order by hand. Both take exactly 1 yoctoNEAR, so a proposal cannot fund its own state: the governance account stakes the stored payload itself, and a wasm-carrying proposal needs roughly 1 NEAR of free balance per 100 KB — pre-fund it or the call panics with `LackBalanceForState`.
+
+**Expected IDs are at-most-once admission guards, not an outcome-recovery service.**
+Manager resolves an omitted proposal/breaker ID once and emits the selected IDs
+before sending. Keep those IDs and the exact payload for retries. Rerunning an
+auto-selecting CLI command is a **new request**, not a safe retry. A rejected stale
+ID might have been consumed by another actor; it does not prove your operation
+succeeded. After cancellation/execution the body may no longer establish who
+submitted it. Reconcile the original transaction/checkpoint or a matching live
+proposal; if neither establishes the result, report outcome unknown and stop.
+Never scan for a similar proposal, advance the ID automatically, or execute an
+unverified peer's proposal. The manager's default in-memory gateway store and
+`idempotency_key: None` do not provide restart-safe recovery. Only after a
+confirmed target failure may an operator deliberately prepare a new request with
+current IDs. NEAR dispatch remains detached and one-shot: `Executed` proves
+dispatch, not target receipt success, and failure does not restore the proposal.
 
 **Borsh is opt-in, and JSON is the default on purpose.** A JSON proposal shows its whole `Operation` in explorers and indexers; a borsh one is opaque base64, so choosing it trades away the readability of the single most audit-sensitive action the protocol has. Reach for it when the payload actually needs it — anything carrying wasm, meaning a `SelfUpgrade` or an `admin_upgrade` target call. There the saving is real: JSON base64 inflates a blob by 4/3, and twice over for a target upgrade whose payload is itself JSON, which costs gas to parse (measured at 102.8 vs 39.5 Tgas over 352 KB of wasm) and eats into NEAR's 1,572,864-byte `max_transaction_size`, capping a JSON-submitted target upgrade at roughly 880 KB of wasm against borsh's ~1.17 MB. Select it with `tmplrmgr proxy-oracle governance create-proposal --encoding borsh`; the gateway refuses the request against a governance contract older than `0.3.0` rather than quietly falling back to JSON.
 

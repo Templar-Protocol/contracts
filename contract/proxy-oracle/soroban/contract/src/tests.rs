@@ -59,6 +59,10 @@ impl MockPriceFeed {
         env.storage().persistent().remove(&MockKey::Price(asset));
     }
 
+    pub fn set_base(env: Env, base: Asset) {
+        env.storage().instance().set(&MockKey::Base, &base);
+    }
+
     pub fn set_decimals(env: Env, decimals: u32) {
         env.storage().instance().set(&MockKey::Decimals, &decimals);
     }
@@ -130,6 +134,12 @@ impl MockSources {
         }
     }
 
+    fn set_base(&self, base: &Asset) {
+        for client in &self.clients {
+            client.set_base(base);
+        }
+    }
+
     #[allow(clippy::trivially_copy_pass_by_ref)]
     fn set_decimals(&self, decimals: &u32) {
         for client in &self.clients {
@@ -157,9 +167,20 @@ fn proxy_sources(env: &Env, base: &Asset, asset: &Asset) -> (MockSources, Vec<So
         config_sources.push_back(SourceConfig {
             oracle: source_id,
             asset: asset.clone(),
+            expected_decimals: 8,
         });
     }
     (sources, config_sources)
+}
+fn median_config(sources: Vec<SourceConfig>, min_sources: u32) -> ProxyConfig {
+    ProxyConfig {
+        aggregator: AggregatorConfig::MedianLow(MedianConfig {
+            sources,
+            min_sources,
+        }),
+        max_age_secs: 30,
+        max_clock_drift_secs: 5,
+    }
 }
 
 fn setup() -> (Env, SorobanProxyOracleClient<'static>, MockSources, Asset) {
@@ -179,15 +200,7 @@ fn setup() -> (Env, SorobanProxyOracleClient<'static>, MockSources, Asset) {
     let proxy_id = env.register(SorobanProxyOracle, (&admin, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
 
-    proxy.set_proxy(
-        &asset,
-        &ProxyConfig {
-            sources,
-            min_sources: 3,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
-        },
-    );
+    proxy.set_proxy(&asset, &median_config(sources, 3));
 
     (env, proxy, source, asset)
 }
@@ -312,20 +325,16 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
 
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let (second_source_id, second_source) = register_mock_source(&env, &base);
-    let mut sources = proxy.get_proxy(&asset).unwrap().sources;
+    let AggregatorConfig::MedianLow(median) = proxy.get_proxy(&asset).unwrap().aggregator else {
+        panic!("setup must configure MedianLow");
+    };
+    let mut sources = median.sources;
     sources.push_back(SourceConfig {
         oracle: second_source_id,
         asset: asset.clone(),
+        expected_decimals: 8,
     });
-    proxy.set_proxy(
-        &asset,
-        &ProxyConfig {
-            sources,
-            min_sources: 4,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
-        },
-    );
+    proxy.set_proxy(&asset, &median_config(sources, 4));
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     second_source.clear_price(&asset);
     let quorum = proxy.refresh(&asset.clone());
@@ -335,15 +344,7 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
     let eur = Asset::Other(Symbol::new(&env, "EUR"));
     let (wrong_base_source, wrong_base_sources) = proxy_sources(&env, &eur, &asset);
     wrong_base_source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.set_proxy(
-        &asset,
-        &ProxyConfig {
-            sources: wrong_base_sources,
-            min_sources: 3,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
-        },
-    );
+    proxy.set_proxy(&asset, &median_config(wrong_base_sources, 3));
     let base_mismatch = proxy.refresh(&asset.clone());
     assert!(matches!(base_mismatch, RefreshStatus::SourceUnavailable));
     assert_eq!(legacy_lastprice(&proxy, &asset), None);
@@ -564,7 +565,7 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     assert!(legacy_lastprice(&proxy, &asset).is_some());
 
     let mut changed = configured;
-    changed.max_age_secs = Some(31);
+    changed.max_age_secs = 31;
     proxy.set_proxy(&asset, &changed);
     assert!(proxy.get_cached(&asset).is_none());
     assert_eq!(legacy_lastprice(&proxy, &asset), None);
@@ -583,19 +584,18 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     );
 
     let mut rotated = proxy.get_proxy(&asset).unwrap();
-    let first_source = rotated.sources.get(0).unwrap();
-    rotated.sources.set(
-        0,
-        SourceConfig {
-            oracle: first_source.oracle,
-            asset: Asset::Other(Symbol::new(&env, "BTC2")),
-        },
-    );
+    let AggregatorConfig::MedianLow(median) = &mut rotated.aggregator else {
+        panic!("setup must configure MedianLow");
+    };
+    let mut first_source = median.sources.get(0).unwrap();
+    first_source.asset = Asset::Other(Symbol::new(&env, "BTC2"));
+    median.sources.set(0, first_source);
     proxy.set_proxy(&asset, &rotated);
     let breakers = stored_breakers(&env, &proxy.address, &asset);
     assert!(breakers.breakers().is_empty());
     assert_eq!(breakers.accepted_history().capacity(), 0);
     assert_eq!(breakers.observed_history().capacity(), 0);
+    assert_eq!(breakers.next_id(), 1);
     assert_eq!(
         legacy_prices(&env, &proxy, &asset, MAX_HISTORY_RECORDS),
         None
@@ -617,18 +617,11 @@ fn parity_config_update_cache_invalidation_and_unauthorized_mutation() {
     sources.push_back(SourceConfig {
         oracle: Address::generate(&unauth_env),
         asset: unauthorized_asset.clone(),
+        expected_decimals: 8,
     });
 
     assert!(unauth_proxy
-        .try_set_proxy(
-            &unauthorized_asset,
-            &ProxyConfig {
-                sources,
-                min_sources: 1,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
-            },
-        )
+        .try_set_proxy(&unauthorized_asset, &median_config(sources, 1),)
         .is_err());
 }
 
@@ -700,15 +693,7 @@ fn event_proxy_set_topics_payload_are_exact() {
     let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
 
-    proxy.set_proxy(
-        &asset,
-        &ProxyConfig {
-            sources,
-            min_sources: 3,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
-        },
-    );
+    proxy.set_proxy(&asset, &median_config(sources, 3));
 
     assert_eq!(
         contract_events(&env, &proxy.address),
@@ -1214,31 +1199,10 @@ fn source_outage_replaces_accepted_cache() {
 
 #[test]
 fn refresh_rejects_source_with_wrong_base_asset() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set(LedgerInfo {
-        timestamp: 100,
-        protocol_version: 25,
-        sequence_number: 100,
-        ..Default::default()
-    });
-    let governance = Address::generate(&env);
-    let usd = Asset::Other(Symbol::new(&env, "USD"));
-    let eur = Asset::Other(Symbol::new(&env, "EUR"));
-    let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let (source, sources) = proxy_sources(&env, &eur, &asset);
+    let (env, proxy, source, asset) = setup();
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &usd));
-    let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
-    proxy.set_proxy(
-        &asset,
-        &ProxyConfig {
-            sources,
-            min_sources: 3,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
-        },
-    );
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+    source.set_base(&Asset::Other(Symbol::new(&env, "EUR")));
 
     let result = proxy.refresh(&asset.clone());
 
@@ -1271,31 +1235,16 @@ fn set_proxy_rejects_unreachable_min_sources() {
         sources.push_back(SourceConfig {
             oracle: Address::generate(&env),
             asset: asset.clone(),
+            expected_decimals: 8,
         });
     }
 
     assert_eq!(
-        proxy.try_set_proxy(
-            &asset,
-            &ProxyConfig {
-                sources: sources.clone(),
-                min_sources: 0,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
-            },
-        ),
+        proxy.try_set_proxy(&asset, &median_config(sources.clone(), 0),),
         Err(Ok(ContractError::InvalidInput))
     );
     assert_eq!(
-        proxy.try_set_proxy(
-            &asset,
-            &ProxyConfig {
-                sources,
-                min_sources: 4,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
-            },
-        ),
+        proxy.try_set_proxy(&asset, &median_config(sources, 4),),
         Err(Ok(ContractError::InvalidInput))
     );
 }
@@ -1328,19 +1277,12 @@ fn invalid_config_duplicate_source_oracle_asset_pair() {
         sources.push_back(SourceConfig {
             oracle: source_id,
             asset: asset.clone(),
+            expected_decimals: 8,
         });
     }
 
     assert_eq!(
-        proxy.try_set_proxy(
-            &asset,
-            &ProxyConfig {
-                sources,
-                min_sources: 3,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
-            },
-        ),
+        proxy.try_set_proxy(&asset, &median_config(sources, 3),),
         Err(Ok(ContractError::InvalidInput))
     );
 }
@@ -1373,19 +1315,12 @@ fn invalid_config_duplicate_oracle_is_rejected_even_for_distinct_assets() {
         sources.push_back(SourceConfig {
             oracle,
             asset: source_asset,
+            expected_decimals: 8,
         });
     }
 
     assert_eq!(
-        proxy.try_set_proxy(
-            &asset,
-            &ProxyConfig {
-                sources,
-                min_sources: 3,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
-            },
-        ),
+        proxy.try_set_proxy(&asset, &median_config(sources, 3),),
         Err(Ok(ContractError::InvalidInput))
     );
 }
@@ -1404,18 +1339,11 @@ fn assert_set_proxy_rejected(num_sources: u32, min_sources: u32, expected: Contr
         sources.push_back(SourceConfig {
             oracle: Address::generate(&env),
             asset: asset.clone(),
+            expected_decimals: 8,
         });
     }
     assert_eq!(
-        proxy.try_set_proxy(
-            &asset,
-            &ProxyConfig {
-                sources,
-                min_sources,
-                max_age_secs: Some(30),
-                max_clock_drift_secs: Some(5),
-            },
-        ),
+        proxy.try_set_proxy(&asset, &median_config(sources, min_sources),),
         Err(Ok(expected))
     );
 }
@@ -1424,14 +1352,14 @@ fn assert_set_proxy_rejected(num_sources: u32, min_sources: u32, expected: Contr
 fn invalid_config_freshness_bounds_are_capped() {
     let (_env, proxy, _source, asset) = setup();
     let mut config = proxy.get_proxy(&asset).unwrap();
-    config.max_age_secs = Some(MAX_SOURCE_AGE_SECS + 1);
+    config.max_age_secs = MAX_SOURCE_AGE_SECS + 1;
     assert_eq!(
         proxy.try_set_proxy(&asset, &config),
         Err(Ok(ContractError::InvalidInput))
     );
 
-    config.max_age_secs = Some(MAX_SOURCE_AGE_SECS);
-    config.max_clock_drift_secs = Some(MAX_CLOCK_DRIFT_SECS + 1);
+    config.max_age_secs = MAX_SOURCE_AGE_SECS;
+    config.max_clock_drift_secs = MAX_CLOCK_DRIFT_SECS + 1;
     assert_eq!(
         proxy.try_set_proxy(&asset, &config),
         Err(Ok(ContractError::InvalidInput))
@@ -1447,8 +1375,11 @@ fn invalid_config_too_few_sources() {
 fn single_source_quorum_of_one_is_accepted_and_prices() {
     let (env, proxy, source, asset) = setup();
     let mut config = proxy.get_proxy(&asset).unwrap();
-    config.sources = Vec::from_array(&env, [config.sources.get(0).unwrap()]);
-    config.min_sources = 1;
+    let AggregatorConfig::MedianLow(median) = &mut config.aggregator else {
+        panic!("setup must configure MedianLow");
+    };
+    median.sources = Vec::from_array(&env, [median.sources.get(0).unwrap()]);
+    median.min_sources = 1;
     proxy.set_proxy(&asset, &config);
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
@@ -1467,7 +1398,7 @@ fn invalid_proxy_config_is_atomic_and_emits_nothing() {
     let cached = legacy_lastprice(&proxy, &asset);
     let events = contract_events(&env, &proxy.address);
     let mut invalid = configured.clone();
-    invalid.max_clock_drift_secs = None;
+    invalid.max_clock_drift_secs = MAX_CLOCK_DRIFT_SECS + 1;
 
     assert_eq!(
         proxy.try_set_proxy(&asset, &invalid),
@@ -1479,35 +1410,347 @@ fn invalid_proxy_config_is_atomic_and_emits_nothing() {
 }
 
 #[test]
-fn proxy_configuration_rejects_sources_with_too_many_decimals() {
-    let (_env, proxy, source, asset) = setup();
-    source.set_decimals(&19);
-    let config = proxy.get_proxy(&asset).unwrap();
-
-    assert_eq!(
-        proxy.try_set_proxy(&asset, &config),
-        Err(Ok(ContractError::InvalidInput))
+fn source_pin_and_source_io_admission_failures_are_atomic() {
+    let (env, proxy, source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &4);
+    proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
     );
+    source.set_price(&asset, &5_000_000_000, &100);
+    proxy.refresh(&asset);
+    let configured = proxy.get_proxy(&asset).unwrap();
+    let cached = proxy.aggregated_latest(&asset);
+    let history = proxy.aggregated_history(&asset, &MAX_HISTORY_RECORDS);
+    let breakers = stored_breakers(&env, &proxy.address, &asset);
+    let registered = proxy.registered_assets();
+    let events = contract_events(&env, &proxy.address);
+    let assert_rejected = |invalid: &ProxyConfig| {
+        assert_eq!(
+            proxy.try_set_proxy(&asset, invalid),
+            Err(Ok(ContractError::InvalidInput))
+        );
+        assert_eq!(proxy.get_proxy(&asset), Some(configured.clone()));
+        assert_eq!(proxy.aggregated_latest(&asset), cached);
+        assert_eq!(
+            proxy.aggregated_history(&asset, &MAX_HISTORY_RECORDS),
+            history
+        );
+        assert_eq!(stored_breakers(&env, &proxy.address, &asset), breakers);
+        assert_eq!(proxy.registered_assets(), registered);
+        assert_eq!(contract_events(&env, &proxy.address), events);
+    };
+    for expected_decimals in [9, 19] {
+        let mut invalid = configured.clone();
+        let AggregatorConfig::MedianLow(median) = &mut invalid.aggregator else {
+            panic!("setup must configure MedianLow");
+        };
+        let mut first = median.sources.get(0).unwrap();
+        first.expected_decimals = expected_decimals;
+        median.sources.set(0, first);
+        assert_rejected(&invalid);
+    }
+    let mut unavailable = configured.clone();
+    let AggregatorConfig::MedianLow(median) = &mut unavailable.aggregator else {
+        panic!("setup must configure MedianLow");
+    };
+    let mut first = median.sources.get(0).unwrap();
+    first.oracle = Address::generate(&env);
+    median.sources.set(0, first);
+    assert_rejected(&unavailable);
+
+    source.set_decimals(&19);
+    assert_rejected(&configured);
+}
+
+#[test]
+fn mutable_source_decimals_fail_quorum_and_explicit_repin_resets_aggregation() {
+    let (env, proxy, source, asset) = setup();
+    let AggregatorConfig::MedianLow(mut median) = proxy.get_proxy(&asset).unwrap().aggregator
+    else {
+        panic!("setup must configure MedianLow");
+    };
+    median.sources = median.sources.slice(0..2);
+    let mut config = median_config(median.sources, 2);
+    proxy.set_proxy(&asset, &config);
+    proxy.configure_breakers(&asset, &0, &4);
+    let first_id = proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
+    );
+    assert_eq!(first_id, 0);
+    source.clients[0].set_price(&asset, &10_000_000_000, &100);
+    source.clients[1].set_price(&asset, &20_000_000_000, &100);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+    let before = stored_breakers(&env, &proxy.address, &asset);
+    let history = proxy.aggregated_history(&asset, &MAX_HISTORY_RECORDS);
+
+    // Only the scale changes: permissionless refresh must not learn a new pin.
+    source.clients[0].set_decimals(&9);
+    assert!(matches!(
+        proxy.refresh(&asset),
+        RefreshStatus::ResolveFailed(_)
+    ));
+    assert_eq!(proxy.aggregated_latest(&asset), None);
+    assert_eq!(proxy.get_proxy(&asset), Some(config.clone()));
+    assert_eq!(stored_breakers(&env, &proxy.address, &asset), before);
+    assert_eq!(
+        proxy.aggregated_history(&asset, &MAX_HISTORY_RECORDS),
+        history
+    );
+
+    let AggregatorConfig::MedianLow(median) = &mut config.aggregator else {
+        panic!("test must configure MedianLow");
+    };
+    let mut first = median.sources.get(0).unwrap();
+    first.expected_decimals = 9;
+    median.sources.set(0, first);
+    proxy.set_proxy(&asset, &config);
+    let reset = stored_breakers(&env, &proxy.address, &asset);
+    assert!(reset.breakers().is_empty());
+    assert_eq!(reset.next_id(), 1);
+    assert_eq!(reset.accepted_history().capacity(), 0);
+    assert_eq!(reset.observed_history().capacity(), 0);
+    assert_eq!(proxy.get_cached(&asset).map(|entry| entry.updated_at), None);
+    assert_eq!(proxy.aggregated_history(&asset, &MAX_HISTORY_RECORDS), None);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+    assert_eq!(
+        proxy.aggregated_latest(&asset),
+        Some(NormalizedPrice {
+            mantissa: 10_000_000_000,
+            expo: -9,
+            timestamp: 100,
+        })
+    );
+    proxy.configure_breakers(&asset, &0, &4);
+    assert_eq!(
+        proxy.add_breaker(
+            &asset,
+            &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+                max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+            }),
+        ),
+        1
+    );
+}
+
+#[test]
+fn all_aggregation_methods_preserve_source_order_and_fail_closed() {
+    let (env, proxy, source, asset) = setup();
+    let AggregatorConfig::MedianLow(median) = proxy.get_proxy(&asset).unwrap().aggregator else {
+        panic!("setup must configure MedianLow");
+    };
+    let sources = median.sources.slice(0..2);
+    let reversed = Vec::from_array(&env, [sources.get(1).unwrap(), sources.get(0).unwrap()]);
+    for (aggregator, expected) in [
+        (
+            AggregatorConfig::MedianLow(MedianConfig {
+                sources: sources.clone(),
+                min_sources: 2,
+            }),
+            10_000_000_000,
+        ),
+        (
+            AggregatorConfig::MedianHigh(MedianConfig {
+                sources,
+                min_sources: 2,
+            }),
+            20_000_000_000,
+        ),
+        (AggregatorConfig::Priority(reversed), 20_000_000_000),
+    ] {
+        set_ledger(&env, 100);
+        let is_priority = matches!(&aggregator, AggregatorConfig::Priority(_));
+        let config = ProxyConfig {
+            aggregator,
+            max_age_secs: 30,
+            max_clock_drift_secs: 5,
+        };
+        source.clients[0].set_price(&asset, &10_000_000_000, &100);
+        source.clients[1].set_price(&asset, &20_000_000_000, &100);
+        proxy.set_proxy(&asset, &config);
+        assert_eq!(
+            contract_events(&env, &proxy.address),
+            vec![ProxySet {
+                asset: asset.clone(),
+                source_count: 2,
+                min_sources: if is_priority { 1 } else { 2 },
+            }
+            .to_xdr(&env, &proxy.address)]
+        );
+        let kernel = config.to_kernel();
+        let kernel_prices = kernel.sources().map(|descriptor| {
+            let value = PriceFeedClient::new(&env, &descriptor.oracle)
+                .lastprice(&descriptor.asset)
+                .unwrap();
+            Some(conversion::source_price_to_kernel(value, descriptor.expected_decimals).unwrap())
+        });
+        let mut reference_breakers: CircuitBreakerSet = CircuitBreakerSet::empty();
+        let expected_price = kernel
+            .resolve(
+                &mut reference_breakers,
+                kernel_prices,
+                Nanoseconds::from_secs(100),
+            )
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(expected_price.price, expected);
+        assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+        assert_eq!(
+            proxy.aggregated_latest(&asset),
+            Some(conversion::kernel_price_to_normalized(expected_price))
+        );
+
+        set_ledger(&env, 101);
+        source.clients[0].set_price(&asset, &10_000_000_000, &101);
+        source.clients[1].set_price(&asset, &20_000_000_000, &69);
+        let status = proxy.refresh(&asset);
+        if is_priority {
+            assert!(matches!(status, RefreshStatus::Accepted(_)));
+            assert_eq!(
+                legacy_lastprice(&proxy, &asset).unwrap().price,
+                10_000_000_000
+            );
+            source.clients[1].clear_price(&asset);
+            assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+        } else {
+            assert!(matches!(status, RefreshStatus::ResolveFailed(_)));
+            assert_eq!(proxy.aggregated_latest(&asset), None);
+        }
+        source.clients[0].clear_price(&asset);
+        source.clients[1].clear_price(&asset);
+        assert!(matches!(
+            proxy.refresh(&asset),
+            RefreshStatus::SourceUnavailable
+        ));
+        assert_eq!(proxy.aggregated_latest(&asset), None);
+    }
+}
+
+#[test]
+fn freshness_only_updates_clear_served_data_but_preserve_all_breaker_state() {
+    let (env, proxy, source, asset) = setup();
+    proxy.configure_breakers(&asset, &0, &4);
+    proxy.add_breaker(
+        &asset,
+        &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+        }),
+    );
+    source.set_price(&asset, &5_000_000_000, &100);
+    proxy.refresh(&asset);
+    let mut config = proxy.get_proxy(&asset).unwrap();
+    let breakers = stored_breakers(&env, &proxy.address, &asset);
+    let history = proxy.aggregated_history(&asset, &MAX_HISTORY_RECORDS);
+    let cached = proxy.aggregated_latest(&asset);
+    proxy.set_proxy(&asset, &config);
+    assert_eq!(stored_breakers(&env, &proxy.address, &asset), breakers);
+    assert_eq!(
+        proxy.aggregated_history(&asset, &MAX_HISTORY_RECORDS),
+        history
+    );
+    assert_eq!(proxy.aggregated_latest(&asset), cached);
+
+    config.max_age_secs = 31;
+    proxy.set_proxy(&asset, &config);
+    assert_eq!(stored_breakers(&env, &proxy.address, &asset), breakers);
+    assert!(proxy.get_cached(&asset).is_none());
+    assert_eq!(proxy.aggregated_history(&asset, &MAX_HISTORY_RECORDS), None);
+    assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+    let breakers = stored_breakers(&env, &proxy.address, &asset);
+    config.max_clock_drift_secs = 6;
+    proxy.set_proxy(&asset, &config);
+    assert_eq!(stored_breakers(&env, &proxy.address, &asset), breakers);
+    assert!(proxy.get_cached(&asset).is_none());
+    assert_eq!(proxy.aggregated_history(&asset, &MAX_HISTORY_RECORDS), None);
+}
+
+#[test]
+fn aggregation_method_order_and_quorum_changes_reset_without_reusing_ids() {
+    let (env, proxy, source, asset) = setup();
+    let AggregatorConfig::MedianLow(median) = proxy.get_proxy(&asset).unwrap().aggregator else {
+        panic!("setup must configure MedianLow");
+    };
+    let reversed = Vec::from_array(
+        &env,
+        [
+            median.sources.get(2).unwrap(),
+            median.sources.get(1).unwrap(),
+            median.sources.get(0).unwrap(),
+        ],
+    );
+    for (next_id, aggregator) in [
+        AggregatorConfig::MedianLow(MedianConfig {
+            sources: median.sources,
+            min_sources: 2,
+        }),
+        AggregatorConfig::MedianLow(MedianConfig {
+            sources: reversed.clone(),
+            min_sources: 2,
+        }),
+        AggregatorConfig::MedianHigh(MedianConfig {
+            sources: reversed.clone(),
+            min_sources: 2,
+        }),
+        AggregatorConfig::Priority(reversed),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        proxy.configure_breakers(&asset, &0, &4);
+        assert_eq!(
+            proxy.add_breaker(
+                &asset,
+                &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+                    max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
+                }),
+            ),
+            u32::try_from(next_id).unwrap()
+        );
+        source.set_price(&asset, &5_000_000_000, &100);
+        assert!(matches!(proxy.refresh(&asset), RefreshStatus::Accepted(_)));
+        proxy.set_manual_trip(&asset, &true, &None);
+        assert!(matches!(proxy.refresh(&asset), RefreshStatus::Blocked(1)));
+        let mut expected = stored_breakers(&env, &proxy.address, &asset);
+        assert_eq!(expected.accepted_history().len(), 1);
+        expected.reset_preserving_next_id();
+        proxy.set_proxy(
+            &asset,
+            &ProxyConfig {
+                aggregator,
+                max_age_secs: 30,
+                max_clock_drift_secs: 5,
+            },
+        );
+        assert_eq!(stored_breakers(&env, &proxy.address, &asset), expected);
+        assert_eq!(expected.next_id(), u32::try_from(next_id + 1).unwrap());
+        assert!(proxy.get_cached(&asset).is_none());
+        assert_eq!(proxy.aggregated_history(&asset, &MAX_HISTORY_RECORDS), None);
+    }
 }
 
 #[test]
 fn registry_cap_allows_reconfiguration_and_slot_reuse() {
     let (env, proxy, _source, initial_asset) = setup();
     let template = proxy.get_proxy(&initial_asset).unwrap();
+    let AggregatorConfig::MedianLow(median) = &template.aggregator else {
+        panic!("setup must configure MedianLow");
+    };
     let additional_config = |asset: &Asset| {
         let mut sources = Vec::new(&env);
-        for source in template.sources.iter() {
+        for source in median.sources.iter() {
             sources.push_back(SourceConfig {
                 oracle: source.oracle,
                 asset: asset.clone(),
+                expected_decimals: source.expected_decimals,
             });
         }
-        ProxyConfig {
-            sources,
-            min_sources: template.min_sources,
-            max_age_secs: template.max_age_secs,
-            max_clock_drift_secs: template.max_clock_drift_secs,
-        }
+        median_config(sources, median.min_sources)
     };
 
     for _ in 1..MAX_REGISTERED_ASSETS {
@@ -1783,32 +2026,6 @@ fn cumulative_breaker_rejects_stale_cache_baseline() {
 }
 
 #[test]
-fn legacy_proxy_without_freshness_bounds_adds_non_cumulative_breakers() {
-    let (env, proxy, _source, asset) = setup();
-    proxy.configure_breakers(&asset, &0, &2);
-    env.as_contract(&proxy.address, || {
-        let mut config = env
-            .storage()
-            .persistent()
-            .get::<_, ProxyConfig>(&DataKey::Proxy(asset.clone()))
-            .unwrap();
-        config.max_age_secs = None;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Proxy(asset.clone()), &config);
-    });
-
-    assert!(proxy
-        .try_add_breaker(
-            &asset,
-            &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-                max_relative_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
-            }),
-        )
-        .is_ok());
-}
-
-#[test]
 fn inert_breaker_zero_history() {
     let (_env, proxy, _source, asset) = setup();
 
@@ -1816,6 +2033,22 @@ fn inert_breaker_zero_history() {
         proxy.try_configure_breakers(&asset, &0, &0),
         Err(Ok(ContractError::InvalidInput))
     );
+}
+
+#[test]
+fn breaker_sample_interval_checked_conversion_rejects_overflow_atomically() {
+    let (env, proxy, _source, asset) = setup();
+    let largest_seconds = u64::MAX / 1_000_000_000;
+    proxy.configure_breakers(&asset, &largest_seconds, &MAX_HISTORY_RECORDS);
+    let before = stored_breakers(&env, &proxy.address, &asset);
+    assert_eq!(before.sample_interval_ns().as_secs(), largest_seconds);
+    let events = contract_events(&env, &proxy.address);
+    assert_eq!(
+        proxy.try_configure_breakers(&asset, &(largest_seconds + 1), &MAX_HISTORY_RECORDS),
+        Err(Ok(ContractError::InvalidInput))
+    );
+    assert_eq!(stored_breakers(&env, &proxy.address, &asset), before);
+    assert_eq!(contract_events(&env, &proxy.address), events);
 }
 
 #[test]
@@ -1946,18 +2179,6 @@ fn missing_config_lastprice_fails_closed_on_missing_proxy_config() {
 }
 
 #[test]
-fn missing_freshness_bounds_are_rejected() {
-    let (_env, proxy, _source, asset) = setup();
-    let mut config = proxy.get_proxy(&asset).unwrap();
-    config.max_age_secs = None;
-
-    assert_eq!(
-        proxy.try_set_proxy(&asset, &config),
-        Err(Ok(ContractError::InvalidInput))
-    );
-}
-
-#[test]
 fn missing_config_source_base_returns_none() {
     let (env, proxy, _source, _asset) = setup();
     env.as_contract(&proxy.address, || {
@@ -1999,17 +2220,10 @@ fn direct_governed_mutation_requires_governance_auth() {
     sources.push_back(SourceConfig {
         oracle: Address::generate(&env),
         asset: asset.clone(),
+        expected_decimals: 8,
     });
 
-    let result = proxy.try_set_proxy(
-        &asset,
-        &ProxyConfig {
-            sources,
-            min_sources: 1,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
-        },
-    );
+    let result = proxy.try_set_proxy(&asset, &median_config(sources, 1));
 
     assert!(result.is_err());
 }

@@ -633,6 +633,76 @@ mod tests {
     }
 
     #[test]
+    fn expected_id_replay_is_rejected_while_pending_and_after_body_removal() {
+        for execute in [false, true] {
+            let mut governance = governance();
+            let now = Nanoseconds::from_secs(1);
+            let operation = Op("original", Kind::Fast);
+            let proposal = governance
+                .create(0, operation.clone(), now, "alice", Nanoseconds::zero())
+                .unwrap();
+            let pending = governance.clone();
+            assert_eq!(
+                governance.create(0, operation.clone(), now, "alice", Nanoseconds::zero()),
+                Err(CreateError::IdOutOfOrder(IdOutOfOrderError {
+                    expected: 1,
+                    actual: 0,
+                }))
+            );
+            assert_eq!(governance, pending);
+
+            if execute {
+                governance.execute(0, &proposal, now).unwrap();
+            } else {
+                governance.cancel(0).unwrap();
+            }
+            let completed = governance.clone();
+            assert_eq!(
+                governance.create(0, operation, now, "alice", Nanoseconds::zero()),
+                Err(CreateError::IdOutOfOrder(IdOutOfOrderError {
+                    expected: 1,
+                    actual: 0,
+                }))
+            );
+            assert_eq!(governance, completed);
+            assert!(governance.active_ids().is_empty());
+        }
+    }
+
+    #[test]
+    fn contending_expected_id_preserves_the_first_creators_admission() {
+        let mut governance = governance();
+        let now = Nanoseconds::from_secs(1);
+        let admitted = governance
+            .create(
+                0,
+                Op("alice's request", Kind::Fast),
+                now,
+                "alice",
+                Nanoseconds::zero(),
+            )
+            .unwrap();
+        let before = governance.clone();
+        assert_eq!(
+            governance.create(
+                0,
+                Op("bob's different request", Kind::Slow),
+                now,
+                "bob",
+                Nanoseconds::zero(),
+            ),
+            Err(CreateError::IdOutOfOrder(IdOutOfOrderError {
+                expected: 1,
+                actual: 0,
+            }))
+        );
+        assert_eq!(governance, before);
+        assert_eq!(admitted.created_by, "alice");
+        assert_eq!(admitted.operation, Op("alice's request", Kind::Fast));
+        assert_eq!(governance.active_ids(), &[0]);
+    }
+
+    #[test]
     fn execute_enforces_ttl() {
         let mut governance = governance();
         let created_at = Nanoseconds::from_secs(1);

@@ -52,10 +52,14 @@ fn two_step_ownership_handoff_through_governance() {
     let action = GovernanceAction::SetProxy(
         eth,
         templar_proxy_oracle_soroban_common::ProxyConfig {
-            sources,
-            min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
+            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                templar_proxy_oracle_soroban_common::MedianConfig {
+                    sources,
+                    min_sources: 3,
+                },
+            ),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         },
     );
     let id_old = b.governance.next_proposal_id();
@@ -95,10 +99,14 @@ fn renounced_owner_cannot_mutate() {
         GovernanceAction::SetProxy(
             eth,
             templar_proxy_oracle_soroban_common::ProxyConfig {
-                sources,
-                min_sources: 3,
-                max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                    templar_proxy_oracle_soroban_common::MedianConfig {
+                        sources,
+                        min_sources: 3,
+                    },
+                ),
+                max_age_secs: 300,
+                max_clock_drift_secs: 60,
             },
         ),
     );

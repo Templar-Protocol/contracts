@@ -110,6 +110,9 @@ stellar contract deploy --network $NET --source $SRC --wasm-hash <GOV_HASH> -- \
 - `base` is the source-validation invariant — every source's `base()` must match
   it. Per-feed `decimals`/`resolution` are adapter-side, not here.
 - Tune per-kind maturity later with `SetActionTtl`.
+- The bootstrap Admin must authorize the constructor invocation. A newly granted
+  Admin must co-authorize its `SetRole` execution; governance itself cannot be an
+  Admin. Membership count alone does not establish a usable recovery signer.
 
 Hand the runtime's owner to governance via the two-step `Ownable` transfer:
 
@@ -123,6 +126,12 @@ inv --id $GOV -- execute_proposal --caller <ADMIN> --id <ID>
 inv --id $RT -- get_owner          # verify == $GOV
 inv --id $GOV -- proxy_oracle      # verify == $RT
 ```
+
+An executed `TransferOwnership(Address)` retains the maximum acceptance window.
+To cancel it, queue `{"CancelOwnershipTransfer":"<PENDING_OWNER>"}` and execute
+after the existing **TransferOwnership** timelock. This is Admin-only, requires
+the matching pending owner, and also permits cancellation of an expired but
+still-stored transfer. It does not emit a transfer-start event.
 
 Deploy one adapter per feed (`decimals ≤ 18`, `resolution ≠ 0`):
 
@@ -163,10 +172,17 @@ inv --id $GOV -- cancel_proposal  --caller <ADDR> --id <ID>   # frees a slot
 
 - `id` must equal `next_proposal_id`. `requested_ttl 0` uses the configured
   per-kind minimum; the effective TTL is `max(requested, minimum)`.
-- A 64-pending cap returns `InvalidInput`; `execute` before maturity returns
+- Queue-full returns `TooManyPendingProposals = 12`; delegates may occupy 63
+  slots and Admin may use slot 64. Execution before maturity returns
   `ProposalNotMature`. Execution is by id — no FIFO ordering.
 - Queries: `next_proposal_id`, `active_ids`, `get_proposal --id`,
   `get_operation_ttl --kind`, `get_effective_proposal_ttl --operation --requested_ttl`.
+- Persist the explicit ID and exact payload before submitting. An uncertain send
+  must reconcile its recorded transaction hash, not fetch a replacement ID.
+  Stale-ID rejection does not prove this caller succeeded: another caller may
+  have consumed it. If recorded evidence or a matching live proposal cannot
+  establish the outcome, report unknown and stop; do not execute a guessed body.
+  Rerunning an auto-selecting command is a new request, not a safe retry.
 
 `<ACTION_JSON>` is a `GovernanceAction` variant. Its `action_code` appears in the
 `ProposalSubmitted` event; Admin overrides every role.
@@ -193,55 +209,57 @@ inv --id $GOV -- cancel_proposal  --caller <ADDR> --id <ID>   # frees a slot
 Wrap each action in `create_proposal` + `execute_proposal` (examples show only
 the `--action` JSON).
 
-**Sources** — `SetProxy` / `RemoveProxy` (mainnet ids; on testnet use Reflector
-`CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63`, RedStone
-`CA7MY6TYNL5Z5H5FYGMN7YWSY3JIZG7LFY3DZ26EEGRBQ2UKTFWHD4ZJ` with its XLM SAC
-`CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC`):
+**Sources** — `SetProxy` / `RemoveProxy`. Resolve actual source addresses and
+query each source's base, asset key, and decimals before preparing the proposal.
+Placeholders below are not deployment identities. These are three alternative
+configurations, not three operations to apply in sequence:
 
 ```json
-{"SetProxy": [{"Other":"BTC"}, {
-  "sources": [{"oracle":"<SRC1>","asset":{"Other":"BTC"}},
-              {"oracle":"<SRC2>","asset":{"Other":"BTC"}},
-              {"oracle":"<SRC3>","asset":{"Other":"BTC"}},
-              {"oracle":"<SRC4>","asset":{"Other":"BTC"}}],
-  "min_sources": 3, "max_age_secs": 120, "max_clock_drift_secs": 0 }]}
-{"SetProxy": [{"Other":"XLM"}, {
-  "sources": [
-    {"oracle":"CAFJZQWSED6YAWZU3GWRTOCNPPCGBN32L7QV43XX5LZLFTK6JLN34DLN",
-     "asset":{"Other":"XLM"}},
-    {"oracle":"CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF",
-     "asset":{"Stellar":"CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA"}},
-    {"oracle":"<LZ>","asset":{"Other":"23"}}
-  ],
-  "min_sources":3,
-  "max_age_secs":46800,
-  "max_clock_drift_secs":60
-}]}
+{"SetProxy":[{"Other":"BTC"},{
+  "aggregator":{"MedianLow":{
+    "sources":[
+      {"oracle":"<SRC1>","asset":{"Other":"BTC"},"expected_decimals":8},
+      {"oracle":"<SRC2>","asset":{"Other":"BTC"},"expected_decimals":8}],
+    "min_sources":2}},
+  "max_age_secs":120,"max_clock_drift_secs":0}]}
+{"SetProxy":[{"Other":"BTC"},{
+  "aggregator":{"MedianHigh":{
+    "sources":[
+      {"oracle":"<SRC1>","asset":{"Other":"BTC"},"expected_decimals":8},
+      {"oracle":"<SRC2>","asset":{"Other":"BTC"},"expected_decimals":8}],
+    "min_sources":2}},
+  "max_age_secs":120,"max_clock_drift_secs":0}]}
+{"SetProxy":[{"Other":"BTC"},{
+  "aggregator":{"Priority":[
+    {"oracle":"<SRC2>","asset":{"Other":"BTC"},"expected_decimals":8},
+    {"oracle":"<SRC1>","asset":{"Other":"BTC"},"expected_decimals":8}]},
+  "max_age_secs":120,"max_clock_drift_secs":0}]}
 ```
 
-Configure 1–16 distinct oracle addresses and `min_sources ∈ [1, n]`.
-`max_age_secs` is capped at seven days, `max_clock_drift_secs` at one hour, and
-both are required. Reflector keys by symbol, RedStone by SAC address, and Lazer
-by feed id. One window filters every source, so it has to clear the slowest:
-Reflector timestamps use 300-second buckets and RedStone updates on 0.2%
-deviation or a 12-hour heartbeat, so a three-source set needs ~13h. With
-`min_sources = 3` one filtered source fails the refresh, so size the window to
-the slowest source and use breakers to constrain the exposure that buys.
+Configure 1–16 distinct oracle addresses. Medians have equal unit weights and
+`min_sources ∈ [1, n]`; Priority selects the first valid surviving source in
+order and has no quorum or weight fields. Different addresses do not prove
+independent providers or manipulation resistance. Admission requires the source's
+decimals to match its pin (≤ 18); refresh drops changed decimals or base before
+conversion. Changing a pin is an explicit aggregation change, not auto-repinning.
+Required `u64` freshness bounds are capped at seven days (`max_age_secs`) and one
+hour (`max_clock_drift_secs`); zero age is allowed as same-ledger policy.
+Reflector keys by symbol, RedStone by SAC address, and Lazer by feed id.
+Size freshness for observed provider cadence and keeper interval. Median quorum
+fails closed when too few sources survive; Priority fails when all are invalid.
 
-**Size every `max_age_secs` above that source's own update cadence plus the
-keeper interval, with margin.** An accepted cache expires when the *earliest*
-contributing source would have aged out, so a source sitting near its window
-edge leaves only the remainder: a Reflector price 580s old under a 600s window
-makes the aggregate readable for 20 seconds, and `aggregated_latest` and the
-adapter's `lastprice` return `None` until the next refresh. That is the
-intended fail-closed response to a source that has effectively stopped
-updating, but a consumer that panics on `None` — Blend's pool does — turns it
-into an outage, so the windows, not the fallback, are what keep reads alive.
+**Size `max_age_secs` for source cadence plus keeper interval, with margin.**
+Latest reads require both the cache-update age and aggregate-publication age to
+be at most this bound (inclusive; age uses saturating subtraction). A price near
+the window edge leaves only its remaining lifetime. Stale reads return `None`,
+not fallback data. The same check gates CumulativeChange baseline selection.
 
-Any changed `SetProxy` policy clears accepted history and cache.
-Freshness/cache-only changes retain breaker state; changing the ordered
-`(oracle, asset)` pairs or `min_sources` also clears breakers. `RemoveProxy`
-clears all state.
+Any changed `SetProxy` policy clears accepted history and cache. Freshness-only
+changes retain breakers; changing method, ordered `(oracle, asset,
+expected_decimals)` sources, or median quorum resets breakers while retaining
+the next-ID allocator. Identical configuration is a no-op. `RemoveProxy` rejects
+unknown assets and removes served state, retaining an allocator tombstone.
+Recreation cannot reuse old breaker IDs; absent-proxy views hide the tombstone.
 
 **Feeds a Blend pool reads: set `max_clock_drift_secs` to 0.** The pool reads this proxy
 through the pool oracle adapter, which rounds timestamps down to its resolution, so a
@@ -270,18 +288,35 @@ Kinds: `StepwiseChange` (1, sudden jumps), `MonotonicRun` (2, staged ramps),
 change from its immutable accepted baseline). Unenforced breakers still evaluate
 but a trip does not block the feed. `history_len` must cover every installed
 rule; undersized configurations are rejected. `MonotonicRun` requires
-`sample_interval_secs = 0` so every accepted step is evaluated. Rearm preserves
-both shared histories. To recover any breaker after a sustained legitimate move,
-disable enforcement, refresh an accepted price, rearm, then re-enable enforcement.
-To intentionally establish a new cumulative baseline, remove the breaker,
-complete a successful refresh, then add it again. Every persisted breaker set is
-semantically valid. An invalid stored set is unreachable; recover from genuine
-corruption with `remove_proxy` followed by `set_proxy`.
+`sample_interval_secs = 0` so every accepted step is evaluated. Window/streak
+rules count samples, not elapsed wall-clock intervals; cadence changes and long
+gaps can conservatively trip them. Relative rules cannot manufacture a trusted
+first baseline. CumulativeChange installation requires a fresh accepted price.
+Rearm preserves both shared histories. `ArmedAfter` intentionally permits
+privileged recovery during its cooldown; it is not a fail-closed waiting period.
+For a deliberate recovery, review the rule, disable enforcement, refresh, rearm,
+and re-enable enforcement. This does not change an immutable cumulative baseline:
+to rebase, remove that rule, successfully refresh, then add it again.
+Missing/corrupt decoder state is not an empty set and must never silently reset
+an unknown allocator. Archived state/tombstones require normal ledger restoration.
 
 **Roles** — `SetRole(account, role, set)` for `Admin`, `ManualTripper`,
 `CircuitBreakerOperator`, `ProxyConfigurationManager`. The last `Admin` cannot be
 revoked. Inspect on governance: `has_role --account --role`, `list_role --role`,
 `get_roles --account`.
+Cancellation is creator-or-current-Admin, independent of the creator's remaining
+action role; same-role peers may execute but cannot veto each other's proposals.
+Revocation cancels that creator's queued operations only when their remaining
+roles no longer authorize them. Proposals have no expiry: maturity is snapshotted
+at creation, so increasing a timelock does not retroactively delay existing ones.
+Delegates can occupy at most 63 of the 64 pending slots; Admin can use the reserve.
+This bounds admission but does not guarantee scheduling fairness.
+The fresh-stack governance stores unchanged proposal values in bounded persistent
+groups so a full-queue revocation can purge atomically within ledger entry limits.
+This storage is incompatible with previous governance deployments; no in-place
+migration is provided. An archived proposal group requires normal ledger
+restoration before cancellation/execution; a missing body never permits silently
+dropping the active ID.
 
 ## 6. Refresh cadence
 
@@ -315,6 +350,11 @@ advance history. A non-advancing candidate still serves the prior aggregate and
 replace the accepted status.
 `aggregated_history` remains a monotonic source-time audit trail but is hidden
 while a manual or enforced breaker blocks the asset.
+Adapter `prices` projects newest-first distinct resolution buckets, skipping
+unconvertible records; parent history remains chronological and
+freshness-independent. `price` buckets the requested timestamp and selects the
+newest convertible record in that bucket: at resolution 10, history times
+`[100, 101, 110]` project to buckets `[110, 100]`, and request 109 resolves 100.
 
 ## 7. TTL extension
 
@@ -325,6 +365,22 @@ inv --id $GOV -- extend_ttl
 inv --id $BATCH -- extend_ttl_many --oracle $RT --assets '[{"Other":"XLM"},{"Other":"USDC"}]'
 inv --id $BATCH -- extend_ttl_contracts --contracts '["'$GOV'","'$AD'","'$LZ'"]'
 ```
+
+Also page **every role** (`Admin`, `ManualTripper`, `CircuitBreakerOperator`,
+`ProxyConfigurationManager`) through governance:
+
+```bash
+inv --id $GOV -- extend_role_ttl --role '"Admin"' --offset 0 --count 16
+# If the result is Some(next_offset), repeat for that role with that exact
+# returned offset until None, then do the same for each remaining role.
+```
+
+Each page permits `1 <= count <= 16` and renews the role count, member indices,
+and membership entries. Ordinary governance `extend_ttl` additionally renews
+`ExistingRoles`, instance state, and pending proposal bodies; **both** calls are
+required. The batcher contract-TTL call includes ordinary governance maintenance
+but does not page role members. Membership can change between pages: sweep
+periodically rather than assume a transaction-wide membership snapshot.
 Every TTL entrypoint is permissionless: the invoker pays the transaction fee, but no role or authorization is required. The batcher also renews each target's (and its own) instance and code entries, so the WASM code cannot be archived out from under live instances.
 
 The runtime accepts only registered assets. Once the proxy exists, it renews every
@@ -335,23 +391,29 @@ asset registry does not prevent maintenance.
 
 Compact typed events. Topics are indexed; alert on anything unexpected.
 
+The companion detail events and history projection below specify the remediation
+release surface. Their implementation and integrated verification are required
+release gates; this document alone is not evidence that those gates passed.
 **Runtime**
 
 | Event | Topics | Payload | Meaning / response |
 |-------|--------|---------|--------------------|
 | `RefreshSuccess` | asset | mantissa, expo, timestamp | source-time price accepted for cache/history |
 | `RefreshEvaluated` | asset | mantissa, expo, timestamp | candidate accepted by breakers but not advanced; paired with the served `RefreshSuccess` |
-| `RefreshFailure` | asset | code | failed refresh — 1 aggregation/quorum, 3 internal storage state, 5 all sources down, 6 unknown asset |
+| `RefreshFailure` | asset | code | 101 aggregation length mismatch, 102 insufficient valid sources, 3 storage failure, 5 source unavailable, 6 unknown asset |
+| `AggregationFailureDetail` | asset | code, expected, actual | adjacent to aggregation failure only; required aligned-vector length or source quorum and actual count |
 | `CacheBlocked` | asset | reason_code | valid price blocked — 1 manual, 2 automatic breaker |
+| `CacheBlockedDetail` | asset | blocking_breaker_ids | adjacent on every blocked refresh, including no-source/already-blocked paths; empty for manual trip |
 | `CircuitBreakerConfigSet` | asset | sample_interval_secs, history_len | breaker set reconfigured |
 | `CircuitBreakerAdded` | asset, breaker_id | breaker_kind (1/2/3/4) | breaker added |
+| `CircuitBreakerAddedDetail` | asset, breaker_id | config, baseline | full typed `CircuitBreakerConfig`; normalized baseline present iff cumulative |
 | `CircuitBreakerRemoved` | asset, breaker_id | — | breaker removed; state cleared, cache invalidated |
 | `CircuitBreakerEnforcementSet` | asset, breaker_id | is_enforced | enforcement toggled |
 | `CircuitBreakerRearmed` | asset, breaker_id | armed_at_secs | breaker rearmed |
 | `CircuitBreakerTripped` | asset, breaker_id | tripped_at_secs, price, expo, publish_timestamp_secs, is_enforced | automatic trip; blocks iff `is_enforced` |
 | `ManualTripSet` | asset | is_manually_tripped, metadata | governed trip/untrip — correlate the operator via the governance proposal |
-| `ProxySet` | asset | source_count, min_sources | changed ordered `(oracle, asset)` pairs or `min_sources` clear breaker state, history, and cache; other config changes clear history and cache |
-| `ProxyRemoved` | asset | — | proxy + all state cleared; downstream now reads `None` |
+| `ProxySet` | asset | source_count, min_sources | median configured quorum, or 1 for Priority; aggregation changes reset breakers preserving allocator, all policy changes clear history/cache |
+| `ProxyRemoved` | asset | — | served state removed, allocator tombstone retained; downstream now reads `None` |
 | `ContractUpgraded` | — | new_wasm_hash | runtime code swapped — high impact, verify |
 | `TtlExtended` | asset | — | runtime `extend_ttl(asset)` ran |
 
@@ -389,14 +451,30 @@ A trip invalidates the cache immediately; `aggregated_latest` and adapter
 
 ## 10. Incident — source outage
 
-`RefreshFailure code 5` = all sources down while unblocked; `code 1` = fewer
-than `min_sources` positive-weight sources responded; and `code 2` = a breaker
-rejected the aggregate. A pre-existing manual or enforced breaker reports
-`CacheBlocked` instead. Every failure status replaces the cached result,
-including source and quorum failures, so downstream reads fail closed until a
-later accepted refresh.
+`RefreshFailure code 5` means no source is available while unblocked; `102`
+means aggregation has too few valid sources (inspect companion expected/actual
+counts); `101` is an aligned-input length mismatch and requires investigation.
+Manual and automatic blocking use `CacheBlocked` reason 1 and 2 respectively,
+with exact IDs in `CacheBlockedDetail`. Every failure replaces the cached
+result; downstream reads fail closed until a later accepted refresh.
 
 ## 11. Upgrade
+**This release is fresh-stack-only for runtime/governance.** Unified aggregation
+and decimal-pin XDR plus eight fixed proposal groups of up to eight unchanged
+bodies are incompatible with previous stacks. In-place migration is skipped;
+leave existing deployments unchanged. There is no old decoder or hidden default.
+Deploy matching new contracts, prove reciprocal governance/runtime wiring,
+complete two-step ownership handoff, authenticate the new Admin, verify adapter
+parent/asset/base and parent `source_base`, then harden production timelocks after
+deliberate zero-TTL bootstrap. Provider addresses/catalog entries do not establish
+live proxy identities.
+
+The calls below describe existing code-swap entrypoints, **not authorization to
+install this release over old state**. Governance has no self-upgrade and runtime
+has no migrate endpoint. An independent adapter upgrade requires an exact
+old/new compiled-Wasm swap proof with preserved config; `tests/upgrade.rs` is not
+that proof. No production upgrade approval is implied.
+
 
 Run the clean-source release gate first and cross-check the validated manifest
 SHA-256 against the installed artifact. Zero WASM hashes are rejected; there is
@@ -418,9 +496,9 @@ stellar contract deploy --network $NET --source $SRC --wasm-hash <BATCHER_HASH> 
 # then point the keeper at the new address; the old instance simply expires.
 ```
 
-The Lazer source's stored prices survive its upgrade (persistent storage is
-untouched); a new version must keep reading `StoredPrice` as stored. Rolling it
-back is the same call with the previous hash.
+Any independently upgraded Lazer source must preserve decoding of its stored
+prices. Prove exact old/new artifact compatibility before either upgrade or
+rollback; an unchanged entrypoint alone is insufficient evidence.
 
 ## 12. Rollback
 
@@ -430,7 +508,8 @@ returning `None` for assets that had accepted prices; governance proposals
 failing to submit/execute/cancel; `extend_ttl` erroring; an unexpected ownership
 transfer; or an optimized WASM over budget.
 
-Procedure: install the previous WASM (identify it by the SHA-256 in the prior
-manifest), upgrade back to its hash, and verify `refresh` succeeds. Keep the
-previous manifest and artifacts until the new version has been stable for 48
-hours.
+For an independently proven layout-compatible upgrade, identify the previous
+artifact by its manifest SHA-256 and use only the tested reverse swap, then
+verify reads and refresh. Never install old runtime/governance code over the new
+incompatible fresh-stack state. Replacement-stack cutover/rollback requires a
+separate operator-authorized plan; keep manifests and exact artifacts.

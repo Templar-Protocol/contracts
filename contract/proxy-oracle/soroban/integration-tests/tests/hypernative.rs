@@ -77,10 +77,14 @@ fn hypernative_key_cannot_do_anything_else() {
     let setproxy = GovernanceAction::SetProxy(
         other_asset,
         templar_proxy_oracle_soroban_common::ProxyConfig {
-            sources,
-            min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
+            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                templar_proxy_oracle_soroban_common::MedianConfig {
+                    sources,
+                    min_sources: 3,
+                },
+            ),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         },
     );
 

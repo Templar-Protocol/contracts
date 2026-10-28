@@ -27,6 +27,12 @@ serialize! {
     }
 }
 
+/// Relative-change thresholds are strictly positive and at most one.
+#[must_use]
+pub fn is_valid_relative_change(value: templar_primitives::Decimal) -> bool {
+    value != templar_primitives::Decimal::ZERO && value <= templar_primitives::Decimal::ONE
+}
+
 impl CircuitBreaker {
     fn rule(&self) -> &dyn CircuitBreakerRule {
         match self {
@@ -48,19 +54,15 @@ impl CircuitBreakerRule for CircuitBreaker {
         sample_interval_ns: templar_primitives::Nanoseconds,
         history_len: u32,
     ) -> bool {
-        let valid_threshold = |threshold: templar_primitives::Decimal| {
-            threshold != templar_primitives::Decimal::ZERO
-                && threshold <= templar_primitives::Decimal::ONE
-        };
         match self {
             Self::StepwiseChange(rule) => {
-                history_len >= 2 && valid_threshold(rule.max_relative_change)
+                history_len >= 2 && is_valid_relative_change(rule.max_relative_change)
             }
             Self::MonotonicRun(rule) => {
                 rule.max_streak > 0
                     && rule.max_streak < history_len
                     && sample_interval_ns == templar_primitives::Nanoseconds::zero()
-                    && valid_threshold(rule.min_relative_step_change)
+                    && is_valid_relative_change(rule.min_relative_step_change)
             }
             Self::WindowedChangeDelta(rule) => {
                 rule.window_len >= 2
@@ -70,12 +72,12 @@ impl CircuitBreakerRule for CircuitBreaker {
                         .checked_add(1)
                         .and_then(|windows| rule.window_len.checked_mul(windows))
                         .is_some_and(|required| required <= history_len)
-                    && valid_threshold(rule.max_relative_mean_change)
+                    && is_valid_relative_change(rule.max_relative_mean_change)
             }
             Self::CumulativeChange(rule) => {
                 history_len >= 1
                     && rule.baseline.has_strictly_positive_confidence_interval()
-                    && valid_threshold(rule.max_relative_change)
+                    && is_valid_relative_change(rule.max_relative_change)
             }
         }
     }

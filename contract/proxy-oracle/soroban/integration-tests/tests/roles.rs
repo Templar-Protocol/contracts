@@ -24,10 +24,14 @@ fn sample_setproxy(b: &Bootstrap, label: &str) -> GovernanceAction {
     GovernanceAction::SetProxy(
         asset,
         ProxyConfig {
-            sources,
-            min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
+            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                templar_proxy_oracle_soroban_common::MedianConfig {
+                    sources,
+                    min_sources: 3,
+                },
+            ),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         },
     )
 }

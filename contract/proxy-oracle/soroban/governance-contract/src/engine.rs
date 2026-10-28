@@ -14,9 +14,9 @@ use templar_proxy_oracle_soroban_governance_common::{
 };
 
 use crate::{
-    events::ActionTtlSet,
+    events::{ActionTtlSet, ProposalRevoked},
     roles,
-    storage::{DataKey, KernelGovernance},
+    storage::{load_proposal, remove_proposal, DataKey, KernelGovernance},
 };
 
 pub fn now(env: &Env) -> Result<Nanoseconds, GovernanceError> {
@@ -33,12 +33,36 @@ pub fn require_authorized(
     action: &GovernanceAction,
 ) -> Result<(), GovernanceError> {
     caller.require_auth();
-    let required = action.required_role();
-    if roles::has_role(env, caller, Role::Admin) || roles::has_role(env, caller, required) {
+    if is_authorized_for(env, caller, action) {
         Ok(())
     } else {
         Err(GovernanceError::Unauthorized)
     }
+}
+
+pub fn is_authorized_for(env: &Env, account: &Address, action: &GovernanceAction) -> bool {
+    roles::has_role(env, account, Role::Admin)
+        || roles::has_role(env, account, action.required_role())
+}
+
+fn purge_unauthorized(
+    env: &Env,
+    governance: &mut KernelGovernance,
+    account: &Address,
+) -> Result<(), GovernanceError> {
+    let mut index = 0;
+    while let Some(&id) = governance.active_ids().get(index) {
+        let proposal = load_proposal(env, id).ok_or(GovernanceError::ProposalNotFound)?;
+        if proposal.created_by == *account && !is_authorized_for(env, account, &proposal.operation)
+        {
+            governance.cancel(id).map_err(crate::map_cancel_error)?;
+            remove_proposal(env, id);
+            ProposalRevoked { id }.publish(env);
+        } else {
+            index += 1;
+        }
+    }
+    Ok(())
 }
 
 pub fn effective_ttl(
@@ -180,6 +204,15 @@ pub fn execute_action(
                 ),
             )
         }
+        GovernanceAction::CancelOwnershipTransfer(pending_owner) => invoke_runtime_call(
+            env,
+            &proxy,
+            "transfer_ownership",
+            Vec::from_array(
+                env,
+                [pending_owner.clone().into_val(env), 0_u32.into_val(env)],
+            ),
+        ),
         GovernanceAction::AcceptOwnership => {
             invoke_runtime_call(env, &proxy, "accept_ownership", Vec::new(env))
         }
@@ -199,10 +232,12 @@ pub fn execute_action(
         }
         GovernanceAction::SetRole(account, role, set) => {
             if *set {
-                roles::grant(env, account, *role, caller);
-                Ok(())
+                roles::grant(env, account, *role, caller)
             } else {
-                roles::revoke(env, account, *role, caller)
+                if roles::revoke(env, account, *role, caller)? {
+                    purge_unauthorized(env, governance, account)?;
+                }
+                Ok(())
             }
         }
         GovernanceAction::Upgrade(new_wasm_hash) => invoke_runtime_call(
@@ -239,8 +274,8 @@ fn invoke_runtime_call(
             sub_invocations: Vec::new(env),
         })],
     ));
-    let result: Result<Val, ContractError> = env.invoke_contract(proxy, &fn_name, args);
-    result
-        .map(|_| ())
-        .map_err(|_| GovernanceError::RuntimeFailed)
+    match env.try_invoke_contract::<Val, ContractError>(proxy, &fn_name, args) {
+        Ok(Ok(_)) => Ok(()),
+        _ => Err(GovernanceError::RuntimeFailed),
+    }
 }

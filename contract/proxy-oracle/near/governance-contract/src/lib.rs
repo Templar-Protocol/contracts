@@ -57,12 +57,16 @@ impl Contract {
     /// Gas for the `migrate` call batched onto a `SelfUpgrade` self-deploy of this contract.
     pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
 
+    fn is_authorized_for(&self, account_id: &AccountId, operation: &Operation) -> bool {
+        <Self as Rbac>::has_role(account_id, &Role::Admin)
+            || <Self as Rbac>::has_role(account_id, &operation.required_role(self.header.ttls()))
+    }
+
     fn assert_authorized(&self, operation: &Operation) {
-        let required = operation.required_role(self.header.ttls());
-        let caller = env::predecessor_account_id();
-        let has_role = <Self as Rbac>::has_role(&caller, &Role::Admin)
-            || <Self as Rbac>::has_role(&caller, &required);
-        require!(has_role, "Caller is not authorized for this operation");
+        require!(
+            self.is_authorized_for(&env::predecessor_account_id(), operation),
+            "Caller is not authorized for this operation"
+        );
     }
 
     fn assert_can_set_role(account_id: &AccountId, role: Role, set: bool) {
@@ -79,6 +83,33 @@ impl Contract {
         u32::try_from(id).unwrap_or_else(|_| env::panic_str("Proposal ID exceeds u32"))
     }
 
+    fn cancel_proposal_inner(&mut self, id: u32) {
+        // Load the body before changing the ledger: a missing/corrupt body is an error.
+        let proposal = self.proposals.get(&id).unwrap_or_reject();
+        let kind = proposal.operation.kind();
+        let method = proposal.operation.method();
+        self.header.cancel(u64::from(id)).unwrap_or_reject();
+        self.proposals.remove(&id).unwrap_or_reject();
+        Event::Cancelled { id, kind, method }.emit();
+    }
+
+    fn purge_unauthorized_proposals(&mut self, account_id: &AccountId) {
+        let mut index = 0;
+        // Cancellation shifts the next active ID into the current position. The ledger is capped
+        // at 64 entries; no second index or copy of the proposal bodies is needed.
+        while let Some(&id) = self.header.active_ids().get(index) {
+            let id = Self::id_to_u32(id);
+            let proposal = self.proposals.get(&id).unwrap_or_reject();
+            if &proposal.created_by == account_id
+                && !self.is_authorized_for(account_id, &proposal.operation)
+            {
+                self.cancel_proposal_inner(id);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
     /// Returns a borrow so the borsh entrypoint never copies the payload it exists to carry cheaply.
     fn create_proposal_inner(
         &mut self,
@@ -91,6 +122,14 @@ impl Contract {
 
         if requested_ttl > MAX_PROPOSAL_TTL {
             env::panic_str("Proposal TTL exceeds maximum allowed");
+        }
+        if !<Self as Rbac>::has_role(&env::predecessor_account_id(), &Role::Admin)
+            && self.header.active_ids().len()
+                >= usize::try_from(self.header.max_pending_proposals().saturating_sub(1))
+                    .unwrap_or(usize::MAX)
+        {
+            operation.validate_on_create().unwrap_or_reject();
+            env::panic_str("too many pending proposals");
         }
         let proposal = self
             .header
@@ -170,17 +209,13 @@ impl ProxyGovernanceInterface for Contract {
     #[payable]
     fn cancel_proposal(&mut self, id: u32) {
         near_sdk::assert_one_yocto();
-        let operation = self.proposals.get(&id).unwrap_or_reject().operation.clone();
-        self.assert_authorized(&operation);
-
-        self.header.cancel(u64::from(id)).unwrap_or_reject();
-        let proposal = self.proposals.remove(&id).unwrap_or_reject();
-        Event::Cancelled {
-            id,
-            kind: proposal.operation.kind(),
-            method: proposal.operation.method(),
-        }
-        .emit();
+        let proposal = self.proposals.get(&id).unwrap_or_reject();
+        let caller = env::predecessor_account_id();
+        require!(
+            proposal.created_by == caller || <Self as Rbac>::has_role(&caller, &Role::Admin),
+            "Only the proposal creator or an admin can cancel"
+        );
+        self.cancel_proposal_inner(id);
     }
 
     #[payable]
@@ -237,8 +272,9 @@ impl ProxyGovernanceInterface for Contract {
                     Self::assert_can_set_role(&account_id, role, set);
                     if set {
                         <Self as Rbac>::add_role(self, &account_id, &role);
-                    } else {
+                    } else if <Self as Rbac>::has_role(&account_id, &role) {
                         <Self as Rbac>::remove_role(self, &account_id, &role);
+                        self.purge_unauthorized_proposals(&account_id);
                     }
                 }
                 ReflexiveOperation::SelfUpgrade { code, migrate_args } => {

@@ -118,15 +118,19 @@ fn one_manipulated_source_cannot_move_the_median() {
 }
 
 #[test]
-fn freshness_without_max_age_is_rejected() {
+fn excessive_freshness_is_rejected_without_reserving_a_proposal() {
     let b = Bootstrap::new();
     let action = GovernanceAction::SetProxy(
         b.asset_btc.clone(),
         ProxyConfig {
-            sources: b.source_configs(&b.asset_btc),
-            min_sources: 3,
-            max_age_secs: None,
-            max_clock_drift_secs: Some(60),
+            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                templar_proxy_oracle_soroban_common::MedianConfig {
+                    sources: b.source_configs(&b.asset_btc),
+                    min_sources: 3,
+                },
+            ),
+            max_age_secs: u64::MAX,
+            max_clock_drift_secs: 60,
         },
     );
 
@@ -135,6 +139,8 @@ fn freshness_without_max_age_is_rejected() {
         .governance
         .try_create_proposal(&b.admin, &id, &action, &0)
         .is_err());
+    assert_eq!(b.governance.next_proposal_id(), id);
+    assert!(b.governance.get_proposal(&id).is_none());
     assert!(b.runtime.get_proxy(&b.asset_btc).is_none());
 }
 

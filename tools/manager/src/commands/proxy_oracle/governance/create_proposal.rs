@@ -33,6 +33,7 @@ pub struct CreateProposal {
     #[command(flatten)]
     pub(crate) target: GovernanceTarget,
     /// Proposal id; fetched from the governance contract's next id when omitted
+    /// Re-running without this flag selects a new request; retry an uncertain send with its original ID.
     #[arg(long, value_name = "ID")]
     id: Option<u32>,
     /// Requested TTL, clamped up to the operation's minimum (e.g. `10s`, `100ns`).
@@ -85,6 +86,15 @@ impl CreateProposal {
             ProposalOperation::Oracle {
                 op: OracleOp::AddCircuitBreaker(a),
             } if a.breaker_id.is_none() => Some(a.price_id),
+            _ => None,
+        }
+    }
+
+    pub fn breaker_id(&self) -> Option<u32> {
+        match &self.operation {
+            ProposalOperation::Oracle {
+                op: OracleOp::AddCircuitBreaker(args),
+            } => args.breaker_id,
             _ => None,
         }
     }

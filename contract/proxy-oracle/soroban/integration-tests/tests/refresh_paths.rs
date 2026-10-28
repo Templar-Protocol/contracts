@@ -13,13 +13,15 @@
 //! B3: each registered asset refreshes in its own transaction
 
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{contract, contractimpl, Address, Bytes, Env, Symbol};
 use templar_proxy_oracle_soroban_common::{
-    Asset, PriceData, PriceFeedTrait, ProxyConfig, SourceConfig,
+    AggregatorConfig, Asset, CircuitBreakerConfig, MedianConfig, PriceData, PriceFeedTrait,
+    ProxyConfig, SorobanDecimal, SourceConfig, StepwiseChangeConfig,
 };
 use templar_proxy_oracle_soroban_contract::RefreshStatus;
 use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
-use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
+use templar_proxy_oracle_soroban_integration_tests::common::{ledger, Bootstrap, MockOracleClient};
 
 #[test]
 fn healthy_refresh_propagates_to_sep40_adapter() {
@@ -56,10 +58,14 @@ fn add_feed(b: &Bootstrap, asset: &Asset) {
         GovernanceAction::SetProxy(
             asset.clone(),
             ProxyConfig {
-                sources: b.source_configs(asset),
-                min_sources: 3,
-                max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                    templar_proxy_oracle_soroban_common::MedianConfig {
+                        sources: b.source_configs(asset),
+                        min_sources: 3,
+                    },
+                ),
+                max_age_secs: 300,
+                max_clock_drift_secs: 60,
             },
         ),
     );
@@ -195,6 +201,7 @@ fn hostile_source_cannot_abort_a_separate_asset_refresh() {
         SourceConfig {
             oracle: hostile_oracle,
             asset: eth.clone(),
+            expected_decimals: 8,
         },
     );
     b.submit_and_execute(
@@ -202,13 +209,263 @@ fn hostile_source_cannot_abort_a_separate_asset_refresh() {
         GovernanceAction::SetProxy(
             eth.clone(),
             ProxyConfig {
-                sources,
-                min_sources: 3,
-                max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                    templar_proxy_oracle_soroban_common::MedianConfig {
+                        sources,
+                        min_sources: 3,
+                    },
+                ),
+                max_age_secs: 300,
+                max_clock_drift_secs: 60,
             },
         ),
     );
     b.push_upstream_price(&eth, 2_000_000_000, 100);
     b.runtime.refresh(&eth);
+}
+
+fn two_source_config(b: &Bootstrap, method: u32) -> ProxyConfig {
+    let mut sources = b.source_configs(&b.asset_btc);
+    let _ = sources.pop_back();
+    let aggregator = match method {
+        0 => AggregatorConfig::MedianLow(MedianConfig {
+            sources,
+            min_sources: 2,
+        }),
+        1 => AggregatorConfig::MedianHigh(MedianConfig {
+            sources,
+            min_sources: 2,
+        }),
+        2 => {
+            // Ordered fallback: the second fixture carries the larger price.
+            let first = sources.pop_front().unwrap();
+            sources.push_back(first);
+            AggregatorConfig::Priority(sources)
+        }
+        _ => unreachable!(),
+    };
+    ProxyConfig {
+        aggregator,
+        max_age_secs: 300,
+        max_clock_drift_secs: 60,
+    }
+}
+
+#[test]
+fn governed_equal_weight_methods_reach_sep40_and_fail_closed() {
+    for (method, expected) in [
+        (0, 10_000_000_000_i128),
+        (1, 20_000_000_000),
+        (2, 20_000_000_000),
+    ] {
+        let b = Bootstrap::new();
+        let config = two_source_config(&b, method);
+        let id = b.governance.next_proposal_id();
+        b.governance.create_proposal(
+            &b.admin,
+            &id,
+            &GovernanceAction::SetProxy(b.asset_btc.clone(), config),
+            &0,
+        );
+        b.governance.execute_proposal(&b.admin, &id);
+        b.push_upstream_prices(&b.asset_btc, [10_000_000_000, 20_000_000_000, 0], 100);
+        assert!(matches!(
+            b.refresh_one(&b.asset_btc),
+            RefreshStatus::Accepted(_)
+        ));
+        assert_eq!(b.adapter.lastprice(&b.asset_btc).unwrap().price, expected);
+
+        // Only the first fixture remains fresh. Both medians lose quorum,
+        // whereas Priority skips its stale first choice and serves the second.
+        ledger::advance_secs(&b.env, 301);
+        b.upstream.set_price(&b.asset_btc, &10_000_000_000, &401);
+        let status = b.refresh_one(&b.asset_btc);
+        if method == 2 {
+            assert!(matches!(status, RefreshStatus::Accepted(_)));
+            assert_eq!(
+                b.adapter.lastprice(&b.asset_btc).unwrap().price,
+                10_000_000_000
+            );
+        } else {
+            assert!(matches!(status, RefreshStatus::ResolveFailed(_)));
+            assert!(b.adapter.lastprice(&b.asset_btc).is_none());
+        }
+        ledger::advance_secs(&b.env, 301);
+        assert!(!matches!(
+            b.refresh_one(&b.asset_btc),
+            RefreshStatus::Accepted(_)
+        ));
+        assert!(b.adapter.lastprice(&b.asset_btc).is_none());
+    }
+}
+
+#[test]
+fn mutable_source_scale_is_pinned_and_deliberate_repin_resets_without_reusing_ids() {
+    let b = Bootstrap::new();
+    let mut config = two_source_config(&b, 0);
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::SetProxy(b.asset_btc.clone(), config.clone()),
+    );
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::ConfigureBreakers(b.asset_btc.clone(), 0, 8),
+    );
+    let rule = CircuitBreakerConfig::StepwiseChange(StepwiseChangeConfig {
+        max_relative_change: SorobanDecimal::from_decimal(
+            &b.env,
+            templar_primitives::Decimal::ONE_HALF,
+        ),
+    });
+    for _ in 0..2 {
+        b.submit_and_execute(
+            &b.admin,
+            GovernanceAction::AddBreaker(b.asset_btc.clone(), rule.clone()),
+        );
+    }
+    b.push_upstream_prices(&b.asset_btc, [10_000_000_000, 20_000_000_000, 0], 100);
+    assert!(matches!(
+        b.refresh_one(&b.asset_btc),
+        RefreshStatus::Accepted(_)
+    ));
+    assert!(b.runtime.aggregated_history(&b.asset_btc, &8).is_some());
+
+    // Only the declared scale changes: the source mantissa is untouched.
+    b.upstream.set_decimals(&9);
+    assert!(matches!(
+        b.refresh_one(&b.asset_btc),
+        RefreshStatus::ResolveFailed(_)
+    ));
+    assert!(b.adapter.lastprice(&b.asset_btc).is_none());
+    assert_eq!(b.runtime.get_proxy(&b.asset_btc), Some(config.clone()));
+    assert_eq!(
+        b.runtime
+            .get_breaker_set_view(&b.asset_btc)
+            .unwrap()
+            .next_id,
+        2
+    );
+
+    let AggregatorConfig::MedianLow(median) = &mut config.aggregator else {
+        unreachable!()
+    };
+    let mut source = median.sources.get(0).unwrap();
+    source.expected_decimals = 9;
+    median.sources.set(0, source);
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::SetProxy(b.asset_btc.clone(), config.clone()),
+    );
+    assert_eq!(b.runtime.get_proxy(&b.asset_btc), Some(config));
+    assert!(b.runtime.get_cached(&b.asset_btc).is_none());
+    assert!(b.runtime.aggregated_history(&b.asset_btc, &8).is_none());
+    let reset = b.runtime.get_breaker_set_view(&b.asset_btc).unwrap();
+    assert_eq!(reset.breaker_count, 0);
+    assert_eq!(reset.next_id, 2);
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::ConfigureBreakers(b.asset_btc.clone(), 0, 8),
+    );
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::AddBreaker(b.asset_btc.clone(), rule),
+    );
+    let replacement = b.runtime.get_breaker_set_view(&b.asset_btc).unwrap();
+    assert_eq!(replacement.breaker_count, 1);
+    assert_eq!(replacement.next_id, 3);
+    let id = b.governance.next_proposal_id();
+    b.governance.create_proposal(
+        &b.admin,
+        &id,
+        &GovernanceAction::RemoveBreaker(b.asset_btc.clone(), 0),
+        &0,
+    );
+    assert!(b.governance.try_execute_proposal(&b.admin, &id).is_err());
+    assert_eq!(
+        b.runtime
+            .get_breaker_set_view(&b.asset_btc)
+            .unwrap()
+            .to_xdr(&b.env),
+        replacement.to_xdr(&b.env),
+    );
+}
+
+#[test]
+fn pin_admission_failure_preserves_existing_proxy_cache_and_breakers() {
+    let b = Bootstrap::new();
+    let original = two_source_config(&b, 0);
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::SetProxy(b.asset_btc.clone(), original.clone()),
+    );
+    b.push_upstream_prices(&b.asset_btc, [10_000_000_000, 20_000_000_000, 0], 100);
+    assert!(matches!(
+        b.refresh_one(&b.asset_btc),
+        RefreshStatus::Accepted(_)
+    ));
+    let cached = b.runtime.get_cached(&b.asset_btc).unwrap().to_xdr(&b.env);
+    let breakers = b
+        .runtime
+        .get_breaker_set_view(&b.asset_btc)
+        .unwrap()
+        .to_xdr(&b.env);
+    for pin in [9, 19] {
+        let mut invalid = original.clone();
+        let AggregatorConfig::MedianLow(median) = &mut invalid.aggregator else {
+            unreachable!()
+        };
+        let mut source = median.sources.get(0).unwrap();
+        source.expected_decimals = pin;
+        median.sources.set(0, source);
+        let id = b.governance.next_proposal_id();
+        let action = GovernanceAction::SetProxy(b.asset_btc.clone(), invalid);
+        if pin == 19 {
+            assert!(b
+                .governance
+                .try_create_proposal(&b.admin, &id, &action, &0)
+                .is_err());
+            assert_eq!(b.governance.next_proposal_id(), id);
+            assert!(b.governance.get_proposal(&id).is_none());
+        } else {
+            let proposal = b.governance.create_proposal(&b.admin, &id, &action, &0);
+            assert!(b.governance.try_execute_proposal(&b.admin, &id).is_err());
+            assert_eq!(b.governance.get_proposal(&id), Some(proposal));
+        }
+        assert_eq!(b.runtime.get_proxy(&b.asset_btc), Some(original.clone()));
+        assert_eq!(
+            b.runtime.get_cached(&b.asset_btc).unwrap().to_xdr(&b.env),
+            cached
+        );
+        assert_eq!(
+            b.runtime
+                .get_breaker_set_view(&b.asset_btc)
+                .unwrap()
+                .to_xdr(&b.env),
+            breakers
+        );
+    }
+    // A source declaring an unsupported scale cannot be admitted even when
+    // governance supplied an otherwise valid pin.
+    let secondary = b.source_configs(&b.asset_btc).get(1).unwrap();
+    MockOracleClient::new(&b.env, &secondary.oracle).set_decimals(&19);
+    let id = b.governance.next_proposal_id();
+    b.governance.create_proposal(
+        &b.admin,
+        &id,
+        &GovernanceAction::SetProxy(b.asset_btc.clone(), two_source_config(&b, 1)),
+        &0,
+    );
+    assert!(b.governance.try_execute_proposal(&b.admin, &id).is_err());
+    assert_eq!(b.runtime.get_proxy(&b.asset_btc), Some(original));
+    assert_eq!(
+        b.runtime.get_cached(&b.asset_btc).unwrap().to_xdr(&b.env),
+        cached
+    );
+    assert_eq!(
+        b.runtime
+            .get_breaker_set_view(&b.asset_btc)
+            .unwrap()
+            .to_xdr(&b.env),
+        breakers
+    );
 }

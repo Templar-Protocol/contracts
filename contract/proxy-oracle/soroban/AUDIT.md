@@ -37,7 +37,7 @@ for NEAR parity, and `RUNBOOK.md` for operations.
    instance-and-code TTL renewal for every target. Every entrypoint rejects more
    than 64 items before dispatch.
 6. **Shared DTOs** (`common/src/lib.rs`) and the **kernel**
-   (`templar-proxy-oracle-kernel`: `MedianLow` aggregation, `FreshnessFilter`,
+   (`templar-proxy-oracle-kernel`: `MedianLow` / `MedianHigh` / `Priority`, `FreshnessFilter`,
    and the `StepwiseChange` / `MonotonicRun` / `WindowedChangeDelta` /
    `CumulativeChange` breakers).
 
@@ -54,10 +54,11 @@ keepers / refresh bots, and monitoring infrastructure.
   of scope.
 - The governance owner key is a secure multisig/process outside this boundary.
 - Reflector and RedStone SEP-40 contracts report correct prices and timestamps.
-- Pyth's Lazer verifier accepts only payloads signed by Pyth's trusted signer set;
-  a compromised signer is a Pyth-side failure, bounded on our side by quorum only
-  when `min_sources` is at least 2. A one-source quorum (`min_sources = 1`)
-  aggregates whichever single fresh source answers, with no cross-check.
+- Pyth's Lazer verifier accepts only payloads signed by Pyth's trusted signer set.
+  A compromised signer is a provider-side failure. Median quorum counts surviving
+  descriptors, not independent providers; neither distinct addresses nor a quorum
+  alone proves manipulation resistance. Priority is first-valid fallback, with no
+  cross-check, even when multiple sources are configured.
 - Ledger timestamps are accurate within Soroban's resolution; extreme clock skew
   is out of model. A source's own reported timestamp is trusted once the
   freshness filter admits it, and becomes the history's monotonic head.
@@ -77,25 +78,25 @@ keepers / refresh bots, and monitoring infrastructure.
   therefore wide enough to serve a hours-old aggregate. The breaker set, not
   the freshness filter, is the control on that exposure, which is why pegged
   assets carry tight `StepwiseChange` bounds.
-- An off-chain keeper calls `extend_ttl` at least weekly; eviction from missed
-  TTL calls is an operational risk, not a contract bug. Every contract's
-  `extend_ttl` renews both its instance and its persistent entries, so a Lazer
-  feed that stops being pushed still survives on keeper maintenance alone. Only
-  a keeper that stops entirely archives an entry, and an archived entry makes
-  that asset's refresh need a restore rather than degrading to
-  `SourceUnavailable`.
+- A keeper maintains instance/proposal/source TTL and pages all four governance
+  roles, renewing count/index/membership and `ExistingRoles` keys as described in
+  `RUNBOOK.md`. Missed maintenance can archive state. Archived entries require
+  normal restoration, not treatment as absent state or permission to reset IDs.
 - Release and rehearsal tooling runs in a trusted workstation/CI environment,
   but treats files, CLI/RPC output, and checkpoint contents as untrusted input.
 
 ## Safety topics
 
-**Oracle manipulation.** `set_proxy` requires 1–16 distinct oracle addresses,
-`min_sources` in `[1, sources.len()]`, and both freshness bounds. A one-source
-quorum (`min_sources = 1`), whether one source is configured or several, has no
-cross-check against a compromised source. `refresh`
-drops stale or future-dated sources before aggregation and fails closed if its
-per-asset storage is missing. Breakers require governance proposals to
-add/update/remove; manual trips require the `ManualTripper` role.
+**Oracle manipulation.** Required `ProxyConfig` fields are `aggregator`,
+`max_age_secs: u64`, and `max_clock_drift_secs: u64`. `AggregatorConfig` is
+`MedianLow(MedianConfig { sources, min_sources })`, `MedianHigh(MedianConfig {
+sources, min_sources })`, or `Priority(sources)`. Each `SourceConfig` is
+`{ oracle, asset, expected_decimals }`; medians have equal unit weights, Priority
+has no quorum. Admission enforces 1–16 distinct oracle addresses, valid median
+quorum, pins ≤ 18 and matching live decimals, plus age/drift bounds. Refresh
+discards changed base/decimals and stale/future sources before aggregation.
+These checks do not establish upstream independence. Governance controls
+breakers; manual trips require `ManualTripper` or Admin.
 
 **Governance and authorization.** Every runtime state-change except `refresh`
 requires owner (`#[only_owner]`) authorization. Proposals are created and
@@ -106,6 +107,9 @@ and configured minimum). `SetActionTtl` requires `ProxyConfigurationManager`
 Ownership handoff emits `OwnershipTransferSubmitted` on submit and completes when
 the new owner calls `accept_ownership`; monitoring should alert on ownership
 transfer immediately.
+`CancelOwnershipTransfer(pending_owner)` is Admin-only under the same transfer
+timelock, including a matching expired-but-stored transfer. Bootstrap and newly
+granted Admins must authorize activation; governance-self Admin is rejected.
 
 **Storage and resources.** `extend_ttl(asset)` first requires a registered
 proxy, then guards every potentially-absent asset key before extending it and
@@ -120,9 +124,13 @@ effects.
 
 **Operational.** Reads fail closed — `aggregated_latest` / adapter `lastprice`
 return `None` on missing config, non-`Accepted` status, a cached entry older
-than the configured `max_age_secs`, or adapter parent-base drift. Any changed
-`SetProxy` policy clears cache and history, and a change to the source set or
-quorum also clears breakers.
+than `max_age_secs` by either cache-update or publication age (inclusive boundary,
+saturating subtraction), or adapter parent-base drift. The same age check gates
+cumulative baseline selection. Changed policy clears cache/history; changed
+method, ordered source identities/pins, or median quorum resets breakers but
+preserves next-ID allocation. Freshness-only changes retain breakers; identical
+config is a no-op. Removal/recreation retains an allocator tombstone hidden from
+absent-proxy views.
 
 `aggregated_history` and adapter `price` / `prices` return `None` while a manual
 or enforced automatic breaker blocks the asset, while retaining historical
@@ -131,7 +139,19 @@ breakers before source time may advance cache/history. A non-advancing
 candidate still serves the prior aggregate, and `RefreshEvaluated` records the
 candidate when it differs. A failed or blocked refresh replaces the cached
 result.
-Every persisted breaker set is semantically valid.
+Relative rules cannot manufacture a trusted first sample. CumulativeChange
+captures a fresh accepted baseline at installation; rearm preserves it and both
+histories. Sample-count window/streak rules are not wall-clock limits; keeper
+cadence and long gaps affect availability. `ArmedAfter` is intentional privileged
+recovery cooldown, not a fail-closed halt. Corrupt/missing decoder state must not
+silently reset an unknown allocator.
+
+Proposal maturity is snapshotted; proposals do not expire. Creator/current Admin
+may cancel, authorized peers may execute, and revocation purges no-longer-authorized
+creator proposals. Reserve one of 64 slots for Admin. Retry only an original
+explicit ID and unchanged payload; contention rejection is not proof of success.
+When transaction evidence or a matching live body cannot establish an uncertain
+outcome, stop rather than reselect or execute another caller's operation.
 
 **Artifact and rehearsal evidence.** A release is one clean-source,
 manifest-last publication of exactly five freshly built optimized Wasms. Schema
@@ -162,8 +182,12 @@ refuses to clear an unmarked non-empty directory.
 - **TTL liveness** — Soroban storage is not permanent; `extend_ttl` must run on a
   cadence (see `RUNBOOK.md`).
 - **No new aggregation** — the kernel is shared with NEAR; no new algorithms.
-- **No implicit migration** — earlier prototype storage layouts need an explicit
-  migration or a reinitialized contract.
+- **Fresh-stack only** — unified runtime config XDR and eight fixed governance
+  proposal groups (up to eight unchanged bodies each) are incompatible with old
+  deployments. In-place runtime/governance migration is skipped; leave live stacks
+  unchanged. No legacy decoder/default/side map is provided. Independent adapter
+  upgrade requires exact old/new compiled-Wasm swap proof; existing
+  `integration-tests/tests/upgrade.rs` is not that evidence.
 - **No `AdminFunctionCall`** — NEAR's arbitrary dynamic dispatch is intentionally
   not ported; the upgrade surface is the typed `upgrade` / `Upgrade` path.
 - **Synchronous refresh** — all source IO is within one `refresh` transaction.

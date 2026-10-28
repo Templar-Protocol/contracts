@@ -255,3 +255,153 @@ async fn self_upgrade_redeploys_governance_and_keeps_it_working(
     );
     Ok(())
 }
+
+/// Unreadable bodies must abort the whole revocation receipt, even after an earlier purge.
+/// This exercises host rollback, not catch_unwind around a direct Rust call.
+#[rstest]
+#[case::missing(false)]
+#[case::corrupt(true)]
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one receipt rollback scenario binds the corrupted fixture to a complete storage snapshot"
+)]
+async fn revocation_with_unreadable_body_rolls_back_membership_ledger_and_prior_purge(
+    #[future(awt)] harness: SandboxHarness,
+    #[case] corrupt: bool,
+) -> Result<()> {
+    use templar_gateway_methods_spec::account::ViewState;
+    use templar_proxy_oracle_governance_kernel::Governance;
+    use templar_proxy_oracle_near_governance_common::{CreateProposalArgs, GovernancePolicy};
+
+    let mut governed = governed(&harness).await?;
+    let delegate = harness.create_user("delegate").await?.0;
+    governed
+        .govern(Operation::Reflexive(ReflexiveOperation::SetRole {
+            account_id: delegate.clone(),
+            role: Role::Admin,
+            set: true,
+        }))
+        .await?;
+    common::call(
+        &governed.network,
+        &governed.governance,
+        "create_proposal",
+        CreateProposalArgs {
+            id: 2,
+            operation: Operation::TargetFunctionCall(target::admin_set_manual_trip(
+                PRICE_ID, true, None, None,
+            )?),
+            requested_ttl: Nanoseconds::zero(),
+        },
+        &delegate,
+        common::ONE_YOCTO,
+    )
+    .await?;
+    common::call(
+        &governed.network,
+        &governed.governance,
+        "create_proposal",
+        CreateProposalArgs {
+            id: 3,
+            operation: Operation::Reflexive(ReflexiveOperation::SetRole {
+                account_id: delegate.clone(),
+                role: Role::Admin,
+                set: false,
+            }),
+            requested_ttl: Nanoseconds::zero(),
+        },
+        &governed.admin,
+        common::ONE_YOCTO,
+    )
+    .await?;
+
+    let client = harness.client()?;
+    let query = ViewState {
+        account_id: governed.governance.clone(),
+        prefix: Vec::new().into(),
+    };
+    let entries = client.read(query.clone()).await?;
+    let state = entries
+        .iter()
+        .find(|entry| entry.key.0 == b"STATE")
+        .expect("governance state exists");
+    // Contract and VersionedState are transparent Borsh wrappers. LookupMap stores its prefix.
+    // Check exact bytes before seeding a phantom active ID whose body is absent or undecodable.
+    let (header, prefix, oracle): (Governance<GovernancePolicy>, Vec<u8>, AccountId) =
+        near_sdk::borsh::from_slice(&state.value.0)?;
+    assert_eq!(
+        near_sdk::borsh::to_vec(&(header.clone(), prefix.clone(), oracle.clone()))?,
+        state.value.0
+    );
+    assert_eq!(header.active_ids(), &[2, 3]);
+    let header = Governance::try_from_parts(
+        5,
+        vec![2, 3, 4],
+        header.ttls().clone(),
+        header.max_pending_proposals(),
+    )
+    .unwrap();
+    let mut patch = vec![(
+        b"STATE".to_vec(),
+        near_sdk::borsh::to_vec(&(header, prefix.clone(), oracle))?,
+    )];
+    if corrupt {
+        let mut key = prefix;
+        key.extend_from_slice(&4_u32.to_le_bytes());
+        patch.push((key, vec![0xff]));
+    }
+    harness.patch_state(&governed.governance, patch).await?;
+    let mut before = client.read(query.clone()).await?;
+    let original = governed.proposal(2).await?;
+    let revocation = governed.proposal(3).await?;
+    let failed = governed
+        .try_execute_with_gas(3, common::GATEWAY_GAS)
+        .await?
+        .assert_failure();
+    let expected_error = if corrupt {
+        "Cannot deserialize element"
+    } else {
+        "called `Option::unwrap_or_reject()` on a `None` value"
+    };
+    assert!(
+        format!("{failed:?}").contains(expected_error),
+        "revocation must reach the unreadable proposal body: {failed:?}"
+    );
+    assert!(
+        failed
+            .logs()
+            .iter()
+            .all(|log| !log.contains("\"event\":\"executed\"")),
+        "failed revocation must not advertise successful execution"
+    );
+    assert!(
+        view::<bool>(
+            &governed.network,
+            &governed.governance,
+            "has_role",
+            json!({ "account_id": delegate, "role": "Admin" }),
+        )
+        .await?
+    );
+    assert_eq!(governed.proposal(2).await?, original);
+    assert_eq!(governed.proposal(3).await?, revocation);
+    assert_eq!(
+        view::<Vec<u32>>(
+            &governed.network,
+            &governed.governance,
+            "list_proposals",
+            json!({}),
+        )
+        .await?,
+        vec![2, 3, 4]
+    );
+    let mut after = client.read(query).await?;
+    before.sort_unstable_by(|a, b| a.key.0.cmp(&b.key.0));
+    after.sort_unstable_by(|a, b| a.key.0.cmp(&b.key.0));
+    assert_eq!(
+        after, before,
+        "failed receipt must revert every storage key"
+    );
+    Ok(())
+}

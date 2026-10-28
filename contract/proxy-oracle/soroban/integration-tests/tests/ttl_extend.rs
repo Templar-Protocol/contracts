@@ -34,10 +34,14 @@ fn runtime_extend_ttl_is_public_and_succeeds_with_assets_configured() {
         GovernanceAction::SetProxy(
             eth.clone(),
             ProxyConfig {
-                sources,
-                min_sources: 3,
-                max_age_secs: Some(300),
-                max_clock_drift_secs: Some(60),
+                aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                    templar_proxy_oracle_soroban_common::MedianConfig {
+                        sources,
+                        min_sources: 3,
+                    },
+                ),
+                max_age_secs: 300,
+                max_clock_drift_secs: 60,
             },
         ),
     );

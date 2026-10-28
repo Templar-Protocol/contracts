@@ -150,10 +150,14 @@ impl Bootstrap {
     /// upstream sources.
     pub fn configure_default_feed(&self) {
         let config = ProxyConfig {
-            sources: self.source_configs(&self.asset_btc),
-            min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
+            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                templar_proxy_oracle_soroban_common::MedianConfig {
+                    sources: self.source_configs(&self.asset_btc),
+                    min_sources: 3,
+                },
+            ),
+            max_age_secs: 300,
+            max_clock_drift_secs: 60,
         };
         self.submit_and_execute(
             &self.admin,
@@ -171,6 +175,7 @@ impl Bootstrap {
             sources.push_back(SourceConfig {
                 oracle,
                 asset: asset.clone(),
+                expected_decimals: 8,
             });
         }
         sources

@@ -20,7 +20,7 @@ use templar_gateway_methods_spec::{
 use templar_gateway_types::common::{ContractArgs, Pagination};
 use templar_gateway_types::contract::ContractKind;
 use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
-use templar_proxy_oracle_near_common::{input::Source, proxy::has_zero_weighted_source};
+use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{
     governance_kernel::Governance, target::method, MAX_PENDING_PROPOSALS,
 };
@@ -92,19 +92,26 @@ fn breakers_status(verdicts: &[(PriceIdentifier, BreakerVerdict)]) -> Status {
     ))
 }
 
-fn source_weights_status(proxies: &[(PriceIdentifier, Proxy<Source>)]) -> Status {
+fn aggregator_config_status(proxies: &[(PriceIdentifier, Proxy<Source>)]) -> Status {
     let offenders: Vec<String> = proxies
         .iter()
-        .filter(|(_, proxy)| has_zero_weighted_source(proxy))
-        .map(|(price_id, _)| price_id.to_string())
+        .filter_map(|(price_id, proxy)| {
+            proxy
+                .aggregator
+                .validate()
+                .err()
+                .map(|error| format!("{price_id}: {error:?}"))
+        })
         .collect();
 
     if offenders.is_empty() {
-        return Status::passed(format!("{} proxy(s) weight every source", proxies.len()));
+        return Status::passed(format!(
+            "{} proxy(s) have valid aggregator configurations",
+            proxies.len()
+        ));
     }
     Status::failed(format!(
-        "{} proxy(s) carry a zero-weight median source, which no longer counts toward quorum and \
-         can start failing as `TooFewValidSources`: {}",
+        "{} proxy(s) have invalid source shape, quorum, or weights: {}",
         offenders.len(),
         offenders.join(", "),
     ))
@@ -316,7 +323,7 @@ async fn source_weights(
             }
         }
     }
-    source_weights_status(&proxies)
+    aggregator_config_status(&proxies)
 }
 
 async fn governance_ledger(
@@ -575,9 +582,9 @@ mod tests {
     use templar_proxy_oracle_near_governance_common::MAX_PENDING_PROPOSALS;
 
     use super::{
-        breakers_status, classify_breaker_set, governance_ledger_status,
-        governance_resolution_failure_checks, is_rearm, pending_rearm_status,
-        source_weights_status, BreakerVerdict, PriceIdentifier, Source, Status, Value,
+        aggregator_config_status, breakers_status, classify_breaker_set, governance_ledger_status,
+        governance_resolution_failure_checks, is_rearm, pending_rearm_status, BreakerVerdict,
+        PriceIdentifier, Source, Status, Value,
     };
 
     fn price_id(byte: u8) -> PriceIdentifier {
@@ -590,11 +597,17 @@ mod tests {
 
     fn proxy(weights: &[u32]) -> Proxy<Source> {
         Proxy {
-            aggregator: Aggregator::MedianLow(Median::new(
-                weights
-                    .iter()
-                    .map(|weight| WeightedSource::new(source(), *weight)),
-            )),
+            aggregator: Aggregator::MedianLow(Median::new(weights.iter().enumerate().map(
+                |(index, weight)| {
+                    WeightedSource::new(
+                        OracleRequest::redstone(
+                            "redstone.near".parse().unwrap(),
+                            format!("ASSET{index}"),
+                        ),
+                        *weight,
+                    )
+                },
+            ))),
             freshness_filter: FreshnessFilter::new(None, None),
         }
     }
@@ -704,19 +717,27 @@ mod tests {
     #[rstest]
     #[case::weighted(&[1, 1], false)]
     #[case::zero_weighted(&[1, 0], true)]
-    fn source_weights_status_flags_only_zero_weights(#[case] weights: &[u32], #[case] fails: bool) {
-        let status = source_weights_status(&[(price_id(1), proxy(weights))]);
+    #[case::empty(&[], true)]
+    fn aggregator_config_status_rejects_invalid_sources(
+        #[case] weights: &[u32],
+        #[case] fails: bool,
+    ) {
+        let status = aggregator_config_status(&[(price_id(1), proxy(weights))]);
         assert_eq!(status.is_failure(), fails, "{status:?}");
     }
 
-    /// `Priority` carries no weights, so it can never trip this check.
     #[test]
-    fn a_priority_aggregator_is_never_flagged() {
+    fn priority_checks_descriptors_without_a_quorum() {
         let proxy = Proxy {
             aggregator: Aggregator::Priority(Priority::new(vec![source()])),
             freshness_filter: FreshnessFilter::new(None, None),
         };
-        assert!(!source_weights_status(&[(price_id(1), proxy)]).is_failure());
+        assert!(!aggregator_config_status(&[(price_id(1), proxy)]).is_failure());
+        let duplicate = Proxy {
+            aggregator: Aggregator::Priority(Priority::new(vec![source(), source()])),
+            freshness_filter: FreshnessFilter::new(None, None),
+        };
+        assert!(aggregator_config_status(&[(price_id(1), duplicate)]).is_failure());
     }
 
     #[rstest]

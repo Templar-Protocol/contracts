@@ -42,7 +42,7 @@ from release_artifacts import (
 )
 from validate_release_artifacts import validate_manifest
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 NETWORK = "testnet"
 NETWORK_IDENTIFIER = "Test SDF Network ; September 2015"
 DEFAULT_RPC_URL = "https://soroban-testnet.stellar.org"
@@ -79,6 +79,12 @@ GOVERNANCE_OPERATION_KINDS = (
     "SetRole",
     "Upgrade",
 )
+GOVERNANCE_ROLES = (
+    "Admin",
+    "ManualTripper",
+    "CircuitBreakerOperator",
+    "ProxyConfigurationManager",
+)
 OPERATION_KINDS = (
     "upload",
     "deploy",
@@ -90,12 +96,13 @@ OPERATION_KINDS = (
     "batch_refresh",
     "ttl_assets",
     "ttl_contracts",
+    "ttl_role",
 )
 # Idempotent maintenance calls: a resume re-submits them, because their whole
 # purpose is to observe live behavior. Every other kind changes state that must
 # not be replayed, so a resume reads its recorded result instead.
 REPLAYABLE_KINDS = frozenset(
-    {"push", "refresh", "batch_refresh", "ttl_assets", "ttl_contracts"}
+    {"push", "refresh", "batch_refresh", "ttl_assets", "ttl_contracts", "ttl_role"}
 )
 OPERATION_STATUSES = (
     "prepared",
@@ -200,6 +207,7 @@ OPERATION_PHASES = {
     "batch_refresh": "refresh",
     "ttl_assets": "refresh",
     "ttl_contracts": "refresh",
+    "ttl_role": "refresh",
 }
 TOOL_HASH_KEYS = {
     "contract/proxy-oracle/soroban/scripts/e2e_live.sh",
@@ -522,7 +530,7 @@ def decode_optional_proxy_config(
         return None
     return require_exact_keys(
         value,
-        {"sources", "min_sources", "max_age_secs", "max_clock_drift_secs"},
+        {"aggregator", "max_age_secs", "max_clock_drift_secs"},
         label,
     )
 
@@ -662,6 +670,16 @@ def require_true_scvals(
         )
 
 
+def decode_role_ttl_offset(value: object, offset: int) -> int | None:
+    if value == "void":
+        return None
+    encoded = require_exact_keys(value, {"u32"}, "extend_role_ttl result")
+    next_offset = require_u32(encoded["u32"], "extend_role_ttl next offset")
+    if next_offset <= offset:
+        fail("extend_role_ttl returned a non-advancing page offset")
+    return next_offset
+
+
 T = TypeVar("T")
 
 
@@ -776,6 +794,14 @@ def validate_operation_args(
             fail(f"{label}.contracts must be an array")
         for index, contract_id in enumerate(contracts):
             validate_contract(contract_id, f"{label}.contracts[{index}]")
+    elif kind == "ttl_role":
+        args = require_exact_keys(args, {"role", "offset", "count"}, label)
+        if args["role"] not in GOVERNANCE_ROLES:
+            fail(f"{label}.role is invalid")
+        require_u32(args["offset"], f"{label}.offset")
+        count = require_u32(args["count"], f"{label}.count", positive=True)
+        if count > 16:
+            fail(f"{label}.count exceeds 16")
     else:
         fail(f"{label} has an unsupported operation kind")
     return args
@@ -2925,14 +2951,14 @@ class Rehearsal:
             for name in RUNTIME_SOURCE_NAMES
         )
 
-    def proxy_config(self) -> dict[str, object]:
+    def proxy_config(self, source_decimals: dict[str, int]) -> dict[str, object]:
         sources = [
-            {"oracle": contract_id, "asset": asset}
-            for _, contract_id, asset in self.runtime_sources()
+            {"oracle": contract_id, "asset": asset,
+             "expected_decimals": source_decimals[name]}
+            for name, contract_id, asset in self.runtime_sources()
         ]
         return {
-            "sources": sources,
-            "min_sources": 3,
+            "aggregator": {"MedianLow": {"sources": sources, "min_sources": 3}},
             "max_age_secs": self.settings.runtime_policy["max_age_secs"],
             "max_clock_drift_secs": self.settings.runtime_policy[
                 "max_clock_drift_secs"
@@ -2942,6 +2968,7 @@ class Rehearsal:
     def phase_configure(self) -> None:
         runtime = str(self.deployments["runtime"]["contract_id"])
         sanity = {}
+        source_decimals: dict[str, int] = {}
         now = int(time.time())
         for name, contract_id, asset in self.runtime_sources():
             source = {
@@ -2958,6 +2985,7 @@ class Rehearsal:
             decimals = source["decimals"]
             if not 0 <= decimals <= 18:
                 fail(f"{name} source decimals are out of range")
+            source_decimals[name] = decimals
             if name != "lazer":
                 price = source["lastprice"]
                 if price is None:
@@ -2980,7 +3008,7 @@ class Rehearsal:
                 ):
                     fail(f"{name} source price is non-positive or stale")
             sanity[name] = source
-        config = self.proxy_config()
+        config = self.proxy_config(source_decimals)
         current = self.view(
             runtime,
             "get_proxy",
@@ -3222,6 +3250,24 @@ class Rehearsal:
         )
         return now - max_age <= timestamp <= now + max_drift
 
+    def extend_governance_roles(self) -> None:
+        governance = str(self.deployments["governance"]["contract_id"])
+        for role in GOVERNANCE_ROLES:
+            offset = 0
+            while True:
+                args = {"role": role, "offset": offset, "count": 16}
+                operation = self.transactions.execute(
+                    "refresh", "ttl_role", governance, args,
+                    self.build_invoke(governance, "extend_role_ttl",
+                                      {**args, "role": canonical_json_text(role)}),
+                )
+                next_offset = decode_role_ttl_offset(
+                    self.transactions.return_value(operation), offset
+                )
+                if next_offset is None:
+                    break
+                offset = next_offset
+
     def phase_refresh(self) -> None:
         runtime = str(self.deployments["runtime"]["contract_id"])
         adapter = str(self.deployments["sep40_adapter"]["contract_id"])
@@ -3345,6 +3391,7 @@ class Rehearsal:
         require_true_scvals(
             extend_contracts_result, 3, "batch extend_ttl_contracts"
         )
+        self.extend_governance_roles()
         batch_results = {
             "refresh_many": refresh_many_result,
             "extend_ttl_many": extend_assets_result,

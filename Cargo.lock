@@ -13813,6 +13813,7 @@ dependencies = [
  "rstest",
  "soroban-sdk",
  "templar-primitives",
+ "templar-proxy-oracle-kernel",
 ]
 
 [[package]]
@@ -13835,6 +13836,7 @@ dependencies = [
  "soroban-sdk",
  "templar-primitives",
  "templar-proxy-oracle-governance-kernel",
+ "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-soroban-common",
 ]
 

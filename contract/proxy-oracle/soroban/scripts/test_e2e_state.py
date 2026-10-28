@@ -189,6 +189,12 @@ class RpcQueue:
 
 
 class CheckpointSchemaTests(unittest.TestCase):
+    def test_old_aggregation_checkpoint_cannot_resume(self) -> None:
+        value = checkpoint()
+        value["schema_version"] = 1
+        with self.assertRaisesRegex(rehearsal.RehearsalError, "unsupported checkpoint schema"):
+            rehearsal.validate_checkpoint(value)
+
     def test_valid_checkpoint_accepts_reordered_phase_object(self) -> None:
         value = checkpoint()
         phase_results = value["phase_results"]
@@ -350,6 +356,14 @@ class CheckpointSchemaTests(unittest.TestCase):
 
 
 class InputValidationTests(unittest.TestCase):
+    def test_role_ttl_pages_reject_nonadvancing_or_malformed_offsets(self) -> None:
+        self.assertIsNone(rehearsal.decode_role_ttl_offset("void", 32))
+        self.assertEqual(rehearsal.decode_role_ttl_offset({"u32": 32}, 16), 32)
+        for value in ({"u32": 16}, {"u32": 0}, {"u32": -1},
+                      {"u32": 1 << 32}, {"u64": 32}, None):
+            with self.subTest(value=value), self.assertRaises(rehearsal.RehearsalError):
+                rehearsal.decode_role_ttl_offset(value, 16)
+
     def base_environment(self, directory: Path) -> dict[str, str]:
         return {"SRC": "operator", "OUT": str(directory / "out")}
 
@@ -570,9 +584,9 @@ class CheckpointStoreTests(unittest.TestCase):
             directory = Path(raw)
             first = self.make_store(directory)
             stale = rehearsal.CheckpointStore.load(directory / "state.json")
-            first.mutate(lambda value: value.__setitem__("schema_version", 1))
+            first.mutate(lambda value: value.__setitem__("schema_version", rehearsal.SCHEMA_VERSION))
             with self.assertRaisesRegex(rehearsal.RehearsalError, "revision conflict"):
-                stale.mutate(lambda value: value.__setitem__("schema_version", 1))
+                stale.mutate(lambda value: value.__setitem__("schema_version", rehearsal.SCHEMA_VERSION))
 
     def test_phase_results_must_be_contiguous(self) -> None:
         value = checkpoint()
@@ -1908,6 +1922,7 @@ class RehearsalLogicTests(unittest.TestCase):
                         "batch_refresh": {"vec": [accepted]},
                         "ttl_assets": {"vec": [{"bool": True}]},
                         "ttl_contracts": {"vec": [{"bool": True}] * 3},
+                        **{f"ttl_role_{role}": "void" for role in rehearsal.GOVERNANCE_ROLES},
                     }
                     kinds = (
                         (["push"] if timestamp == 99 else [])
@@ -2424,64 +2439,28 @@ class RehearsalLogicTests(unittest.TestCase):
             )
             self.assertEqual(transactions.calls[0][3]["id"], 11)
 
-    def test_configure_skips_exact_existing_config(self) -> None:
+    def test_configure_rejects_changed_pin_without_submitting_or_repinning(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             driver = self.driver(Path(raw))
-            driver.runtime_sources = mock.Mock(  # type: ignore[method-assign]
-                return_value=()
-            )
-            expected = driver.proxy_config()
-            driver.view = mock.Mock(  # type: ignore[method-assign]
-                return_value=expected
-            )
-            driver.run_governance_operation = mock.Mock()  # type: ignore[method-assign]
-            driver.store.pass_phase = mock.Mock()  # type: ignore[method-assign]
+            pins = {name: 8 for name in rehearsal.RUNTIME_SOURCE_NAMES}
+            current = driver.proxy_config(pins)
+            before = copy.deepcopy(driver.store.value)
 
-            driver.phase_configure()
+            def view(_contract, function, _args=None, **_kwargs):
+                if function == "base":
+                    return {"Other": "USD"}
+                if function == "decimals":
+                    return 9
+                if function == "get_proxy":
+                    return current
+                raise AssertionError(f"unexpected view {function}")
 
-            driver.run_governance_operation.assert_not_called()
-            driver.store.pass_phase.assert_called_once()
-
-    def test_configure_only_creates_proposal_for_absent_config(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            driver = self.driver(Path(raw))
-            driver.runtime_sources = mock.Mock(  # type: ignore[method-assign]
-                return_value=()
-            )
-            expected = driver.proxy_config()
-            driver.view = mock.Mock(  # type: ignore[method-assign]
-                side_effect=[None, expected]
-            )
-            driver.run_governance_operation = mock.Mock()  # type: ignore[method-assign]
-            driver.store.pass_phase = mock.Mock()  # type: ignore[method-assign]
-
-            driver.phase_configure()
-
-            driver.run_governance_operation.assert_called_once()
-            driver.store.pass_phase.assert_called_once()
-
-    def test_configure_rejects_conflicting_existing_config(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            driver = self.driver(Path(raw))
-            driver.runtime_sources = mock.Mock(  # type: ignore[method-assign]
-                return_value=()
-            )
-            driver.view = mock.Mock(  # type: ignore[method-assign]
-                return_value={
-                    "sources": [],
-                    "min_sources": 4,
-                    "max_age_secs": 3600,
-                    "max_clock_drift_secs": 60,
-                }
-            )
-            driver.run_governance_operation = mock.Mock()  # type: ignore[method-assign]
-
-            with self.assertRaisesRegex(
-                rehearsal.RehearsalError, "conflicts"
-            ):
-                driver.phase_configure()
-
-            driver.run_governance_operation.assert_not_called()
+            driver.view = view
+            driver.sep40_price = lambda *_: {"price": 1_000_000_000, "timestamp": 3700}
+            with mock.patch.object(rehearsal.time, "time", return_value=3700):
+                with self.assertRaisesRegex(rehearsal.RehearsalError, "conflicts"):
+                    driver.phase_configure()
+            self.assertEqual(driver.store.value, before)
 
     def test_recorded_push_requires_matching_saved_payload(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

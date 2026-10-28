@@ -107,22 +107,40 @@ fn stepwise_breaker() -> CircuitBreaker {
     })
 }
 
-#[test]
-#[should_panic(expected = "Proxy sources must have positive weights")]
-pub fn admin_set_proxy_rejects_zero_weight_sources() {
+#[rstest::rstest]
+#[case::zero_weight(0)]
+#[case::empty(1)]
+#[case::duplicate(2)]
+#[case::zero_quorum(3)]
+#[case::impossible_quorum(4)]
+pub fn admin_set_proxy_rejects_invalid_aggregators_without_mutation(#[case] invalid: u8) {
     testing_env!(VMContextBuilder::new()
         .predecessor_account_id("owner.near".parse().unwrap())
         .build());
     let mut c = Contract::new(None);
-    let proxy = Proxy::new(
-        Aggregator::MedianLow(MedianLow::new([WeightedSource::<Source>::new(
-            OracleRequest::pyth("pyth-oracle.near".parse().unwrap(), CRYPTO_BTC_USD),
-            0,
-        )])),
-        FreshnessFilter::empty(),
-    );
-
-    c.admin_set_proxy(PriceIdentifier([0x55; 32]), Some(proxy));
+    let id = PriceIdentifier([0x55; 32]);
+    let prior = test_proxy("pyth-oracle.near");
+    c.admin_set_proxy(id, Some(prior.clone()));
+    cache_test_price_and_seed_history(&mut c, id, proxy_price(100));
+    let before = c.get_proxy_circuit_breaker_set(id);
+    let mut proxy = prior.clone();
+    let Aggregator::MedianLow(median) = &mut proxy.aggregator else {
+        unreachable!()
+    };
+    match invalid {
+        0 => median.sources[0].weight = 0,
+        1 => median.sources.clear(),
+        2 => median.sources.push(median.sources[0].clone()),
+        3 => median.min_sources = 0,
+        4 => median.min_sources = 2,
+        _ => unreachable!(),
+    }
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.admin_set_proxy(id, Some(proxy));
+    }))
+    .is_err());
+    assert_eq!(c.get_proxy_circuit_breaker_set(id), before);
+    assert_eq!(c.get_proxy(id), Some(prior));
 }
 
 #[test]

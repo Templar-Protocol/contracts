@@ -1,103 +1,119 @@
 # Defense Against Blend-Style Oracle Manipulation
 
-How the Templar proxy oracle's layered defenses stop the oracle-manipulation
-class of attack demonstrated by the Blend exploit. See the internal Blend
-exploit analysis for the source incident.
+This is a conditional defense model and regression guide, not a proof of source
+independence, economic security, or production upgrade safety. See [audit
+boundary](AUDIT.md) and [operator runbook](RUNBOOK.md).
 
-## The exploit
+## Threat and aggregation choices
 
-An attacker manipulated SDEX trades to inflate USTRY from $1.0574 to $106.7373
-(100.9×). It worked because Blend used a **single source** (Reflector VWAP of
-SDEX trades), a **weak deviation check** (current vs previous sample — both
-inflated, so δ ≈ 0 passed the 10% threshold), and had **no circuit breaker or
-kill switch**.
+The motivating attack manipulated one venue's reported price. Combining sources
+can reduce that exposure only when their actual upstream data and failure modes
+are sufficiently independent. Distinct contract addresses and quorum counts do
+not establish that independence or manipulation resistance.
 
-## Defenses
-
-Each Templar defense closes one of those gaps; an attack must defeat all of them
-at once.
-
-- **Multi-source quorum** — with three independent sources and `min_sources =
-  3`, no single compromised source determines the price. Median of
-  `[1.06, 1.06, 106.74]` is `1.06`; the attacker must compromise a majority.
-- **StepwiseChange** — blocks a single step strictly exceeding
-  `max_relative_change` versus the last **accepted** price
-  (`δ = |p_new − h_last| / h_last`). Blend compared against the previous sample,
-  which could itself be manipulated; Templar compares against accepted history.
-- **MonotonicRun** — blocks at least `max_streak` same-direction transitions
-  whose relative change is at least `min_relative_step_change`. It requires
-  zero sampling so it evaluates every accepted step.
-- **WindowedChangeDelta** — blocks when the exact means of equal-sized current
-  and historical windows differ by more than `max_relative_mean_change`.
-- **CumulativeChange** — blocks a price that strictly exceeds its threshold from
-  the immutable accepted baseline captured when the rule is installed. To
-  intentionally rebase it, remove the rule, complete a successful refresh, then
-  add it again.
-- **Freshness filter** — rejects prices older than `max_age_secs` or more than
-  `max_clock_drift_secs` in the future, so stale or pre-manufactured prices
-  cannot be replayed. Feeds a Blend pool reads must set `max_clock_drift_secs`
-  to 0 (see `RUNBOOK.md`, Guardian L-05).
-- **Manual trip** — a `ManualTripper` operator can immediately block a feed via
-  governance; untripping needs the same role.
-
-## Defense-in-depth
-
-| Stage | Blend | Templar |
-|-------|-------|---------|
-| Source IO | single SDEX VWAP | 3+ sources + quorum |
-| Aggregation | pass-through | median of survivors |
-| Freshness | none | `max_age_secs` + `max_clock_drift_secs` |
-| Deviation | current vs previous | StepwiseChange vs accepted history |
-| Sustained move | none | MonotonicRun |
-| Statistical anomaly | none | WindowedChangeDelta |
-| Emergency stop | none | governed manual trip |
-
-To land the Blend attack against this stack an attacker must *simultaneously*
-compromise a majority of independent sources, stay within 10% of accepted
-history (impossible for a 100× jump), keep any ramp under `max_streak` windows
-at < 1% per step, keep the recent average within the windowed bound, land inside
-the freshness window, and avoid any operator manual trip.
-
-## Example configuration
+Soroban has one typed configuration boundary:
 
 ```rust
 let proxy_config = ProxyConfig {
-    sources: vec![pyth, redstone, reflector],
-    min_sources: 3,
-    max_age_secs: Some(300),
-    max_clock_drift_secs: Some(0), // required for feeds a Blend pool reads
+    aggregator: AggregatorConfig::MedianLow(MedianConfig {
+        sources: soroban_sdk::vec![&env,
+            SourceConfig { oracle: source_a, asset: asset.clone(), expected_decimals: 8 },
+            SourceConfig { oracle: source_b, asset: asset.clone(), expected_decimals: 8 },
+        ],
+        min_sources: 2,
+    }),
+    max_age_secs: 300,
+    max_clock_drift_secs: 0,
 };
-let stepwise = StepwiseChange { max_relative_change: dec("0.10") };
-let monotonic = MonotonicRun { max_streak: 3, min_relative_step_change: dec("0.01") };
-let windowed = WindowedChangeDelta { window_len: 2, lookback_windows: 3, max_relative_mean_change: dec("0.15") };
 ```
 
-Set `history_len` ≥ the largest lookback any installed breaker needs. Guard the
-`ManualTripper` role: any holder can both trip and untrip.
+`MedianHigh(MedianConfig { sources, min_sources })` selects the upper median;
+`Priority(sources)` selects the first surviving source in configured order and
+has no quorum. Medians use equal unit weights, not configurable weights.
+For fresh values `[100, 200]` with quorum 2, MedianLow returns 100 and MedianHigh
+returns 200; Priority `[200, 100]` returns 200, falling back to 100 when the first
+source is invalid. With three surviving independent sources, an equal-weight
+median of `[1.06, 1.06, 106.74]` is 1.06. That example does not generalize into a
+security guarantee for Priority, a reduced surviving set, or correlated sources.
 
-## Demonstration
+Admission requires 1–16 distinct oracle addresses, valid median quorum, pins
+≤ 18 matching source decimals, and required `u64` freshness bounds (age at most
+seven days, drift at most one hour). Refresh discards changed decimals/base,
+stale samples, and samples too far in the future. It never learns a new pin.
+Zero age is allowed; feeds consumed by a Blend pool should use zero clock drift.
+Latest reads require both cache-update and publication age within the inclusive
+age bound, using saturating subtraction. No stale-cache fallback is promised.
+
+## Breakers and their limits
+
+- **StepwiseChange** compares a candidate with the last accepted sample and blocks
+  a relative change strictly greater than its threshold.
+- **MonotonicRun** counts same-direction transitions meeting its minimum step;
+  it requires zero sampling. Small changes can remain below the threshold.
+- **WindowedChangeDelta** compares means of equal-sized windows directly.
+- **CumulativeChange** uses the immutable fresh accepted baseline captured at
+  installation. To deliberately rebase, remove it, successfully refresh, then add
+  it again. Rearm does not replace that baseline.
+- **Manual trip** requires a governance proposal by `ManualTripper` or Admin and
+  its applicable timelock; it is not guaranteed instantaneous intervention.
+
+Relative rules cannot manufacture a trusted first bootstrap sample. Sample-count
+windows/streaks are not wall-clock rate limits: keeper cadence matters and long
+gaps can cause conservative availability trips. History capacity must cover
+installed rules. Thresholds satisfy `0 < x <= 1`; a decline of exactly 100% is
+not greater than threshold 1. `ArmedAfter` intentionally permits privileged
+recovery during its cooldown; rearm retains histories rather than imposing a
+fail-closed outage. Authorities able to disable enforcement remain trusted.
+
+## Lifecycle and observable outcomes
+
+Any changed policy clears served history/cache. Aggregation method, ordered
+source identities/pins, or median-quorum changes reset breakers while preserving
+the next-ID allocator; freshness-only changes retain breakers. Identical config
+is a no-op. Removal/recreation retains an allocator tombstone. Corrupt or missing
+decoder state must not silently reset an unknown allocator; archived entries
+require normal restoration.
+
+Historical records remain freshness-independent but are hidden while blocked.
+Parent history is chronological; adapter `prices` returns newest-first distinct
+resolution buckets, skipping unconvertible records. `price` buckets the requested
+time and chooses that bucket's newest convertible record.
+
+`RefreshFailure` retains its payload and uses aggregation codes 101 (length
+mismatch) and 102 (too few valid sources), paired with
+`AggregationFailureDetail { asset, code, expected, actual }`. Every blocked
+refresh has `CacheBlockedDetail { asset, blocking_breaker_ids }`, empty for a
+manual trip. Adds pair the existing event with `CircuitBreakerAddedDetail {
+asset, breaker_id, config, baseline }`; baseline is present only for cumulative
+rules. These are release contract requirements; integration and actual-host
+verification must establish them, not this document.
+
+Proposals have snapshotted maturity and no expiry. Creator/current Admin may
+cancel; currently authorized peers may execute. Timelock increases do not delay
+existing proposals. Persist original explicit IDs and exact payloads for retries;
+contention rejection does not establish success. If recorded transaction evidence
+or a matching live proposal cannot establish an uncertain outcome, stop rather
+than select another ID or execute a guessed proposal.
+
+## Regression entrypoints and deployment boundary
 
 ```bash
 just test-fast -p templar-proxy-oracle-kernel blend_exploit
+just -f contract/proxy-oracle/soroban/justfile test
+just -f contract/proxy-oracle/soroban/justfile test-integration
 ```
 
-| Scenario | Expected outcome |
-|----------|------------------|
-| 4 sources, 1 unavailable | `min_sources: 3` retains quorum |
-| 3 sources, 1 manipulated | median returns the honest price |
-| source outage | cache records failure; reads fail closed |
-| 100× single-step jump | StepwiseChange trips, cache blocked |
-| 20% pump × 4 windows | MonotonicRun trips on window 4 |
-| 50× statistical outlier | WindowedChangeDelta blocks |
-| 10-minute-old price | freshness filter rejects |
-| operator manual trip | all future refreshes blocked, event emitted |
+Expected regressions include median endpoint selection, Priority fallback,
+quorum/all-invalid failure, decimal drift rejection, bootstrap/cumulative
+baseline behavior, halted historical reads, and exact companion diagnostics.
+Commands above are instructions, not recorded verification results.
 
-## Limitations
-
-- **Source independence** — if all sources derive from the same exchange, the
-  effective source count is 1.
-- **Governance integrity** — a compromised governance key can disable breakers.
-- **Operator vigilance** — manual trip requires monitoring and a timely response.
-- **Gradual manipulation** — sub-1%-per-window moves sustained over hundreds of
-  windows can stay under MonotonicRun, but still require compromising a majority
-  of independent sources.
+Unified runtime config XDR and governance's eight fixed groups of up to eight
+unchanged proposal bodies are **fresh-stack-only**. Incompatible runtime/governance
+in-place migration is skipped; existing deployments remain unchanged. No old
+configuration decoder, defaults, or side maps are provided. Prove matching
+runtime/governance ownership wiring, Admin authorization, adapter bindings and
+base, and production timelock hardening after zero-TTL bootstrap on a new stack.
+An independent adapter upgrade requires an exact old/new compiled-Wasm swap
+proof; `integration-tests/tests/upgrade.rs` does not establish one. No live
+identity, transaction authorization, or production upgrade approval is implied.
