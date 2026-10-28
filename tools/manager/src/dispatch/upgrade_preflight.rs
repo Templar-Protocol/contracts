@@ -23,7 +23,10 @@ use templar_gateway_methods_spec::{
 use templar_gateway_types::common::{ContractArgs, Pagination};
 use templar_gateway_types::contract::ContractKind;
 use templar_gateway_types::Base64Bytes;
-use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
+use templar_proxy_oracle_kernel::proxy::{
+    circuit_breaker::{CircuitBreaker, CircuitBreakerSet},
+    Proxy,
+};
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{
     cancellation_event_size, governance_kernel::Governance, policy_recovery_working_set_bytes,
@@ -443,6 +446,8 @@ async fn pending_proposals(
 struct PendingBreakerArgs {
     id: PriceIdentifier,
     breaker_id: u32,
+    #[serde(default)]
+    breaker: Option<CircuitBreaker>,
 }
 
 #[derive(Clone, Copy)]
@@ -491,25 +496,13 @@ fn breaker_lifecycle_problem(args: &PendingBreakerArgs, set: &CircuitBreakerSet)
 
 /// All adds queued for one proxy must be usable in order against the committed
 /// allocator. Their expected IDs are stable because no other operation rewinds it.
-fn pending_add_problem(next_id: u32, adds: &[(u32, u32)]) -> Option<String> {
-    let mut ids: Vec<u32> = adds.iter().map(|(_, breaker_id)| *breaker_id).collect();
-    ids.sort_unstable();
-    if ids.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Some(format!(
-            "duplicate expected add IDs {ids:?}; at most one can execute"
-        ));
-    }
-    for (index, breaker_id) in ids.iter().enumerate() {
-        let Some(expected) = u32::try_from(index)
-            .ok()
-            .and_then(|index| next_id.checked_add(index))
-        else {
-            return Some(format!("pending add IDs {ids:?} overflow the allocator"));
-        };
-        if *breaker_id != expected {
-            return Some(format!(
-                "expected sequential add IDs starting at {next_id}, got {ids:?}"
-            ));
+fn pending_add_problem(set: &CircuitBreakerSet, adds: &[(u32, CircuitBreaker)]) -> Option<String> {
+    let mut set = set.clone();
+    let mut ordered: Vec<_> = adds.iter().collect();
+    ordered.sort_by_key(|(breaker_id, _)| *breaker_id);
+    for (breaker_id, breaker) in ordered {
+        if let Err(error) = set.add(*breaker_id, breaker.clone()) {
+            return Some(format!("add breaker {breaker_id}: {error}"));
         }
     }
     None
@@ -522,7 +515,7 @@ async fn pending_breaker_lifecycles(
 ) -> Status {
     let mut sets = BTreeMap::new();
     let mut problems = Vec::new();
-    let mut installs: BTreeMap<PriceIdentifier, Vec<(u32, u32)>> = BTreeMap::new();
+    let mut installs: BTreeMap<PriceIdentifier, Vec<(u32, CircuitBreaker)>> = BTreeMap::new();
     for (proposal_id, body) in bodies {
         let (args, usage) = match pending_breaker_target(body) {
             Ok(Some(target)) => target,
@@ -564,10 +557,17 @@ async fn pending_breaker_lifecycles(
         };
         if matches!(usage, BreakerIdUse::Install) {
             if set.is_ok() {
-                installs
-                    .entry(args.id)
-                    .or_default()
-                    .push((*proposal_id, args.breaker_id));
+                if let Some(breaker) = args.breaker {
+                    installs
+                        .entry(args.id)
+                        .or_default()
+                        .push((args.breaker_id, breaker));
+                } else {
+                    problems.push(format!(
+                        "proposal {proposal_id}, proxy {}: add is missing its breaker payload",
+                        args.id
+                    ));
+                }
             } else if let Err(error) = &set {
                 problems.push(format!(
                     "proposal {proposal_id}, proxy {}: {error}",
@@ -588,11 +588,10 @@ async fn pending_breaker_lifecycles(
         }
     }
     for (proxy, adds) in installs {
-        let next_id = match sets.get(&proxy) {
-            Some(Ok(set)) => set.next_id(),
-            _ => continue,
+        let Some(Ok(set)) = sets.get(&proxy) else {
+            continue;
         };
-        if let Some(problem) = pending_add_problem(next_id, &adds) {
+        if let Some(problem) = pending_add_problem(set, &adds) {
             problems.push(format!("proxy {proxy}: {problem}"));
         }
     }
@@ -974,6 +973,7 @@ mod tests {
         },
         circuit_breaker::{
             CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig, MonotonicRun,
+            StepwiseChange,
         },
         FreshnessFilter, Proxy, WeightedSource,
     };
@@ -993,6 +993,13 @@ mod tests {
 
     fn price_id(byte: u8) -> PriceIdentifier {
         PriceIdentifier([byte; 32])
+    }
+
+    fn sample_breaker() -> CircuitBreaker {
+        CircuitBreaker::MonotonicRun(MonotonicRun {
+            max_streak: 1,
+            min_relative_step_change: Decimal::ONE_HALF,
+        })
     }
 
     fn source() -> Source {
@@ -1219,32 +1226,49 @@ mod tests {
         let args = PendingBreakerArgs {
             id: price_id(1),
             breaker_id: 0,
+            breaker: None,
         };
-        assert!(pending_add_problem(set.next_id(), &[(1, 0)]).is_none());
+        assert!(pending_add_problem(&set, &[(0, sample_breaker())]).is_none());
         assert!(breaker_lifecycle_problem(&args, &set).is_some());
-        set.add(
-            0,
-            CircuitBreaker::MonotonicRun(MonotonicRun {
-                max_streak: 1,
-                min_relative_step_change: Decimal::ONE_HALF,
-            }),
-        )
-        .unwrap();
-        assert!(pending_add_problem(set.next_id(), &[(1, 0)]).is_some());
+        set.add(0, sample_breaker()).unwrap();
+        assert!(pending_add_problem(&set, &[(0, sample_breaker())]).is_some());
         assert!(breaker_lifecycle_problem(&args, &set).is_none());
         set.reset_preserving_next_id();
+        set.set_config(CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 4,
+        })
+        .unwrap();
         assert!(breaker_lifecycle_problem(&args, &set).is_some());
-        assert!(pending_add_problem(set.next_id(), &[(1, 0)]).is_some());
-        assert!(pending_add_problem(set.next_id(), &[(2, 1)]).is_none());
+        assert!(pending_add_problem(&set, &[(0, sample_breaker())]).is_some());
+        assert!(pending_add_problem(&set, &[(1, sample_breaker())]).is_none());
     }
 
     #[test]
-    fn pending_adds_must_be_distinct_contiguous_and_in_allocator_order() {
-        assert!(pending_add_problem(0, &[(1, 0), (2, 1)]).is_none());
-        assert!(pending_add_problem(0, &[(1, 0), (2, 0)]).is_some());
-        assert!(pending_add_problem(0, &[(1, 0), (2, 2)]).is_some());
-        assert!(pending_add_problem(u32::MAX, &[(1, u32::MAX)]).is_none());
-        assert!(pending_add_problem(u32::MAX, &[(1, u32::MAX), (2, 0)]).is_some());
+    fn pending_adds_apply_runtime_rule_and_capacity_validation() {
+        assert!(pending_add_problem(
+            &breaker_set(4),
+            &[(0, sample_breaker()), (1, sample_breaker())]
+        )
+        .is_none());
+        assert!(pending_add_problem(
+            &breaker_set(4),
+            &[(0, sample_breaker()), (0, sample_breaker())]
+        )
+        .is_some());
+        assert!(pending_add_problem(
+            &breaker_set(4),
+            &[(0, sample_breaker()), (2, sample_breaker())]
+        )
+        .is_some());
+        let mut raw = serde_json::to_value(breaker_set(4)).unwrap();
+        raw["next_id"] = json!(u32::MAX);
+        let exhausted: CircuitBreakerSet = serde_json::from_value(raw).unwrap();
+        assert!(pending_add_problem(&exhausted, &[(u32::MAX, sample_breaker())]).is_some());
+        let invalid = CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: Decimal::from(2_u8),
+        });
+        assert!(pending_add_problem(&breaker_set(4), &[(0, invalid)]).is_some());
     }
 
     #[rstest]

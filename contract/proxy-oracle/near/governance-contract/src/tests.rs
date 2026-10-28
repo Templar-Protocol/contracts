@@ -1203,7 +1203,6 @@ fn legacy_queue_must_drain_before_byte_accounting_activates() {
 fn legacy_unmarked_policy_execution_still_enforces_recovery() {
     testing_env!(context_with_admin());
     let mut contract = contract();
-    allow_immediate_role_changes(&mut contract);
     let method = "m".repeat(1_300_000);
     contract.create_proposal(
         0,
@@ -1222,10 +1221,23 @@ fn legacy_unmarked_policy_execution_still_enforces_recovery() {
     near_sdk::env::storage_remove(
         &near_sdk::borsh::to_vec(&crate::StorageKey::PendingProposalBytes).unwrap(),
     );
-    assert!(panics(|| contract.execute_proposal(0)));
-    assert!(contract.get_proposal(0).is_some());
-    contract.cancel_proposal(0);
-    assert_eq!(contract.proposal_count(), 0);
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("admin.near".parse().unwrap())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .block_timestamp(Nanoseconds::from_secs(49 * 60 * 60).as_ns())
+        .build());
+    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        contract.execute_proposal(0);
+    }))
+    .expect_err("legacy execution must enforce policy recovery");
+    let message = error.downcast_ref::<&str>().map_or_else(
+        || error.downcast_ref::<String>().map_or("", String::as_str),
+        |message| message,
+    );
+    assert!(
+        message.contains("Governance policy exceeds recoverable working set"),
+        "unexpected failure: {message}"
+    );
 }
 
 #[test]
