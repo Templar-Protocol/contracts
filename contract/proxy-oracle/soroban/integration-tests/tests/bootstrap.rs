@@ -61,6 +61,10 @@ fn authorize_governance_call(
     }]);
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Exercise the authenticated handoff and final timelock hardening on the same fresh stack"
+)]
 #[test]
 fn fresh_stack_activates_authenticated_admin_and_hardens_bootstrap_timelocks() {
     let b = Bootstrap::new();

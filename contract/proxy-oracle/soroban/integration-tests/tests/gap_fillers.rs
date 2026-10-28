@@ -14,14 +14,45 @@
 
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Symbol};
-use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig};
-use templar_proxy_oracle_soroban_governance_common::{GovernanceAction, OperationKind, Role};
+use templar_primitives::Decimal;
+use templar_proxy_oracle_soroban_common::{
+    Asset, CircuitBreakerConfig, ProxyConfig, RearmConfig, SetEnforcedConfig, SorobanDecimal,
+    StepwiseChangeConfig,
+};
+use templar_proxy_oracle_soroban_governance_common::{
+    GovernanceAction, GovernanceError, OperationKind, Role,
+};
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Stale operations must target the same removed and recreated breaker allocator"
+)]
 #[test]
-fn remove_proxy_clears_proxy_cache_history_and_breakers() {
+fn remove_recreate_hides_tombstone_and_rejects_stale_governed_breaker_operations() {
     let b = Bootstrap::new();
     b.configure_default_feed();
+    let config = b.runtime.get_proxy(&b.asset_btc).unwrap();
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::ConfigureBreakers(b.asset_btc.clone(), 0, 8),
+    );
+    let rule = CircuitBreakerConfig::StepwiseChange(StepwiseChangeConfig {
+        max_relative_change: SorobanDecimal::from_decimal(&b.env, Decimal::ONE_HALF),
+    });
+    for expected_next_id in [1, 2] {
+        b.submit_and_execute(
+            &b.admin,
+            GovernanceAction::AddBreaker(b.asset_btc.clone(), rule.clone()),
+        );
+        assert_eq!(
+            b.runtime
+                .get_breaker_set_view(&b.asset_btc)
+                .unwrap()
+                .next_id,
+            expected_next_id
+        );
+    }
     b.push_upstream_price(&b.asset_btc, 5_000_000_000, 100);
     let _ = b.refresh_one(&b.asset_btc);
 
@@ -36,6 +67,75 @@ fn remove_proxy_clears_proxy_cache_history_and_breakers() {
     assert!(b.runtime.get_cached(&b.asset_btc).is_none());
     assert!(b.runtime.get_breaker_set_view(&b.asset_btc).is_none());
     assert_eq!(b.runtime.registered_assets().len(), 0);
+    assert!(b.runtime.aggregated_history(&b.asset_btc, &32).is_none());
+
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::SetProxy(b.asset_btc.clone(), config),
+    );
+    assert_eq!(
+        b.runtime
+            .get_breaker_set_view(&b.asset_btc)
+            .unwrap()
+            .next_id,
+        2
+    );
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::ConfigureBreakers(b.asset_btc.clone(), 0, 8),
+    );
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::AddBreaker(b.asset_btc.clone(), rule),
+    );
+    assert_eq!(
+        b.runtime
+            .get_breaker_set_view(&b.asset_btc)
+            .unwrap()
+            .next_id,
+        3
+    );
+    b.refresh_one(&b.asset_btc);
+    let cached = b.runtime.aggregated_latest(&b.asset_btc);
+    for action in [
+        GovernanceAction::RemoveBreaker(b.asset_btc.clone(), 0),
+        GovernanceAction::Rearm(
+            b.asset_btc.clone(),
+            0,
+            RearmConfig {
+                arming_delay_secs: 0,
+            },
+        ),
+        GovernanceAction::SetEnforced(
+            b.asset_btc.clone(),
+            0,
+            SetEnforcedConfig { is_enforced: false },
+        ),
+    ] {
+        let id = b.governance.next_proposal_id();
+        b.governance.create_proposal(&b.admin, &id, &action, &0);
+        assert_eq!(
+            b.governance.try_execute_proposal(&b.admin, &id),
+            Err(Ok(GovernanceError::RuntimeFailed))
+        );
+        assert_eq!(b.governance.get_proposal(&id).unwrap().operation, action);
+        assert_eq!(
+            b.runtime
+                .get_breaker_set_view(&b.asset_btc)
+                .unwrap()
+                .next_id,
+            3
+        );
+        assert_eq!(
+            b.runtime
+                .get_breaker_set_view(&b.asset_btc)
+                .unwrap()
+                .breaker_count,
+            1
+        );
+        assert_eq!(b.runtime.aggregated_latest(&b.asset_btc), cached);
+        b.governance.cancel_proposal(&b.admin, &id);
+    }
 }
 
 #[test]

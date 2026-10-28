@@ -108,7 +108,7 @@ pub fn save_proposal(env: &Env, id: u64, proposal: &Proposal) -> Result<(), Gove
             .persistent()
             .get(&key)
             .unwrap_or_else(|| Map::new(env));
-        if group.len() < PROPOSALS_PER_GROUP as u32 {
+        if u64::from(group.len()) < PROPOSALS_PER_GROUP {
             group.set(id, proposal.clone());
             env.storage().persistent().set(&key, &group);
             env.storage().persistent().extend_ttl(

@@ -238,7 +238,7 @@ fn two_source_config(b: &Bootstrap, method: u32) -> ProxyConfig {
         }),
         2 => {
             // Ordered fallback: the second fixture carries the larger price.
-            let first = sources.pop_front().unwrap();
+            let first = sources.pop_front_unchecked();
             sources.push_back(first);
             AggregatorConfig::Priority(sources)
         }

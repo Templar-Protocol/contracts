@@ -12,7 +12,7 @@ use templar_gateway_types::{common::WriteOperationResult, ManagedAccountId};
 
 use crate::commands::proxy_oracle::{CreateProposal, ExecuteProposalArgs};
 use crate::commands::signer::{Authorization, Mode};
-use crate::context::{print_json, CliContext};
+use crate::context::{check_governed_execution_status, print_json, CliContext};
 
 /// Plan or create a governance proposal. Resolves the proposal id (fetching the
 /// governance contract's next id when `--id` was omitted) and, for an
@@ -113,8 +113,15 @@ pub(super) async fn execute(ctx: CliContext, args: ExecuteProposalArgs) -> anyho
         )
         .await?;
     }
-    ctx.write_authorized(authorization, args.into_spec(governance_id))
-        .await
+    if let Mode::Plan(_) = authorization.mode() {
+        return ctx
+            .write_authorized(authorization, args.into_spec(governance_id))
+            .await;
+    }
+    let id = args.id();
+    let (signer, client, _) = ctx.signing_client_and_key(authorization).await?;
+    let result = execute_now(&ctx, &client, &signer, &governance_id, id).await?;
+    print_json(&result)
 }
 
 /// Execute proposal `id` on its own (no idempotency key), signed as `signer`
@@ -135,7 +142,13 @@ async fn execute_now(
             },
         )
         .await?;
-    ctx.report_checked(&result)?;
+    ctx.report_tx(&result);
+    if let Err(error) = check_governed_execution_status(&result) {
+        // Emit receipt/transaction evidence before the CLI exits nonzero, including
+        // create-with-execute, whose combined success output is otherwise never reached.
+        print_json(&result)?;
+        return Err(error);
+    }
     Ok(result)
 }
 

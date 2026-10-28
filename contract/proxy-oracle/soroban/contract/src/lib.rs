@@ -42,7 +42,8 @@ mod refresh;
 mod storage;
 
 pub use events::{
-    CacheBlocked, CircuitBreakerAdded, CircuitBreakerConfigSet, CircuitBreakerEnforcementSet,
+    AggregationFailureDetail, CacheBlocked, CacheBlockedDetail, CircuitBreakerAdded,
+    CircuitBreakerAddedDetail, CircuitBreakerConfigSet, CircuitBreakerEnforcementSet,
     CircuitBreakerRearmed, CircuitBreakerRemoved, CircuitBreakerTripped, ContractUpgraded,
     ManualTripSet, ProxyRemoved, ProxySet, RefreshEvaluated, RefreshFailure, RefreshSuccess,
     TtlExtended,
@@ -59,7 +60,8 @@ const MAX_BREAKERS_PER_PROXY: usize = 16;
 pub(crate) const MAX_REGISTERED_ASSETS: u32 = 64;
 
 // `RefreshFailure` / `CacheBlocked` event codes published as the `code` field.
-pub(crate) const AGGREGATION_FAILED_CODE: u32 = 1;
+pub(crate) const AGGREGATION_LENGTH_MISMATCH_CODE: u32 = 101;
+pub(crate) const AGGREGATION_TOO_FEW_SOURCES_CODE: u32 = 102;
 pub(crate) const STORAGE_FAILED_CODE: u32 = 3;
 pub(crate) const SOURCE_UNAVAILABLE_CODE: u32 = 5;
 pub(crate) const UNKNOWN_ASSET_CODE: u32 = 6;
@@ -188,8 +190,14 @@ impl SorobanProxyOracle {
             let mut breakers = load_breakers(&env, &asset)?;
             breakers.reset_preserving_next_id();
             store_breakers(&env, &asset, &breakers)?;
-        } else if previous.is_none() && !storage.has(&DataKey::Breakers(asset.clone())) {
-            store_breakers(&env, &asset, &CircuitBreakerSet::empty())?;
+        } else if previous.is_none() {
+            if storage.has(&DataKey::Breakers(asset.clone())) {
+                // Reading the retained allocator also rejects corrupt state. Archived
+                // persistent entries require normal host restoration, not a new ID.
+                load_breakers(&env, &asset)?;
+            } else {
+                store_breakers(&env, &asset, &CircuitBreakerSet::empty())?;
+            }
         }
         add_asset(&env, &asset)?;
         storage.set(&DataKey::Proxy(asset.clone()), &config);
@@ -212,10 +220,13 @@ impl SorobanProxyOracle {
 
     #[only_owner]
     pub fn remove_proxy(env: Env, asset: Asset) -> Result<(), ContractError> {
+        require_proxy_exists(&env, &asset)?;
         extend_instance_ttl(&env);
+        let mut breakers = load_breakers(&env, &asset)?;
+        breakers.reset_preserving_next_id();
+        store_breakers(&env, &asset, &breakers)?;
         let storage = env.storage().persistent();
         storage.remove(&DataKey::Proxy(asset.clone()));
-        storage.remove(&DataKey::Breakers(asset.clone()));
         storage.remove(&DataKey::History(asset.clone()));
         remove_asset(&env, &asset)?;
         invalidate_cache(&env, &asset);

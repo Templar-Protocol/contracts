@@ -500,5 +500,45 @@ not a proof of all new runtime/governance behavior:
   conversion. Refresh now uses one kernel source vector and one aligned price
   vector. Admission checks decimal pins only; existing base filtering remains at
   refresh rather than adding an unrelated admission precondition.
-- All 33 immutable released Wasm fixtures were fetched into the verified artifact
-  cache. They do not establish current production deployment identities.
+- All 33 immutable released **NEAR** Wasm fixtures were fetched into the verified
+  artifact cache. They do not establish current production deployment identities.
+
+### Step 5 — lifecycle and diagnostics verification
+
+- Breaker removal/recreation retains the allocator on both chains. Stale add,
+  remove, rearm and enforcement operations cannot mutate a replacement rule;
+  absent or corrupt historical allocators fail closed rather than restart at 0.
+  Public absent-proxy views hide the retained tombstone.
+- Manager/NEAR-common gate: **625 passed, 12 skipped**. NEAR runtime contract
+  gate: **40 passed, 3 ignored fixture generators**. The added relative-rearm
+  overflow case passed separately, preserving breaker state, cache and epoch.
+  Kernel gate: **189 passed**, including strict relative threshold 1 boundaries.
+- Final scoped Soroban gate: **197 passed** (runtime 81, governance 41,
+  integration 75). It exercises checked aggregation counts, every typed
+  diagnostic companion, blocked IDs with and without available sources, manual
+  blocking, cumulative baseline disclosure, duplicate/older publication,
+  history resize/cadence changes and host restoration of an archived tombstone.
+- Adapter gate: **25 passed**. History selects newest convertible prices,
+  deduplicates resolution buckets and preserves fail-closed/decommission behavior.
+  This is not yet proof of an old-Wasm-to-new-Wasm adapter upgrade.
+- Script gate: **120 passed**. Compiled Wasm ABI policy accepted the exact three
+  new diagnostic event schemas, including field order and topic placement.
+  Size gate passed: runtime 99,890/131,072 bytes; governance 46,221/131,072;
+  adapter 16,729/32,768; Lazer 25,593/32,768; batcher 7,600/32,768.
+- Actual `tmplrmgr` subprocesses against an ephemeral NEAR sandbox exercised
+  create/execute/cancel, discarded-create-response retry with the original ID,
+  counterparty contention, replay after cancellation/execution and stale breaker
+  IDs. Rejected requests did not consume a replacement ID or execute another
+  creator's body. This simulated response loss by discarding a successful
+  response; it was not transport-level fault injection.
+- Explicit execution of stale proposal 5 reported a successful governance dispatch
+  **and** the failed oracle receipt, exiting 1 with transaction
+  `8sUky3fZyrVaCrDtH686Q6FfzxHEVbpiKUWMMXeLchKF`.
+  Combined create/execute proposal 7 likewise exited 1 with transaction
+  `CXJfycKyDbhGpXRqQRZjyYCdteTayAJqMuHkNYuq6DVF`. Both hashes belong only to
+  that ephemeral sandbox. Final state: next proposal 8, next breaker 1, no active
+  proposals. Temporary smoke sources were removed after execution.
+- NEAR/manager and affected Soroban all-target Clippy commands exited successfully
+  with `-D warnings`; they emitted the workspace's unknown
+  `clippy::ignore_without_reason` warning. Historical-baseline comparison is
+  recorded with final verification rather than treating that warning as fixed.

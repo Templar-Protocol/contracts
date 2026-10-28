@@ -84,9 +84,9 @@ fn breakers_status(verdicts: &[(PriceIdentifier, BreakerVerdict)]) -> Status {
         return Status::passed(format!("{} breaker set(s) load cleanly", verdicts.len()));
     }
     Status::failed(format!(
-        "{} breaker set(s) the new runtime would reject — recover each with \
-         `admin_set_proxy <id> null` then re-set, since the admin breaker methods panic on an \
-         invalid set: {}",
+        "{} breaker set(s) the new runtime would reject — block the upgrade and inspect the \
+         exact old code/state and allocator history; removal/recreation must not reset an \
+         unknown breaker-ID allocator: {}",
         rejected.len(),
         rejected.join("; "),
     ))

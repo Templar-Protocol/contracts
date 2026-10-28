@@ -276,9 +276,9 @@ fn prices_returns_scaled_history() {
 
     let prices = f.adapter.prices(&f.asset, &2).unwrap();
     assert_eq!(prices.len(), 2);
-    // 100 with expo=-2 at decimals=8 → 100 * 10^6 = 100_000_000.
-    assert_eq!(prices.get(0).unwrap().price, 100_000_000);
-    assert_eq!(prices.get(1).unwrap().price, 200_000_000);
+    // Newest first, scaled from expo=-2 to decimals=8.
+    assert_eq!(prices.get(0).unwrap().price, 200_000_000);
+    assert_eq!(prices.get(1).unwrap().price, 100_000_000);
 }
 
 #[test]
@@ -463,17 +463,17 @@ fn parent_base_drift_fails_all_price_reads_closed() {
 
 #[test]
 fn timestamps_are_bucketed_and_history_collisions_keep_newest() {
-    let f = fixture(8, 60);
+    let f = fixture(8, 10);
     f.parent.set_aggregated(
         &f.asset,
         &NormalizedPrice {
             mantissa: 200,
             expo: -2,
-            timestamp: 119,
+            timestamp: 101,
         },
     );
     let mut history = soroban_sdk::Vec::new(&f.env);
-    for (mantissa, timestamp) in [(100_i64, 101_u64), (200, 119), (300, 120)] {
+    for (mantissa, timestamp) in [(100_i64, 100_u64), (200, 101), (300, 110)] {
         history.push_back(NormalizedPrice {
             mantissa,
             expo: -2,
@@ -482,15 +482,14 @@ fn timestamps_are_bucketed_and_history_collisions_keep_newest() {
     }
     f.parent.set_history(&f.asset, &history);
 
-    assert_eq!(f.adapter.lastprice(&f.asset).unwrap().timestamp, 60);
-    assert_eq!(f.adapter.price(&f.asset, &60).unwrap().price, 200_000_000);
-    assert_eq!(f.adapter.price(&f.asset, &101), None);
-    let prices = f.adapter.prices(&f.asset, &3).unwrap();
+    assert_eq!(f.adapter.lastprice(&f.asset).unwrap().timestamp, 100);
+    assert_eq!(f.adapter.price(&f.asset, &109).unwrap().price, 200_000_000);
+    let prices = f.adapter.prices(&f.asset, &2).unwrap();
     assert_eq!(prices.len(), 2);
-    assert_eq!(prices.get(0).unwrap().timestamp, 60);
-    assert_eq!(prices.get(0).unwrap().price, 200_000_000);
-    assert_eq!(prices.get(1).unwrap().timestamp, 120);
-    assert_eq!(prices.get(1).unwrap().price, 300_000_000);
+    assert_eq!(prices.get(0).unwrap().timestamp, 110);
+    assert_eq!(prices.get(0).unwrap().price, 300_000_000);
+    assert_eq!(prices.get(1).unwrap().timestamp, 100);
+    assert_eq!(prices.get(1).unwrap().price, 200_000_000);
 }
 
 #[test]
@@ -513,7 +512,7 @@ fn timestamp_bucketing_handles_u64_max_without_overflow() {
 
 #[test]
 fn prices_skips_unconvertible_history_entries() {
-    let f = fixture(8, 1);
+    let f = fixture(8, 10);
     let mut history = soroban_sdk::Vec::new(&f.env);
     history.push_back(NormalizedPrice {
         mantissa: 100,
@@ -528,14 +527,21 @@ fn prices_skips_unconvertible_history_entries() {
     history.push_back(NormalizedPrice {
         mantissa: 200,
         expo: -2,
-        timestamp: 102,
+        timestamp: 110,
+    });
+    history.push_back(NormalizedPrice {
+        mantissa: 300,
+        expo: -2,
+        timestamp: 111,
     });
     f.parent.set_history(&f.asset, &history);
 
-    let prices = f.adapter.prices(&f.asset, &3).unwrap();
+    let prices = f.adapter.prices(&f.asset, &2).unwrap();
     assert_eq!(prices.len(), 2);
-    assert_eq!(prices.get(0).unwrap().price, 100_000_000);
-    assert_eq!(prices.get(1).unwrap().price, 200_000_000);
+    assert_eq!(prices.get(0).unwrap().price, 300_000_000);
+    assert_eq!(prices.get(1).unwrap().price, 100_000_000);
+    assert_eq!(f.adapter.price(&f.asset, &109).unwrap().price, 100_000_000);
+    assert_eq!(f.adapter.prices(&f.asset, &0), None);
     let mut invalid = soroban_sdk::Vec::new(&f.env);
     invalid.push_back(NormalizedPrice {
         mantissa: i64::MAX,

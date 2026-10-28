@@ -410,6 +410,24 @@ pub fn rearm_interprets_target_argument_as_relative_delay() {
         CircuitBreakerStatus::ArmedAfter { timestamp_ns }
             if timestamp_ns == Nanoseconds::from_ns(NOW_NS + 30_000_000_000)
     ));
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+    let before = (
+        c.get_proxy_circuit_breaker_set(proxy_id),
+        c.get_cached_proxy_price(proxy_id),
+        c.cache_epoch(proxy_id),
+    );
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.admin_rearm(proxy_id, 0, Nanoseconds::from_ns(u64::MAX));
+    }))
+    .is_err());
+    assert_eq!(
+        (
+            c.get_proxy_circuit_breaker_set(proxy_id),
+            c.get_cached_proxy_price(proxy_id),
+            c.cache_epoch(proxy_id),
+        ),
+        before
+    );
 }
 
 #[test]
@@ -477,6 +495,107 @@ pub fn proxy_removal_clears_cache_and_stale_update_cannot_write() {
         None
     );
     assert!(c.get_cached_proxy_price(proxy_id).is_none());
+}
+
+#[rstest::rstest]
+#[case::remove(0)]
+#[case::rearm(1)]
+#[case::enforce(2)]
+#[case::replay_add(3)]
+pub fn recreated_proxy_rejects_stale_breaker_operations(#[case] operation: u8) {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build());
+    let mut c = Contract::new(None);
+    let proxy_id = PriceIdentifier([0x6a; 32]);
+    let proxy = test_proxy("pyth-oracle.near");
+    let config = CircuitBreakerSetConfig {
+        sample_interval_ns: Nanoseconds::zero(),
+        history_len: 2,
+    };
+    c.set_proxy(proxy_id, Some(proxy.clone()));
+    c.admin_configure_circuit_breakers(proxy_id, config);
+    c.admin_add_circuit_breaker(proxy_id, 0, stepwise_breaker());
+    c.admin_add_circuit_breaker(proxy_id, 1, stepwise_breaker());
+    cache_test_price_and_seed_history(&mut c, proxy_id, proxy_price(100));
+    let pending = c.proxy_entry(proxy_id).unwrap().prepare_price_update();
+    let initial_epoch = c.cache_epoch(proxy_id);
+
+    c.set_proxy(proxy_id, None);
+    assert!(c.get_proxy_circuit_breaker_set(proxy_id).is_none());
+    assert!(c.get_cached_proxy_price(proxy_id).is_none());
+    assert!(c.cache_epoch(proxy_id) > initial_epoch);
+    c.set_proxy(proxy_id, Some(proxy));
+    assert_eq!(
+        c.get_proxy_circuit_breaker_set(proxy_id).unwrap().next_id(),
+        2
+    );
+    c.admin_configure_circuit_breakers(proxy_id, config);
+    c.admin_add_circuit_breaker(proxy_id, 2, stepwise_breaker());
+    cache_test_price_and_seed_history(&mut c, proxy_id, proxy_price(200));
+    let before_set = c.get_proxy_circuit_breaker_set(proxy_id).unwrap();
+    let before_cache = c.get_cached_proxy_price(proxy_id);
+    let before_epoch = c.cache_epoch(proxy_id);
+
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match operation {
+            0 => c.admin_remove_circuit_breaker(proxy_id, 0),
+            1 => c.admin_rearm(proxy_id, 0, Nanoseconds::from_secs(1)),
+            2 => c.admin_set_enforced(proxy_id, 0, false),
+            3 => c.admin_add_circuit_breaker(proxy_id, 0, stepwise_breaker()),
+            _ => unreachable!(),
+        }
+    }))
+    .is_err());
+    assert_eq!(
+        c.finish_price_update_if_current(pending, Nanoseconds::zero(), |_, _| {
+            panic!("removed lifecycle callback must not execute")
+        }),
+        None
+    );
+    assert_eq!(c.get_proxy_circuit_breaker_set(proxy_id), Some(before_set));
+    assert_eq!(c.get_cached_proxy_price(proxy_id), before_cache);
+    assert_eq!(c.cache_epoch(proxy_id), before_epoch);
+}
+
+#[test]
+pub fn competing_guarded_adds_install_only_one_rule() {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build());
+    let mut c = Contract::new(None);
+    let proxy_id = PriceIdentifier([0x6b; 32]);
+    c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
+    c.admin_configure_circuit_breakers(
+        proxy_id,
+        CircuitBreakerSetConfig {
+            sample_interval_ns: Nanoseconds::zero(),
+            history_len: 2,
+        },
+    );
+    c.admin_add_circuit_breaker(proxy_id, 0, stepwise_breaker());
+    cache_test_price(&mut c, proxy_id, proxy_price(100));
+    let before_set = c.get_proxy_circuit_breaker_set(proxy_id).unwrap();
+    let before_cache = c.get_cached_proxy_price(proxy_id);
+    let before_epoch = c.cache_epoch(proxy_id);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.admin_add_circuit_breaker(proxy_id, 0, stepwise_breaker());
+    }))
+    .is_err());
+    assert_eq!(before_set.next_id(), 1);
+    assert_eq!(before_set.breaker_count(), 1);
+    assert_eq!(c.get_proxy_circuit_breaker_set(proxy_id), Some(before_set));
+    assert_eq!(c.get_cached_proxy_price(proxy_id), before_cache);
+    assert_eq!(c.cache_epoch(proxy_id), before_epoch);
+
+    c.admin_remove_circuit_breaker(proxy_id, 0);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c.admin_add_circuit_breaker(proxy_id, 0, stepwise_breaker());
+    }))
+    .is_err());
+    let set = c.get_proxy_circuit_breaker_set(proxy_id).unwrap();
+    assert_eq!(set.next_id(), 1);
+    assert_eq!(set.breaker_count(), 0);
 }
 
 #[rstest::rstest]

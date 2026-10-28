@@ -100,10 +100,10 @@ pub fn extend_page(
     }
     let symbol = role_symbol(env, role);
     let member_count = access_control::get_role_member_count(env, &symbol);
-    let end = offset.saturating_add(count).min(member_count);
-    for index in offset..end {
+    let page_end = offset.saturating_add(count).min(member_count);
+    for index in offset..page_end {
         let account = access_control::get_role_member(env, &symbol, index);
         access_control::has_role(env, &account, &symbol);
     }
-    Ok((end < member_count).then_some(end))
+    Ok((page_end < member_count).then_some(page_end))
 }

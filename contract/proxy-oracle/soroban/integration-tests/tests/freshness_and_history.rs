@@ -156,7 +156,7 @@ fn future_dated_source_is_not_published() {
 }
 
 #[test]
-fn prices_returns_history_oldest_first() {
+fn prices_returns_history_newest_first() {
     let b = Bootstrap::new();
     b.configure_default_feed();
     b.submit_and_execute(
@@ -180,9 +180,9 @@ fn prices_returns_history_oldest_first() {
     }
     let series = b.adapter.prices(&b.asset_btc, &3_u32).unwrap();
     assert_eq!(series.len(), 3);
-    // Last 3 oldest-first: prices[2], prices[3], prices[4].
-    assert_eq!(series.get(0).unwrap().price, prices[2]);
-    assert_eq!(series.get(2).unwrap().price, prices[4]);
+    // The three newest distinct timestamps, descending.
+    assert_eq!(series.get(0).unwrap().price, prices[4]);
+    assert_eq!(series.get(2).unwrap().price, prices[2]);
 }
 
 #[test]
@@ -206,6 +206,54 @@ fn price_lookup_by_exact_timestamp() {
 
     assert!(b.adapter.price(&b.asset_btc, &101).is_some());
     assert!(b.adapter.price(&b.asset_btc, &999).is_none());
+}
+
+#[test]
+fn bucketed_history_returns_distinct_newest_records_and_respects_halts() {
+    let b = Bootstrap::new();
+    b.configure_default_feed();
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::ConfigureBreakers(b.asset_btc.clone(), 0, 16),
+    );
+    let adapter_id = b.env.register(
+        Sep40Adapter,
+        (
+            &b.admin,
+            &b.runtime_id,
+            &b.asset_btc,
+            &8_u32,
+            &10_u32,
+            &b.base_usd,
+        ),
+    );
+    let adapter = Sep40AdapterClient::new(&b.env, &adapter_id);
+    for (timestamp, price) in [
+        (100_u64, 1_000_000_000_i128),
+        (101, 1_100_000_000),
+        (110, 1_200_000_000),
+        (111, 1_300_000_000),
+    ] {
+        ledger::advance_secs(&b.env, timestamp - b.env.ledger().timestamp());
+        b.push_upstream_price(&b.asset_btc, price, timestamp);
+        let _ = b.refresh_one(&b.asset_btc);
+    }
+    let series = adapter.prices(&b.asset_btc, &2).unwrap();
+    assert_eq!(series.len(), 2);
+    assert_eq!(series.get(0).unwrap().timestamp, 110);
+    assert_eq!(series.get(0).unwrap().price, 1_300_000_000);
+    assert_eq!(series.get(1).unwrap().timestamp, 100);
+    assert_eq!(series.get(1).unwrap().price, 1_100_000_000);
+    assert_eq!(adapter.price(&b.asset_btc, &109), series.get(1));
+    assert_eq!(adapter.prices(&b.asset_btc, &0), None);
+
+    b.submit_and_execute(
+        &b.admin,
+        GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None),
+    );
+    assert_eq!(adapter.price(&b.asset_btc, &109), None);
+    assert_eq!(adapter.prices(&b.asset_btc, &2), None);
+    assert_eq!(adapter.lastprice(&b.asset_btc), None);
 }
 
 #[test]
