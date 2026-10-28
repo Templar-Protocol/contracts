@@ -213,8 +213,8 @@ impl PriceFeedTrait for Sep40Adapter {
                 continue;
             };
             if prices
-                .iter()
-                .any(|previous| previous.timestamp == price.timestamp)
+                .last()
+                .is_some_and(|previous| previous.timestamp == price.timestamp)
             {
                 continue;
             }

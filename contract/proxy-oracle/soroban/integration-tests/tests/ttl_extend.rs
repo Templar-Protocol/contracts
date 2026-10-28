@@ -19,9 +19,9 @@
 //! error paths are still covered by the unit tests inside each crate.
 
 use soroban_sdk::Symbol;
-use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig};
+use templar_proxy_oracle_soroban_common::Asset;
 use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
-use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
+use templar_proxy_oracle_soroban_integration_tests::common::{default_proxy_config, Bootstrap};
 
 #[test]
 fn runtime_extend_ttl_is_public_and_succeeds_with_assets_configured() {
@@ -31,19 +31,7 @@ fn runtime_extend_ttl_is_public_and_succeeds_with_assets_configured() {
     let sources = b.source_configs(&eth);
     b.submit_and_execute(
         &b.admin,
-        GovernanceAction::SetProxy(
-            eth.clone(),
-            ProxyConfig {
-                aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
-                    templar_proxy_oracle_soroban_common::MedianConfig {
-                        sources,
-                        min_sources: 3,
-                    },
-                ),
-                max_age_secs: 300,
-                max_clock_drift_secs: 60,
-            },
-        ),
+        GovernanceAction::SetProxy(eth.clone(), default_proxy_config(sources)),
     );
 
     b.runtime.extend_ttl(&b.asset_btc);

@@ -415,6 +415,7 @@ GOVERNANCE_ERROR_CODES = _codes(
     "TtlExceedsMaximum",
     "LastAdmin",
     "TooManyPendingProposals",
+    "PendingProposalBytesExceeded",
 )
 
 

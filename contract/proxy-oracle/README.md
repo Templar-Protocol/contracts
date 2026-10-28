@@ -85,8 +85,10 @@ without changing persisted layouts:
 - `upgrade.pending_breaker_lifecycles`: inspect current and legacy pending add,
   remove, rearm and enforcement targets. Missing/undecodable sets, stale expected
   add IDs and absent mutation targets require inspection and drain/cancellation;
-  compatible queued adds are not rejected wholesale. Current state cannot prove
-  allocator history already deleted by old code.
+- `upgrade.pending_resources`: exact serialized state+body working set, policy
+  recoverability, and cancellation-log bytes against the same limits the new
+  contract enforces. Oversized legacy queues or an unrecoverable policy must be
+  drained/reconfigured on the old code; compatible bodies remain executable.
 
 Checks run on direct upgrades, proposal creation, and again before governed
 upgrade execution. `--skip-preflight` opts out, `--skip-check <id>` drops one
@@ -94,6 +96,22 @@ check, and `--print` submits nothing.
 
 Run `tmplrmgr proxy-oracle preflight --oracle-id <oracle-id>` for each known deployment before preparing an upgrade. Registry sweeps require `list_deployments_by_kind`; a release catalog is not evidence of current deployment. Inventory the exact old Wasm/hash, state version, proxy/governance identities, owner/roles, proxy configs, breaker sets, and pending bodies. Drain/cancel only breaker-ID operations that may refer to a lifecycle deleted by old code; do not cancel compatible operations merely because code changes. A rejected or unknown allocator must be investigated without resetting its ID history. Production upgrade approval remains blocked when that inventory cannot be established.
 
+
+### Aggregate resource limits
+
+Governance bounds the combined serialized working set of its state and pending
+bodies (2 MiB, 1 KiB reserved for an Admin recovery proposal) and the combined
+cancellation-log bytes of one atomic revocation (12 KiB, 512 bytes reserved).
+Individual proposal payloads stay unbounded below those aggregates: a 1.25 MiB
+target-call body is still admissible when the rest of the queue is small.
+Policy edits are admitted only while the resulting policy remains removable
+within the same budget, so an accepted configuration cannot lock itself in.
+Admission counts bytes exactly (Borsh for bodies, the NEP-297 encoder for
+logs); backpressure is rejection without reservation or mutation. An unmarked
+legacy queue without accounting still drains: existing bodies can be cancelled
+or ordinarily executed, while new admissions and non-noop revocations wait
+until it is empty. This bound preserves atomic revocation liveness; it does not
+guarantee scheduling fairness.
 ### Bring-up and hardening
 
 A newly deployed oracle needs configuration immediately — proxy definitions, breaker history, breakers — so bring-up runs under a deliberately open policy and is hardened afterwards. `--ttl-default 0s` (what a market deployment's `governance.ttl_default` sets) is already that open policy: every lock is zero and every target method is Admin-only, so `create-proposal … --execute-when-ready` configures the oracle in a single pass. Use `--policy-file governance-policy.bootstrap.example.json` instead if delegates rather than the Admin should do the bring-up — same role assignments as the steady-state table, all timelocks zero.

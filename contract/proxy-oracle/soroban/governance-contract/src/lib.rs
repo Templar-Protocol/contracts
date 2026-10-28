@@ -30,7 +30,8 @@ pub use events::{
 use engine::{effective_ttl, execute_action, now, require_authorized};
 use storage::{
     extend_active_proposal_ttls, load_header, load_proposal, proposal_from_kernel,
-    proposal_to_kernel, remove_proposal, save_header, save_proposal, DataKey, KernelGovernance,
+    proposal_to_kernel, remove_proposal, save_header, save_pending_bytes, save_proposal, DataKey,
+    KernelGovernance,
 };
 
 const MAX_PENDING_PROPOSALS: u32 = 64;
@@ -63,6 +64,7 @@ impl ProxyOracleGovernance {
                 MAX_PENDING_PROPOSALS,
             ),
         );
+        save_pending_bytes(&env, 0);
         roles::grant(&env, &admin, Role::Admin, &admin)?;
         Ok(())
     }
@@ -104,7 +106,8 @@ impl ProxyOracleGovernance {
         if requested_ttl > MAX_PROPOSAL_TTL_NS {
             return Err(GovernanceError::TtlExceedsMaximum);
         }
-        if !roles::has_role(&env, &caller, Role::Admin)
+        let is_admin = roles::has_role(&env, &caller, Role::Admin);
+        if !is_admin
             && header.active_ids().len()
                 >= header.max_pending_proposals().saturating_sub(1) as usize
         {
@@ -127,7 +130,7 @@ impl ProxyOracleGovernance {
             return Err(GovernanceError::TtlExceedsMaximum);
         }
         let proposal = proposal_from_kernel(kernel_proposal);
-        save_proposal(&env, id, &proposal)?;
+        save_proposal(&env, id, &proposal, is_admin)?;
         save_header(&env, &header);
         ProposalSubmitted {
             id,
@@ -153,7 +156,7 @@ impl ProxyOracleGovernance {
         }
         let mut header = load_header(&env)?;
         header.cancel(id).map_err(map_cancel_error)?;
-        remove_proposal(&env, id);
+        remove_proposal(&env, id)?;
         save_header(&env, &header);
         ProposalRevoked { id }.publish(&env);
         Ok(())
@@ -172,8 +175,8 @@ impl ProxyOracleGovernance {
         header
             .execute(id, &kernel_proposal, now(&env)?)
             .map_err(map_execute_error)?;
+        remove_proposal(&env, id)?;
         execute_action(&env, &mut header, &proposal.operation, &caller)?;
-        remove_proposal(&env, id);
         save_header(&env, &header);
         ProposalAccepted { id }.publish(&env);
         Ok(())

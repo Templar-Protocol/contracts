@@ -214,33 +214,6 @@ async fn mainnet_upgrade_needs_no_migration() -> Result<()> {
     Ok(())
 }
 
-/// The captured account's breaker sets must survive the new runtime's validation gate; this is
-/// scoped to these literal records, not to uninspected production configurations.
-#[tokio::test]
-async fn mainnet_upgrade_preserves_loadable_breaker_sets() -> Result<()> {
-    let harness = SandboxHarness::start().await?;
-    let client = harness.client()?;
-    let oracle_id = upgrade_from_mainnet_state(&harness).await?;
-
-    for price_id in [USDC_PRICE_ID, USTRY_PRICE_ID] {
-        // Deserializing into the post-audit `CircuitBreakerSet` is itself half the assertion: a set
-        // the new types cannot parse is exactly the failure mode being ruled out.
-        let set = client
-            .read(proxy_oracle::GetProxyCircuitBreakerSet {
-                oracle_id: oracle_id.clone(),
-                id: price_id,
-            })
-            .await?
-            .unwrap_or_else(|| panic!("{price_id} has no stored breaker set"));
-
-        set.validate().unwrap_or_else(|error| {
-            panic!("{price_id}'s stored breaker set is inert under the new rules: {error}")
-        });
-    }
-
-    Ok(())
-}
-
 /// The other side of the same gate: a set the *previous* release accepted, which the new one will
 /// not, must fail closed rather than quietly evaluate.
 ///

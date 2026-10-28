@@ -599,14 +599,14 @@ not a proof of all new runtime/governance behavior:
 | Command / gate | Observed result |
 |---|---|
 | `just test-fast -p templar-proxy-oracle-kernel -p templar-proxy-oracle-governance-kernel --features serde,borsh` | 200 passed (189 kernel + 11 governance-kernel) |
-| `just test-fast -p templar-proxy-oracle-near-common -p templar-proxy-oracle-near-governance-common -p templar-gateway-core -p templar-gateway-methods-spec -p templar-gateway-methods-dispatch -p templar-manager` | 827 passed; 12 node-backed cases excluded |
+| `just test-fast -p templar-proxy-oracle-near-common -p templar-proxy-oracle-near-governance-common -p templar-gateway-core -p templar-gateway-methods-spec -p templar-gateway-methods-dispatch -p templar-manager` | 690 passed in the governance/manager partition plus 187 near-common/gateway; 12 node-backed cases excluded |
 | `just test-fast -p templar-gateway-catalog` | 4 passed; ignored regeneration case excluded; METHODS.md current |
-| `just test-sandbox --stale -p templar-proxy-oracle-near-contract -p templar-proxy-oracle-near-governance-contract` | 54 passed; 46 non-node/ignored cases excluded; Wasms had just been rebuilt by ordinary sandbox recipe |
-| Soroban `test` | 247 passed: common/governance-common 27, runtime 82, governance 42, adapter 25, Lazer 63, batcher 8 |
+| `just test-sandbox --stale -p templar-proxy-oracle-near-contract -p templar-proxy-oracle-near-governance-contract` | 56 passed; 51 non-node/ignored cases excluded; Wasms rebuilt by ordinary sandbox recipe |
+| Soroban `test` | 249 passed: common/governance-common 27, runtime 82, governance 44, adapter 25, Lazer 63, batcher 8 |
 | Soroban `test-integration` | 76 passed, including actual compiled adapter swap; native-only gate separately 75 passed |
 | Soroban `test-scripts` | 122 passed |
-| Soroban `budget-check` | Runtime 82/82 and governance 42/42 passed; deterministic host scenarios, not full Stellar RPC resource simulation |
-| Soroban `size-check` + compiled ABI policies | Runtime 99,749/131,072; governance 46,221/131,072; adapter 16,729/32,768; Lazer 25,593/32,768; batcher 7,600/32,768 bytes |
+| Soroban `budget-check` | Runtime 82/82 and governance 44/44 passed; deterministic host scenarios, not full Stellar RPC resource simulation |
+| Soroban `size-check` + compiled ABI policies | Runtime 99,749/131,072; governance 47,753/131,072; adapter 16,704/32,768; Lazer 25,593/32,768; batcher 7,600/32,768 bytes |
 | `cargo check --workspace` | Passed |
 | Existing `cargo kani -p templar-proxy-oracle-kernel` obligations | 9/9 proved; every listed reachability cover satisfied; inputs unchanged |
 
@@ -641,3 +641,84 @@ match the cached audit records, and every row has a final disposition/evidence.
 Local Markdown checker verified five relative links/headings across eight
 changed guides; CI YAML parsed and its explicit compiled-Wasm gate was checked.
 No remediation smoke source remains in either examples directory.
+
+### Step 7 — critical review, bounded queues, and simplification
+
+The final critical review found two release-blocking liveness defects in the
+HAL-34 remedy itself, which earlier green gates had missed:
+
+- **NEAR (reproduced on owned sandbox).** 63 legal Borsh proposals carrying
+  900,000 opaque argument bytes filled the non-Admin slots; the reserved Admin
+  revocation failed at ~73 Tgas with
+  `Size of the recorded trie storage proof has exceeded the allowed limit (4.0 MB)`
+  and the delegate retained its role (artifact `artifact://227`). Cancellation
+  logs from rolled-back receipts still appear in logs, so indexers must use
+  receipt status. A second witness showed 63 proposals with a 256-byte method
+  exceeding `max_total_log_length` at 16,582 bytes of cancellation logs
+  (artifact `artifact://285`).
+- **Soroban (real SDK-25 host, default 100M CPU).** A mixed-role queue with 55
+  maximum-size 16-source `SetProxy` bodies and 8 small manual-trip bodies
+  trapped `Error(Budget, ExceededLimit)` during revocation, because purging a
+  few small bodies rewrote all surviving large groups (artifact `artifact://222`;
+  Stellar SLP-0004 keeps the 132,096-byte write limit). A homogeneous purge had
+  already consumed 96,643,282 CPU (artifact `artifact://212`).
+
+The user explicitly selected **bound aggregate pending bytes** rather than
+staged revocation. The remedy preserves atomic physical purge, all existing
+event shapes, individual large payloads, explicit IDs, and layout-compatible
+NEAR `State`/header/proposal/operation encodings:
+
+- NEAR: combined serialized state + pending bodies is capped at 2 MiB with a
+  1 KiB Admin recovery reserve, sized exactly via `proposal_body_size`
+  (Borsh-length, fallible). Cancellation-log bytes are capped at 12 KiB with a
+  512-byte reserve, sized exactly via `cancellation_event_size` (the real
+  NEP-297 encoder with a counting writer). Policy edits also require the
+  resulting policy to remain removable within the same working-set bound, so
+  an admitted configuration cannot lock itself in. New auxiliary accounting
+  keys (working-set and cancellation-log bytes) live outside the serialized
+  state, so no state-version bump. Legacy unmarked queues still drain:
+  ordinary cancel/execute continue; new admissions and non-noop revocations
+  wait until the queue is empty — an explicit transition, not a wholesale
+  cancellation of compatible pending work.
+- Soroban (fresh stack): proposal XDR values are capped at 122,880 bytes with
+  a 2,048-byte Admin reserve; the new error is appended as
+  `PendingProposalBytesExceeded = 13` (all prior codes unchanged). Purge is a
+  single pass with exact byte reconciliation; missing/inconsistent bodies fail
+  the whole invocation. The eight-group storage shape is unchanged.
+- New read-only preflight check `upgrade.pending_resources` evaluates legacy
+  and current pending bodies plus policy recoverability against these exact
+  limits and instructs operators to drain/reconfigure oversized legacy state
+  on the old code before upgrading.
+
+Verification of the remedy (actual execution, not extrapolation):
+
+- NEAR sandbox, exact 2,097,152-byte working set with 64 entries (including a
+  1,250,000-byte payload, an Admin survivor and the revocation proposal):
+  revocation succeeded at 119.585 Tgas execution / 119.895 Tgas total; the
+  delegate lost the role and the survivor remained (artifact `artifact://289`).
+- NEAR event budget: 29 delegated proposals with a 256-byte method produced
+  11,447 counted cancellation-log bytes; the next create was rejected with the
+  byte-limit error, and the reserved Admin revocation then succeeded
+  (artifact `artifact://287`).
+- Soroban generated-client smoke: a mixed queue saturated at 45 proposals,
+  after which Admin revocation succeeded at 26,733,295 CPU, 19 memory-read
+  entries, 12 write entries, and 120,388 write bytes. Permanent regressions
+  additionally assert event size, CPU, combined footprint, write entries and
+  write bytes for mixed-role, Admin-revocation and 63-small-body cases.
+
+Simplification pass (six reviewers, findings DRY 2, YAGNI 0, STATE 0, FLOW 3,
+SIGNAL 2, TEST 1; all eight accepted, zero deduplicated): shared
+`default_proxy_config` fixture and `ADAPTER_DECIMALS` pins; last-emitted-bucket
+dedup in adapter history; borrowed JSON deserialization in preflight;
+unchecked map removal only after presence is proven; corrected stale adapter
+proof guidance in PARITY/PROOF; `has_incompatible_rearm_payload` naming and
+accurate preflight wording; consolidated duplicate captured-state upgrade
+rehearsal. No observable contract changed.
+
+Final follow-up verification: actual `tmplrmgr proxy-oracle preflight` against a
+fresh sandbox with three large-but-legal pending bodies passed all six checks,
+reporting working set 1,200,457/2,097,152 bytes and policy recovery 1,184 bytes.
+The temporary smoke source was removed. Permanent sandbox gate: 56 passed
+(51 excluded), including `cancellation_log_budget_prevents_long_method_revocation_failure`.
+Affected NEAR/manager and Soroban all-target Clippy gates exited successfully
+with `-D warnings`; `cargo fmt --all` and `git diff --check` passed.

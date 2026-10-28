@@ -30,6 +30,84 @@ pub const MAX_METHOD_POLICIES: usize = 64;
 /// have to supply it to check the stored `active_ids` against.
 pub const MAX_PENDING_PROPOSALS: u32 = 64;
 
+/// Maximum combined Borsh size of governance state and pending proposal bodies.
+pub const MAX_GOVERNANCE_WORKING_SET_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Space within the aggregate limit reserved for an Admin recovery proposal.
+pub const ADMIN_RESERVED_PROPOSAL_BYTES: u64 = 1024;
+
+/// Bound the combined NEP-297 cancellation logs emitted by a single revocation.
+pub const MAX_PENDING_CANCELLATION_LOG_BYTES: u64 = 12 * 1024;
+
+/// Cancellation-log space reserved for an Admin recovery proposal.
+pub const ADMIN_RESERVED_CANCELLATION_LOG_BYTES: u64 = 512;
+
+/// Exact serialized body size, without allocating or copying the operation payload.
+///
+/// # Errors
+/// Returns an error if serialization fails or the size overflows.
+pub fn proposal_body_size(operation: &Operation, created_by: &AccountId) -> std::io::Result<u64> {
+    let operation_size = near_sdk::borsh::object_length(operation)?;
+    let timestamp_size = near_sdk::borsh::object_length(&Nanoseconds::zero())?;
+    let creator_size = near_sdk::borsh::object_length(created_by)?;
+    let total = timestamp_size
+        .checked_mul(2)
+        .and_then(|size| size.checked_add(operation_size))
+        .and_then(|size| size.checked_add(creator_size))
+        .ok_or_else(|| std::io::Error::other("proposal size overflow"))?;
+    u64::try_from(total).map_err(std::io::Error::other)
+}
+
+/// Exact bytes of the cancellation log emitted for this proposal.
+///
+/// # Errors
+/// Returns an error if event serialization fails or the size overflows.
+pub fn cancellation_event_size(id: u32, operation: &Operation) -> std::io::Result<u64> {
+    use near_sdk::AsNep297Event;
+    use std::io::{self, Write};
+
+    struct Counter(u64);
+    impl Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(|| io::Error::other("event length overflow"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let event = Event::Cancelled {
+        id,
+        kind: operation.kind(),
+        method: operation.method(),
+    };
+    let mut counter = Counter("EVENT_JSON:".len() as u64);
+    near_sdk::serde_json::to_writer(&mut counter, &event.to_nep297_event())
+        .map_err(io::Error::other)?;
+    Ok(counter.0)
+}
+
+/// Working-set bytes needed to remove the longest method-policy key after the queue drains.
+#[must_use]
+pub fn policy_recovery_working_set_bytes(
+    state_bytes: u64,
+    policy: &GovernancePolicy,
+) -> Option<u64> {
+    let longest_method = policy
+        .method_policies()
+        .keys()
+        .map(String::len)
+        .max()
+        .unwrap_or(0);
+    state_bytes
+        .checked_add(u64::try_from(longest_method).ok()?)?
+        .checked_add(ADMIN_RESERVED_PROPOSAL_BYTES)
+}
+
 /// Gas a governance-driven `admin_upgrade` target call needs (a full contract self-deploy + migrate).
 pub const GAS_FOR_ADMIN_UPGRADE: Gas = Gas::from_tgas(280);
 

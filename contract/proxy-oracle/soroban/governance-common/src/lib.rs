@@ -47,6 +47,7 @@ pub enum GovernanceError {
     TtlExceedsMaximum = 10,
     LastAdmin = 11,
     TooManyPendingProposals = 12,
+    PendingProposalBytesExceeded = 13,
 }
 
 // Generates `GovernanceAction` (the on-chain action union), the parallel

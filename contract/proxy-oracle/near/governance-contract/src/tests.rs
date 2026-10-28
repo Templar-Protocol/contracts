@@ -1074,3 +1074,261 @@ fn contending_expected_id_does_not_create_or_claim_the_winning_proposal() {
     assert!(get_logs().is_empty());
     assert!(panics(|| contract.cancel_proposal(0)));
 }
+
+#[test]
+fn pending_byte_limit_reserves_admin_recovery_and_purge_releases_bytes() {
+    use templar_proxy_oracle_near_governance_common::{
+        proposal_body_size, ADMIN_RESERVED_PROPOSAL_BYTES, MAX_GOVERNANCE_WORKING_SET_BYTES,
+    };
+
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(&mut contract, "delegate.near", Role::ManualTripper);
+    let creator: AccountId = "delegate.near".parse().unwrap();
+    let mut operation = admin_function_call("admin_set_manual_trip", 0, Gas::from_tgas(1));
+    let base = proposal_body_size(&operation, &creator).unwrap();
+    let budget = MAX_GOVERNANCE_WORKING_SET_BYTES
+        - ADMIN_RESERVED_PROPOSAL_BYTES
+        - contract.state_size()
+        - 8;
+    let Operation::TargetFunctionCall(call) = &mut operation else {
+        unreachable!()
+    };
+    call.args
+        .0
+        .extend(vec![0; usize::try_from(budget - base).unwrap()]);
+    testing_env!(context_with_account("delegate.near"));
+    let proposal = contract.create_proposal(0, operation, Nanoseconds::zero());
+    assert_eq!(
+        near_sdk::borsh::object_length(&proposal).unwrap() as u64,
+        budget
+    );
+    let before = contract.header.clone();
+    assert!(panics(|| {
+        contract.create_proposal(1, manual_trip(), Nanoseconds::zero());
+    }));
+    assert_eq!(contract.header, before);
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.body_bytes),
+        Some(budget)
+    );
+
+    testing_env!(context_with_admin());
+    contract.create_proposal(
+        1,
+        set_role("delegate.near", Role::ManualTripper, false),
+        Nanoseconds::zero(),
+    );
+    contract.execute_proposal(1);
+    assert_eq!(contract.proposal_count(), 0);
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.body_bytes),
+        Some(0)
+    );
+    assert_eq!(cancelled_ids(), vec![0]);
+}
+
+#[test]
+fn pending_byte_accounting_releases_cancelled_and_executed_bodies() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    let first = contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    let second = contract.create_proposal(1, manual_trip(), Nanoseconds::zero());
+    let first_size = near_sdk::borsh::object_length(&first).unwrap() as u64;
+    let second_size = near_sdk::borsh::object_length(&second).unwrap() as u64;
+    let first_log =
+        templar_proxy_oracle_near_governance_common::cancellation_event_size(0, &first.operation)
+            .unwrap();
+    let second_log =
+        templar_proxy_oracle_near_governance_common::cancellation_event_size(1, &second.operation)
+            .unwrap();
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.body_bytes),
+        Some(first_size + second_size)
+    );
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.cancellation_log_bytes),
+        Some(first_log + second_log)
+    );
+    contract.cancel_proposal(0);
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.body_bytes),
+        Some(second_size)
+    );
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.cancellation_log_bytes),
+        Some(second_log)
+    );
+    contract.execute_proposal(1);
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.body_bytes),
+        Some(0)
+    );
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.cancellation_log_bytes),
+        Some(0)
+    );
+}
+
+#[test]
+fn legacy_queue_must_drain_before_byte_accounting_activates() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(&mut contract, "delegate.near", Role::ManualTripper);
+    contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    contract.create_proposal(
+        1,
+        set_role("delegate.near", Role::ManualTripper, false),
+        Nanoseconds::zero(),
+    );
+    let key = near_sdk::borsh::to_vec(&crate::StorageKey::PendingProposalBytes).unwrap();
+    near_sdk::env::storage_remove(&key);
+    let before = contract.header.clone();
+    assert!(panics(|| {
+        contract.create_proposal(2, manual_trip(), Nanoseconds::zero());
+    }));
+    assert!(panics(|| contract.execute_proposal(1)));
+    assert_eq!(contract.header, before);
+    assert!(contract.has_role("delegate.near".parse().unwrap(), Role::ManualTripper));
+    contract.cancel_proposal(0);
+    contract.execute_proposal(1);
+    assert_eq!(contract.proposal_count(), 0);
+    contract.create_proposal(2, manual_trip(), Nanoseconds::zero());
+    assert!(Contract::pending_usage().is_some());
+}
+
+#[test]
+fn policy_recovery_budget_covers_longest_key_removal() {
+    use templar_proxy_oracle_near_governance_common::{
+        proposal_body_size, ADMIN_RESERVED_PROPOSAL_BYTES,
+    };
+
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    let method = "m".repeat(1_000_000);
+    contract
+        .header
+        .ttls_mut()
+        .set_method_policy(
+            method.clone(),
+            Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::Admin,
+            }),
+        )
+        .unwrap();
+    contract.assert_policy_recovery();
+    let max_admin: AccountId = format!("{}.near", "a".repeat(59)).parse().unwrap();
+    let removal = Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+        method,
+        policy: None,
+    });
+    assert!(
+        proposal_body_size(&removal, &max_admin).unwrap() + 8
+            <= 1_000_000 + ADMIN_RESERVED_PROPOSAL_BYTES
+    );
+    contract
+        .header
+        .ttls_mut()
+        .set_method_policy("m".repeat(1_000_000), None)
+        .unwrap();
+    contract
+        .header
+        .ttls_mut()
+        .set_method_policy(
+            "m".repeat(1_100_000),
+            Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::Admin,
+            }),
+        )
+        .unwrap();
+    assert!(panics(|| contract.assert_policy_recovery()));
+}
+
+#[test]
+fn cancellation_budget_counts_encoded_events_and_reserves_admin_recovery() {
+    use near_sdk::AsNep297Event;
+    use templar_proxy_oracle_near_governance_common::{
+        cancellation_event_size, Event, ADMIN_RESERVED_CANCELLATION_LOG_BYTES,
+        MAX_PENDING_CANCELLATION_LOG_BYTES,
+    };
+
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(
+        &mut contract,
+        "delegate.near",
+        Role::ProxyConfigurationManager,
+    );
+    let method = "m\"\\\n".repeat(64);
+    contract
+        .header
+        .ttls_mut()
+        .set_method_policy(
+            method.clone(),
+            Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::ProxyConfigurationManager,
+            }),
+        )
+        .unwrap();
+    let operation = admin_function_call(&method, 0, Gas::from_tgas(1));
+    let event = Event::Cancelled {
+        id: u32::MAX,
+        kind: operation.kind(),
+        method: operation.method(),
+    };
+    assert_eq!(
+        cancellation_event_size(u32::MAX, &operation).unwrap(),
+        event.to_nep297_event().to_event_log().len() as u64
+    );
+    assert!(
+        cancellation_event_size(
+            u32::MAX,
+            &set_role(
+                &format!("{}.near", "a".repeat(59)),
+                Role::ManualTripper,
+                false
+            ),
+        )
+        .unwrap()
+            <= ADMIN_RESERVED_CANCELLATION_LOG_BYTES
+    );
+
+    testing_env!(context_with_account("delegate.near"));
+    let mut id = 0;
+    loop {
+        if panics(|| {
+            contract.create_proposal(id, operation.clone(), Nanoseconds::zero());
+        }) {
+            break;
+        }
+        id += 1;
+        assert!(
+            id < 63,
+            "event budget should bind before the proposal count"
+        );
+    }
+    let usage = Contract::pending_usage().unwrap();
+    assert!(
+        usage.cancellation_log_bytes
+            <= MAX_PENDING_CANCELLATION_LOG_BYTES - ADMIN_RESERVED_CANCELLATION_LOG_BYTES
+    );
+    assert_eq!(contract.next_proposal_id(), id);
+    testing_env!(context_with_admin());
+    contract.create_proposal(
+        id,
+        set_role("delegate.near", Role::ProxyConfigurationManager, false),
+        Nanoseconds::zero(),
+    );
+    contract.execute_proposal(id);
+    let usage = Contract::pending_usage().unwrap();
+    assert_eq!(usage.body_bytes, 0);
+    assert_eq!(usage.cancellation_log_bytes, 0);
+    assert_eq!(contract.proposal_count(), 0);
+    assert_eq!(cancelled_ids().len(), usize::try_from(id).unwrap());
+}

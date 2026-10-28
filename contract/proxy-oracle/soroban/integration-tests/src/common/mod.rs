@@ -10,7 +10,9 @@ pub mod mock_oracle;
 
 use soroban_sdk::testutils::{Address as _, Ledger as _, LedgerInfo};
 use soroban_sdk::{Address, Env, Symbol};
-use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig, SourceConfig};
+use templar_proxy_oracle_soroban_common::{
+    AggregatorConfig, Asset, MedianConfig, ProxyConfig, SourceConfig,
+};
 use templar_proxy_oracle_soroban_contract::{
     RefreshStatus, SorobanProxyOracle, SorobanProxyOracleClient,
 };
@@ -27,6 +29,17 @@ pub use mock_oracle::{MockOracle, MockOracleClient};
 pub const ADAPTER_DECIMALS: u32 = 8;
 /// Default SEP-40 resolution.
 pub const ADAPTER_RESOLUTION: u32 = 1;
+
+pub fn default_proxy_config(sources: soroban_sdk::Vec<SourceConfig>) -> ProxyConfig {
+    ProxyConfig {
+        aggregator: AggregatorConfig::MedianLow(MedianConfig {
+            sources,
+            min_sources: 3,
+        }),
+        max_age_secs: 300,
+        max_clock_drift_secs: 60,
+    }
+}
 
 /// One-stop fixture: three deployed contracts + one mock upstream oracle +
 /// the symbolic Assets we use in tests.
@@ -149,16 +162,7 @@ impl Bootstrap {
     /// Convenience for the common pattern of registering BTC/USD with three
     /// upstream sources.
     pub fn configure_default_feed(&self) {
-        let config = ProxyConfig {
-            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
-                templar_proxy_oracle_soroban_common::MedianConfig {
-                    sources: self.source_configs(&self.asset_btc),
-                    min_sources: 3,
-                },
-            ),
-            max_age_secs: 300,
-            max_clock_drift_secs: 60,
-        };
+        let config = default_proxy_config(self.source_configs(&self.asset_btc));
         self.submit_and_execute(
             &self.admin,
             GovernanceAction::SetProxy(self.asset_btc.clone(), config),
@@ -175,7 +179,7 @@ impl Bootstrap {
             sources.push_back(SourceConfig {
                 oracle,
                 asset: asset.clone(),
-                expected_decimals: 8,
+                expected_decimals: ADAPTER_DECIMALS,
             });
         }
         sources

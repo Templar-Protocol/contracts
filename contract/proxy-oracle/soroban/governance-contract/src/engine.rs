@@ -8,15 +8,20 @@ use soroban_sdk::{
 };
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_governance_kernel::OperationPolicy;
-use templar_proxy_oracle_soroban_common::ContractError;
+use templar_proxy_oracle_soroban_common::{
+    ContractError, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD,
+};
 use templar_proxy_oracle_soroban_governance_common::{
-    GovernanceAction, GovernanceError, Role, MAX_PROPOSAL_TTL_NS,
+    GovernanceAction, GovernanceError, Proposal, Role, MAX_PROPOSAL_TTL_NS,
 };
 
 use crate::{
     events::{ActionTtlSet, ProposalRevoked},
     roles,
-    storage::{load_proposal, remove_proposal, DataKey, KernelGovernance},
+    storage::{
+        pending_bytes, proposal_bytes, save_pending_bytes, DataKey, KernelGovernance,
+        PROPOSAL_GROUP_COUNT,
+    },
 };
 
 pub fn now(env: &Env) -> Result<Nanoseconds, GovernanceError> {
@@ -50,18 +55,70 @@ fn purge_unauthorized(
     governance: &mut KernelGovernance,
     account: &Address,
 ) -> Result<(), GovernanceError> {
-    let mut index = 0;
-    while let Some(&id) = governance.active_ids().get(index) {
-        let proposal = load_proposal(env, id).ok_or(GovernanceError::ProposalNotFound)?;
-        if proposal.created_by == *account && !is_authorized_for(env, account, &proposal.operation)
-        {
+    let original_len = governance.active_ids().len();
+    let mut seen = alloc::vec::Vec::new();
+    let mut total_bytes = 0_u32;
+    let mut removed_bytes = 0_u32;
+    let mut authorization = [None; 4];
+
+    for slot in 0..PROPOSAL_GROUP_COUNT {
+        let key = DataKey::ProposalGroup(slot);
+        let Some(mut group): Option<soroban_sdk::Map<u64, Proposal>> =
+            env.storage().persistent().get(&key)
+        else {
+            continue;
+        };
+        let mut removed = alloc::vec::Vec::new();
+        for (id, proposal) in group.iter() {
+            if !governance.active_ids().contains(&id) || seen.contains(&id) {
+                return Err(GovernanceError::InvalidInput);
+            }
+            seen.push(id);
+            let bytes = proposal_bytes(env, &proposal);
+            total_bytes = total_bytes
+                .checked_add(bytes)
+                .ok_or(GovernanceError::InvalidInput)?;
+            let role_index = match proposal.operation.required_role() {
+                Role::Admin => 0,
+                Role::ManualTripper => 1,
+                Role::CircuitBreakerOperator => 2,
+                Role::ProxyConfigurationManager => 3,
+            };
+            let authorized = proposal.created_by != *account
+                || *authorization[role_index]
+                    .get_or_insert_with(|| is_authorized_for(env, account, &proposal.operation));
+            if proposal.created_by == *account && !authorized {
+                removed_bytes = removed_bytes
+                    .checked_add(bytes)
+                    .ok_or(GovernanceError::InvalidInput)?;
+                removed.push(id);
+            }
+        }
+        let changed = !removed.is_empty();
+        for id in removed {
             governance.cancel(id).map_err(crate::map_cancel_error)?;
-            remove_proposal(env, id);
+            group.remove_unchecked(id);
             ProposalRevoked { id }.publish(env);
-        } else {
-            index += 1;
+        }
+        if changed {
+            if group.is_empty() {
+                env.storage().persistent().remove(&key);
+            } else {
+                env.storage().persistent().set(&key, &group);
+            }
+        }
+        if !group.is_empty() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                DEFAULT_TTL_THRESHOLD,
+                DEFAULT_TTL_EXTEND_TO,
+            );
         }
     }
+    if seen.len() != original_len || total_bytes != pending_bytes(env)? {
+        return Err(GovernanceError::ProposalNotFound);
+    }
+    save_pending_bytes(env, total_bytes - removed_bytes);
     Ok(())
 }
 

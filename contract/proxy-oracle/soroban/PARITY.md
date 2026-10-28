@@ -53,9 +53,10 @@ Explicit-ID retries retain exact payloads; unknown outcomes stop, not reselect.
 
 The unified XDR and eight proposal groups of eight unchanged bodies are
 incompatible with previous Soroban stacks. Leave them unchanged and deploy a
-fresh matching runtime/governance. Adapter-only upgrade compatibility needs
-exact old/new Wasm proof; `integration-tests/tests/upgrade.rs` does not prove a
-successful swap. See [runbook](RUNBOOK.md) for wiring, timelock hardening, complete
+fresh matching runtime/governance. The adapter-only test mounts verified released
+0.1.4 and current Wasms and executes the swap via the `compiled-wasm-tests`
+feature in `test-integration`; native-only tests do not supply that evidence.
+Local proof does not authorize a live upgrade. See [runbook](RUNBOOK.md) for wiring, timelock hardening, complete
 role TTL paging, and deployment restrictions.
 
 Verify the shared kernel and Soroban stack through the repository test

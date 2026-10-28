@@ -21,7 +21,7 @@ use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
 use templar_proxy_oracle_soroban_governance_contract::{
     ProxyOracleGovernance, ProxyOracleGovernanceClient,
 };
-use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
+use templar_proxy_oracle_soroban_integration_tests::common::{default_proxy_config, Bootstrap};
 
 #[test]
 fn two_step_ownership_handoff_through_governance() {
@@ -49,19 +49,7 @@ fn two_step_ownership_handoff_through_governance() {
     // v1's mutations now fail because the runtime owner has moved.
     let eth = Asset::Other(soroban_sdk::Symbol::new(&b.env, "ETH"));
     let sources = b.source_configs(&eth);
-    let action = GovernanceAction::SetProxy(
-        eth,
-        templar_proxy_oracle_soroban_common::ProxyConfig {
-            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
-                templar_proxy_oracle_soroban_common::MedianConfig {
-                    sources,
-                    min_sources: 3,
-                },
-            ),
-            max_age_secs: 300,
-            max_clock_drift_secs: 60,
-        },
-    );
+    let action = GovernanceAction::SetProxy(eth, default_proxy_config(sources));
     let id_old = b.governance.next_proposal_id();
     b.governance.create_proposal(&b.admin, &id_old, &action, &0);
     let result = b.governance.try_execute_proposal(&b.admin, &id_old);
@@ -96,18 +84,6 @@ fn renounced_owner_cannot_mutate() {
     // host panic; either way the assertion is the test panics.
     b.submit_and_execute(
         &b.admin,
-        GovernanceAction::SetProxy(
-            eth,
-            templar_proxy_oracle_soroban_common::ProxyConfig {
-                aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
-                    templar_proxy_oracle_soroban_common::MedianConfig {
-                        sources,
-                        min_sources: 3,
-                    },
-                ),
-                max_age_secs: 300,
-                max_clock_drift_secs: 60,
-            },
-        ),
+        GovernanceAction::SetProxy(eth, default_proxy_config(sources)),
     );
 }

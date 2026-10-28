@@ -6,10 +6,10 @@ use soroban_sdk::{testutils::Ledger as _, Address, Bytes, Env, Symbol, Vec};
 use templar_proxy_oracle_soroban_batcher_contract::{
     ProxyOracleBatcher, ProxyOracleBatcherClient, RefreshStatus as BatcherRefreshStatus,
 };
-use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig, SourceConfig};
+use templar_proxy_oracle_soroban_common::{Asset, SourceConfig};
 use templar_proxy_oracle_soroban_contract::RefreshStatus;
 use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
-use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
+use templar_proxy_oracle_soroban_integration_tests::common::{default_proxy_config, Bootstrap};
 use templar_proxy_oracle_soroban_pyth_lazer_source_contract::{
     feed_asset,
     testutils::{payload_at, MockVerifier},
@@ -54,19 +54,7 @@ fn wired() -> Wired {
     });
     b.submit_and_execute(
         &b.admin,
-        GovernanceAction::SetProxy(
-            b.asset_btc.clone(),
-            ProxyConfig {
-                aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
-                    templar_proxy_oracle_soroban_common::MedianConfig {
-                        sources,
-                        min_sources: 3,
-                    },
-                ),
-                max_age_secs: 300,
-                max_clock_drift_secs: 60,
-            },
-        ),
+        GovernanceAction::SetProxy(b.asset_btc.clone(), default_proxy_config(sources)),
     );
     let source = PythLazerSourceClient::new(&b.env, &source_id);
     Wired { b, source }

@@ -114,6 +114,7 @@ in-place migration is skipped; existing deployments remain unchanged. No old
 configuration decoder, defaults, or side maps are provided. Prove matching
 runtime/governance ownership wiring, Admin authorization, adapter bindings and
 base, and production timelock hardening after zero-TTL bootstrap on a new stack.
-An independent adapter upgrade requires an exact old/new compiled-Wasm swap
-proof; `integration-tests/tests/upgrade.rs` does not establish one. No live
+The independent adapter test mounts verified released 0.1.4/current compiled
+Wasms and executes the swap. Run `test-integration`, which explicitly enables
+`compiled-wasm-tests`; native-only tests do not establish this proof. No live
 identity, transaction authorization, or production upgrade approval is implied.

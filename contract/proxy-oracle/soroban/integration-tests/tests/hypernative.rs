@@ -28,7 +28,9 @@ use templar_proxy_oracle_soroban_common::{
 };
 use templar_proxy_oracle_soroban_contract::RefreshStatus;
 use templar_proxy_oracle_soroban_governance_common::{GovernanceAction, OperationKind, Role};
-use templar_proxy_oracle_soroban_integration_tests::common::{ledger, Bootstrap};
+use templar_proxy_oracle_soroban_integration_tests::common::{
+    default_proxy_config, ledger, Bootstrap,
+};
 
 fn setup_with_hypernative(b: &Bootstrap) -> Address {
     b.configure_default_feed();
@@ -74,19 +76,7 @@ fn hypernative_key_cannot_do_anything_else() {
 
     let other_asset = templar_proxy_oracle_soroban_common::Asset::Other(Symbol::new(&b.env, "ETH"));
     let sources = b.source_configs(&other_asset);
-    let setproxy = GovernanceAction::SetProxy(
-        other_asset,
-        templar_proxy_oracle_soroban_common::ProxyConfig {
-            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
-                templar_proxy_oracle_soroban_common::MedianConfig {
-                    sources,
-                    min_sources: 3,
-                },
-            ),
-            max_age_secs: 300,
-            max_clock_drift_secs: 60,
-        },
-    );
+    let setproxy = GovernanceAction::SetProxy(other_asset, default_proxy_config(sources));
 
     let denied: &[GovernanceAction] = &[
         setproxy,

@@ -13,18 +13,23 @@ use std::collections::{btree_map::Entry, BTreeMap};
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
+use near_sdk::borsh::object_length;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_methods_spec::{
-    contract, proxy_oracle, proxy_oracle_governance as gov, registry,
+    account, contract, proxy_oracle, proxy_oracle_governance as gov, registry,
 };
 use templar_gateway_types::common::{ContractArgs, Pagination};
 use templar_gateway_types::contract::ContractKind;
+use templar_gateway_types::Base64Bytes;
 use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{
-    governance_kernel::Governance, target::method, FunctionCall, MAX_PENDING_PROPOSALS,
+    cancellation_event_size, governance_kernel::Governance, policy_recovery_working_set_bytes,
+    proposal_body_size, target::method, FunctionCall, GovernancePolicy, LegacyOperation,
+    LegacyTtlConfig, Operation, MAX_GOVERNANCE_WORKING_SET_BYTES,
+    MAX_PENDING_CANCELLATION_LOG_BYTES, MAX_PENDING_PROPOSALS,
 };
 
 use crate::commands::proxy_oracle::{Preflight, PreflightArgs};
@@ -135,11 +140,11 @@ fn governance_ledger_status(next_id: u32, active_ids: &[u32]) -> Status {
     }
 }
 
-/// Whether a proposal body dispatches a rearm, in either the current or the pre-upgrade encoding.
+/// Whether a rearm payload is incompatible with the relative-delay contract.
 ///
 /// Untyped because a v0 governance deployment answers with an operation enum the current types
 /// reject outright, and that body still has to be recognized.
-fn is_rearm(operation: &Value) -> bool {
+fn has_incompatible_rearm_payload(operation: &Value) -> bool {
     if operation.get("Rearm").is_some() {
         return true;
     }
@@ -153,7 +158,7 @@ fn is_rearm(operation: &Value) -> bool {
         return false;
     }
     // Generic calls may already carry the compatible relative-delay payload.
-    serde_json::from_value::<FunctionCall>(call.clone())
+    FunctionCall::deserialize(call)
         .ok()
         .and_then(|call| serde_json::from_slice::<Value>(&call.args.0).ok())
         .is_none_or(|args| {
@@ -164,13 +169,16 @@ fn is_rearm(operation: &Value) -> bool {
 fn pending_rearm_status(bodies: &[(u32, Value)]) -> Status {
     let queued: Vec<String> = bodies
         .iter()
-        .filter(|(_, body)| body.get("operation").is_some_and(is_rearm))
+        .filter(|(_, body)| {
+            body.get("operation")
+                .is_some_and(has_incompatible_rearm_payload)
+        })
         .map(|(id, _)| id.to_string())
         .collect();
 
     if queued.is_empty() {
         return Status::passed(format!(
-            "no rearm among {} pending proposal(s)",
+            "no incompatible rearm payloads among {} pending proposal(s)",
             bodies.len()
         ));
     }
@@ -187,12 +195,16 @@ enum GovernanceResolution<'a> {
     Failed(&'a anyhow::Error),
 }
 
-fn governance_resolution_failure_checks(error: &anyhow::Error) -> [Check; 3] {
+fn governance_resolution_failure_checks(error: &anyhow::Error) -> [Check; 4] {
     let detail = format!("could not resolve the governing contract: {error:#}");
     [
         Check::new("upgrade.governance_ledger", Status::failed(detail.clone())),
         Check::new("upgrade.pending_rearm", Status::failed(detail.clone())),
-        Check::new("upgrade.pending_breaker_lifecycles", Status::failed(detail)),
+        Check::new(
+            "upgrade.pending_breaker_lifecycles",
+            Status::failed(detail.clone()),
+        ),
+        Check::new("upgrade.pending_resources", Status::failed(detail)),
     ]
 }
 
@@ -200,6 +212,10 @@ fn governance_resolution_failure_checks(error: &anyhow::Error) -> [Check; 3] {
 /// so one dead RPC cannot hide the rest.
 ///
 /// Governance checks are skipped only when no governance contract owns the oracle.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered reporter pass must record every independent upgrade check"
+)]
 async fn run(
     ctx: &CliContext,
     oracle_id: &AccountId,
@@ -241,6 +257,7 @@ async fn run(
             for check in [
                 "upgrade.pending_rearm",
                 "upgrade.pending_breaker_lifecycles",
+                "upgrade.pending_resources",
             ] {
                 reporter.record(Check::new(
                     check,
@@ -274,11 +291,16 @@ async fn run(
                         "upgrade.pending_breaker_lifecycles",
                         pending_breaker_lifecycles(ctx, oracle_id, &bodies).await,
                     ));
+                    reporter.record(Check::new(
+                        "upgrade.pending_resources",
+                        pending_resources(ctx, governance_id, &bodies).await,
+                    ));
                 }
                 Err(error) => {
                     for check in [
                         "upgrade.pending_rearm",
                         "upgrade.pending_breaker_lifecycles",
+                        "upgrade.pending_resources",
                     ] {
                         reporter.record(Check::new(check, Status::failed(format!("{error:#}"))));
                     }
@@ -297,6 +319,10 @@ async fn run(
             ));
             reporter.record(Check::new(
                 "upgrade.pending_breaker_lifecycles",
+                Status::failed(detail.clone()),
+            ));
+            reporter.record(Check::new(
+                "upgrade.pending_resources",
                 Status::failed(detail),
             ));
         }
@@ -438,7 +464,7 @@ fn pending_breaker_target(
         ("SetEnforced", BreakerIdUse::Existing),
     ] {
         if let Some(args) = operation.get(name) {
-            return Ok(Some((serde_json::from_value(args.clone())?, usage)));
+            return Ok(Some((PendingBreakerArgs::deserialize(args)?, usage)));
         }
     }
     let Some(raw_call) = operation
@@ -454,7 +480,7 @@ fn pending_breaker_target(
         }
         _ => return Ok(None),
     };
-    let call: FunctionCall = serde_json::from_value(raw_call.clone())?;
+    let call = FunctionCall::deserialize(raw_call)?;
     Ok(Some((serde_json::from_slice(&call.args.0)?, usage)))
 }
 
@@ -544,6 +570,165 @@ async fn pending_breaker_lifecycles(
              ambiguous outcome: {}",
             problems.join("; ")
         ))
+    }
+}
+
+/// The state begins with the existing shared header on both supported layouts.
+/// v0 -> v1 replaces only its TTL policy representation; the rest is byte-compatible.
+fn governance_state_budget(state: &[u8], version: u32) -> anyhow::Result<(u64, u64)> {
+    let state_bytes = u64::try_from(state.len())?;
+    match version {
+        0 => {
+            let header =
+                <Governance<LegacyTtlConfig> as near_sdk::borsh::BorshDeserialize>::deserialize(
+                    &mut &state[..],
+                )?;
+            let old_policy_bytes = u64::try_from(object_length(header.ttls())?)?;
+            let policy = (*header.ttls()).into_policy();
+            let new_policy_bytes = u64::try_from(object_length(&policy)?)?;
+            let state_bytes = state_bytes
+                .checked_sub(old_policy_bytes)
+                .and_then(|bytes| bytes.checked_add(new_policy_bytes))
+                .context("migrated governance state size overflow")?;
+            let recovery = policy_recovery_working_set_bytes(state_bytes, &policy)
+                .context("policy recovery size overflow")?;
+            Ok((state_bytes, recovery))
+        }
+        1 => {
+            let header =
+                <Governance<GovernancePolicy> as near_sdk::borsh::BorshDeserialize>::deserialize(
+                    &mut &state[..],
+                )?;
+            let recovery = policy_recovery_working_set_bytes(state_bytes, header.ttls())
+                .context("policy recovery size overflow")?;
+            Ok((state_bytes, recovery))
+        }
+        _ => anyhow::bail!("unsupported governance state version {version}"),
+    }
+}
+
+fn pending_operation_for_budget(raw: &Value) -> anyhow::Result<Operation> {
+    if let Ok(operation) = Operation::deserialize(raw) {
+        return Ok(operation);
+    }
+    // The actual released v0 view used an untagged code blob for AdminUpgrade.
+    // Lift it into the existing migration DTO, without modifying stored bodies.
+    let legacy = if let Some(args) = raw
+        .get("AdminUpgrade")
+        .filter(|args| args.get("code").is_some_and(Value::is_string))
+    {
+        LegacyOperation::AdminUpgrade {
+            code: templar_common::upgrade::UpgradeSource::Code(
+                near_sdk::json_types::Base64VecU8::deserialize(
+                    args.get("code").context("missing legacy upgrade code")?,
+                )?,
+            ),
+            migrate_args: near_sdk::json_types::Base64VecU8::deserialize(
+                args.get("migrate_args")
+                    .context("missing legacy migration arguments")?,
+            )?,
+        }
+    } else {
+        LegacyOperation::deserialize(raw)?
+    };
+    Ok(legacy.try_into()?)
+}
+
+fn pending_resource_status(
+    state_bytes: u64,
+    recovery_bytes: u64,
+    bodies: &[(u32, Value)],
+) -> Status {
+    let mut working_set = state_bytes;
+    let mut cancellation_logs = 0_u64;
+    for (id, body) in bodies {
+        let parsed = (|| -> anyhow::Result<_> {
+            let operation = pending_operation_for_budget(
+                body.get("operation")
+                    .context("missing proposal operation")?,
+            )?;
+            let creator = AccountId::deserialize(
+                body.get("created_by").context("missing proposal creator")?,
+            )?;
+            Ok((
+                proposal_body_size(&operation, &creator)?,
+                cancellation_event_size(*id, &operation)?,
+            ))
+        })();
+        let (bytes, log_bytes) = match parsed {
+            Ok(sizes) => sizes,
+            Err(error) => {
+                return Status::failed(format!("inspect proposal {id} resources: {error:#}"))
+            }
+        };
+        let Some(next_bytes) = working_set.checked_add(bytes) else {
+            return Status::failed("pending proposal working-set size overflow");
+        };
+        let Some(next_logs) = cancellation_logs.checked_add(log_bytes) else {
+            return Status::failed("pending cancellation log size overflow");
+        };
+        working_set = next_bytes;
+        cancellation_logs = next_logs;
+    }
+    let detail = format!(
+        "working set {working_set}/{MAX_GOVERNANCE_WORKING_SET_BYTES} bytes; \
+         policy recovery {recovery_bytes}/{MAX_GOVERNANCE_WORKING_SET_BYTES} bytes; \
+         cancellation logs {cancellation_logs}/{MAX_PENDING_CANCELLATION_LOG_BYTES} bytes"
+    );
+    if working_set > MAX_GOVERNANCE_WORKING_SET_BYTES
+        || recovery_bytes > MAX_GOVERNANCE_WORKING_SET_BYTES
+        || cancellation_logs > MAX_PENDING_CANCELLATION_LOG_BYTES
+    {
+        Status::failed(format!(
+            "{detail}; drain oversized legacy queues or reconfigure oversized policy on old code \
+             before upgrading; never replace an ambiguous request"
+        ))
+    } else {
+        Status::passed(format!(
+            "{detail}. Unaccounted legacy queues must drain before new admissions/revocation; \
+             compatible pending bodies remain executable/cancellable"
+        ))
+    }
+}
+
+async fn governance_state_entry(
+    ctx: &CliContext,
+    governance_id: &AccountId,
+    key: &[u8],
+) -> anyhow::Result<Option<Base64Bytes>> {
+    let entries = ctx
+        .client
+        .read(account::ViewState {
+            account_id: governance_id.clone(),
+            prefix: key.to_vec().into(),
+        })
+        .await?;
+    Ok(entries
+        .into_iter()
+        .find(|entry| entry.key.0 == key)
+        .map(|entry| entry.value))
+}
+
+async fn pending_resources(
+    ctx: &CliContext,
+    governance_id: &AccountId,
+    bodies: &[(u32, Value)],
+) -> Status {
+    let budget = async {
+        let state = governance_state_entry(ctx, governance_id, b"STATE")
+            .await?
+            .context("governance STATE missing")?;
+        let version = governance_state_entry(ctx, governance_id, b"__v")
+            .await?
+            .map(|bytes| near_sdk::borsh::from_slice::<u32>(&bytes))
+            .transpose()?
+            .unwrap_or(0);
+        governance_state_budget(&state, version)
+    }
+    .await;
+    match budget {
+        Ok((state_bytes, recovery)) => pending_resource_status(state_bytes, recovery, bodies),
+        Err(error) => Status::failed(format!("inspect governance resource budget: {error:#}")),
     }
 }
 
@@ -757,12 +942,16 @@ mod tests {
     };
     use templar_proxy_oracle_near_common::request::OracleRequest;
     use templar_proxy_oracle_near_governance_common::MAX_PENDING_PROPOSALS;
+    use templar_proxy_oracle_near_governance_common::{
+        governance_kernel as kernel_governance, target, GovernancePolicy, LegacyTtlConfig,
+    };
 
     use super::{
         aggregator_config_status, breaker_lifecycle_problem, breakers_status, classify_breaker_set,
-        governance_ledger_status, governance_resolution_failure_checks, is_rearm,
-        pending_breaker_target, pending_rearm_status, BreakerIdUse, BreakerVerdict,
-        PendingBreakerArgs, PriceIdentifier, Source, Status, Value,
+        governance_ledger_status, governance_resolution_failure_checks, governance_state_budget,
+        has_incompatible_rearm_payload, pending_breaker_target, pending_rearm_status,
+        pending_resource_status, BreakerIdUse, BreakerVerdict, PendingBreakerArgs, PriceIdentifier,
+        Source, Status, Value,
     };
 
     fn price_id(byte: u8) -> PriceIdentifier {
@@ -960,7 +1149,7 @@ mod tests {
     #[case::other_target(json!({"TargetFunctionCall": {"method_name": "admin_set_proxy"}}), false)]
     #[case::reflexive(json!({"Reflexive": {"SetRole": {}}}), false)]
     fn is_rearm_recognizes_both_encodings(#[case] operation: Value, #[case] expected: bool) {
-        assert_eq!(is_rearm(&operation), expected);
+        assert_eq!(has_incompatible_rearm_payload(&operation), expected);
     }
 
     #[test]
@@ -1044,11 +1233,94 @@ mod tests {
     fn pending_relative_rearm_is_compatible_but_absolute_rearm_requires_intervention() {
         use templar_proxy_oracle_near_governance_common::target;
         let mut call = target::admin_rearm(price_id(4), 2, Nanoseconds::from_ns(5), None).unwrap();
-        assert!(!is_rearm(&json!({"TargetFunctionCall": call})));
+        assert!(!has_incompatible_rearm_payload(
+            &json!({"TargetFunctionCall": call})
+        ));
         call.args.0 = serde_json::to_vec(&json!({
             "id": price_id(4), "breaker_id": 2, "armed_after_ns": "5",
         }))
         .unwrap();
-        assert!(is_rearm(&json!({"TargetFunctionCall": call})));
+        assert!(has_incompatible_rearm_payload(
+            &json!({"TargetFunctionCall": call})
+        ));
+    }
+
+    #[test]
+    fn v0_and_v1_state_budgets_use_their_actual_policy_encodings() {
+        let legacy_ttls = LegacyTtlConfig {
+            set_proxy: Nanoseconds::zero(),
+            configure_circuit_breakers: Nanoseconds::zero(),
+            add_circuit_breaker: Nanoseconds::zero(),
+            remove_circuit_breaker: Nanoseconds::zero(),
+            set_manual_trip: Nanoseconds::zero(),
+            rearm: Nanoseconds::zero(),
+            set_enforced: Nanoseconds::zero(),
+            set_action_ttl: Nanoseconds::zero(),
+            set_role: Nanoseconds::zero(),
+            admin_upgrade: Nanoseconds::zero(),
+            admin_function_call: Nanoseconds::zero(),
+        };
+        let policy = legacy_ttls.into_policy();
+        let v0 = <kernel_governance::Governance<LegacyTtlConfig> as near_sdk::borsh::BorshDeserialize>::deserialize(
+            &mut &near_sdk::borsh::to_vec(&kernel_governance::Governance::new(
+                legacy_ttls,
+                MAX_PENDING_PROPOSALS,
+            )).unwrap()[..],
+        ).unwrap();
+        let v0_bytes = near_sdk::borsh::to_vec(&v0).unwrap();
+        let v1 = kernel_governance::Governance::new(policy, MAX_PENDING_PROPOSALS);
+        let v1_bytes = near_sdk::borsh::to_vec(&v1).unwrap();
+        // The v0 estimate must equal the header the migration actually writes.
+        let (state_bytes, _) = governance_state_budget(&v0_bytes, 0).unwrap();
+        let (v1_state_bytes, _) = governance_state_budget(&v1_bytes, 1).unwrap();
+        assert_eq!(state_bytes, u64::try_from(v1_bytes.len()).unwrap());
+        assert_eq!(v1_state_bytes, u64::try_from(v1_bytes.len()).unwrap());
+        assert!(governance_state_budget(&v0_bytes, 2).is_err());
+    }
+
+    #[test]
+    fn legacy_and_current_pending_bodies_share_one_resource_budget() {
+        let creator: near_account_id::AccountId = "delegate.near".parse().unwrap();
+        let small = json!({
+            "operation": {"TargetFunctionCall": target::admin_rearm(
+                price_id(1), 0, Nanoseconds::from_secs(1), None,
+            ).unwrap()},
+            "created_by": "delegate.near",
+        });
+        let legacy = json!({
+            "operation": {"AddCircuitBreaker": {
+                "id": price_id(2), "breaker_id": 0,
+                "breaker": {"StepwiseChange": {"max_relative_change": "0.5"}},
+            }},
+            "created_by": creator,
+        });
+        let v1 = kernel_governance::Governance::new(
+            GovernancePolicy::uniform(Nanoseconds::zero()).unwrap(),
+            MAX_PENDING_PROPOSALS,
+        );
+        let state_bytes = near_sdk::borsh::to_vec(&v1).unwrap().len() as u64;
+        let status = pending_resource_status(state_bytes, state_bytes, &[(1, small), (2, legacy)]);
+        let Status::Passed { detail } = status else {
+            panic!("compatible pending bodies must stay executable: {status:?}");
+        };
+        assert!(detail.starts_with("working set"), "{detail}");
+
+        let oversized = (0..64_u64)
+            .map(|id| {
+                (
+                    u32::try_from(id).unwrap(),
+                    json!({
+                        "operation": {"TargetFunctionCall": templar_proxy_oracle_near_governance_common::FunctionCall {
+                            method_name: "admin_rearm".to_owned(),
+                            args: near_sdk::json_types::Base64VecU8(vec![0; 40_000]),
+                            attached_deposit: near_sdk::json_types::U128(0),
+                            gas: near_sdk::Gas::from_tgas(1),
+                        }},
+                        "created_by": creator,
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(pending_resource_status(state_bytes, state_bytes, &oversized).is_failure());
     }
 }

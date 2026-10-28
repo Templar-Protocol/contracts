@@ -16,13 +16,13 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
-    Asset, CircuitBreakerConfig, ProxyConfig, RearmConfig, SetEnforcedConfig, SorobanDecimal,
+    Asset, CircuitBreakerConfig, RearmConfig, SetEnforcedConfig, SorobanDecimal,
     StepwiseChangeConfig,
 };
 use templar_proxy_oracle_soroban_governance_common::{
     GovernanceAction, GovernanceError, OperationKind, Role,
 };
-use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
+use templar_proxy_oracle_soroban_integration_tests::common::{default_proxy_config, Bootstrap};
 
 #[allow(
     clippy::too_many_lines,
@@ -148,19 +148,7 @@ fn get_proposal_returns_action_and_maturity() {
 
     let asset = Asset::Other(Symbol::new(&b.env, "ETH"));
     let sources = b.source_configs(&asset);
-    let action = GovernanceAction::SetProxy(
-        asset,
-        ProxyConfig {
-            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
-                templar_proxy_oracle_soroban_common::MedianConfig {
-                    sources,
-                    min_sources: 3,
-                },
-            ),
-            max_age_secs: 300,
-            max_clock_drift_secs: 60,
-        },
-    );
+    let action = GovernanceAction::SetProxy(asset, default_proxy_config(sources));
     let id = b.governance.next_proposal_id();
     b.governance.create_proposal(&b.admin, &id, &action, &0);
 

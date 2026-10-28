@@ -21,7 +21,9 @@ use templar_proxy_oracle_soroban_common::{
 };
 use templar_proxy_oracle_soroban_contract::RefreshStatus;
 use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
-use templar_proxy_oracle_soroban_integration_tests::common::{ledger, Bootstrap, MockOracleClient};
+use templar_proxy_oracle_soroban_integration_tests::common::{
+    default_proxy_config, ledger, Bootstrap, MockOracleClient,
+};
 
 #[test]
 fn healthy_refresh_propagates_to_sep40_adapter() {
@@ -55,19 +57,7 @@ fn healthy_refresh_propagates_to_sep40_adapter() {
 fn add_feed(b: &Bootstrap, asset: &Asset) {
     b.submit_and_execute(
         &b.admin,
-        GovernanceAction::SetProxy(
-            asset.clone(),
-            ProxyConfig {
-                aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
-                    templar_proxy_oracle_soroban_common::MedianConfig {
-                        sources: b.source_configs(asset),
-                        min_sources: 3,
-                    },
-                ),
-                max_age_secs: 300,
-                max_clock_drift_secs: 60,
-            },
-        ),
+        GovernanceAction::SetProxy(asset.clone(), default_proxy_config(b.source_configs(asset))),
     );
 }
 
@@ -206,19 +196,7 @@ fn hostile_source_cannot_abort_a_separate_asset_refresh() {
     );
     b.submit_and_execute(
         &b.admin,
-        GovernanceAction::SetProxy(
-            eth.clone(),
-            ProxyConfig {
-                aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
-                    templar_proxy_oracle_soroban_common::MedianConfig {
-                        sources,
-                        min_sources: 3,
-                    },
-                ),
-                max_age_secs: 300,
-                max_clock_drift_secs: 60,
-            },
-        ),
+        GovernanceAction::SetProxy(eth.clone(), default_proxy_config(sources)),
     );
     b.push_upstream_price(&eth, 2_000_000_000, 100);
     b.runtime.refresh(&eth);

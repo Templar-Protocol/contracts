@@ -7,11 +7,14 @@
 //! - `ProposalGroup(slot)` (persistent): eight fixed slots holding at most
 //!   eight unchanged proposal bodies each. Slot selection is independent of
 //!   historical IDs, so churn cannot enlarge queue-wide revocation's footprint.
-//!   This fresh-stack layout does not decode the previous per-body layout.
+//! - `PendingBytes` (instance): sum of the XDR sizes of active proposal
+//!   values, bounded to keep atomic revocation within transaction limits.
+//!
+//! This fresh-stack layout does not decode the previous per-body layout.
 //!
 //! Role membership lives in `stellar-access` (see `roles`), not here.
 
-use soroban_sdk::{contracttype, Env, Map, Vec};
+use soroban_sdk::{contracttype, xdr::ToXdr, Env, Map, Vec};
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_soroban_common::{DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD};
 use templar_proxy_oracle_soroban_governance_common::{
@@ -25,12 +28,19 @@ pub type KernelProposal =
 pub const PROPOSALS_PER_GROUP: u64 = 8;
 pub const PROPOSAL_GROUP_COUNT: u64 = 8;
 
+// Leave room below the 132,096-byte transaction write limit for group keys,
+// map entries, ledger envelopes, the instance header, and role mutations.
+// Reserve space within the payload budget for an Admin recovery proposal.
+pub const MAX_PENDING_PROPOSAL_BYTES: u32 = 120 * 1024;
+pub const ADMIN_PROPOSAL_BYTE_RESERVE: u32 = 2 * 1024;
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     ProxyOracle,
     Header,
     ProposalGroup(u64),
+    PendingBytes,
 }
 
 /// Soroban-native mirror of the kernel ledger. Only the `active_ids` vector
@@ -74,6 +84,21 @@ pub fn load_header(env: &Env) -> Result<KernelGovernance, GovernanceError> {
     .map_err(|_| GovernanceError::InvalidInput)
 }
 
+pub fn proposal_bytes(env: &Env, proposal: &Proposal) -> u32 {
+    proposal.clone().to_xdr(env).len()
+}
+
+pub fn pending_bytes(env: &Env) -> Result<u32, GovernanceError> {
+    env.storage()
+        .instance()
+        .get(&DataKey::PendingBytes)
+        .ok_or(GovernanceError::MissingConfig)
+}
+
+pub fn save_pending_bytes(env: &Env, bytes: u32) {
+    env.storage().instance().set(&DataKey::PendingBytes, &bytes);
+}
+
 pub fn load_proposal(env: &Env, id: u64) -> Option<Proposal> {
     for slot in 0..PROPOSAL_GROUP_COUNT {
         let key = DataKey::ProposalGroup(slot);
@@ -100,7 +125,23 @@ pub fn extend_active_proposal_ttls(env: &Env) {
     }
 }
 
-pub fn save_proposal(env: &Env, id: u64, proposal: &Proposal) -> Result<(), GovernanceError> {
+pub fn save_proposal(
+    env: &Env,
+    id: u64,
+    proposal: &Proposal,
+    is_admin: bool,
+) -> Result<(), GovernanceError> {
+    let bytes = pending_bytes(env)?
+        .checked_add(proposal_bytes(env, proposal))
+        .ok_or(GovernanceError::PendingProposalBytesExceeded)?;
+    let limit = if is_admin {
+        MAX_PENDING_PROPOSAL_BYTES
+    } else {
+        MAX_PENDING_PROPOSAL_BYTES - ADMIN_PROPOSAL_BYTE_RESERVE
+    };
+    if bytes > limit {
+        return Err(GovernanceError::PendingProposalBytesExceeded);
+    }
     for slot in 0..PROPOSAL_GROUP_COUNT {
         let key = DataKey::ProposalGroup(slot);
         let mut group: Map<u64, Proposal> = env
@@ -116,6 +157,7 @@ pub fn save_proposal(env: &Env, id: u64, proposal: &Proposal) -> Result<(), Gove
                 DEFAULT_TTL_THRESHOLD,
                 DEFAULT_TTL_EXTEND_TO,
             );
+            save_pending_bytes(env, bytes);
             return Ok(());
         }
     }
@@ -123,24 +165,29 @@ pub fn save_proposal(env: &Env, id: u64, proposal: &Proposal) -> Result<(), Gove
     Err(GovernanceError::InvalidInput)
 }
 
-pub fn remove_proposal(env: &Env, id: u64) {
+pub fn remove_proposal(env: &Env, id: u64) -> Result<(), GovernanceError> {
     for slot in 0..PROPOSAL_GROUP_COUNT {
         let key = DataKey::ProposalGroup(slot);
         let Some(mut group): Option<Map<u64, Proposal>> = env.storage().persistent().get(&key)
         else {
             continue;
         };
-        if !group.contains_key(id) {
+        let Some(proposal) = group.get(id) else {
             continue;
-        }
-        group.remove(id);
+        };
+        let bytes = pending_bytes(env)?
+            .checked_sub(proposal_bytes(env, &proposal))
+            .ok_or(GovernanceError::InvalidInput)?;
+        group.remove_unchecked(id);
         if group.is_empty() {
             env.storage().persistent().remove(&key);
         } else {
             env.storage().persistent().set(&key, &group);
         }
-        return;
+        save_pending_bytes(env, bytes);
+        return Ok(());
     }
+    Err(GovernanceError::ProposalNotFound)
 }
 
 pub fn proposal_to_kernel(proposal: Proposal) -> KernelProposal {

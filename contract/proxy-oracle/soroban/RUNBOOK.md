@@ -173,8 +173,11 @@ inv --id $GOV -- cancel_proposal  --caller <ADDR> --id <ID>   # frees a slot
 - `id` must equal `next_proposal_id`. `requested_ttl 0` uses the configured
   per-kind minimum; the effective TTL is `max(requested, minimum)`.
 - Queue-full returns `TooManyPendingProposals = 12`; delegates may occupy 63
-  slots and Admin may use slot 64. Execution before maturity returns
-  `ProposalNotMature`. Execution is by id — no FIFO ordering.
+- Proposal XDR bytes are also bounded in aggregate (122,880 bytes total,
+  2,048 reserved for Admin recovery); exceeding the bound returns
+  `PendingProposalBytesExceeded = 13` without reserving the ID or mutating
+  state. Large `SetProxy` bodies therefore meet backpressure before the queue
+  fills, keeping atomic revocation inside host resource limits.
 - Queries: `next_proposal_id`, `active_ids`, `get_proposal --id`,
   `get_operation_ttl --kind`, `get_effective_proposal_ttl --operation --requested_ttl`.
 - Persist the explicit ID and exact payload before submitting. An uncertain send
