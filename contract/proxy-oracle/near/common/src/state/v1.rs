@@ -372,6 +372,75 @@ mod tests {
         })
     }
 
+    /// Hand-authored positional fixtures for the unchanged v1 layout, not captured live state.
+    /// Borsh stores Decimal::ONE as eight little-endian limbs; postcard uses its string form.
+    /// Install literal Borsh values under the real UnorderedMap value key, then use runtime views.
+    #[test]
+    fn frozen_breaker_bytes_load_through_runtime_storage() {
+        use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerStatus;
+
+        const ARMED: &[u8] = &[0, 7, 0, 0, 0, 0, 0, 0, 0];
+        const TRIPPED: &[u8] = &[
+            1, 9, 0, 0, 0, 0, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 254, 255,
+            255, 255, 8, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        const ARMED_SET: &[u8] = &[
+            0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0,
+            1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 7, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        const TRIPPED_SET: &[u8] = &[
+            0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0,
+            1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 9, 0, 0, 0, 0, 0, 0, 0, 100, 0, 0,
+            0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 254, 255, 255, 255, 8, 0, 0, 0, 0, 0, 0, 0, 9,
+            0, 0, 0, 0, 0, 0, 0,
+        ];
+        const ARMED_POSTCARD: &[u8] = b"\x00\x017";
+        const TRIPPED_POSTCARD: &[u8] = b"\x01\x019\xc8\x01\x01\x03\x018\x019";
+        const ARMED_SET_POSTCARD: &[u8] =
+            b"\x010\x02\x00\x02\x00\x04\x00\x01\x03\x00\x011\x01\x00\x017";
+        const TRIPPED_SET_POSTCARD: &[u8] =
+            b"\x010\x02\x00\x02\x00\x04\x00\x01\x03\x00\x011\x01\x01\x019\xc8\x01\x01\x03\x018\x019";
+
+        testing_env!(VMContextBuilder::new().build());
+        let price_id = PriceIdentifier([0x38; 32]);
+        let mut state = state();
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        // UnorderedMap stores values by vector index, not by the feed's serialized key.
+        let value_key = [
+            near_sdk::borsh::to_vec(&StorageKey::CircuitBreakers).unwrap(),
+            vec![b'v'],
+            0_u64.to_le_bytes().to_vec(),
+        ]
+        .concat();
+        for (set_bytes, status_bytes, set_postcard, status_postcard) in [
+            (ARMED_SET, ARMED, ARMED_SET_POSTCARD, ARMED_POSTCARD),
+            (TRIPPED_SET, TRIPPED, TRIPPED_SET_POSTCARD, TRIPPED_POSTCARD),
+        ] {
+            env::storage_write(&value_key, set_bytes);
+            let loaded = state.get_proxy_circuit_breaker_set(price_id).unwrap();
+            loaded.validate().unwrap();
+            assert_eq!(loaded.next_id(), 4);
+            assert_eq!(loaded.breaker_count(), 1);
+            let status = &loaded.breakers()[&3].status;
+            assert_eq!(near_sdk::borsh::to_vec(status).unwrap(), status_bytes);
+            assert_eq!(postcard::to_allocvec(status).unwrap(), status_postcard);
+            assert_eq!(
+                postcard::from_bytes::<CircuitBreakerStatus>(status_postcard).unwrap(),
+                *status
+            );
+            assert_eq!(near_sdk::borsh::to_vec(&loaded).unwrap(), set_bytes);
+            assert_eq!(postcard::to_allocvec(&loaded).unwrap(), set_postcard);
+            assert_eq!(
+                postcard::from_bytes::<CircuitBreakerSet>(set_postcard).unwrap(),
+                loaded
+            );
+        }
+    }
+
     #[test]
     fn missing_tombstone_is_not_treated_as_a_never_used_allocator() {
         testing_env!(VMContextBuilder::new().build());

@@ -10,6 +10,10 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+[features]
+# Requires the current optimized adapter fixture; prepared by Soroban test-integration.
+compiled-wasm-tests = ["dep:templar-contract-artifacts", "dep:tokio"]
+
 [dependencies]
 soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
 templar-primitives = { path = "../../../../primitives", default-features = false }
@@ -20,6 +24,8 @@ templar-proxy-oracle-soroban-governance-contract = { path = "../governance-contr
 templar-proxy-oracle-soroban-sep40-adapter-contract = { path = "../sep40-adapter-contract", features = ["testutils"] }
 templar-proxy-oracle-soroban-pyth-lazer-source-contract = { path = "../pyth-lazer-source-contract", features = ["testutils"] }
 templar-proxy-oracle-soroban-batcher-contract = { path = "../batcher-contract", features = ["testutils"] }
+templar-contract-artifacts = { path = "../../../artifacts", features = ["fetch"], optional = true }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }

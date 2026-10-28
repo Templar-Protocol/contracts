@@ -49,6 +49,7 @@ templar-gateway-client.workspace = true
 templar-gateway-methods-spec.workspace = true
 templar-gateway-testing.workspace = true
 templar-gateway-types.workspace = true
+templar-proxy-oracle-near-governance-common.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
 

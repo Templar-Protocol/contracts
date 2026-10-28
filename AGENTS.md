@@ -163,6 +163,7 @@ Several CI/test-infra files enumerate crates, contracts, or paths by hand. A fea
 - Write comprehensive unit tests for new, non-trivial logic. Prefer `#[rstest]` parameterization when it improves coverage and keeps cases readable.
 - Keep fuzzers current when behavior changes affect parsing, arithmetic, state transitions, or other high-risk logic. Run them periodically, not only after major rewrites.
 - If you cannot run an important verification step, say so explicitly.
+- Proxy-oracle Soroban native integration tests remain in `just test-fast`. Run `just -f contract/proxy-oracle/soroban/justfile test-integration` for the complete integration gate: it builds the optimized adapter and enables `compiled-wasm-tests` for the catalog-pinned old/current Wasm swap. CI runs this in the Soroban job; it requires the documented Stellar CLI/Rust build toolchain. Do not claim adapter upgrade compatibility from native-only tests.
 
 ## Documentation
 

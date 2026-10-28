@@ -72,7 +72,25 @@ The role a method requires comes from its resolved policy, so what a role can do
 
 Proxy oracle contract upgrades are a `TargetFunctionCall` to the proxy's owner-gated `admin_upgrade` entrypoint (the CLI's `create-proposal oracle upgrade` subcommand attaches 280 Tgas). Any other proxy-admin action — e.g. accepting ownership after an owner transfer via `create-proposal oracle call --method own_accept_owner --deposit "1 yoctoNEAR"` — is likewise a plain target call. Attach whatever deposit the target method asserts (the ownership entrypoints require one yoctoNEAR); a call that under-attaches is a rejected receipt that still consumes the proposal. Gas is caller-supplied and baked into the stored call; if a target call is under-funded it simply fails at the proxy oracle with a rejected receipt (the proposal is still consumed), leaving nothing in a broken state. The manager CLI's `--gas` accepts either raw gas units or a formatted value such as `120 Tgas`.
 
-Every path that puts new code on an oracle first runs a read-only preflight over the state that code will load, because a release can tighten accepted configurations without changing persisted layouts. The checks include `upgrade.breakers` (stored sets decode and satisfy runtime rules), `upgrade.source_weights` (the stable external identifier now checks nonempty/distinct source descriptors, median quorum, and positive weights), `upgrade.governance_ledger` (the stored active-ID header remains valid), and `upgrade.pending_rearm` (queued rearm payloads retain checked relative-delay semantics). They run on direct upgrades, proposal creation, and again before governed upgrade execution. `--skip-preflight` opts out, `--skip-check <id>` drops one check, and `--print` submits nothing.
+Every path that puts new code on an oracle first runs a read-only preflight over
+the state that code will load; a release may tighten accepted configurations
+without changing persisted layouts:
+
+- `upgrade.breakers`: stored sets decode and satisfy runtime rules.
+- `upgrade.source_weights`: this stable identifier checks nonempty/distinct
+  source descriptors, median quorum, and positive weights.
+- `upgrade.governance_ledger`: the stored active-ID header remains valid.
+- `upgrade.pending_rearm`: reject old absolute-time rearm payloads, but retain
+  compatible relative-delay calls.
+- `upgrade.pending_breaker_lifecycles`: inspect current and legacy pending add,
+  remove, rearm and enforcement targets. Missing/undecodable sets, stale expected
+  add IDs and absent mutation targets require inspection and drain/cancellation;
+  compatible queued adds are not rejected wholesale. Current state cannot prove
+  allocator history already deleted by old code.
+
+Checks run on direct upgrades, proposal creation, and again before governed
+upgrade execution. `--skip-preflight` opts out, `--skip-check <id>` drops one
+check, and `--print` submits nothing.
 
 Run `tmplrmgr proxy-oracle preflight --oracle-id <oracle-id>` for each known deployment before preparing an upgrade. Registry sweeps require `list_deployments_by_kind`; a release catalog is not evidence of current deployment. Inventory the exact old Wasm/hash, state version, proxy/governance identities, owner/roles, proxy configs, breaker sets, and pending bodies. Drain/cancel only breaker-ID operations that may refer to a lifecycle deleted by old code; do not cancel compatible operations merely because code changes. A rejected or unknown allocator must be investigated without resetting its ID history. Production upgrade approval remains blocked when that inventory cannot be established.
 

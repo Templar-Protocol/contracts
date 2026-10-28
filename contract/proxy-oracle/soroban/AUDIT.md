@@ -185,9 +185,11 @@ refuses to clear an unmarked non-empty directory.
 - **Fresh-stack only** — unified runtime config XDR and eight fixed governance
   proposal groups (up to eight unchanged bodies each) are incompatible with old
   deployments. In-place runtime/governance migration is skipped; leave live stacks
-  unchanged. No legacy decoder/default/side map is provided. Independent adapter
-  upgrade requires exact old/new compiled-Wasm swap proof; existing
-  `integration-tests/tests/upgrade.rs` is not that evidence.
+  unchanged. No legacy decoder/default/side map is provided. The independent
+  adapter test mounts verified released 0.1.4/current compiled Wasms and executes
+  the swap with preserved state. Its `compiled-wasm-tests` feature is exercised
+  by the Soroban `test-integration` recipe and CI, not native-only fast tests.
+  This does not establish production identity or approve a live upgrade.
 - **No `AdminFunctionCall`** — NEAR's arbitrary dynamic dispatch is intentionally
   not ported; the upgrade surface is the typed `upgrade` / `Upgrade` path.
 - **Synchronous refresh** — all source IO is within one `refresh` transaction.

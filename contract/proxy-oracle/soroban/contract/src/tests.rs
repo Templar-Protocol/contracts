@@ -2635,6 +2635,47 @@ fn exhausted_allocator_survives_removal_recreation_and_replacement_without_wrapp
 }
 
 #[test]
+fn frozen_postcard_breaker_sets_load_through_runtime_storage_and_public_views() {
+    // Hand-authored positional fixtures shared with NEAR's frozen v1 layout
+    // regression. These are not a claim of Soroban config migration support.
+    const ARMED_STATUS: &[u8] = b"\x00\x017";
+    const TRIPPED_STATUS: &[u8] = b"\x01\x019\xc8\x01\x01\x03\x018\x019";
+    const ARMED_SET: &[u8] = b"\x010\x02\x00\x02\x00\x04\x00\x01\x03\x00\x011\x01\x00\x017";
+    const TRIPPED_SET: &[u8] =
+        b"\x010\x02\x00\x02\x00\x04\x00\x01\x03\x00\x011\x01\x01\x019\xc8\x01\x01\x03\x018\x019";
+
+    let (env, proxy, _, asset) = setup();
+    for (set_bytes, status_bytes, blocking) in [
+        (ARMED_SET, ARMED_STATUS, false),
+        (TRIPPED_SET, TRIPPED_STATUS, true),
+    ] {
+        env.as_contract(&proxy.address, || {
+            env.storage().persistent().set(
+                &DataKey::Breakers(asset.clone()),
+                &Bytes::from_slice(&env, set_bytes),
+            );
+        });
+        // This public endpoint goes through the production postcard decoder
+        // and validation, rather than loading a separately reconstructed set.
+        let view = proxy.get_breaker_set_view(&asset).unwrap();
+        assert_eq!(view.next_id, 4);
+        assert_eq!(view.breaker_count, 1);
+        assert_eq!(view.history_len, 2);
+        assert_eq!(view.sample_interval_secs, 0);
+        assert!(!view.is_manually_tripped);
+        assert_eq!(view.is_blocking, blocking);
+        let loaded = env.as_contract(&proxy.address, || {
+            storage::load_breakers(&env, &asset).unwrap()
+        });
+        assert_eq!(postcard::to_allocvec(&loaded).unwrap(), set_bytes);
+        assert_eq!(
+            postcard::to_allocvec(&loaded.breakers()[&3].status).unwrap(),
+            status_bytes
+        );
+    }
+}
+
+#[test]
 fn archived_tombstone_is_host_restored_without_restarting_ids() {
     use soroban_sdk::testutils::storage::Persistent as _;
 

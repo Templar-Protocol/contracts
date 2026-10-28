@@ -1,6 +1,5 @@
-//! End-to-end proof that upgrading the proxy oracle and its governance contract from their
-//! currently-deployed (pre-standardized-upgrade) wasm to this branch's wasm leaves both contracts
-//! functional, **in either order**.
+//! End-to-end proof that upgrading the historical proxy-oracle/governance release
+//! fixtures to this branch's Wasm leaves both contracts functional in either order.
 //!
 //! The deployed contracts predate the standardized upgrade path, so the upgrades are key-driven: a
 //! bare `DeployContract` for the v1 oracle (state layout unchanged, no migrate) and
@@ -12,10 +11,12 @@
 //! stored proposal body on-chain, not just an empty map; each upgraded contract is then probed with
 //! a domain view to prove it still answers, not merely that its code hash changed.
 //!
-//! Fixtures are the real on-chain blobs (proxy-oracle `0.3.0`, state v1;
-//! proxy-governance `0.1.0`, pre-versioned-state), pinned from mainnet and
-//! catalogued as releases in `contract/artifacts/releases/`.
+//! Fixtures are immutable release blobs (proxy-oracle `0.3.0`, state v1;
+//! proxy-governance `0.1.0`, pre-versioned-state) from
+//! `contract/artifacts/releases/`, not a survey of current deployments.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
 
 use anyhow::Result;
 use near_api::types::AccountId;
@@ -40,6 +41,17 @@ fn seeded_upgrade() -> LegacyOperation {
     LegacyOperation::AdminUpgrade {
         code: UpgradeSource::Code(Base64VecU8(PENDING_UPGRADE_CODE.to_vec())),
         migrate_args: Base64VecU8(Vec::new()),
+    }
+}
+
+fn seeded_add() -> LegacyOperation {
+    use templar_proxy_oracle_kernel::proxy::circuit_breaker::{CircuitBreaker, StepwiseChange};
+    LegacyOperation::AddCircuitBreaker {
+        id: templar_common::oracle::pyth::PriceIdentifier([0x38; 32]),
+        breaker_id: 7,
+        breaker: CircuitBreaker::StepwiseChange(StepwiseChange {
+            max_relative_change: templar_common::Decimal::ONE,
+        }),
     }
 }
 
@@ -128,6 +140,27 @@ async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
             NearToken::from_yoctonear(1),
         )
         .await?;
+    harness
+        .call_function_payable(
+            &admin,
+            &gov_account.0,
+            "create_proposal",
+            CreateProposalArgs {
+                id: 1,
+                operation: seeded_add(),
+                requested_ttl: Nanoseconds::zero(),
+            },
+            NearToken::from_yoctonear(1),
+        )
+        .await?;
+    let before: Value = common::view(
+        &harness.network,
+        &gov_account.0,
+        "get_proposal",
+        json!({ "id": 1 }),
+    )
+    .await?;
+    assert_eq!(before["operation"]["AddCircuitBreaker"]["breaker_id"], 7);
 
     Ok((oracle.0, gov_account.0))
 }
@@ -201,6 +234,45 @@ async fn upgrade_gov(harness: &SandboxHarness, governance_id: &AccountId) -> Res
         Operation::try_from(seeded_upgrade()).unwrap(),
         "migrated proposal should reshape the raw code into an admin_upgrade target call"
     );
+    let migrated_add = harness
+        .client()?
+        .read(gov::GetProposal {
+            governance_id: governance_id.clone(),
+            id: 1,
+        })
+        .await?
+        .expect("guarded legacy AddBreaker survived migration");
+    assert_eq!(
+        migrated_add.operation,
+        Operation::try_from(seeded_add()).unwrap()
+    );
+    let Operation::TargetFunctionCall(call) = migrated_add.operation else {
+        panic!("legacy AddBreaker must remain a target call");
+    };
+    assert_eq!(call.method_name, "admin_add_circuit_breaker");
+    let args: Value = serde_json::from_slice(&call.args.0)?;
+    assert_eq!(
+        args["breaker_id"], 7,
+        "migration must not allocate a different breaker ID"
+    );
+    assert_eq!(
+        common::view::<u32>(
+            &harness.network,
+            governance_id,
+            "next_proposal_id",
+            json!({}),
+        )
+        .await?,
+        2,
+    );
+    let roles: Vec<templar_proxy_oracle_near_governance_common::Role> = common::view(
+        &harness.network,
+        governance_id,
+        "get_roles",
+        json!({ "account_id": migrated_add.created_by }),
+    )
+    .await?;
+    assert!(roles.contains(&templar_proxy_oracle_near_governance_common::Role::Admin));
     Ok(())
 }
 

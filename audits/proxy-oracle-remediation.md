@@ -8,37 +8,37 @@ New Soroban aggregation/pin XDR is **fresh-stack only**: incompatible runtime/go
 
 - Original UUID: `9d21d325-84c0-4ff5-bc7d-8fea19323dc2`. Audit severity: **low**. Report status: **Pending**.
 - Chain: Both. Precondition: Delegated role holder fills shared queue.
-- Current assessment: Valid unresolved.
+- Current assessment: Fixed; delegated availability attack no longer consumes Admin's reserved slot. Scheduling fairness is not guaranteed.
 - Disposition: Reserve slot 64 for Admin; retain cap and expected IDs.
 - Audit source locations: `contract/proxy-oracle/governance-kernel/src/lib.rs`; `contract/proxy-oracle/soroban/governance-contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Both governance entrypoints reject delegate admission at 63 pending and accept Admin slot 64. NEAR governance regressions, Soroban `reserved_admin_slot_and_original_expected_ids_are_never_reused`, and real host queue/revocation smoke passed. Admission lives in each governance `src/lib.rs`; shared creation IDs remain unchanged.
 
 ## HAL-2: Unpinned Source Decimals Allow Silent Price Rescaling
 
 - Original UUID: `3071300a-fabf-4dc9-bf55-337bc20fffc1`. Audit severity: **low**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Admitted upstream changes decimals after admission.
-- Current assessment: Valid unresolved; decimals already bounded.
+- Current assessment: Fixed for admitted-source decimal drift; it still presupposes upstream upgrade/misconfiguration rather than an unauthenticated local write.
 - Disposition: Pin expected decimals at admission and refresh; requires source upgrade/misconfiguration.
 - Audit source locations: `contract/proxy-oracle/soroban/contract/src/conversion.rs`; `contract/proxy-oracle/soroban/contract/src/refresh.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `soroban/common/src/lib.rs::parse_proxy_config` validates explicit pins; runtime admission queries decimals and refresh filters drift. Decimal 8→9 invalidates quorum; explicit repin resets aggregation and retains next_id. Common/runtime/integration gates and actual host smoke passed.
 
 ## HAL-3: History Keeps Serving Prices After A Halt
 
 - Original UUID: `f185765f-2667-4e6b-9a8a-f2e071c92d82`. Audit severity: **low**. Report status: **Solved**.
 - Chain: Soroban. Precondition: Manual or automatic halt with historical samples.
-- Current assessment: Existing fix; regression required.
+- Current assessment: Existing fix retained and verified.
 - Disposition: Historical reads consult breaker state; history remains freshness-independent.
 - Audit source locations: `contract/proxy-oracle/soroban/contract/src/lib.rs`; `contract/proxy-oracle/soroban/sep40-adapter-contract/src/lib.rs`; `contract/proxy-oracle/soroban/contract/src/refresh.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Runtime and adapter historical reads fail closed under manual/automatic halt, while ordinary history remains independent of cache freshness. Runtime/adapter/history integration regressions passed; no ring-buffer or freshness policy change was introduced.
 
 ## HAL-4: Circuit Breaker Ring Buffer Accepts Duplicate Samples
 
 - Original UUID: `5995c3ab-1135-4396-be70-261809879bba`. Audit severity: **informational**. Report status: **Solved**.
 - Chain: Both. Precondition: Duplicate/older publication with zero sampling interval.
-- Current assessment: Existing fix; regression required.
+- Current assessment: Existing fix retained and verified at zero sampling interval.
 - Disposition: Persist only increasing source publication times; generic ring buffer unchanged.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/ring_buffer.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`; `contract/proxy-oracle/soroban/contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Kernel `equal_publish_time_trips_without_advancing_history` and `regressing_price_trips_without_advancing_history`, plus runtime `duplicate_and_older_samples_do_not_pad_zero_interval_histories_while_blocked`, passed. Generic RingBuffer behavior is unchanged.
 
 ## HAL-5: Empty Breaker History Skips First Price Check
 
@@ -47,25 +47,25 @@ New Soroban aggregation/pin XDR is **fresh-stack only**: incompatible runtime/go
 - Current assessment: Intentional bootstrap limitation.
 - Disposition: Preserve initial baseline semantics and explicit cumulative baseline.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/rule/stepwise_change.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Kernel first-baseline behavior remains unchanged: relative rules require a reference; cumulative rules retain their explicit installation baseline. Production-config/baseline recovery tests and fresh host first-refresh smoke passed. This is an acknowledged bootstrap trust requirement, not a new fail-closed policy.
 
 ## HAL-6: Admin Grant Accepts An Address That Cannot Sign
 
 - Original UUID: `892faed0-d266-4647-a238-e30e9c81999d`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Admin grants unusable account then revokes usable Admin.
-- Current assessment: Valid unresolved.
+- Current assessment: Fixed; Admin activation now proves grantee authorization without restricting valid contract-account authentication.
 - Disposition: Require grantee co-authorization; reject governance-self Admin; retain last-Admin guard.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-contract/src/roles.rs`; `contract/proxy-oracle/soroban/governance-contract/src/engine.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `soroban/governance-contract/src/roles.rs` requires new-Admin coauthorization and rejects self-Admin; explicit auth-tree tests reject missing grantee/bootstrap auth and retain last-Admin protection. Constructor failure also leaves Header/ProxyOracle absent. Governance and fresh-stack integration gates passed.
 
 ## HAL-7: Role Mapping Lets Lower Roles Veto Admin Proposals
 
 - Original UUID: `2608f406-c729-447f-b73f-7da5caf2caf1`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Both. Precondition: Peer with same operation role cancels another creator proposal.
-- Current assessment: Valid unresolved.
+- Current assessment: Fixed; peer execution remains intentionally separate from cancellation authority.
 - Disposition: Creator-or-Admin cancellation; current authorized peer may still execute.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-common/src/lib.rs`; `contract/proxy-oracle/soroban/governance-contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Both chains require creator or current Admin to cancel. Regressions cover unauthorized same-role peers, authorized peer execution, creator cancellation after role loss, and Admin override; Soroban uses explicit caller auth. NEAR/Soroban governance gates passed.
 
 ## HAL-8: Circuit Breaker Rules Ignore Sample Time Gaps
 
@@ -74,34 +74,34 @@ New Soroban aggregation/pin XDR is **fresh-stack only**: incompatible runtime/go
 - Current assessment: Intentional sample-count semantics.
 - Disposition: Document cadence/recalibration; do not change mathematics.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/observation.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/rule/stepwise_change.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/rule/windowed_change_delta.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `kernel/.../rule/{stepwise_change,windowed_change_delta,monotonic_run}.rs` retains observation-count mathematics; sampling only controls persistence. Window-mean/monotonic/sampling tests passed, with existing window/monotonic Kani assertions and reachability proved. Keeper cadence remains an operator calibration assumption.
 
 ## HAL-9: Opposite-Sign Window Changes Sum Instead Of Subtract
 
 - Original UUID: `43c53da8-628e-4aa6-a3c0-51fb5a7f58c9`. Audit severity: **informational**. Report status: **Solved**.
 - Chain: Both. Precondition: Opposite-direction windows.
-- Current assessment: Existing fix; regression required.
+- Current assessment: Existing arithmetic fix retained and verified.
 - Disposition: Current window means/sums replace historical sign error.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/rule/windowed_change_delta.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/math.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Kernel `windowed_change_delta_compares_window_means`, strict window-sum and overflow cases passed. Both windowed Kani harnesses proved their assertions and all covers. No signed-sum formula was reintroduced.
 
 ## HAL-10: Ownership Transfer Always Uses Maximum Acceptance Window
 
 - Original UUID: `9592a6f2-161e-489b-a7ca-39dcd6381bd0`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Executed ownership transfer remains pending.
-- Current assessment: Valid unresolved.
+- Current assessment: Fixed by cancellability; maximum acceptance-window bootstrap remains intentional.
 - Disposition: Append cancellation action sharing Admin authorization and transfer TTL.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-contract/src/engine.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Appended `CancelOwnershipTransfer` in Soroban governance-common; engine dispatches existing transfer cancellation. Matching/wrong/missing/expired stored pending-owner tests passed, with explicit auth, the existing transfer TTL, and no new OperationKind/TtlConfig field or transfer-start event.
 
 ## HAL-11: Arbitrary Tie-Break Picks Aggregate Timestamp And Exponent
 
 - Original UUID: `6ae3db6a-c3a8-4465-a172-8eb5f53dac25`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Both. Precondition: Numerically equal endpoints have different metadata.
-- Current assessment: Valid unresolved metadata nondeterminism.
+- Current assessment: Fixed; metadata selection is deterministic without changing numeric price equality.
 - Disposition: Median-local total order; preserve numeric SpecificPrice equality and exact exponents.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/aggregator/method/median/specific_price.rs`; `contract/proxy-oracle/kernel/src/proxy/aggregator/method/median/mod.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Failing-before reversed-source timestamp 110/100 regression now selects Low 100/High 110 in either order. `equal_price_metadata_is_permutation_independent` and scaled exponent/weight regressions passed; median comparator orders numeric value, timestamp, exponent, raw value, weight. SpecificPrice comparison remains numeric.
 
 ## HAL-12: Constructor Allows Zero Timelock, Unverified Proxy Oracle
 
@@ -110,7 +110,7 @@ New Soroban aggregation/pin XDR is **fresh-stack only**: incompatible runtime/go
 - Current assessment: Intentional bootstrap facility.
 - Disposition: Verify reciprocal wiring and hardened timelocks as deployment postconditions.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Fresh-stack integration proves governance/runtime reciprocal wiring, two-step handoff, explicit new-Admin auth, adapter binding and all 14 TTLs hardened to 24h with SetActionTtl last. Script gate and interrupted-hardening model smoke passed; constructors still permit deliberate zero-TTL bootstrap, not production approval.
 
 ## HAL-13: Rearmed Circuit Breakers Skip Trip Checks During Cool-Down
 
@@ -119,52 +119,52 @@ New Soroban aggregation/pin XDR is **fresh-stack only**: incompatible runtime/go
 - Current assessment: Intentional recovery authority.
 - Disposition: Preserve ArmedAfter and histories; no fail-closed cooldown.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`; `contract/proxy-oracle/soroban/contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Kernel `future_armed_breaker_records_history_without_tripping` and `hal_20_rearm_preserves_both_shared_histories` passed. Relative rearm arithmetic and both runtime overflow regressions passed. Privileged cooldown bypass is retained and documented, not silently converted to blocking.
 
 ## HAL-14: Proxy Reconfiguration Leaves Stale History And Breakers
 
 - Original UUID: `91a93fd5-087d-4365-8faf-168bfc0e5690`. Audit severity: **informational**. Report status: **Partially Solved**.
 - Chain: Both. Precondition: Aggregator/source/quorum replacement or destructive removal.
-- Current assessment: Partly fixed; allocator reset unresolved.
+- Current assessment: Fixed; full reset clears configuration/rules/trip/history/cache while retaining allocator identity.
 - Disposition: Retain cache/history clearing and only preserve next breaker ID on full reset.
 - Audit source locations: `contract/proxy-oracle/soroban/contract/src/lib.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `reset_preserving_next_id` is used for destructive removal and Soroban aggregator replacement. Method/order/pin/quorum changes reset full state; freshness-only changes preserve breakers; identical config is a no-op. Both-chain lifecycle and Soroban replacement regressions passed.
 
 ## HAL-15: Governance Keeper Never Refreshes Role Storage TTLs
 
 - Original UUID: `1d75c83b-c8be-407d-8eb7-eeff7476b396`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Dormant role count/index/membership/ExistingRoles archive.
-- Current assessment: Valid unresolved.
+- Current assessment: Fixed with bounded maintenance; live-network restoration remains an operator responsibility.
 - Disposition: Bounded role TTL pages plus normal keeper ExistingRoles renewal; no membership cap.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-contract/src/roles.rs`; `contract/proxy-oracle/soroban/governance-contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `roles.rs::extend_page` renews count/index/membership for all four roles; ordinary keeper renews ExistingRoles/groups. Multi-page near-archival tests verify TTLs/default resource limits, count 0/17 rejection and past-end None. Archived role/group host-restoration regression passed; this is SDK recording-mode evidence, not network restoration proof.
 
 ## HAL-16: Stale Breaker Id Silently Voids NEAR Proposal
 
 - Original UUID: `5d4a4f15-0fb7-479b-86c7-c5b0970c0806`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: NEAR. Precondition: Two adds captured same expected breaker ID.
-- Current assessment: Guard intentional; operator failure visibility unresolved.
+- Current assessment: Guard retained; operator-facing target-failure ambiguity fixed.
 - Disposition: Preserve one-shot dispatch and explicit IDs; reject failed target receipts in manager.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/error.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Competing guarded adds install exactly one rule. `context::check_governed_execution_status` is shared by explicit and combined execution, requiring terminal outcome/no failed receipts. Actual tmplrmgr sandbox executions exited 1 with failed oracle receipt and transaction evidence for proposals 5/7; consumed proposals were not requeued.
 
 ## HAL-17: Breaker Added Event Drops Configured Parameters
 
 - Original UUID: `3c1199a0-0376-4f29-a6c2-9d8564b774b2`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Breaker added event omits parameters.
-- Current assessment: Valid unresolved.
+- Current assessment: Fixed through an additive companion event.
 - Disposition: Keep old event; add typed config/baseline detail from existing DTO.
 - Audit source locations: `contract/proxy-oracle/soroban/contract/src/events.rs`; `contract/proxy-oracle/soroban/contract/src/codes.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `CircuitBreakerAddedDetail` projects existing CircuitBreakerConfig from the installed kernel rule; baseline exists iff cumulative. All rule parameters/baseline and old Added payload regressions passed; compiled ABI gate pins companion fields/topics. Existing event remains unchanged.
 
 ## HAL-18: Constructor Accepts Owner With No Reciprocity Check
 
 - Original UUID: `1fc1450f-8b20-4d5a-8346-0dc6628abcf1`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Bootstrap owner not governance; adapter base differs.
-- Current assessment: Base guard existing; bootstrap intentional.
+- Current assessment: Existing base guard retained; circular constructor restrictions rejected in favor of verified deployment postconditions.
 - Disposition: Test ownership/wiring postconditions; avoid circular constructors.
 - Audit source locations: `contract/proxy-oracle/soroban/contract/src/lib.rs`; `contract/proxy-oracle/soroban/sep40-adapter-contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Fresh host Bootstrap and integration assertions verify intended runtime, governance ownership after ordinary handoff, authenticated Admin, adapter parent/asset/base and runtime source_base. Adapter base-mismatch rejection passed. Script verifies the same bindings; no live stack identity or cutover is claimed.
 
 ## HAL-19: Matured Governance Proposals Remain Executable Indefinitely
 
@@ -173,34 +173,34 @@ New Soroban aggregation/pin XDR is **fresh-stack only**: incompatible runtime/go
 - Current assessment: Intentional minimum delay.
 - Disposition: No expiry/grace period; current authorization and explicit cancellation remain.
 - Audit source locations: `contract/proxy-oracle/governance-kernel/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Governance kernel retains minimum-delay semantics and current execution authorization; create/execute TTL tests passed. Cancellation/revocation regressions provide explicit removal paths. No expiry/grace period was added; indefinite maturity remains a deliberate policy.
 
 ## HAL-20: Aggregation Error Codes Collapse To One Value
 
 - Original UUID: `44d398e9-bf01-4b10-8f39-b8119f0df191`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Aggregation errors share code.
-- Current assessment: Valid unresolved diagnostics.
+- Current assessment: Fixed; non-aggregation public codes remain unchanged.
 - Disposition: Keep unrelated codes; append 101/102 with expected/actual detail.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/aggregator/method/mod.rs`; `contract/proxy-oracle/soroban/contract/src/codes.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `soroban/contract/src/{codes,refresh}.rs` projects intact errors to 101/102 and checked expected/actual counts. Length mismatch boundary, insufficient quorum, generic-no-detail tests and real host code-102 companion smoke passed. ABI gate verifies the additive event schema.
 
 ## HAL-21: Blocked Price Event Omits Which Breaker Tripped
 
 - Original UUID: `8e7760b8-232e-48ce-830b-95ad21e15fa6`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Already blocked refresh including no-source path.
-- Current assessment: Valid unresolved diagnostics.
+- Current assessment: Fixed for all blocked refresh paths.
 - Disposition: Publish exact blocking IDs on every blocked refresh; manual IDs empty.
 - Audit source locations: `contract/proxy-oracle/soroban/contract/src/events.rs`; `contract/proxy-oracle/soroban/contract/src/codes.rs`; `contract/proxy-oracle/soroban/contract/src/refresh.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Typed Blocked(PriceBlockedReason) reaches one projection match. `blocked_refresh_details_retain_all_ids_with_sources_without_sources_and_manual_trip` passed: automatic IDs remain complete, manual IDs empty, old CacheBlocked payload unchanged. Host blocked-event smoke and ABI policy passed.
 
 ## HAL-22: Breaker History Resize Skips Clear Or Rearm
 
 - Original UUID: `0cf73c69-56df-47bd-becc-6615214bebe5`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Both. Precondition: History capacity/cadence changed with installed rules.
-- Current assessment: Existing rejection/preservation; regression required.
+- Current assessment: Existing atomic rejection/history-preservation behavior retained and verified.
 - Disposition: Reject insufficient capacity atomically and retain valid history.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/ring_buffer.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/rule/windowed_change_delta.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Kernel `set_config_resizes_history_in_place` and Soroban history resize/cadence regression passed: invalid capacity/sampling rejects without mutation; valid resizing retains appropriate observations and installed breaker state. No unconditional clear/rearm was introduced.
 
 ## HAL-23: Governance Create Requires Predicting Shared Proposal Id
 
@@ -209,7 +209,7 @@ New Soroban aggregation/pin XDR is **fresh-stack only**: incompatible runtime/go
 - Current assessment: Intentional at-most-once guard; contention remains.
 - Disposition: Retain expected IDs; unknown outcome stops, never reselect or claim ownership.
 - Audit source locations: `contract/proxy-oracle/governance-kernel/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Kernel replay/contention cases passed; actual CLI sandbox covered discarded-success response, contention and replay after cancel/execute without ID advancement or body adoption. Script unknown-send gates and exact-ID hardening evidence tests passed. Contention remains intentional; transport-level loss was not injected.
 
 ## HAL-24: Price Decline Measurement Caps Change At 1.0
 
@@ -218,97 +218,97 @@ New Soroban aggregation/pin XDR is **fresh-stack only**: incompatible runtime/go
 - Current assessment: Intentional conventional relative math.
 - Disposition: Validate 0 < threshold <= 1; exact 1 allowed with strict comparison.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/math.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/rule/stepwise_change.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/rule/monotonic_run.rs`; `contract/proxy-oracle/soroban/contract/src/conversion.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `is_valid_relative_change` preserves 0 < x <= 1. Exact threshold-1 cases passed: full/positive declines and growth exactly 100% do not exceed strict 1; growth above 100% does. Existing relative-comparison Kani proof passed. No symmetric/log-return substitute was introduced.
 
 ## HAL-25: Sep40Adapter Returns Price History Oldest First
 
 - Original UUID: `093e6a69-09a5-49a7-972d-a385f8e8fcb7`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: SEP-40 historical bucket order/query alignment.
-- Current assessment: Valid unresolved.
+- Current assessment: Fixed; compatible adapter storage is separately exercised through compiled-Wasm upgrade.
 - Disposition: Newest-first distinct buckets; bucket query time and choose newest convertible entry.
 - Audit source locations: `contract/proxy-oracle/soroban/sep40-adapter-contract/src/lib.rs`; `contract/proxy-oracle/soroban/contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Adapter tests yield distinct newest buckets [110,100] from [100,101,110], bucket query 109→100 and skip unconvertible candidates. Actual released 0.1.4→current Wasm swap passed with preserved Config/owner/decommission and corrected history. Parent history stays chronological/breaker-gated.
 
 ## HAL-26: Remove Proxy Skips Existence Check And Emits Event
 
 - Original UUID: `4ba68345-7b17-4cab-bc2b-f3520b9ff022`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Remove unknown asset.
-- Current assessment: Valid unresolved.
+- Current assessment: Fixed; unknown removal fails before mutation/events.
 - Disposition: Existence guard before all mutation/events.
 - Audit source locations: `contract/proxy-oracle/soroban/contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `soroban/contract/src/lib.rs::remove_proxy` requires an existing proxy before resetting/deleting/emitting. Unknown-asset regression passed with no success event/state mutation; removed-proxy views hide retained allocator tombstones.
 
 ## HAL-27: Runtime Failure Mapping In Governance Call Is Dead Code
 
 - Original UUID: `c5aa2669-eca2-4b7d-b349-ba1eb6c7ebc8`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Governed runtime invocation returns failure.
-- Current assessment: Valid unresolved error mapping.
+- Current assessment: Fixed with typed nested invocation outcome handling.
 - Disposition: try_invoke_contract; RuntimeFailed with whole-transaction rollback/proposal retention.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-contract/src/engine.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Engine uses try_invoke_contract and accepts only Ok(Ok). `runtime_error_rolls_back_effects_and_retains_proposal_through_real_invocation` passed: returned runtime error maps to RuntimeFailed, child effects roll back and body/header remain unchanged.
 
 ## HAL-28: Queue-Full Governance Error Aliases As Invalid Input
 
 - Original UUID: `3c3238a9-14a2-436f-91fe-d30a5787bc8e`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Pending queue full.
-- Current assessment: Valid unresolved error alias.
+- Current assessment: Fixed additively; existing error numbers retained.
 - Disposition: Append TooManyPendingProposals=12; retain all existing codes.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-contract/src/lib.rs`; `contract/proxy-oracle/soroban/governance-common/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `TooManyPendingProposals = 12` is appended in governance-common and used for delegate reserve/global cap. Full-queue/error regressions and real host reserve smoke passed; compiled governance ABI policy passed without renumbering old errors.
 
 ## HAL-29: Proxy Config Lacks Age And Source Bounds
 
 - Original UUID: `db38f61d-0b93-4cdd-a64d-831aabc6d4ec`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Missing freshness/source bounds or duplicate wrappers.
-- Current assessment: Existing bounds; provider independence not provable.
+- Current assessment: Existing bounds strengthened through the shared parser; provider independence remains outside enforceable address identity.
 - Disposition: Retain fail-closed and zero-age policy; no invented identity/stale fallback.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/freshness_filter.rs`; `contract/proxy-oracle/soroban/contract/src/conversion.rs`; `contract/proxy-oracle/soroban/contract/src/lib.rs`; `contract/proxy-oracle/soroban/contract/src/refresh.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Common parser tests passed for 1–16 distinct oracle addresses, quorum, pins≤18, required age/drift bounds and zero-age policy. Runtime freshness/pin/fallback tests and integration smoke fail closed. Wrapper addresses/quorum are not represented as proof of economic independence.
 
 ## HAL-30: NEAR Proxy Oracle Lacks Aggregator Config Validation
 
 - Original UUID: `eec1926b-3050-4162-ab28-818562fc739a`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Both. Precondition: Authorized config has duplicate descriptors/impossible quorum.
-- Current assessment: Valid unresolved on NEAR.
+- Current assessment: Fixed at shared admission/preflight boundaries; historical decoding remains compatible.
 - Disposition: Shared ingress shape validator; Priority first-valid fallback, no quorum.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/aggregator/mod.rs`; `contract/proxy-oracle/kernel/src/proxy/aggregator/method/median/mod.rs`; `contract/proxy-oracle/kernel/src/proxy/mod.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: `Aggregator::validate` rejects empty/duplicate descriptors and median zero weights/impossible quorum; Priority remains first-surviving fallback. Five NEAR invalid-config no-mutation cases passed. Manager reports invalid configurations under unchanged upgrade.source_weights; actual CLI preflight passed.
 
 ## HAL-31: Unbounded Sample Interval Freezes Circuit Breaker History
 
 - Original UUID: `68fe64c7-9b06-4df2-9c56-6c9c13604ac6`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Seconds conversion overflows nanoseconds.
-- Current assessment: Valid unresolved.
+- Current assessment: Fixed for overflow; long representable privileged intervals remain intentional.
 - Disposition: Checked runtime/static parsing; zero and all representable intervals allowed.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`; `contract/proxy-oracle/soroban/contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Shared parse_breaker_set_config and runtime configure_breakers use checked seconds→nanoseconds. Static/runtime overflow regressions passed with no reservation/state/events; zero remains accepted, including MonotonicRun. No arbitrary interval cap was added.
 
 ## HAL-32: Unbounded Rearm Timestamp Can Permanently Disable Breaker
 
 - Original UUID: `1fde15dd-2c3a-48bf-b26b-fc9a230f8ba2`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Both. Precondition: Relative rearm delay overflows timestamp.
-- Current assessment: Existing checked arithmetic; regression required.
+- Current assessment: Existing checked relative-delay behavior retained and verified.
 - Disposition: Preserve relative delay and reject overflow; long intentional delay remains authorized.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/status.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`; `contract/proxy-oracle/soroban/contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Both runtimes reject seconds/deadline overflow atomically. NEAR relative-rearm regression preserves breaker/cache/epoch on u64::MAX; Soroban overflow case passed. Preflight distinguishes compatible relative payloads from old absolute-time payloads. Very long representable recovery delays remain authorized.
 
 ## HAL-33: Governance Validation Admits Proposals The Runtime Rejects
 
 - Original UUID: `8cd2a72b-1924-416c-90c6-a98f284a4f61`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Statically impossible breaker proposal queues.
-- Current assessment: Valid partly unresolved.
+- Current assessment: Fixed for statically decidable shape, representability and feasibility; dynamic execution remains state-dependent.
 - Disposition: Share pure shape/representability/feasibility parsing; execution retains dynamic checks.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-common/src/lib.rs`; `contract/proxy-oracle/soroban/governance-contract/src/engine.rs`; `contract/proxy-oracle/soroban/governance-contract/src/lib.rs`; `contract/proxy-oracle/soroban/contract/src/lib.rs`; `contract/proxy-oracle/soroban/contract/src/conversion.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Governance-common reuses common proxy/breaker parsers and kernel feasibility predicate without fabricated cumulative baseline. Static impossible-history/threshold/interval cases reject before queue reservation; dynamic runtime-failure regression retains proposal and rolls back child state. Common/governance gates passed.
 
 ## HAL-34: Role Revocation Leaves Queued Proposals Executable
 
 - Original UUID: `c2bc2295-ef24-46b1-a586-e103eac7b97b`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Both. Precondition: Revoked creator queued proposals survive.
-- Current assessment: Valid unresolved hygiene.
+- Current assessment: Fixed with live policy checks and atomic body-dependent purge.
 - Disposition: Purge only now-unauthorized creator operations after successful role removal.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-contract/src/roles.rs`; `contract/proxy-oracle/soroban/governance-contract/src/lib.rs`; `contract/proxy-oracle/soroban/governance-contract/src/engine.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Both governance engines purge only the revoked creator's now-unauthorized operations after actual removal; retained roles/Admin policy and no-op revocations are covered. Missing/corrupt body node tests roll back membership, header, prior purges and storage. Soroban full/sparse grouped queue default-resource and host smoke passed.
 
 ## HAL-35: Proposal Maturity Ignores Later Timelock Increases
 
@@ -317,34 +317,34 @@ New Soroban aggregation/pin XDR is **fresh-stack only**: incompatible runtime/go
 - Current assessment: Intentional snapshotted maturity.
 - Disposition: Preserve queued maturity; document no retroactive delay.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-contract/src/events.rs`; `contract/proxy-oracle/soroban/governance-contract/src/lib.rs`; `contract/proxy-oracle/soroban/governance-contract/src/engine.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Kernel stores effective TTL in each Proposal and executes against that snapshot; TTL creation/maturity tests passed. Fresh hardening and interrupted script model rely on SetActionTtl last rather than retroactively changing queued maturity. Policy increases intentionally do not rewrite existing bodies.
 
 ## HAL-36: Decoupled Proposal TTL Policies Risk Liveness Friction
 
 - Original UUID: `6adf5dc6-5bfe-4090-8531-9bf24d1367d3`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Soroban. Precondition: Proposal body archived while ID persists.
-- Current assessment: Restoration requirement, not ordinary orphan.
+- Current assessment: Retained restoration/body-required semantics, with bounded group maintenance verified.
 - Disposition: Maintain body-required cancellation and keeper; never silently drop missing body IDs.
 - Audit source locations: `contract/proxy-oracle/soroban/governance-contract/src/storage.rs`; `contract/proxy-oracle/soroban/governance-contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Missing-body cancellation/revocation fails instead of dropping IDs. Ordinary keeper renews bounded proposal groups; archived proposal-group/role recording-mode restoration test executes/cancels retained original IDs without allocator reset. No claim of automatic live-network restoration or irreversible orphaning.
 
 ## HAL-37: Reused Breaker Id Matches Wrong Breaker State
 
 - Original UUID: `2d6d1a28-0d6d-4ab5-a272-3c03ddd6ea2c`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Both. Precondition: Asset removed/recreated resets breaker allocator.
-- Current assessment: Valid unresolved wrong-object hazard.
+- Current assessment: Fixed for future lifecycles; already-deleted allocator history remains unrecoverable automatically.
 - Disposition: Reset bounded tombstone preserving next_id; hide absent-asset tombstones.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/error.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`; `contract/proxy-oracle/soroban/contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Both chains retain reset tombstones; replacement IDs advance 0/1→2 and stale remove/rearm/enforce/add cannot change replacement/cache. Exhaustion never wraps; corrupt/missing prior allocator rejects. Soroban archival restoration passed. Actual CLI preflight identifies missing lifecycles without rejecting compatible adds wholesale.
 
 ## HAL-38: Unversioned Breaker Status Encoding Risks Silent Misdecode
 
 - Original UUID: `7e05397f-523a-4def-9468-c1e01ec989b7`. Audit severity: **informational**. Report status: **Pending**.
 - Chain: Both. Precondition: Code upgrade changes positional breaker bytes.
-- Current assessment: Compatibility risk; not present forged-state attack.
+- Current assessment: Compatible bytes frozen/verified; incompatible Soroban runtime/governance migration explicitly skipped.
 - Disposition: Freeze old bytes/load real fixtures; skip incompatible Soroban runtime/governance migration.
 - Audit source locations: `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/status.rs`; `contract/proxy-oracle/kernel/src/proxy/circuit_breaker/set.rs`; `contract/proxy-oracle/soroban/contract/src/storage.rs`; `contract/proxy-oracle/soroban/contract/src/lib.rs`.
-- Scenario/evidence: baseline source assessment and executed verification recorded below as implementation proceeds; no passing result claimed.
+- Scenario/evidence: Literal Borsh and postcard fixtures cover both status variants/full sets through native NEAR and Soroban runtime storage/public views. Historical NEAR code-only/migration/ordering fixtures and current-code keyless redeployment preserve owner/roles/pending bodies/IDs and guarded JSON/Borsh APIs. Actual compiled adapter swap passed; no live fleet coverage or old-config decoder is claimed.
 
 ## Baseline source assessment and verification
 
@@ -410,7 +410,7 @@ Observed baseline checks:
 - Initial `--stale` sandbox attempt stopped before testing because mock signer/DAO
   Wasms were missing; ordinary sandbox recipe built the prerequisites and the
   scoped admission gate then passed. This is not yet the full node acceptance gate.
-- Kani has been started; no proof result is claimed here until it completes.
+- Existing Kani obligations completed **9/9**, with all reachability covers satisfied; individual results are recorded below.
 
 ### Approved amendment — Soroban proposal body grouping
 
@@ -421,12 +421,13 @@ entries > 100**, **68 write entries > 50**. No test limits were increased and th
 queue scenario was not reduced.
 
 The user explicitly approved **Group proposal bodies** rather than requiring an
-operator queue-drain precondition. The fresh Soroban stack will group unchanged
-`Proposal` values into bounded persistent groups, preserving header fields,
-creation IDs/arguments/results, action/policy shapes, and checkpoint identity.
-This is an additional **fresh-stack-only storage change**; no old decoder,
-fallback, or in-place governance migration is authorized. Worst-case group bytes,
-atomic revocation and keeper budgets still require executed verification.
+operator queue-drain precondition. The fresh Soroban stack groups unchanged
+`Proposal` values into eight fixed persistent slots, up to eight bodies each,
+preserving header fields, creation IDs/arguments/results, action/policy shapes
+and checkpoint identity. This additional storage change is **fresh-stack only**;
+no old decoder, fallback or in-place governance migration is provided.
+Worst-case group bytes, sparse full-queue atomic revocation and keeper pages
+passed their default host resource-limit assertions.
 
 ### Step 3 — governance verification
 
@@ -453,9 +454,9 @@ atomic revocation and keeper budgets still require executed verification.
 - Fresh grouped-storage callers: Soroban integration **70 passed**. Keeper script
   suite **120 passed** before DTO cutover; role paging follows returned offsets
   for all four roles and rejects non-advancing offsets.
-- Manager CLI help was exercised; it now explains explicit-ID retries, and
-  selected proposal/breaker IDs are emitted before submission. Full manager
-  target-receipt failure smoke remains a separate required step.
+- Manager CLI help was exercised; it explains explicit-ID retries and emits
+  selected proposal/breaker IDs before submission. Actual target-receipt failure
+  smoke subsequently passed as recorded in Step 5.
 
 ### Existing Kani obligations after step 2
 
@@ -520,7 +521,7 @@ not a proof of all new runtime/governance behavior:
   history resize/cadence changes and host restoration of an archived tombstone.
 - Adapter gate: **25 passed**. History selects newest convertible prices,
   deduplicates resolution buckets and preserves fail-closed/decommission behavior.
-  This is not yet proof of an old-Wasm-to-new-Wasm adapter upgrade.
+  Compiled-Wasm upgrade compatibility is separately verified in Step 6.
 - Script gate: **120 passed**. Compiled Wasm ABI policy accepted the exact three
   new diagnostic event schemas, including field order and topic placement.
   Size gate passed: runtime 99,890/131,072 bytes; governance 46,221/131,072;
@@ -542,3 +543,101 @@ not a proof of all new runtime/governance behavior:
   with `-D warnings`; they emitted the workspace's unknown
   `clippy::ignore_without_reason` warning. Historical-baseline comparison is
   recorded with final verification rather than treating that warning as fixed.
+
+### Step 6 — compatibility and complete callers
+
+- NEAR fixtures freeze literal Borsh/postcard status/full-set bytes and load the
+  Borsh bytes through the actual runtime map. Soroban loads literal postcard
+  bytes through its production storage decoder/public view. Neither fixture is
+  represented as a captured production breaker set.
+- The historical oracle fixture is specifically
+  `proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near`, release 0.3.0,
+  tag `templar-proxy-oracle-near-contract-v0.3.0`, SHA-256
+  `d2e62c4566c98e55121a5aad32e0e5b8cfb911f82aca71dbaeaa83794fed9e8e`,
+  with `tests/migration/mainnet_v1_proxy_oracle_ixlmustry_ixlmusdc.borsh`.
+  Code-only replacement preserves captured owner/sets/allocator. Governance
+  release 0.1.0 migration preserves pending legacy AddBreaker ID 7 and Admin;
+  both upgrade orders pass. Current-code keyless redeployment separately
+  preserves roles, pending JSON/Borsh bodies and proposal allocator.
+- Actual Soroban adapter swap mounts verified release 0.1.4,
+  tag `templar-proxy-oracle-soroban-sep40-adapter-contract-v0.1.4`,
+  SHA-256 `e84da57949a1120d9deef9ced1d54d5436ec115efd05e214495f30cd262a2995`
+  (16,818 bytes), and current optimized Wasm SHA-256
+  `1b65cba38c4c815c73646faff85232d82b57ce36525713a5b9e55108af9b5662`
+  (16,729 bytes). Executable hashes change, Config XDR/owner/decommission state
+  survive, old historical defects reproduce before swap and corrected bucket
+  reads pass afterward. This is host execution, not live upgrade approval.
+- `test-integration` prepares the optimized adapter and enables the explicit
+  `compiled-wasm-tests` feature. CI's Soroban job installs Nextest and runs this
+  gate. Native-only fast integration remains 75 tests without Stellar tooling;
+  the complete compiled-Wasm integration gate runs 76. No ignored or
+  silently-successful missing-artifact fallback was added.
+- New read-only `upgrade.pending_breaker_lifecycles` inspects current/legacy
+  pending targets against loadable sets and IDs. Compatible adds remain queued;
+  missing/undecodable lifecycles, stale expected add IDs and absent mutation
+  targets fail. It cannot reconstruct deleted allocator history. Rearm preflight
+  now retains compatible relative-delay payloads rather than rejecting every
+  generic rearm call as legacy.
+- Actual `tmplrmgr proxy-oracle preflight` subprocess smoke passed five checks
+  with compatible pending add proposal 2, then exited 1 and named proposal 2
+  after its proxy was removed. The body stayed unchanged; no execution, new ID
+  or replacement proposal occurred. Temporary source was removed.
+- Rehearsal `configure` hardens all 14 TTLs to 24 hours, SetActionTtl last.
+  Resume requires matching confirmed create/execute evidence for each nonzero
+  TTL. Script tests reject wrong-ID/unconfirmed evidence and repeated writes.
+  A throwaway transaction/ledger-model smoke interrupted after six updates with
+  pending ID 6, resumed that original ID, created IDs 0..13 once, hardened
+  SetActionTtl last and submitted nothing on completed resume. This model
+  exercises real rehearsal functions, not live Stellar or transport faults.
+- Both read-only final review slices found no patch-introduced actionable
+  defects in their assigned governance/NEAR/manager and Soroban/script scopes.
+  They did not independently execute gates; the observed results below remain
+  the verification evidence.
+
+## Final acceptance evidence
+
+| Command / gate | Observed result |
+|---|---|
+| `just test-fast -p templar-proxy-oracle-kernel -p templar-proxy-oracle-governance-kernel --features serde,borsh` | 200 passed (189 kernel + 11 governance-kernel) |
+| `just test-fast -p templar-proxy-oracle-near-common -p templar-proxy-oracle-near-governance-common -p templar-gateway-core -p templar-gateway-methods-spec -p templar-gateway-methods-dispatch -p templar-manager` | 827 passed; 12 node-backed cases excluded |
+| `just test-fast -p templar-gateway-catalog` | 4 passed; ignored regeneration case excluded; METHODS.md current |
+| `just test-sandbox --stale -p templar-proxy-oracle-near-contract -p templar-proxy-oracle-near-governance-contract` | 54 passed; 46 non-node/ignored cases excluded; Wasms had just been rebuilt by ordinary sandbox recipe |
+| Soroban `test` | 247 passed: common/governance-common 27, runtime 82, governance 42, adapter 25, Lazer 63, batcher 8 |
+| Soroban `test-integration` | 76 passed, including actual compiled adapter swap; native-only gate separately 75 passed |
+| Soroban `test-scripts` | 122 passed |
+| Soroban `budget-check` | Runtime 82/82 and governance 42/42 passed; deterministic host scenarios, not full Stellar RPC resource simulation |
+| Soroban `size-check` + compiled ABI policies | Runtime 99,749/131,072; governance 46,221/131,072; adapter 16,729/32,768; Lazer 25,593/32,768; batcher 7,600/32,768 bytes |
+| `cargo check --workspace` | Passed |
+| Existing `cargo kani -p templar-proxy-oracle-kernel` obligations | 9/9 proved; every listed reachability cover satisfied; inputs unchanged |
+
+Affected NEAR/kernel/manager and Soroban all-target Clippy gates use
+`-D warnings`. The unknown `clippy::ignore_without_reason` warning also occurs
+with successful Clippy on the original `a3c8a965` kernel in a temporary detached
+baseline worktree; that worktree was removed after comparison.
+
+Net simplification is structural, not a claim of fewer total lines: removed
+runtime `Proxy<u32>`/source-order translation, the old private proxy/breaker
+conversion paths and independent optional error fields. One common parser and
+config conversion now serve admission/runtime/governance; event projections use
+the existing breaker DTO. Remaining `config.sources/min_sources` references are
+the intended MedianConfig conversion in common, not the removed flat config.
+Public kernel constructors, existing zero-weight helper and Soroban aliases
+remain intentionally compatible.
+
+### Production limits
+
+No live transactions, upgrades, ownership handoff or consumer cutover occurred.
+Runtime/governance Soroban migration is intentionally skipped for this
+incompatible release. Live identities and the complete pre-upgrade NEAR
+Wasm/state/roles/pending-operation inventory were not established, so production
+upgrade approval remains blocked. Current-state preflight is not proof that old
+code never deleted/reused an allocator. Host restoration/resource assertions are
+not live ledger restoration or full Stellar simulation evidence. External
+documentation URLs were not checked; local relative paths/headings were checked.
+
+Final hygiene: `cargo fmt --all --check` and `git diff --check` passed; script
+gate remained 122/122. All 38 original titles/UUIDs/severities/report statuses
+match the cached audit records, and every row has a final disposition/evidence.
+Local Markdown checker verified five relative links/headings across eight
+changed guides; CI YAML parsed and its explicit compiled-Wasm gate was checked.
+No remediation smoke source remains in either examples directory.

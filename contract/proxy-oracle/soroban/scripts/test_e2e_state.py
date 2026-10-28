@@ -1876,6 +1876,83 @@ class RehearsalLogicTests(unittest.TestCase):
             driver = self.governance_postcondition_driver(Path(raw), value, [9])
             driver.verify_deployment_postconditions("governance")
 
+    def test_partial_timelock_hardening_requires_matching_execution_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            value = checkpoint()
+            driver = self.governance_postcondition_driver(Path(raw), value, [])
+            governance = str(driver.deployments["governance"]["contract_id"])
+            operations = driver.store.value["operations"]
+            assert isinstance(operations, list)
+            ttls = {kind: 0 for kind in rehearsal.GOVERNANCE_OPERATION_KINDS}
+            original_view = driver.view
+
+            def view(contract, method, arguments=None, **kwargs):
+                if method == "get_operation_ttl":
+                    return ttls[arguments["kind"]]
+                return original_view(contract, method, arguments, **kwargs)
+
+            driver.view = view
+            kind = "SetProxy"
+            ttls[kind] = rehearsal.OPERATIONAL_TTL_NS
+            create_args = {
+                "caller": ACCOUNT, "id": 11, "requested_ttl": 0,
+                "operation": {"SetActionTtl": [kind, rehearsal.OPERATIONAL_TTL_NS]},
+            }
+            operations.append(self.successful_operation(
+                "configure", "proposal_create", governance, create_args,
+            ))
+            # A changed chain TTL is not evidence that an ambiguous execution
+            # succeeded, nor may another proposal's receipt be adopted.
+            for executed_id in (None, 12):
+                if executed_id is not None:
+                    operations.append(self.successful_operation(
+                        "configure", "proposal_execute", governance,
+                        {"caller": ACCOUNT, "id": executed_id}, number=2,
+                    ))
+                with self.assertRaises(rehearsal.RehearsalError):
+                    driver.verify_deployment_postconditions("governance")
+            operations.append(self.successful_operation(
+                "configure", "proposal_execute", governance,
+                {"caller": ACCOUNT, "id": 11}, number=3,
+            ))
+            driver.verify_deployment_postconditions("governance")
+            ttls["SetActionTtl"] = rehearsal.OPERATIONAL_TTL_NS
+            with self.assertRaises(rehearsal.RehearsalError):
+                driver.verify_deployment_postconditions("governance")
+
+    def test_confirmed_hardening_resume_does_not_create_replacement_proposals(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            driver = self.governance_postcondition_driver(Path(raw), checkpoint(), [])
+            governance = str(driver.deployments["governance"]["contract_id"])
+            operations = driver.store.value["operations"]
+            assert isinstance(operations, list)
+            for index, kind in enumerate(rehearsal.GOVERNANCE_OPERATION_KINDS):
+                operations.extend([
+                    self.successful_operation(
+                        "configure", "proposal_create", governance,
+                        {
+                            "caller": ACCOUNT, "id": index, "requested_ttl": 0,
+                            "operation": {"SetActionTtl": [kind, rehearsal.OPERATIONAL_TTL_NS]},
+                        }, number=index * 2 + 1,
+                    ),
+                    self.successful_operation(
+                        "configure", "proposal_execute", governance,
+                        {"caller": ACCOUNT, "id": index}, number=index * 2 + 2,
+                    ),
+                ])
+            original_view = driver.view
+            driver.view = lambda contract, method, arguments=None, **kwargs: (
+                rehearsal.OPERATIONAL_TTL_NS if method == "get_operation_ttl"
+                else original_view(contract, method, arguments, **kwargs)
+            )
+            transactions = self.Transactions()
+            driver.transactions = transactions
+            before = copy.deepcopy(driver.store.value)
+            driver.verify_deployment_postconditions("governance")
+            driver.harden_governance_timelocks()
+            self.assertEqual(driver.store.value, before)
+            self.assertEqual(transactions.calls, [])
+
     def test_pending_refresh_reuses_fresh_push_and_renews_stale_push(self) -> None:
         for phase in ("all", "refresh", "push"):
             for timestamp, failure in (

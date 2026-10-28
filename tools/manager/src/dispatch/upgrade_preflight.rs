@@ -9,9 +9,11 @@
 //! cannot drift. Reads are deliberately untyped where a deployed contract may still serialize a
 //! pre-upgrade shape: a body the new types reject is the finding, not a transport error.
 
+use std::collections::{btree_map::Entry, BTreeMap};
+
 use anyhow::Context as _;
 use near_account_id::AccountId;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_methods_spec::{
@@ -22,7 +24,7 @@ use templar_gateway_types::contract::ContractKind;
 use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{
-    governance_kernel::Governance, target::method, MAX_PENDING_PROPOSALS,
+    governance_kernel::Governance, target::method, FunctionCall, MAX_PENDING_PROPOSALS,
 };
 
 use crate::commands::proxy_oracle::{Preflight, PreflightArgs};
@@ -141,11 +143,22 @@ fn is_rearm(operation: &Value) -> bool {
     if operation.get("Rearm").is_some() {
         return true;
     }
-    operation
+    let Some(call) = operation
         .get("TargetFunctionCall")
-        .and_then(|call| call.get("method_name"))
-        .and_then(Value::as_str)
-        .is_some_and(|name| name == method::REARM)
+        .or_else(|| operation.get("AdminFunctionCall"))
+    else {
+        return false;
+    };
+    if call.get("method_name").and_then(Value::as_str) != Some(method::REARM) {
+        return false;
+    }
+    // Generic calls may already carry the compatible relative-delay payload.
+    serde_json::from_value::<FunctionCall>(call.clone())
+        .ok()
+        .and_then(|call| serde_json::from_slice::<Value>(&call.args.0).ok())
+        .is_none_or(|args| {
+            args.get("arming_delay_ns").is_none() || args.get("armed_after_ns").is_some()
+        })
 }
 
 fn pending_rearm_status(bodies: &[(u32, Value)]) -> Status {
@@ -174,11 +187,12 @@ enum GovernanceResolution<'a> {
     Failed(&'a anyhow::Error),
 }
 
-fn governance_resolution_failure_checks(error: &anyhow::Error) -> [Check; 2] {
+fn governance_resolution_failure_checks(error: &anyhow::Error) -> [Check; 3] {
     let detail = format!("could not resolve the governing contract: {error:#}");
     [
         Check::new("upgrade.governance_ledger", Status::failed(detail.clone())),
-        Check::new("upgrade.pending_rearm", Status::failed(detail)),
+        Check::new("upgrade.pending_rearm", Status::failed(detail.clone())),
+        Check::new("upgrade.pending_breaker_lifecycles", Status::failed(detail)),
     ]
 }
 
@@ -224,10 +238,17 @@ async fn run(
                     reason: reason.clone(),
                 },
             ));
-            reporter.record(Check::new(
+            for check in [
                 "upgrade.pending_rearm",
-                Status::Skipped { reason },
-            ));
+                "upgrade.pending_breaker_lifecycles",
+            ] {
+                reporter.record(Check::new(
+                    check,
+                    Status::Skipped {
+                        reason: reason.clone(),
+                    },
+                ));
+            }
             return;
         }
         GovernanceResolution::Failed(error) => {
@@ -243,10 +264,26 @@ async fn run(
                 "upgrade.governance_ledger",
                 governance_ledger(ctx, governance_id, &ids).await,
             ));
-            reporter.record(Check::new(
-                "upgrade.pending_rearm",
-                pending_rearm(ctx, governance_id, &ids).await,
-            ));
+            match pending_proposals(ctx, governance_id, &ids).await {
+                Ok(bodies) => {
+                    reporter.record(Check::new(
+                        "upgrade.pending_rearm",
+                        pending_rearm_status(&bodies),
+                    ));
+                    reporter.record(Check::new(
+                        "upgrade.pending_breaker_lifecycles",
+                        pending_breaker_lifecycles(ctx, oracle_id, &bodies).await,
+                    ));
+                }
+                Err(error) => {
+                    for check in [
+                        "upgrade.pending_rearm",
+                        "upgrade.pending_breaker_lifecycles",
+                    ] {
+                        reporter.record(Check::new(check, Status::failed(format!("{error:#}"))));
+                    }
+                }
+            }
         }
         Err(error) => {
             let detail = format!("{error:#}");
@@ -254,7 +291,14 @@ async fn run(
                 "upgrade.governance_ledger",
                 Status::failed(detail.clone()),
             ));
-            reporter.record(Check::new("upgrade.pending_rearm", Status::failed(detail)));
+            reporter.record(Check::new(
+                "upgrade.pending_rearm",
+                Status::failed(detail.clone()),
+            ));
+            reporter.record(Check::new(
+                "upgrade.pending_breaker_lifecycles",
+                Status::failed(detail),
+            ));
         }
     }
 }
@@ -345,13 +389,14 @@ async fn governance_ledger(
 
 /// Read every pending proposal body as raw JSON: a v0 governance deployment answers with an
 /// operation enum the current types reject, and those bodies still have to be inspected.
-async fn pending_rearm(ctx: &CliContext, governance_id: &AccountId, ids: &[u32]) -> Status {
+async fn pending_proposals(
+    ctx: &CliContext,
+    governance_id: &AccountId,
+    ids: &[u32],
+) -> anyhow::Result<Vec<(u32, Value)>> {
     let mut bodies = Vec::with_capacity(ids.len());
     for &id in ids {
-        let args = match serde_json::to_value(ProposalIdArgs { id }) {
-            Ok(args) => args,
-            Err(error) => return Status::failed(format!("encode proposal id {id}: {error}")),
-        };
+        let args = serde_json::to_value(ProposalIdArgs { id })?;
         let read = ctx
             .client
             .read(contract::ViewFunction {
@@ -360,14 +405,146 @@ async fn pending_rearm(ctx: &CliContext, governance_id: &AccountId, ids: &[u32])
                 args: ContractArgs::Json(args),
             })
             .await;
-        match read {
-            Ok(result) => bodies.push((id, result)),
-            Err(error) => {
-                return Status::failed(format!("read proposal {id} on {governance_id}: {error}"))
-            }
+        bodies.push((
+            id,
+            read.with_context(|| format!("read proposal {id} on {governance_id}"))?,
+        ));
+    }
+    Ok(bodies)
+}
+
+#[derive(Deserialize)]
+struct PendingBreakerArgs {
+    id: PriceIdentifier,
+    breaker_id: u32,
+}
+
+#[derive(Clone, Copy)]
+enum BreakerIdUse {
+    Install,
+    Existing,
+}
+
+fn pending_breaker_target(
+    body: &Value,
+) -> anyhow::Result<Option<(PendingBreakerArgs, BreakerIdUse)>> {
+    let operation = body
+        .get("operation")
+        .context("missing proposal body/operation")?;
+    for (name, usage) in [
+        ("AddCircuitBreaker", BreakerIdUse::Install),
+        ("RemoveCircuitBreaker", BreakerIdUse::Existing),
+        ("Rearm", BreakerIdUse::Existing),
+        ("SetEnforced", BreakerIdUse::Existing),
+    ] {
+        if let Some(args) = operation.get(name) {
+            return Ok(Some((serde_json::from_value(args.clone())?, usage)));
         }
     }
-    pending_rearm_status(&bodies)
+    let Some(raw_call) = operation
+        .get("TargetFunctionCall")
+        .or_else(|| operation.get("AdminFunctionCall"))
+    else {
+        return Ok(None);
+    };
+    let usage = match raw_call.get("method_name").and_then(Value::as_str) {
+        Some(method::ADD_CIRCUIT_BREAKER) => BreakerIdUse::Install,
+        Some(method::REMOVE_CIRCUIT_BREAKER | method::REARM | method::SET_ENFORCED) => {
+            BreakerIdUse::Existing
+        }
+        _ => return Ok(None),
+    };
+    let call: FunctionCall = serde_json::from_value(raw_call.clone())?;
+    Ok(Some((serde_json::from_slice(&call.args.0)?, usage)))
+}
+
+fn breaker_lifecycle_problem(
+    args: &PendingBreakerArgs,
+    usage: BreakerIdUse,
+    set: &CircuitBreakerSet,
+) -> Option<String> {
+    match usage {
+        BreakerIdUse::Install if args.breaker_id != set.next_id() => Some(format!(
+            "expected add ID {}, current allocator {}",
+            args.breaker_id,
+            set.next_id()
+        )),
+        BreakerIdUse::Existing if !set.breakers().contains_key(&args.breaker_id) => {
+            Some(format!("breaker {} no longer exists", args.breaker_id))
+        }
+        _ => None,
+    }
+}
+
+async fn pending_breaker_lifecycles(
+    ctx: &CliContext,
+    oracle_id: &AccountId,
+    bodies: &[(u32, Value)],
+) -> Status {
+    let mut sets = BTreeMap::new();
+    let mut problems = Vec::new();
+    for (proposal_id, body) in bodies {
+        let (args, usage) = match pending_breaker_target(body) {
+            Ok(Some(target)) => target,
+            Ok(None) => continue,
+            Err(error) => {
+                problems.push(format!(
+                    "proposal {proposal_id}: cannot inspect target: {error:#}"
+                ));
+                continue;
+            }
+        };
+        let set = match sets.entry(args.id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let request_args = match serde_json::to_value(PriceIdArgs { id: args.id }) {
+                    Ok(args) => args,
+                    Err(error) => {
+                        return Status::failed(format!("encode proxy {}: {error}", args.id))
+                    }
+                };
+                let result = ctx
+                    .client
+                    .read(contract::ViewFunction {
+                        contract_id: oracle_id.clone(),
+                        method_name: "get_proxy_circuit_breaker_set".to_owned().into(),
+                        args: ContractArgs::Json(request_args),
+                    })
+                    .await;
+                let set = result
+                    .map_err(|error| format!("{error:#}"))
+                    .and_then(|raw| {
+                        let set: CircuitBreakerSet = serde_json::from_value(raw)
+                            .map_err(|error| format!("missing/undecodable lifecycle: {error}"))?;
+                        set.validate().map_err(|error| error.to_string())?;
+                        Ok(set)
+                    });
+                entry.insert(set)
+            }
+        };
+        let problem = match set {
+            Ok(set) => breaker_lifecycle_problem(&args, usage, set),
+            Err(error) => Some(error.clone()),
+        };
+        if let Some(problem) = problem {
+            problems.push(format!(
+                "proposal {proposal_id}, proxy {}: {problem}",
+                args.id
+            ));
+        }
+    }
+    if problems.is_empty() {
+        Status::passed(
+            "pending breaker IDs match current lifecycles; compatible adds remain queued. \
+             This cannot prove allocator history deleted by old code; inspect the pre-upgrade inventory"
+        )
+    } else {
+        Status::failed(format!(
+            "inspect and drain/cancel affected proposals before upgrade; never reselect IDs on an \
+             ambiguous outcome: {}",
+            problems.join("; ")
+        ))
+    }
 }
 
 async fn proposal_ids(ctx: &CliContext, governance_id: &AccountId) -> anyhow::Result<Vec<u32>> {
@@ -582,9 +759,10 @@ mod tests {
     use templar_proxy_oracle_near_governance_common::MAX_PENDING_PROPOSALS;
 
     use super::{
-        aggregator_config_status, breakers_status, classify_breaker_set, governance_ledger_status,
-        governance_resolution_failure_checks, is_rearm, pending_rearm_status, BreakerVerdict,
-        PriceIdentifier, Source, Status, Value,
+        aggregator_config_status, breaker_lifecycle_problem, breakers_status, classify_breaker_set,
+        governance_ledger_status, governance_resolution_failure_checks, is_rearm,
+        pending_breaker_target, pending_rearm_status, BreakerIdUse, BreakerVerdict,
+        PendingBreakerArgs, PriceIdentifier, Source, Status, Value,
     };
 
     fn price_id(byte: u8) -> PriceIdentifier {
@@ -764,12 +942,10 @@ mod tests {
     }
 
     #[test]
-    fn governance_resolution_failure_fails_both_governance_checks() {
+    fn governance_resolution_failure_fails_every_governance_check() {
         let error = anyhow::anyhow!("proxy RPC unavailable");
         let checks = governance_resolution_failure_checks(&error);
 
-        assert_eq!(checks[0].id, "upgrade.governance_ledger");
-        assert_eq!(checks[1].id, "upgrade.pending_rearm");
         for check in checks {
             let Status::Failed { detail } = check.status else {
                 panic!("a resolution failure must fail the check");
@@ -809,5 +985,70 @@ mod tests {
     #[test]
     fn pending_rearm_status_passes_an_empty_queue() {
         assert!(!pending_rearm_status(&[]).is_failure());
+    }
+
+    #[test]
+    fn pending_ids_distinguish_compatible_adds_from_stale_lifecycles() {
+        let mut set = breaker_set(4);
+        let mut args = PendingBreakerArgs {
+            id: price_id(1),
+            breaker_id: 0,
+        };
+        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Install, &set).is_none());
+        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Existing, &set).is_some());
+        set.add(
+            0,
+            CircuitBreaker::MonotonicRun(MonotonicRun {
+                max_streak: 1,
+                min_relative_step_change: Decimal::ONE_HALF,
+            }),
+        )
+        .unwrap();
+        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Install, &set).is_some());
+        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Existing, &set).is_none());
+        set.reset_preserving_next_id();
+        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Existing, &set).is_some());
+        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Install, &set).is_some());
+        args.breaker_id = 1;
+        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Install, &set).is_none());
+    }
+
+    #[rstest]
+    #[case::legacy(true)]
+    #[case::current(false)]
+    fn pending_add_keeps_its_expected_id_in_both_encodings(#[case] legacy: bool) {
+        use templar_proxy_oracle_near_governance_common::target;
+        let breaker = CircuitBreaker::MonotonicRun(MonotonicRun {
+            max_streak: 1,
+            min_relative_step_change: Decimal::ONE_HALF,
+        });
+        let operation = if legacy {
+            json!({"AddCircuitBreaker": {
+                "id": price_id(3), "breaker_id": 7, "breaker": breaker,
+            }})
+        } else {
+            json!({"TargetFunctionCall": target::admin_add_circuit_breaker(
+                price_id(3), 7, breaker, None,
+            ).unwrap()})
+        };
+        let (args, usage) = pending_breaker_target(&json!({"operation": operation}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(args.id, price_id(3));
+        assert_eq!(args.breaker_id, 7);
+        assert!(matches!(usage, BreakerIdUse::Install));
+        assert!(pending_breaker_target(&Value::Null).is_err());
+    }
+
+    #[test]
+    fn pending_relative_rearm_is_compatible_but_absolute_rearm_requires_intervention() {
+        use templar_proxy_oracle_near_governance_common::target;
+        let mut call = target::admin_rearm(price_id(4), 2, Nanoseconds::from_ns(5), None).unwrap();
+        assert!(!is_rearm(&json!({"TargetFunctionCall": call})));
+        call.args.0 = serde_json::to_vec(&json!({
+            "id": price_id(4), "breaker_id": 2, "armed_after_ns": "5",
+        }))
+        .unwrap();
+        assert!(is_rearm(&json!({"TargetFunctionCall": call})));
     }
 }

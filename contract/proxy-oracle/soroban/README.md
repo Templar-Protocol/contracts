@@ -192,7 +192,7 @@ renew target instance and code entries.
 
 - Source contracts must expose the SEP-40 ABI used here. NEAR Pyth sources and NEAR price transformers are not ported.
 - Soroban storage is not permanent (unlike NEAR); a missed `extend_ttl` risks eviction. Events are compact typed events, not byte-for-byte equal to NEAR's JSON events.
-- **Fresh-stack only:** unified aggregation/pin XDR and eight persistent proposal groups (up to eight unchanged proposal bodies each) are incompatible with previous runtime/governance storage. In-place migration is skipped; leave existing stacks unchanged and deploy a fresh matching stack. There is no old decoder, defaulting, or overlay configuration. An independent adapter upgrade requires exact old/new Wasm swap evidence; `integration-tests/tests/upgrade.rs` does not establish that proof or approve production upgrades.
+- **Fresh-stack only:** unified aggregation/pin XDR and eight persistent proposal groups (up to eight unchanged proposal bodies each) are incompatible with previous runtime/governance storage. In-place migration is skipped; leave existing stacks unchanged and deploy a fresh matching stack. There is no old decoder, defaulting, or overlay configuration. The independent adapter proof mounts catalog-pinned 0.1.4 and current compiled Wasms and verifies the actual swap with preserved Config/owner/decommission state; it does not approve a production upgrade.
 - **OZ `upgradeable` not adopted**: crates.io v0.7.1 needs Rust ≥ 1.87 (`is_multiple_of`) but the toolchain pins 1.86; the 1.86-compat fork is locked to soroban-sdk 23.x, not the 25.0.1 used here. The hand-rolled `upgrade` is the stopgap until the toolchain bumps or the fork rebases — don't re-investigate without one of those.
 
 ## Verification and release
@@ -212,6 +212,11 @@ canonical paths, and size limits without rebuilding. Developer `build`,
 `optimize`, and `size-check` invalidate prior PASS evidence and never emit a
 release manifest.
 
+`test-integration` first builds the optimized adapter, then explicitly enables
+`compiled-wasm-tests` to mount the verified released 0.1.4 fixture and current
+Wasm in the real Soroban host. CI runs this gate in its Soroban job; ordinary
+`just test-fast` remains native-only and needs no Stellar build tools.
+
 The live proof is testnet-only and consumes that validated release:
 
 ```bash
@@ -229,6 +234,14 @@ submission.
 Re-running re-hashes and resumes one unresolved envelope by its transaction
 hash. Use `--reinitialize` only to deliberately discard that state and plan new
 contract IDs; destructive reset refuses an unmarked non-empty output directory.
+
+The schema-2 checkpoint rejects schema-1 aggregation payloads. `configure` pins
+observed source decimals, configures the proxy, then hardens all 14 governance
+operation timelocks to 24 hours; `SetActionTtl` is hardened last so the deliberate
+zero-TTL bootstrap completes without a new waiting period. Resume accepts each
+nonzero TTL only when the checkpoint contains its matching confirmed
+create/execute pair. A changed TTL, missing receipt or ambiguous execution does
+not authorize a replacement proposal or a fresh ID.
 
 All five contracts build through `stellar contract build` with Soroban Rust
 1.99.0; host tests still use the workspace toolchain. Plain `cargo build` is not

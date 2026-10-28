@@ -532,6 +532,30 @@ pub fn recreated_proxy_rejects_stale_breaker_operations(#[case] operation: u8) {
     );
     c.admin_configure_circuit_breakers(proxy_id, config);
     c.admin_add_circuit_breaker(proxy_id, 2, stepwise_breaker());
+    // A queued legacy AddBreaker is converted to the same guarded target call, not a request
+    // to allocate a new ID after an asset lifecycle changes.
+    let legacy = templar_proxy_oracle_near_governance_common::LegacyOperation::AddCircuitBreaker {
+        id: proxy_id,
+        breaker_id: 0,
+        breaker: stepwise_breaker(),
+    };
+    let legacy_bytes = near_sdk::borsh::to_vec(&legacy).unwrap();
+    let decoded = near_sdk::borsh::from_slice::<
+        templar_proxy_oracle_near_governance_common::LegacyOperation,
+    >(&legacy_bytes)
+    .unwrap();
+    let converted =
+        templar_proxy_oracle_near_governance_common::Operation::try_from(decoded).unwrap();
+    let templar_proxy_oracle_near_governance_common::Operation::TargetFunctionCall(call) =
+        converted
+    else {
+        panic!("legacy add must convert to a target call");
+    };
+    assert_eq!(call.method_name, "admin_add_circuit_breaker");
+    let args: serde_json::Value = serde_json::from_slice(&call.args.0).unwrap();
+    assert_eq!(args["breaker_id"], 0);
+    assert_eq!(args["id"], serde_json::to_value(proxy_id).unwrap(),);
+    let original_breaker_id = u32::try_from(args["breaker_id"].as_u64().unwrap()).unwrap();
     cache_test_price_and_seed_history(&mut c, proxy_id, proxy_price(200));
     let before_set = c.get_proxy_circuit_breaker_set(proxy_id).unwrap();
     let before_cache = c.get_cached_proxy_price(proxy_id);
@@ -542,7 +566,7 @@ pub fn recreated_proxy_rejects_stale_breaker_operations(#[case] operation: u8) {
             0 => c.admin_remove_circuit_breaker(proxy_id, 0),
             1 => c.admin_rearm(proxy_id, 0, Nanoseconds::from_secs(1)),
             2 => c.admin_set_enforced(proxy_id, 0, false),
-            3 => c.admin_add_circuit_breaker(proxy_id, 0, stepwise_breaker()),
+            3 => c.admin_add_circuit_breaker(proxy_id, original_breaker_id, stepwise_breaker()),
             _ => unreachable!(),
         }
     }))

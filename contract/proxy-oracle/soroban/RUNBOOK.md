@@ -471,9 +471,12 @@ live proxy identities.
 
 The calls below describe existing code-swap entrypoints, **not authorization to
 install this release over old state**. Governance has no self-upgrade and runtime
-has no migrate endpoint. An independent adapter upgrade requires an exact
-old/new compiled-Wasm swap proof with preserved config; `tests/upgrade.rs` is not
-that proof. No production upgrade approval is implied.
+has no migrate endpoint. The layout-compatible adapter proof in
+`integration-tests/tests/upgrade.rs` mounts the catalog-pinned 0.1.4 artifact and
+current optimized Wasm, executes the swap, and preserves Config, ownership and
+decommission state while testing corrected history. Run it through
+`just -f contract/proxy-oracle/soroban/justfile test-integration`, not the
+native-only gate. This is local host evidence, not production upgrade approval.
 
 
 Run the clean-source release gate first and cross-check the validated manifest

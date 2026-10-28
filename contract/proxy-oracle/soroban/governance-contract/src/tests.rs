@@ -1841,10 +1841,43 @@ fn ownership_cancellation_shares_transfer_timelock_and_rejects_wrong_or_missing_
     assert!(proxy.try_accept_ownership().is_err());
 }
 
+fn access_control_storage_keys(env: &Env, governance: &Address) -> StdVec<soroban_sdk::Val> {
+    use soroban_sdk::Val;
+    use stellar_access::access_control::AccessControlStorageKey as Key;
+
+    let mut keys = StdVec::new();
+    for name in [
+        "Admin",
+        "ManualTripper",
+        "CircuitBreakerOperator",
+        "ProxyConfigurationManager",
+    ] {
+        let symbol = Symbol::new(env, name);
+        let count = env.as_contract(governance, || {
+            stellar_access::access_control::get_role_member_count(env, &symbol)
+        });
+        keys.push(Key::RoleAccountsCount(symbol.clone()).into_val(env));
+        for index in 0..count {
+            let member = env.as_contract(governance, || {
+                stellar_access::access_control::get_role_member(env, &symbol, index)
+            });
+            // The public enum's RoleAccountKey payload type is private.
+            let payload: soroban_sdk::Map<Symbol, Val> = soroban_sdk::map![
+                env,
+                (Symbol::new(env, "index"), index.into_val(env)),
+                (Symbol::new(env, "role"), symbol.clone().into_val(env))
+            ];
+            keys.push((Symbol::new(env, "RoleAccounts"), payload).into_val(env));
+            keys.push(Key::HasRole(member, symbol.clone()).into_val(env));
+        }
+    }
+    keys.push(Key::ExistingRoles.into_val(env));
+    keys
+}
+
 #[test]
 fn role_keeper_pages_renew_every_access_control_key_family() {
-    use soroban_sdk::{IntoVal, Val};
-    use stellar_access::access_control::AccessControlStorageKey as Key;
+    use soroban_sdk::Val;
     let (env, admin, _, governance, _) = setup_with_ttl(0);
     env.ledger().with_mut(|ledger| {
         ledger.min_persistent_entry_ttl = 4096;
@@ -1857,14 +1890,7 @@ fn role_keeper_pages_renew_every_access_control_key_family() {
     });
     let client = ProxyOracleGovernanceClient::new(&env, &governance);
     client.extend_ttl();
-    let symbols = [
-        Symbol::new(&env, "Admin"),
-        Symbol::new(&env, "ManualTripper"),
-        Symbol::new(&env, "CircuitBreakerOperator"),
-        Symbol::new(&env, "ProxyConfigurationManager"),
-    ];
-    let mut keys: StdVec<Val> = StdVec::new();
-    for (role, symbol) in Role::ALL.into_iter().zip(&symbols) {
+    for role in Role::ALL {
         for _ in 0..17 {
             env.cost_estimate().budget().reset_default();
             let member = Address::generate(&env);
@@ -1872,26 +1898,8 @@ fn role_keeper_pages_renew_every_access_control_key_family() {
                 roles::grant(&env, &member, role, &admin).unwrap();
             });
         }
-        let count = env.as_contract(&governance, || {
-            stellar_access::access_control::get_role_member_count(&env, symbol)
-        });
-        keys.push(Key::RoleAccountsCount(symbol.clone()).into_val(&env));
-        for index in 0..count {
-            let member = env.as_contract(&governance, || {
-                stellar_access::access_control::get_role_member(&env, symbol, index)
-            });
-            // stellar-access exports the enum but not its RoleAccountKey
-            // payload type. Build that exact contracttype map as a Val.
-            let payload: soroban_sdk::Map<Symbol, Val> = soroban_sdk::map![
-                &env,
-                (Symbol::new(&env, "index"), index.into_val(&env)),
-                (Symbol::new(&env, "role"), symbol.into_val(&env))
-            ];
-            keys.push((Symbol::new(&env, "RoleAccounts"), payload).into_val(&env));
-            keys.push(Key::HasRole(member, symbol.clone()).into_val(&env));
-        }
     }
-    keys.push(Key::ExistingRoles.into_val(&env));
+    let keys: StdVec<Val> = access_control_storage_keys(&env, &governance);
     let min_ttl = keys
         .iter()
         .map(|key| env.as_contract(&governance, || env.storage().persistent().get_ttl(key)))
@@ -1932,6 +1940,143 @@ fn role_keeper_pages_renew_every_access_control_key_family() {
     env.ledger().with_mut(|ledger| ledger.sequence_number += 11);
     assert!(client.has_role(&admin, &Role::Admin));
     assert_eq!(client.list_role(&Role::Admin).len(), 18);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "archives grouped bodies and every role family in one authenticated lifecycle"
+)]
+fn archived_proposal_groups_and_dormant_roles_restore_without_reallocating_ids() {
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    env.ledger().with_mut(|ledger| {
+        ledger.min_persistent_entry_ttl = 4096;
+        ledger.max_entry_ttl = 6_312_000;
+    });
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let delegate = Address::generate(&env);
+    for role in [
+        Role::ManualTripper,
+        Role::CircuitBreakerOperator,
+        Role::ProxyConfigurationManager,
+    ] {
+        env.as_contract(&governance, || {
+            roles::grant(&env, &delegate, role, &admin).unwrap();
+        });
+    }
+    let action = GovernanceAction::SetActionTtl(OperationKind::SetProxy, 42);
+    let mut proposals = StdVec::new();
+    for id in 0..9_u64 {
+        env.cost_estimate().budget().reset_default();
+        proposals.push(client.create_proposal(&delegate, &id, &action, &0));
+    }
+    let active_before = client.active_ids();
+    client.extend_ttl();
+    for role in Role::ALL {
+        // Renew the fixture's original Admin entries under the installed
+        // ledger policy as well as the newly created dormant delegate keys.
+        assert_eq!(client.extend_role_ttl(&role, &0, &16), None);
+    }
+    let mut keys = access_control_storage_keys(&env, &governance);
+    keys.push(DataKey::ProposalGroup(0).into_val(&env));
+    keys.push(DataKey::ProposalGroup(1).into_val(&env));
+    let longest_ttl = keys
+        .iter()
+        .map(|key| env.as_contract(&governance, || env.storage().persistent().get_ttl(key)))
+        .max()
+        .unwrap();
+    assert!(longest_ttl > 0);
+    let archived_after = env.ledger().sequence() + longest_ttl;
+    env.ledger()
+        .with_mut(|ledger| ledger.sequence_number = archived_after + 1);
+    // All recorded persistent keys are now beyond live-until. Recording mode
+    // restores them in the real host; no entries are deleted/reinserted here.
+    // The instance header remains the identity authority, not a new allocator.
+    env.cost_estimate().budget().reset_default();
+    client.extend_ttl();
+    for role in Role::ALL {
+        env.cost_estimate().budget().reset_default();
+        assert_eq!(client.extend_role_ttl(&role, &0, &16), None);
+    }
+    for key in &keys {
+        env.as_contract(&governance, || {
+            assert!(env.storage().persistent().get_ttl(key) > 4096);
+        });
+    }
+    assert_eq!(client.active_ids(), active_before);
+    assert_eq!(client.next_proposal_id(), 9);
+    for (id, proposal) in (0..9_u64).zip(proposals) {
+        env.cost_estimate().budget().reset_default();
+        assert_eq!(client.get_proposal(&id), Some(proposal));
+    }
+    assert!(client.has_role(&admin, &Role::Admin));
+    for role in [
+        Role::ManualTripper,
+        Role::CircuitBreakerOperator,
+        Role::ProxyConfigurationManager,
+    ] {
+        assert!(client.has_role(&delegate, &role));
+        assert_eq!(
+            client.list_role(&role),
+            soroban_sdk::vec![&env, delegate.clone()]
+        );
+    }
+    env.mock_auths(&[]);
+    assert!(client.try_execute_proposal(&delegate, &0).is_err());
+    assert_eq!(client.active_ids(), active_before);
+    authorize_call(
+        &env,
+        &delegate,
+        &governance,
+        "execute_proposal",
+        (&delegate, 0_u64).into_val(&env),
+    );
+    client.execute_proposal(&delegate, &0);
+    assert_eq!(client.get_operation_ttl(&OperationKind::SetProxy), 42);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "cancel_proposal",
+        (&admin, 8_u64).into_val(&env),
+    );
+    client.cancel_proposal(&admin, &8);
+    authorize_call(
+        &env,
+        &delegate,
+        &governance,
+        "create_proposal",
+        (&delegate, 0_u64, &action, 0_u64).into_val(&env),
+    );
+    assert_eq!(
+        client.try_create_proposal(&delegate, &0, &action, &0),
+        Err(Ok(GovernanceError::ProposalOutOfOrder))
+    );
+    let revoke =
+        GovernanceAction::SetRole(delegate.clone(), Role::ProxyConfigurationManager, false);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "create_proposal",
+        (&admin, 9_u64, &revoke, 0_u64).into_val(&env),
+    );
+    client.create_proposal(&admin, &9, &revoke, &0);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 9_u64).into_val(&env),
+    );
+    client.execute_proposal(&admin, &9);
+    assert!(client.active_ids().is_empty());
+    assert_eq!(client.next_proposal_id(), 10);
+    assert!(client
+        .list_role(&Role::ProxyConfigurationManager)
+        .is_empty());
+    assert!(client.has_role(&delegate, &Role::ManualTripper));
+    assert!(client.has_role(&delegate, &Role::CircuitBreakerOperator));
 }
 
 #[test]
