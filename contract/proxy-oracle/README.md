@@ -85,6 +85,8 @@ without changing persisted layouts:
 - `upgrade.pending_breaker_lifecycles`: inspect current and legacy pending add,
   remove, rearm and enforcement targets. Missing/undecodable sets, stale expected
   add IDs and absent mutation targets require inspection and drain/cancellation;
+  compatible queued adds are not rejected wholesale. Current state cannot
+  prove allocator history already deleted by old code.
 - `upgrade.pending_resources`: exact serialized state+body working set, policy
   recoverability, and cancellation-log bytes against the same limits the new
   contract enforces. Oversized legacy queues or an unrecoverable policy must be
@@ -112,6 +114,7 @@ legacy queue without accounting still drains: existing bodies can be cancelled
 or ordinarily executed, while new admissions and non-noop revocations wait
 until it is empty. This bound preserves atomic revocation liveness; it does not
 guarantee scheduling fairness.
+
 ### Bring-up and hardening
 
 A newly deployed oracle needs configuration immediately — proxy definitions, breaker history, breakers — so bring-up runs under a deliberately open policy and is hardened afterwards. `--ttl-default 0s` (what a market deployment's `governance.ttl_default` sets) is already that open policy: every lock is zero and every target method is Admin-only, so `create-proposal … --execute-when-ready` configures the oracle in a single pass. Use `--policy-file governance-policy.bootstrap.example.json` instead if delegates rather than the Admin should do the bring-up — same role assignments as the steady-state table, all timelocks zero.

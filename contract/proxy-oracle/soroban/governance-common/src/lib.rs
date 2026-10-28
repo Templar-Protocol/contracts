@@ -694,5 +694,6 @@ mod tests {
         assert_eq!(GovernanceError::InvalidInput as u32, 9);
         assert_eq!(GovernanceError::LastAdmin as u32, 11);
         assert_eq!(GovernanceError::TooManyPendingProposals as u32, 12);
+        assert_eq!(GovernanceError::PendingProposalBytesExceeded as u32, 13);
     }
 }
