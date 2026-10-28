@@ -484,22 +484,35 @@ fn pending_breaker_target(
     Ok(Some((serde_json::from_slice(&call.args.0)?, usage)))
 }
 
-fn breaker_lifecycle_problem(
-    args: &PendingBreakerArgs,
-    usage: BreakerIdUse,
-    set: &CircuitBreakerSet,
-) -> Option<String> {
-    match usage {
-        BreakerIdUse::Install if args.breaker_id != set.next_id() => Some(format!(
-            "expected add ID {}, current allocator {}",
-            args.breaker_id,
-            set.next_id()
-        )),
-        BreakerIdUse::Existing if !set.breakers().contains_key(&args.breaker_id) => {
-            Some(format!("breaker {} no longer exists", args.breaker_id))
-        }
-        _ => None,
+fn breaker_lifecycle_problem(args: &PendingBreakerArgs, set: &CircuitBreakerSet) -> Option<String> {
+    (!set.breakers().contains_key(&args.breaker_id))
+        .then(|| format!("breaker {} no longer exists", args.breaker_id))
+}
+
+/// All adds queued for one proxy must be usable in order against the committed
+/// allocator. Their expected IDs are stable because no other operation rewinds it.
+fn pending_add_problem(next_id: u32, adds: &[(u32, u32)]) -> Option<String> {
+    let mut ids: Vec<u32> = adds.iter().map(|(_, breaker_id)| *breaker_id).collect();
+    ids.sort_unstable();
+    if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Some(format!(
+            "duplicate expected add IDs {ids:?}; at most one can execute"
+        ));
     }
+    for (index, breaker_id) in ids.iter().enumerate() {
+        let Some(expected) = u32::try_from(index)
+            .ok()
+            .and_then(|index| next_id.checked_add(index))
+        else {
+            return Some(format!("pending add IDs {ids:?} overflow the allocator"));
+        };
+        if *breaker_id != expected {
+            return Some(format!(
+                "expected sequential add IDs starting at {next_id}, got {ids:?}"
+            ));
+        }
+    }
+    None
 }
 
 async fn pending_breaker_lifecycles(
@@ -509,6 +522,7 @@ async fn pending_breaker_lifecycles(
 ) -> Status {
     let mut sets = BTreeMap::new();
     let mut problems = Vec::new();
+    let mut installs: BTreeMap<PriceIdentifier, Vec<(u32, u32)>> = BTreeMap::new();
     for (proposal_id, body) in bodies {
         let (args, usage) = match pending_breaker_target(body) {
             Ok(Some(target)) => target,
@@ -548,8 +562,22 @@ async fn pending_breaker_lifecycles(
                 entry.insert(set)
             }
         };
+        if matches!(usage, BreakerIdUse::Install) {
+            if set.is_ok() {
+                installs
+                    .entry(args.id)
+                    .or_default()
+                    .push((*proposal_id, args.breaker_id));
+            } else if let Err(error) = &set {
+                problems.push(format!(
+                    "proposal {proposal_id}, proxy {}: {error}",
+                    args.id
+                ));
+            }
+            continue;
+        }
         let problem = match set {
-            Ok(set) => breaker_lifecycle_problem(&args, usage, set),
+            Ok(set) => breaker_lifecycle_problem(&args, set),
             Err(error) => Some(error.clone()),
         };
         if let Some(problem) = problem {
@@ -557,6 +585,15 @@ async fn pending_breaker_lifecycles(
                 "proposal {proposal_id}, proxy {}: {problem}",
                 args.id
             ));
+        }
+    }
+    for (proxy, adds) in installs {
+        let next_id = match sets.get(&proxy) {
+            Some(Ok(set)) => set.next_id(),
+            _ => continue,
+        };
+        if let Some(problem) = pending_add_problem(next_id, &adds) {
+            problems.push(format!("proxy {proxy}: {problem}"));
         }
     }
     if problems.is_empty() {
@@ -949,9 +986,9 @@ mod tests {
     use super::{
         aggregator_config_status, breaker_lifecycle_problem, breakers_status, classify_breaker_set,
         governance_ledger_status, governance_resolution_failure_checks, governance_state_budget,
-        has_incompatible_rearm_payload, pending_breaker_target, pending_rearm_status,
-        pending_resource_status, BreakerIdUse, BreakerVerdict, PendingBreakerArgs, PriceIdentifier,
-        Source, Status, Value,
+        has_incompatible_rearm_payload, pending_add_problem, pending_breaker_target,
+        pending_rearm_status, pending_resource_status, BreakerIdUse, BreakerVerdict,
+        PendingBreakerArgs, PriceIdentifier, Source, Status, Value,
     };
 
     fn price_id(byte: u8) -> PriceIdentifier {
@@ -1179,12 +1216,12 @@ mod tests {
     #[test]
     fn pending_ids_distinguish_compatible_adds_from_stale_lifecycles() {
         let mut set = breaker_set(4);
-        let mut args = PendingBreakerArgs {
+        let args = PendingBreakerArgs {
             id: price_id(1),
             breaker_id: 0,
         };
-        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Install, &set).is_none());
-        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Existing, &set).is_some());
+        assert!(pending_add_problem(set.next_id(), &[(1, 0)]).is_none());
+        assert!(breaker_lifecycle_problem(&args, &set).is_some());
         set.add(
             0,
             CircuitBreaker::MonotonicRun(MonotonicRun {
@@ -1193,13 +1230,21 @@ mod tests {
             }),
         )
         .unwrap();
-        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Install, &set).is_some());
-        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Existing, &set).is_none());
+        assert!(pending_add_problem(set.next_id(), &[(1, 0)]).is_some());
+        assert!(breaker_lifecycle_problem(&args, &set).is_none());
         set.reset_preserving_next_id();
-        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Existing, &set).is_some());
-        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Install, &set).is_some());
-        args.breaker_id = 1;
-        assert!(breaker_lifecycle_problem(&args, BreakerIdUse::Install, &set).is_none());
+        assert!(breaker_lifecycle_problem(&args, &set).is_some());
+        assert!(pending_add_problem(set.next_id(), &[(1, 0)]).is_some());
+        assert!(pending_add_problem(set.next_id(), &[(2, 1)]).is_none());
+    }
+
+    #[test]
+    fn pending_adds_must_be_distinct_contiguous_and_in_allocator_order() {
+        assert!(pending_add_problem(0, &[(1, 0), (2, 1)]).is_none());
+        assert!(pending_add_problem(0, &[(1, 0), (2, 0)]).is_some());
+        assert!(pending_add_problem(0, &[(1, 0), (2, 2)]).is_some());
+        assert!(pending_add_problem(u32::MAX, &[(1, u32::MAX)]).is_none());
+        assert!(pending_add_problem(u32::MAX, &[(1, u32::MAX), (2, 0)]).is_some());
     }
 
     #[rstest]

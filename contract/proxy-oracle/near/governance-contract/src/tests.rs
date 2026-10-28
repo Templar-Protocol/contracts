@@ -1200,6 +1200,35 @@ fn legacy_queue_must_drain_before_byte_accounting_activates() {
 }
 
 #[test]
+fn legacy_unmarked_policy_execution_still_enforces_recovery() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    let method = "m".repeat(1_300_000);
+    contract.create_proposal(
+        0,
+        Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+            method,
+            policy: Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::Admin,
+            }),
+        }),
+        Nanoseconds::zero(),
+    );
+    // A legacy queue has no byte accounting until it drains. Policy recovery
+    // must still hold when executing that queue, or no later proposal could
+    // remove the admitted key.
+    near_sdk::env::storage_remove(
+        &near_sdk::borsh::to_vec(&crate::StorageKey::PendingProposalBytes).unwrap(),
+    );
+    assert!(panics(|| contract.execute_proposal(0)));
+    assert!(contract.get_proposal(0).is_some());
+    contract.cancel_proposal(0);
+    assert_eq!(contract.proposal_count(), 0);
+}
+
+#[test]
 fn policy_recovery_budget_covers_longest_key_removal() {
     use templar_proxy_oracle_near_governance_common::{
         proposal_body_size, ADMIN_RESERVED_PROPOSAL_BYTES,

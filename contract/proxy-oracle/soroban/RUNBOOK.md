@@ -173,6 +173,9 @@ inv --id $GOV -- cancel_proposal  --caller <ADDR> --id <ID>   # frees a slot
 - `id` must equal `next_proposal_id`. `requested_ttl 0` uses the configured
   per-kind minimum; the effective TTL is `max(requested, minimum)`.
 - Queue-full returns `TooManyPendingProposals = 12`; delegates may occupy 63
+  of the 64 pending slots, and Admin retains access to the 64th.
+  Execution before maturity returns `ProposalNotMature`. Execution is by id —
+  no FIFO ordering.
 - Proposal XDR bytes are also bounded in aggregate (122,880 bytes total,
   2,048 reserved for Admin recovery); exceeding the bound returns
   `PendingProposalBytesExceeded = 13` without reserving the ID or mutating

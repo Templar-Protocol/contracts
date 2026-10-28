@@ -152,8 +152,8 @@ impl Contract {
                     .is_some_and(|size| size <= MAX_GOVERNANCE_WORKING_SET_BYTES),
                 "Governance working set byte limit exceeded"
             );
-            self.assert_policy_recovery();
         }
+        self.assert_policy_recovery();
     }
 
     fn assert_policy_recovery(&self) {

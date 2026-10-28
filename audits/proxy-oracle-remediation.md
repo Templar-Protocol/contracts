@@ -702,9 +702,14 @@ Verification of the remedy (actual execution, not extrapolation):
   (artifact `artifact://287`).
 - Soroban generated-client smoke: a mixed queue saturated at 45 proposals,
   after which Admin revocation succeeded at 26,733,295 CPU, 19 memory-read
-  entries, 12 write entries, and 120,388 write bytes. Permanent regressions
-  additionally assert event size, CPU, combined footprint, write entries and
-  write bytes for mixed-role, Admin-revocation and 63-small-body cases.
+  entries, 12 write entries, and 120,388 write bytes. The cap is 122,880 bytes
+  (120 KiB), 9,216 bytes below the 132,096-byte write limit; the measured
+  smoke is a bounded mixed case, not a claim of cap-saturation or of full
+  Stellar RPC resource usage. Permanent regressions additionally assert event
+  size, CPU, combined footprint, write entries and write bytes for mixed-role,
+  Admin-revocation and 63-small-body cases. Testnet `simulateTransaction`
+  evidence for these scenarios remains a deployment prerequisite; no live
+  network simulation was performed for this implementation.
 
 Simplification pass (six reviewers, findings DRY 2, YAGNI 0, STATE 0, FLOW 3,
 SIGNAL 2, TEST 1; all eight accepted, zero deduplicated): shared
