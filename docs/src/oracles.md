@@ -73,7 +73,7 @@ Circuit breakers are the on-chain defence against oracle manipulation and runawa
 | `WindowedChangeDelta` | The mean of the most recent `window_len` observations differs from the mean of an earlier window by more than `max_relative_mean_change`. |
 | `CumulativeChange` | The price drifts more than `max_relative_change` from an immutable baseline captured when the rule was installed. |
 
-In addition to automatic rules, an operator holding the `ManualTripper` role can **trip a feed manually with no timelock**. Because market contracts have no pause function, the manual trip is the emergency brake for an immutable market: while a feed is blocked, borrowing, collateral withdrawal against debt, and liquidation on every market reading that feed stop, while supply withdrawals, repayments, and collateral withdrawal from debt-free positions continue.
+In addition to automatic rules, an operator holding the `ManualTripper` role can **trip a feed manually with no timelock under the typical production policy**; the actual delay is the governance contract's configured `admin_set_manual_trip` TTL. Because market contracts have no pause function, the manual trip is the emergency brake for an immutable market: while a feed is blocked, borrowing, collateral withdrawal against debt, and liquidation on every market reading that feed stop, while supply withdrawals, repayments, and collateral withdrawal from debt-free positions continue.
 
 Each feed keeps up to 32 accepted observations of history and up to 16 breakers. Breakers can be installed in observe-only mode (they trip and emit events but do not block) before being enforced. Re-arming a tripped breaker is a separate governed action, so a block cannot be lifted by the same automation that detected the problem.
 
@@ -81,7 +81,7 @@ Every configuration change, trip, re-arm, and enforcement change emits an on-cha
 
 ### Governance and Timelocks
 
-Each proxy oracle is owned by its own governance contract. Feed configuration (sources, weights, aggregator, freshness filter, circuit breaker rules) and contract upgrades change only through proposals that mature under a per-method timelock and can only be executed by an account holding the role that method requires. Circuit breaker *operation* is different: tripping and untripping a feed, re-arming a breaker, and switching enforcement on or off are role-gated actions with no delay.
+Each proxy oracle is owned by its own governance contract. Feed configuration (sources, weights, aggregator, freshness filter, circuit breaker rules) and contract upgrades change only through proposals that mature under a per-method timelock and can only be executed by an account holding the role that method requires. Circuit breaker *operation* is different: tripping and untripping a feed, re-arming a breaker, and switching enforcement on or off are role-gated actions with no delay under the typical production policy; their actual method TTLs are configurable.
 
 Timelocks and roles are configured per governance contract. The table below is the typical production setup; it is not guaranteed to apply to every proxy oracle, so confirm the policy in force on a specific contract as shown at the end of this section.
 
@@ -186,12 +186,12 @@ Markets validate price freshness before use. If no fresh, accepted price is avai
 
 ## Oracle Security Measures
 
-- **Multiple independent sources**: Pyth and RedStone are aggregated per feed with a configurable quorum. With the standard quorum of one this guarantees liveness through a single-provider outage; raising the quorum trades liveness for manipulation resistance.
+- **Multiple sources where available**: Standard feeds combine Pyth and RedStone with a configurable quorum. With the standard quorum of one this provides liveness through a single-provider outage; raising the quorum trades liveness for manipulation resistance. A feed with only one active provider uses that source alone and gains no source-redundancy protection.
 - **Freshness filters**: Stale and future-dated source prices are discarded before aggregation.
 - **Conservative aggregation**: Weighted median, biased low for collateral and high for liabilities.
 - **Confidence intervals**: Pyth prices include confidence bands. The lower bound is used for collateral valuations and the upper bound for liability valuations.
-- **Circuit breakers**: Automatic rules against jumps, ramps, and drift, plus an instant manual trip. See [Circuit Breakers](#circuit-breakers).
-- **Timelocked governance**: No feed configuration can change without a maturing proposal; only risk-reducing actions are immediate.
+- **Circuit breakers**: Automatic rules against jumps, ramps, and drift, plus a manual trip that is immediate under the typical production policy. See [Circuit Breakers](#circuit-breakers).
+- **Timelocked governance**: No feed configuration can change without a maturing proposal. Operator actions can be immediate when their configured TTL is zero, including risk-increasing untrip, re-arm, and enforcement-disable actions.
 - **Maximum age limits**: Markets reject stale price data using a configurable expiration duration.
 - **Fail-closed reads**: A blocked, failed, or stale feed reads as no price, never as the last known price.
 - **Monitoring**: Oracle divergence and downtime alerts run continuously; see [Monitoring and Risk Management](./monitoring.md).

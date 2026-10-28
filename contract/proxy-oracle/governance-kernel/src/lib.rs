@@ -60,9 +60,9 @@ struct UncheckedGovernance<TtlConfig> {
 /// proposal queue. It tracks only `next_id`, the set of pending ids, the
 /// runtime's timelock policy (`ttls`), and the pending cap — it does **not** own the
 /// proposal bodies. Each runtime stores the bodies at whatever granularity is
-/// efficient for it (one storage key per proposal) and hands the relevant body
-/// back to the kernel when it needs to validate a transition. This keeps the
-/// kernel from dictating a storage layout while still owning every invariant of
+/// efficient for it (per-proposal keys on NEAR, bounded groups on Soroban) and
+/// hands the relevant body back to the kernel when it needs to validate a transition.
+/// This keeps the kernel from dictating a storage layout while still owning every invariant of
 /// the proposal lifecycle.
 ///
 /// Role/authorization state lives entirely in the runtime layer (each runtime

@@ -21,7 +21,7 @@ Two no-std kernels hold the runtime-agnostic logic; each chain (`near/`, `soroba
 
 ## Configuration
 
-Each proxied price should be configured with independent sources, a freshness filter, and a circuit-breaker set. Prefer multiple independent sources for important feeds; configure `min_sources` so one compromised or stale source cannot determine the price alone.
+Each proxied price should be configured with independent sources, a freshness filter, and a circuit-breaker set. Prefer multiple independent sources for important feeds; for median aggregation, configure `min_sources` so one compromised or stale source cannot determine the price alone. Priority instead selects the first surviving source in configured order and has no quorum.
 
 Freshness filters are mandatory for production feeds. Circuit breakers only compare accepted observations; they do not protect against stale or future-dated source prices.
 
@@ -83,10 +83,12 @@ without changing persisted layouts:
 - `upgrade.pending_rearm`: reject old absolute-time rearm payloads, but retain
   compatible relative-delay calls.
 - `upgrade.pending_breaker_lifecycles`: inspect current and legacy pending add,
-  remove, rearm and enforcement targets. Missing/undecodable sets, stale expected
-  add IDs and absent mutation targets require inspection and drain/cancellation;
-  compatible queued adds are not rejected wholesale. Current state cannot
-  prove allocator history already deleted by old code.
+  remove, rearm and enforcement targets. Pending adds are validated as complete
+  `CircuitBreakerSet::add` operations, not merely by expected ID. Missing or
+  undecodable sets, stale expected add IDs, invalid add payloads and absent
+  mutation targets require inspection and drain/cancellation; compatible queued
+  adds are not rejected wholesale. Current state cannot prove allocator history
+  already deleted by old code.
 - `upgrade.pending_resources`: exact serialized state+body working set, policy
   recoverability, and cancellation-log bytes against the same limits the new
   contract enforces. Oversized legacy queues or an unrecoverable policy must be

@@ -42,15 +42,17 @@ Asset profiles carry `symbol` and `reference` because neither reaches the
 chain: `market export` cannot recover them, so a spec reconstructed from a
 deployed market has neither and its `reference.price.*` checks cannot run.
 
-Every asset profile reads exactly two sources — a Pyth Lazer feed at weight 8
-and a RedStone feed at weight 2. **Pyth is being retired in favor of Lazer**,
-so most of these profiles are a migration target rather than a description of
-what is deployed: adopting one on a market still reading `pyth-oracle.near`
+Standard two-provider asset profiles read a Pyth Lazer feed at weight 8 and a
+RedStone feed at weight 2. Assets without an active Lazer feed instead configure
+RedStone alone rather than assigning weight to an unavailable source.
+**Classic Pyth is being retired in favor of Lazer**, so most of these profiles
+are a migration target rather than a description of what is deployed: adopting
+one on a market still reading `pyth-oracle.near`
 repoints its feed, which is the intent. The three that already match their
 market are `v1-borrow-ixlmusdc`, `v1-collateral-iethwbtc` and
 `v1-collateral-ixlm`.
 
 `a_shared_asset_profile_is_standard_and_names_its_token_consistently` in
-`tools/manager/src/tests/spec.rs` holds both halves of that: the token identity
-must still agree with the market that holds it, and the source pair must be the
-standard shape.
+`tools/manager/src/tests/spec.rs` holds both halves for the standard two-provider
+profiles it covers: the token identity must still agree with the market that
+holds it, and the source pair must be the standard shape.

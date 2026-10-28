@@ -722,6 +722,7 @@ rehearsal. No observable contract changed.
 
 Final follow-up verification: actual `tmplrmgr proxy-oracle preflight` against a
 fresh sandbox with three large-but-legal pending bodies passed all six checks,
+reporting working set 1,200,457/2,097,152 bytes and policy recovery 1,184 bytes.
 
 Post-refactor regression: current governance Wasm SHA-256
 `e18c6a0a6b5f4bb1fd19275c87135911f547fe7a9a66bf764b7ee704bc53959f`
@@ -730,7 +731,6 @@ passed all five `borsh_create_proposal` sandbox tests, including
 `cancellation_log_budget_prevents_long_method_revocation_failure`.
 Soroban governance-common discriminant tests now also assert error 13;
 the 122-test script suite passed again.
-reporting working set 1,200,457/2,097,152 bytes and policy recovery 1,184 bytes.
 The temporary smoke source was removed. Permanent sandbox gate: 56 passed
 (51 excluded), including `cancellation_log_budget_prevents_long_method_revocation_failure`.
 Affected NEAR/manager and Soroban all-target Clippy gates exited successfully

@@ -13,7 +13,7 @@ supplies its own storage, RBAC, and events.
 
 | Feature | NEAR | Soroban | Notes |
 | :--- | :--- | :--- | :--- |
-| SEP-40 read surface | `list_ema_prices_no_older_than` | `aggregated_latest` / `aggregated_history` (normalized); SEP-40 served by per-feed `Sep40Adapter` | Adapter rescales to its own `decimals`; fail-closed when stale/missing |
+| SEP-40 read surface | `list_ema_prices_no_older_than` | `aggregated_latest` / `aggregated_history` (normalized); SEP-40 served by per-feed `Sep40Adapter` | Adapter rescales to its own `decimals`; `lastprice` fails closed when stale/missing, while historical reads are breaker-gated but freshness-independent |
 | Source IO / aggregation | async cross-contract calls; weighted medians / Priority | synchronous `refresh`; equal-weight MedianLow / MedianHigh / Priority | Shared kernel; Priority is first surviving source, no quorum |
 | Pyth Lazer source | `Lazer` source kind reads the NEAR adapter by feed id | `PythLazerSource` is a SEP-40 contract keyed `Other("<feed id>")`, listed in `SetProxy` like any source | Both push→persist→serve; Soroban delegates signature checks to Pyth's on-chain verifier and keeps freshness + anti-replay |
 | Maintenance fan-out | N/A (one call refreshes all sources) | `ProxyOracleBatcher` batches `refresh` / `extend_ttl` per asset | Stellar allows one Soroban op per transaction |
@@ -24,10 +24,10 @@ supplies its own storage, RBAC, and events.
 | Source base / scale | source-descriptor-specific IO | `source_base` + explicit `expected_decimals` pins | Admission checks live scale; refresh discards drift; identity is not provider independence |
 | Manual trip | `set_circuit_breaker_manual_trip`, `ManualTripper` role, 1024-byte event metadata | `SetManualTrip(asset, tripped, metadata)`, `ManualTripper` role, 1024-byte event metadata | Neither action carries an operator id; NEAR records the predecessor (governance account) in-kernel, Soroban's event has none — correlate via the governance proposal |
 | Breaker trip | kernel-driven | kernel-driven | Identical kernel; Soroban stores compact postcard state |
-| Breaker config / rearm / enforce | `gov_create` + `gov_execute` | governed `AddBreaker` / `Rearm` / `SetEnforced` | `Rearm` and `SetEnforced` carry independent per-op TTLs |
+| Breaker config / rearm / enforce | `create_proposal` + `execute_proposal` | governed `AddBreaker` / `Rearm` / `SetEnforced` | `Rearm` and `SetEnforced` carry independent per-op TTLs |
 | Cache invalidation | epoch bump | explicit cache removal on config change | Stale updates cannot write to a new config |
 | TTL extension | N/A (permanent storage) | `extend_ttl` | Soroban-specific eviction guard |
-| Governance lifecycle | `gov_create` / `gov_execute` | `create_proposal` / `execute_proposal` / `cancel_proposal` | Maturity-gated by id (no FIFO); per-op TTLs; 64-pending cap; queried via `active_ids` / `get_proposal` |
+| Governance lifecycle | `create_proposal` / `execute_proposal` / `cancel_proposal` | `create_proposal` / `execute_proposal` / `cancel_proposal` | Maturity-gated by id (no FIFO); per-op TTLs; 64-pending cap; queried via `active_ids` / `get_proposal` |
 | Roles / authority | `Role` enum + `near-sdk-contract-tools::Rbac` | same 4 roles + OpenZeppelin `stellar-access` | Admin override; last-Admin removal rejected; the kernel does no role checks |
 | Upgrade | versioned state | typed code-swap surface, no governance self-upgrade/runtime migrate endpoint | This incompatible runtime/governance release is fresh-stack-only; in-place migration skipped |
 | Events | JSON | compact typed | Semantic, not byte parity |

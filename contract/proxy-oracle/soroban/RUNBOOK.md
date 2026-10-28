@@ -204,6 +204,7 @@ inv --id $GOV -- cancel_proposal  --caller <ADDR> --id <ID>   # frees a slot
 | 7 | `SetManualTrip(asset, tripped, metadata)` | ManualTripper |
 | 8 | `AcceptOwnership` | Admin |
 | 9 | `TransferOwnership(new_owner)` | Admin |
+| 9 | `CancelOwnershipTransfer(pending_owner)` | Admin |
 | 10 | `SetActionTtl(kind, new_ttl_ns)` | ProxyConfigurationManager |
 | 11 | `SetRole(account, role, set)` | Admin |
 | 12 | `Upgrade(new_wasm_hash)` | Admin |
