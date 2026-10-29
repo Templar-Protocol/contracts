@@ -29,7 +29,7 @@ supplies its own storage, RBAC, and events.
 | TTL extension | N/A (permanent storage) | `extend_ttl` | Soroban-specific eviction guard |
 | Governance lifecycle | `create_proposal` / `execute_proposal` / `cancel_proposal` | `create_proposal` / `execute_proposal` / `cancel_proposal` | Maturity-gated by id (no FIFO); per-op TTLs; 64-pending cap; queried via `active_ids` / `get_proposal` |
 | Roles / authority | `Role` enum + `near-sdk-contract-tools::Rbac` | same 4 roles + OpenZeppelin `stellar-access` | Admin override; last-Admin removal rejected; the kernel does no role checks |
-| Upgrade | versioned state | typed code-swap surface, no governance self-upgrade/runtime migrate endpoint | This incompatible runtime/governance release is fresh-stack-only; in-place migration skipped |
+| Upgrade | versioned state | governance-controlled typed code-swap surface; no governance-contract self-upgrade or runtime migration payload | This incompatible runtime/governance release is fresh-stack-only; in-place migration skipped |
 | Events | JSON | compact typed | Semantic, not byte parity |
 | Asset lifecycle | `set_proxy(id, None)` | `set_proxy` / `remove_proxy`, explicit `Assets` registry (≤ 64) | Reset/remove retains next-breaker-ID tombstone; no ID reuse or silent decoder reset |
 | Refresh shape | one call, all sources, request-id dedup | `refresh(asset)` per asset → `RefreshStatus`; `refresh_many` via the batcher | First-seen, deterministic |
