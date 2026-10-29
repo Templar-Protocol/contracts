@@ -1,0 +1,12 @@
+# USDe on Ethereum, held through NEAR Intents.
+[collateral]
+asset = "nep245:intents.near:nep141:eth-0x4c9edd5852cd905f086c759e8383e09bff1e68b3.omft.near"
+symbol = "USDe"
+reference = { coin_gecko = { id = "ethena-usde" } }
+decimals = 18
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 204, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "USDe", weight = 2 },
+]

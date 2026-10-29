@@ -1,0 +1,19 @@
+extends = [
+    "../profiles/v1.toml",
+    "../profiles/irs-stable.toml",
+    "../profiles/v1-collateral-iethsusde.toml",
+    "../profiles/v1-borrow-iethusdc.toml",
+]
+
+name = "iethsusde-iethusdc"
+
+[market]
+mcr_maintenance = "1.13636363636363636363636363636363636364"
+mcr_liquidation = "1.11111111111111111111111111111111111112"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.05"
+borrow_range = { minimum = "1 atom" }
+supply_range = { minimum = "0.04 tokens" }
+supply_withdrawal_range = { minimum = "0.04 tokens" }
+# A 10% protocol share of interest, against the profile's 20%.
+yield_weights = { supply = 9, static = { "revenue.tmplr.near" = 1 } }
