@@ -49,4 +49,9 @@ unlisted = [
   # Active in the Markets API, not linked in the app.
   "linear-usdt",
   "stnear-usdt",
+  # Specced, not yet deployed or in the app (ENG-763).
+  "iethsusde-iethusdc",
+  "iethsusde-iethusdt",
+  "iethusde-iethusdc",
+  "iethusde-iethusdt",
 ]
