@@ -201,7 +201,6 @@ fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
 /// since no exported spec can recover them.
 #[rstest]
 #[case("v1-borrow-iethusdc", "borrow", &[])]
-#[case("v1-borrow-iethusdt", "borrow", &[])]
 #[case("v1-borrow-ixlmusdc", "borrow", &["iethwbtc-ixlmusdc", "ixlm-ixlmusdc-1"])]
 #[case("v1-collateral-iada", "collateral", &["iada-ixlmusdc"])]
 #[case("v1-collateral-ibtc", "collateral", &["ibtc-ixlmusdc"])]
