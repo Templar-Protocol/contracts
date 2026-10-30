@@ -46,9 +46,10 @@ Every asset profile reads exactly two sources — a Pyth Lazer feed at weight 8
 and a RedStone feed at weight 2. **Pyth is being retired in favor of Lazer**,
 so most of these profiles are a migration target rather than a description of
 what is deployed: adopting one on a market still reading `pyth-oracle.near`
-repoints its feed, which is the intent. The three that already match their
-market are `v1-borrow-ixlmusdc`, `v1-collateral-iethwbtc` and
-`v1-collateral-ixlm`.
+repoints its feed, which is the intent. The ones that already match their
+markets are `v1-borrow-ixlmusdc`, `v1-collateral-iethwbtc`,
+`v1-collateral-ixlm`, and the `iethsusde-iethusdc` / `iethusde-iethusdc` legs
+(`v1-borrow-iethusdc`, `v1-collateral-iethsusde`, `v1-collateral-iethusde`).
 
 `a_shared_asset_profile_is_standard_and_names_its_token_consistently` in
 `tools/manager/src/tests/spec.rs` holds both halves of that: the token identity

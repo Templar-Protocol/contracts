@@ -212,6 +212,8 @@ SYMBOLS = {
     "hemibtc": "hemiBTC",
     "stnear": "stNEAR",
     "linear": "LiNEAR",
+    "susde": "sUSDe",
+    "usde": "USDe",
 }
 
 
@@ -473,6 +475,7 @@ def self_test():
     assert asset_label("ibtc") == "BTC (via NEAR Intents)"
     assert asset_label("iethhemibtc") == "hemiBTC on Ethereum (via NEAR Intents)"
     assert asset_label("ixlmdejaaa") == "deJAAA on Stellar (via NEAR Intents)"
+    assert asset_label("iethsusde") == "sUSDe on Ethereum (via NEAR Intents)"
     assert fmt_curve({"Piecewise": {"base": "0", "optimal": "0.9", "rate_1": "0.08888888888888888888888888888888888889", "rate_2": "2.4"}}) == "0% at 0% usage, 8% at 90% usage (kink), 32% at 100% usage"
     assert fmt_curve({"Piecewise": {"base": "0.03", "optimal": "0.9", "rate_1": "0", "rate_2": "2"}}) == "3% at 0% usage, 3% at 90% usage (kink), 23% at 100% usage"
     # The listing file must partition the specs.
