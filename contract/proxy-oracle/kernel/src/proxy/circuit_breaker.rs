@@ -13,8 +13,8 @@ pub use error::{CircuitBreakerError, ErrorCode};
 pub use observation::Observation;
 pub use ring_buffer::{RingBuffer, RingBufferParseError, UncheckedRingBuffer};
 pub use rule::{
-    CircuitBreaker, CircuitBreakerRule, CumulativeChange, MonotonicRun, StepwiseChange,
-    WindowedChangeDelta,
+    is_valid_relative_change, CircuitBreaker, CircuitBreakerRule, CumulativeChange, MonotonicRun,
+    StepwiseChange, WindowedChangeDelta,
 };
 pub use set::{
     CircuitBreakerEvent, CircuitBreakerOutcome, CircuitBreakerSet, CircuitBreakerSetConfig,

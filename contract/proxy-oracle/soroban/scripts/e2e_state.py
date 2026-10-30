@@ -42,7 +42,7 @@ from release_artifacts import (
 )
 from validate_release_artifacts import validate_manifest
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 NETWORK = "testnet"
 NETWORK_IDENTIFIER = "Test SDF Network ; September 2015"
 DEFAULT_RPC_URL = "https://soroban-testnet.stellar.org"
@@ -79,6 +79,13 @@ GOVERNANCE_OPERATION_KINDS = (
     "SetRole",
     "Upgrade",
 )
+OPERATIONAL_TTL_NS = 24 * 60 * 60 * 1_000_000_000
+GOVERNANCE_ROLES = (
+    "Admin",
+    "ManualTripper",
+    "CircuitBreakerOperator",
+    "ProxyConfigurationManager",
+)
 OPERATION_KINDS = (
     "upload",
     "deploy",
@@ -90,12 +97,13 @@ OPERATION_KINDS = (
     "batch_refresh",
     "ttl_assets",
     "ttl_contracts",
+    "ttl_role",
 )
 # Idempotent maintenance calls: a resume re-submits them, because their whole
 # purpose is to observe live behavior. Every other kind changes state that must
 # not be replayed, so a resume reads its recorded result instead.
 REPLAYABLE_KINDS = frozenset(
-    {"push", "refresh", "batch_refresh", "ttl_assets", "ttl_contracts"}
+    {"push", "refresh", "batch_refresh", "ttl_assets", "ttl_contracts", "ttl_role"}
 )
 OPERATION_STATUSES = (
     "prepared",
@@ -200,6 +208,7 @@ OPERATION_PHASES = {
     "batch_refresh": "refresh",
     "ttl_assets": "refresh",
     "ttl_contracts": "refresh",
+    "ttl_role": "refresh",
 }
 TOOL_HASH_KEYS = {
     "contract/proxy-oracle/soroban/scripts/e2e_live.sh",
@@ -522,7 +531,7 @@ def decode_optional_proxy_config(
         return None
     return require_exact_keys(
         value,
-        {"sources", "min_sources", "max_age_secs", "max_clock_drift_secs"},
+        {"aggregator", "max_age_secs", "max_clock_drift_secs"},
         label,
     )
 
@@ -662,6 +671,16 @@ def require_true_scvals(
         )
 
 
+def decode_role_ttl_offset(value: object, offset: int) -> int | None:
+    if value == "void":
+        return None
+    encoded = require_exact_keys(value, {"u32"}, "extend_role_ttl result")
+    next_offset = require_u32(encoded["u32"], "extend_role_ttl next offset")
+    if next_offset <= offset:
+        fail("extend_role_ttl returned a non-advancing page offset")
+    return next_offset
+
+
 T = TypeVar("T")
 
 
@@ -776,6 +795,14 @@ def validate_operation_args(
             fail(f"{label}.contracts must be an array")
         for index, contract_id in enumerate(contracts):
             validate_contract(contract_id, f"{label}.contracts[{index}]")
+    elif kind == "ttl_role":
+        args = require_exact_keys(args, {"role", "offset", "count"}, label)
+        if args["role"] not in GOVERNANCE_ROLES:
+            fail(f"{label}.role is invalid")
+        require_u32(args["offset"], f"{label}.offset")
+        count = require_u32(args["count"], f"{label}.count", positive=True)
+        if count > 16:
+            fail(f"{label}.count exceeds 16")
     else:
         fail(f"{label} has an unsupported operation kind")
     return args
@@ -2451,10 +2478,10 @@ class Rehearsal:
                     {"kind": kind},
                     decoder=decode_nonnegative_integer,
                 )
-                if ttl != 0:
+                if ttl != self.recorded_operation_ttl(kind):
                     fail(
-                        "governance operation TTL differs from "
-                        "the zero-TTL rehearsal plan"
+                        f"governance {kind} TTL differs from "
+                        "its recorded bootstrap/hardening lifecycle"
                     )
             return
         if slug == "lazer_source":
@@ -2544,6 +2571,60 @@ class Rehearsal:
                         require_u64(arguments["id"], f"{kind} proposal id")
                     )
         return sorted(ids["proposal_create"] - ids["proposal_execute"])
+
+    def recorded_operation_ttl(self, kind: str) -> int:
+        """Only a matching confirmed create/execute pair proves hardening."""
+        governance = str(self.deployments["governance"]["contract_id"])
+        operation = {"SetActionTtl": [kind, OPERATIONAL_TTL_NS]}
+        for entry in self.store.operations_for(
+            "configure", "proposal_create", governance
+        ):
+            arguments = entry["args"]
+            assert isinstance(arguments, dict)
+            if (
+                entry["status"] == "succeeded"
+                and arguments.get("operation") == operation
+                and arguments.get("caller") == self.settings.administrator
+                and arguments.get("requested_ttl") == 0
+                and self.store.successful_operation(
+                    "configure",
+                    "proposal_execute",
+                    governance,
+                    {
+                        "caller": self.settings.administrator,
+                        "id": arguments["id"],
+                    },
+                ) is not None
+            ):
+                return OPERATIONAL_TTL_NS
+        return 0
+
+    def harden_governance_timelocks(self) -> None:
+        governance = str(self.deployments["governance"]["contract_id"])
+        # Each action snapshots SetActionTtl's minimum; harden it last so
+        # bootstrap needs no 24-hour wait, including after a partial resume.
+        kinds = tuple(
+            kind for kind in GOVERNANCE_OPERATION_KINDS if kind != "SetActionTtl"
+        ) + ("SetActionTtl",)
+        for kind in kinds:
+            arguments = {"kind": kind}
+            ttl = self.view(
+                governance, "get_operation_ttl", arguments,
+                decoder=decode_nonnegative_integer,
+            )
+            if ttl != self.recorded_operation_ttl(kind):
+                fail(f"{kind} TTL conflicts with recorded hardening")
+            if ttl == OPERATIONAL_TTL_NS:
+                continue
+            self.run_governance_operation(
+                "configure", f"timelock/{kind}",
+                {"SetActionTtl": [kind, OPERATIONAL_TTL_NS]},
+            )
+            if self.view(
+                governance, "get_operation_ttl", arguments,
+                decoder=decode_nonnegative_integer,
+            ) != OPERATIONAL_TTL_NS:
+                fail(f"{kind} timelock hardening postcondition is absent")
 
     def verify_recorded_deployments(self) -> None:
         for slug in DEPLOYMENT_ORDER:
@@ -2925,14 +3006,14 @@ class Rehearsal:
             for name in RUNTIME_SOURCE_NAMES
         )
 
-    def proxy_config(self) -> dict[str, object]:
+    def proxy_config(self, source_decimals: dict[str, int]) -> dict[str, object]:
         sources = [
-            {"oracle": contract_id, "asset": asset}
-            for _, contract_id, asset in self.runtime_sources()
+            {"oracle": contract_id, "asset": asset,
+             "expected_decimals": source_decimals[name]}
+            for name, contract_id, asset in self.runtime_sources()
         ]
         return {
-            "sources": sources,
-            "min_sources": 3,
+            "aggregator": {"MedianLow": {"sources": sources, "min_sources": 3}},
             "max_age_secs": self.settings.runtime_policy["max_age_secs"],
             "max_clock_drift_secs": self.settings.runtime_policy[
                 "max_clock_drift_secs"
@@ -2942,6 +3023,7 @@ class Rehearsal:
     def phase_configure(self) -> None:
         runtime = str(self.deployments["runtime"]["contract_id"])
         sanity = {}
+        source_decimals: dict[str, int] = {}
         now = int(time.time())
         for name, contract_id, asset in self.runtime_sources():
             source = {
@@ -2958,6 +3040,7 @@ class Rehearsal:
             decimals = source["decimals"]
             if not 0 <= decimals <= 18:
                 fail(f"{name} source decimals are out of range")
+            source_decimals[name] = decimals
             if name != "lazer":
                 price = source["lastprice"]
                 if price is None:
@@ -2980,7 +3063,7 @@ class Rehearsal:
                 ):
                     fail(f"{name} source price is non-positive or stale")
             sanity[name] = source
-        config = self.proxy_config()
+        config = self.proxy_config(source_decimals)
         current = self.view(
             runtime,
             "get_proxy",
@@ -3009,9 +3092,13 @@ class Rehearsal:
                 "runtime proxy configuration does not match "
                 "the requested configuration"
             )
+        self.harden_governance_timelocks()
         self.store.pass_phase(
             "configure",
-            [{"source_sanity": sanity}, {"proxy_config": current}],
+            [
+                {"source_sanity": sanity}, {"proxy_config": current},
+                {"governance_ttl_ns": OPERATIONAL_TTL_NS},
+            ],
         )
 
     def pyth_api_key(self) -> str:
@@ -3222,6 +3309,24 @@ class Rehearsal:
         )
         return now - max_age <= timestamp <= now + max_drift
 
+    def extend_governance_roles(self) -> None:
+        governance = str(self.deployments["governance"]["contract_id"])
+        for role in GOVERNANCE_ROLES:
+            offset = 0
+            while True:
+                args = {"role": role, "offset": offset, "count": 16}
+                operation = self.transactions.execute(
+                    "refresh", "ttl_role", governance, args,
+                    self.build_invoke(governance, "extend_role_ttl",
+                                      {**args, "role": canonical_json_text(role)}),
+                )
+                next_offset = decode_role_ttl_offset(
+                    self.transactions.return_value(operation), offset
+                )
+                if next_offset is None:
+                    break
+                offset = next_offset
+
     def phase_refresh(self) -> None:
         runtime = str(self.deployments["runtime"]["contract_id"])
         adapter = str(self.deployments["sep40_adapter"]["contract_id"])
@@ -3345,6 +3450,7 @@ class Rehearsal:
         require_true_scvals(
             extend_contracts_result, 3, "batch extend_ttl_contracts"
         )
+        self.extend_governance_roles()
         batch_results = {
             "refresh_many": refresh_many_result,
             "extend_ttl_many": extend_assets_result,

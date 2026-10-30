@@ -302,7 +302,7 @@ jobs:
       - name: Install tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
-          tool: just
+          tool: just,nextest
 
       - name: Install stellar CLI
         uses: stellar/stellar-cli@60f7458e7ecffddf2f2d91dc6d0d2db4fab03ecc
@@ -320,6 +320,9 @@ jobs:
 
       - name: Test proxy-oracle Soroban release scripts
         run: just -f contract/proxy-oracle/soroban/justfile test-scripts
+
+      - name: Test compiled proxy-oracle adapter compatibility
+        run: just -f contract/proxy-oracle/soroban/justfile test-integration
 
       - name: Check curator-primitives (default)
         run: cargo check -p templar-curator-primitives

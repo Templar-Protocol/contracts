@@ -16,7 +16,7 @@ Read these first. They are the maintainers' own map of the code and its invarian
 Components:
 
 - **Markets** (`contract/market`, logic in `common/src/market`, `common/src/borrow.rs`). One collateral asset and one borrow asset per contract. Supply, borrow, repay, collateral deposit and withdrawal, liquidation, interest, fees and static yield. Markets are immutable: no owner, no upgrade, no pause, no parameter setters.
-- **Proxy oracles** (`contract/proxy-oracle`). A shared kernel (`kernel`, `governance-kernel`) with NEAR and Soroban runtimes. Weighted-median aggregation, freshness filters, circuit breakers, fail-closed reads, timelocked governance. Soroban also has a SEP-40 adapter, a Pyth Lazer source and a batcher.
+- **Proxy oracles** (`contract/proxy-oracle`). A shared kernel (`kernel`, `governance-kernel`) with NEAR and Soroban runtimes. NEAR uses weighted medians and Priority; Soroban uses equal-weight MedianLow/MedianHigh and ordered Priority. Both apply freshness filters, circuit breakers, fail-closed reads and timelocked governance. Soroban also has a SEP-40 adapter, a Pyth Lazer source and a batcher.
 - **Price sources**: the Pyth Lazer verifier and adapter (`contract/pyth-lazer`), the RedStone adapter (`contract/redstone-adapter`), and the LST oracle (`contract/proxy-oracle/near/lst-contract`).
 - **Curated vaults** (`contract/vault`). A shared kernel (`kernel`, `curator-primitives`), a NEAR runtime (`near`) and a Soroban runtime (`soroban`: governance, share token, Blend adapter, custodial adapter, ERC-4626-style proxy, curator proxy). Curated vaults are live on Stellar.
 - **Registry** (`contract/registry`): market version reservation, deployment and two-step finalization.

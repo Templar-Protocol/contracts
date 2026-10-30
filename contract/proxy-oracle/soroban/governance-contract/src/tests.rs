@@ -1,3 +1,5 @@
+extern crate std;
+
 use super::*;
 
 use alloc::vec;
@@ -5,7 +7,7 @@ use alloc::vec::Vec as StdVec;
 use soroban_sdk::testutils::{
     storage::Persistent as _, Address as _, Events as _, Ledger, LedgerInfo,
 };
-use soroban_sdk::{contract, contractimpl, Bytes, BytesN, Event, Symbol};
+use soroban_sdk::{contract, contractimpl, Bytes, BytesN, Event, IntoVal, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
     Asset, CircuitBreakerConfig, MonotonicRunConfig, PriceData, PriceFeedTrait, ProxyConfig,
@@ -103,13 +105,18 @@ fn sample_proxy_config(env: &Env, asset: Asset, _source: Address) -> ProxyConfig
         sources.push_back(SourceConfig {
             oracle: env.register(MockSource, ()),
             asset: asset.clone(),
+            expected_decimals: 8,
         });
     }
     ProxyConfig {
-        sources,
-        min_sources: 3,
-        max_age_secs: Some(30),
-        max_clock_drift_secs: Some(5),
+        aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+            templar_proxy_oracle_soroban_common::MedianConfig {
+                sources,
+                min_sources: 3,
+            },
+        ),
+        max_age_secs: 30,
+        max_clock_drift_secs: 5,
     }
 }
 
@@ -670,7 +677,7 @@ fn ttl_governance_extend_is_permissionless_and_emits_event() {
 fn ttl_governance_extend_renews_active_proposals() {
     let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(10);
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proposal_id = submit_now(
+    submit_now(
         &env,
         &governance_id,
         &admin,
@@ -684,7 +691,7 @@ fn ttl_governance_extend_renews_active_proposals() {
         ..Default::default()
     });
 
-    let key = DataKey::Proposal(proposal_id);
+    let key = DataKey::ProposalGroup(0);
     let ttl_before = env.as_contract(&governance_id, || env.storage().persistent().get_ttl(&key));
     env.as_contract(&governance_id, || {
         ProxyOracleGovernance::extend_ttl(env.clone()).unwrap();
@@ -742,7 +749,20 @@ fn create_proposal_requires_admin_auth() {
     });
     let admin = Address::generate(&env);
     let proxy = Address::generate(&env);
-    let governance_id = env.register(ProxyOracleGovernance, (&admin, &proxy, 0_u64));
+    let governance_id = Address::generate(&env);
+    authorize_call(
+        &env,
+        &admin,
+        &governance_id,
+        "__constructor",
+        (&admin, &proxy, 0_u64).into_val(&env),
+    );
+    env.register_at(
+        &governance_id,
+        ProxyOracleGovernance,
+        (&admin, &proxy, 0_u64),
+    );
+    env.mock_auths(&[]);
     let client = ProxyOracleGovernanceClient::new(&env, &governance_id);
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
 
@@ -947,12 +967,12 @@ fn last_admin_protection_and_admin_role_views() {
         &admin,
         GovernanceAction::SetRole(admin.clone(), Role::Admin, false),
     );
+    let client = ProxyOracleGovernanceClient::new(&env, &governance_id);
     assert_eq!(
-        env.as_contract(&governance_id, || {
-            ProxyOracleGovernance::execute_proposal(env.clone(), admin.clone(), remove_last)
-        }),
-        Err(GovernanceError::LastAdmin)
+        client.try_execute_proposal(&admin, &remove_last),
+        Err(Ok(GovernanceError::LastAdmin))
     );
+    assert!(client.get_proposal(&remove_last).is_some());
 
     let grant_second = submit_now(
         &env,
@@ -981,10 +1001,14 @@ fn validation_rejects_empty_proxy_invalid_ttls_and_large_metadata() {
     let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
     let empty_proxy = ProxyConfig {
-        sources: Vec::new(&env),
-        min_sources: 0,
-        max_age_secs: None,
-        max_clock_drift_secs: None,
+        aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+            templar_proxy_oracle_soroban_common::MedianConfig {
+                sources: Vec::new(&env),
+                min_sources: 0,
+            },
+        ),
+        max_age_secs: 30,
+        max_clock_drift_secs: 5,
     };
     assert_eq!(
         env.as_contract(&governance_id, || {
@@ -1221,7 +1245,7 @@ fn pending_proposals_are_capped_and_slots_free_on_cancel_or_execute() {
                 env.clone(),
                 admin.clone(),
                 id,
-                GovernanceAction::RemoveProxy(Asset::Other(Symbol::new(&env, "BTC"))),
+                GovernanceAction::SetActionTtl(OperationKind::RemoveProxy, 0),
                 0,
             )
             .unwrap();
@@ -1246,11 +1270,11 @@ fn pending_proposals_are_capped_and_slots_free_on_cancel_or_execute() {
                 env.clone(),
                 admin.clone(),
                 64,
-                GovernanceAction::RemoveProxy(Asset::Other(Symbol::new(&env, "BTC"))),
+                GovernanceAction::SetActionTtl(OperationKind::RemoveProxy, 0),
                 0,
             )
         }),
-        Err(GovernanceError::InvalidInput)
+        Err(GovernanceError::TooManyPendingProposals)
     );
     assert_eq!(
         env.as_contract(&governance_id, || {
@@ -1273,7 +1297,7 @@ fn pending_proposals_are_capped_and_slots_free_on_cancel_or_execute() {
             env.clone(),
             admin.clone(),
             64,
-            GovernanceAction::RemoveProxy(Asset::Other(Symbol::new(&env, "BTC"))),
+            GovernanceAction::SetActionTtl(OperationKind::RemoveProxy, 0),
             0,
         )
         .unwrap();
@@ -1293,7 +1317,7 @@ fn pending_proposals_are_capped_and_slots_free_on_cancel_or_execute() {
             env.clone(),
             admin,
             65,
-            GovernanceAction::RemoveProxy(Asset::Other(Symbol::new(&env, "BTC"))),
+            GovernanceAction::SetActionTtl(OperationKind::RemoveProxy, 0),
             0,
         )
         .unwrap();
@@ -1388,4 +1412,1091 @@ fn upgrade_zero_hash_is_rejected_before_silent_acceptance() {
         }),
         Err(GovernanceError::InvalidInput)
     );
+}
+
+fn authorize_call(
+    env: &Env,
+    account: &Address,
+    contract: &Address,
+    function: &str,
+    args: Vec<soroban_sdk::Val>,
+) {
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: account,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract,
+            fn_name: function,
+            args,
+            sub_invokes: &[],
+        },
+    }]);
+}
+
+#[test]
+fn explicit_bootstrap_auth_and_admin_coauthorization() {
+    use soroban_sdk::{
+        testutils::{MockAuth, MockAuthInvoke},
+        IntoVal,
+    };
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let proxy = Address::generate(&env);
+    let governance = Address::generate(&env);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "__constructor",
+        (&admin, &proxy, 0_u64).into_val(&env),
+    );
+    env.register_at(&governance, ProxyOracleGovernance, (&admin, &proxy, 0_u64));
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let grantee = Address::generate(&env);
+    let action = GovernanceAction::SetRole(grantee.clone(), Role::Admin, true);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "create_proposal",
+        (&admin, 0_u64, &action, 0_u64).into_val(&env),
+    );
+    client.create_proposal(&admin, &0, &action, &0);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 0_u64).into_val(&env),
+    );
+    assert!(client.try_execute_proposal(&admin, &0).is_err());
+    assert!(!client.has_role(&grantee, &Role::Admin));
+    assert!(client.get_proposal(&0).is_some());
+    let invoke = MockAuthInvoke {
+        contract: &governance,
+        fn_name: "execute_proposal",
+        args: (&admin, 0_u64).into_val(&env),
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[
+        MockAuth {
+            address: &admin,
+            invoke: &invoke,
+        },
+        MockAuth {
+            address: &grantee,
+            invoke: &invoke,
+        },
+    ]);
+    client.execute_proposal(&admin, &0);
+    assert!(client.has_role(&grantee, &Role::Admin));
+    let self_grant = GovernanceAction::SetRole(governance.clone(), Role::Admin, true);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "create_proposal",
+        (&admin, 1_u64, &self_grant, 0_u64).into_val(&env),
+    );
+    client.create_proposal(&admin, &1, &self_grant, &0);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 1_u64).into_val(&env),
+    );
+    assert_eq!(
+        client.try_execute_proposal(&admin, &1),
+        Err(Ok(GovernanceError::InvalidInput))
+    );
+}
+
+#[test]
+fn bootstrap_without_admin_auth_is_rejected() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let proxy = Address::generate(&env);
+    let governance = Address::generate(&env);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(&governance, ProxyOracleGovernance, (&admin, &proxy, 0_u64));
+    }));
+    assert!(result.is_err());
+    env.as_contract(&governance, || {
+        assert!(!env.storage().instance().has(&storage::DataKey::Header));
+        assert!(!env.storage().instance().has(&storage::DataKey::ProxyOracle));
+    });
+}
+
+#[test]
+fn reserved_admin_slot_and_original_expected_ids_are_never_reused() {
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    env.cost_estimate().budget().reset_unlimited();
+    let delegate = Address::generate(&env);
+    env.as_contract(&governance, || {
+        roles::grant(&env, &delegate, Role::ProxyConfigurationManager, &admin).unwrap();
+    });
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let action = GovernanceAction::SetActionTtl(OperationKind::RemoveProxy, 0);
+    for id in 0..63 {
+        client.create_proposal(&delegate, &id, &action, &0);
+    }
+    assert_eq!(
+        client.try_create_proposal(&delegate, &63, &action, &0),
+        Err(Ok(GovernanceError::TooManyPendingProposals))
+    );
+    client.create_proposal(&admin, &63, &action, &0);
+    assert_eq!(
+        client.try_create_proposal(&admin, &64, &action, &0),
+        Err(Ok(GovernanceError::TooManyPendingProposals))
+    );
+    client.cancel_proposal(&delegate, &0);
+    assert_eq!(
+        client.try_create_proposal(&delegate, &0, &action, &0),
+        Err(Ok(GovernanceError::TooManyPendingProposals))
+    );
+    client.cancel_proposal(&delegate, &1);
+    for id in [0, 1, 62, 63] {
+        assert_eq!(
+            client.try_create_proposal(&admin, &id, &action, &0),
+            Err(Ok(GovernanceError::ProposalOutOfOrder))
+        );
+    }
+    client.execute_proposal(&admin, &2);
+    assert_eq!(
+        client.try_create_proposal(&delegate, &2, &action, &0),
+        Err(Ok(GovernanceError::ProposalOutOfOrder))
+    );
+    assert_eq!(client.next_proposal_id(), 64);
+    assert_eq!(client.active_ids().len(), 61);
+}
+
+#[test]
+fn cancellation_is_creator_or_admin_but_execution_remains_role_based() {
+    use soroban_sdk::IntoVal;
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    let creator = Address::generate(&env);
+    let peer = Address::generate(&env);
+    env.as_contract(&governance, || {
+        for account in [&creator, &peer] {
+            roles::grant(&env, account, Role::ProxyConfigurationManager, &admin).unwrap();
+        }
+    });
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let action = GovernanceAction::SetActionTtl(OperationKind::RemoveProxy, 0);
+    client.create_proposal(&creator, &0, &action, &0);
+    authorize_call(
+        &env,
+        &peer,
+        &governance,
+        "cancel_proposal",
+        (&peer, 0_u64).into_val(&env),
+    );
+    assert_eq!(
+        client.try_cancel_proposal(&peer, &0),
+        Err(Ok(GovernanceError::Unauthorized))
+    );
+    env.mock_auths(&[]);
+    assert!(client.try_cancel_proposal(&creator, &0).is_err());
+    authorize_call(
+        &env,
+        &peer,
+        &governance,
+        "execute_proposal",
+        (&peer, 0_u64).into_val(&env),
+    );
+    client.execute_proposal(&peer, &0);
+    authorize_call(
+        &env,
+        &creator,
+        &governance,
+        "create_proposal",
+        (&creator, 1_u64, &action, 0_u64).into_val(&env),
+    );
+    client.create_proposal(&creator, &1, &action, &0);
+    // Cancellation does not require the creator's former action role.
+    env.as_contract(&governance, || {
+        stellar_access::access_control::revoke_role_no_auth(
+            &env,
+            &creator,
+            &Symbol::new(&env, "ProxyConfigurationManager"),
+            &admin,
+        );
+    });
+    authorize_call(
+        &env,
+        &creator,
+        &governance,
+        "cancel_proposal",
+        (&creator, 1_u64).into_val(&env),
+    );
+    client.cancel_proposal(&creator, &1);
+}
+
+#[test]
+fn revocation_purges_only_newly_unauthorized_creator_operations() {
+    use soroban_sdk::IntoVal;
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    let delegate = Address::generate(&env);
+    let other = Address::generate(&env);
+    env.as_contract(&governance, || {
+        for account in [&delegate, &other] {
+            roles::grant(&env, account, Role::ProxyConfigurationManager, &admin).unwrap();
+            roles::grant(&env, account, Role::ManualTripper, &admin).unwrap();
+        }
+    });
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let manager_action = GovernanceAction::SetActionTtl(OperationKind::SetProxy, 0);
+    client.create_proposal(&delegate, &0, &manager_action, &0);
+    client.create_proposal(&other, &1, &manager_action, &0);
+    client.create_proposal(
+        &delegate,
+        &2,
+        &GovernanceAction::SetManualTrip(Asset::Other(Symbol::new(&env, "BTC")), true, None),
+        &0,
+    );
+    let revoke =
+        GovernanceAction::SetRole(delegate.clone(), Role::ProxyConfigurationManager, false);
+    client.create_proposal(&admin, &3, &revoke, &0);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 3_u64).into_val(&env),
+    );
+    client.execute_proposal(&admin, &3);
+    assert!(governance_events(&env, &governance)
+        .contains(&ProposalRevoked { id: 0 }.to_xdr(&env, &governance)));
+    assert!(client.get_proposal(&0).is_none());
+    assert!(client.get_proposal(&1).is_some());
+    assert!(client.get_proposal(&2).is_some());
+    assert_eq!(client.active_ids(), Vec::from_array(&env, [1, 2]));
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "create_proposal",
+        (&admin, 4_u64, &revoke, 0_u64).into_val(&env),
+    );
+    client.create_proposal(&admin, &4, &revoke, &0);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 4_u64).into_val(&env),
+    );
+    client.execute_proposal(&admin, &4);
+    assert_eq!(client.active_ids(), Vec::from_array(&env, [1, 2]));
+}
+
+#[contract]
+struct FailingRuntime;
+
+#[contractimpl]
+impl FailingRuntime {
+    pub fn remove_proxy(
+        env: Env,
+        asset: Asset,
+    ) -> Result<(), templar_proxy_oracle_soroban_common::ContractError> {
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "effect"), &asset);
+        Err(templar_proxy_oracle_soroban_common::ContractError::InvalidInput)
+    }
+}
+
+#[test]
+fn runtime_error_rolls_back_effects_and_retains_proposal_through_real_invocation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let runtime = env.register(FailingRuntime, ());
+    let governance = env.register(ProxyOracleGovernance, (&admin, &runtime, 0_u64));
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let action = GovernanceAction::RemoveProxy(Asset::Other(Symbol::new(&env, "BTC")));
+    let proposal = client.create_proposal(&admin, &0, &action, &0);
+    assert_eq!(
+        client.try_execute_proposal(&admin, &0),
+        Err(Ok(GovernanceError::RuntimeFailed))
+    );
+    assert!(env.events().all().events().to_vec().is_empty());
+    assert_eq!(client.get_proposal(&0), Some(proposal));
+    assert_eq!(client.active_ids(), Vec::from_array(&env, [0]));
+    assert_eq!(client.next_proposal_id(), 1);
+    env.as_contract(&runtime, || {
+        assert!(!env.storage().instance().has(&Symbol::new(&env, "effect")));
+    });
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "One ownership-transfer lifecycle must retain its proposal IDs and stored pending owner"
+)]
+#[test]
+fn ownership_cancellation_shares_transfer_timelock_and_rejects_wrong_or_missing_owner() {
+    use soroban_sdk::IntoVal;
+    let (env, admin, _, governance, proxy) = setup_with_ttl(0);
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let pending = Address::generate(&env);
+    let wrong = Address::generate(&env);
+    client.create_proposal(
+        &admin,
+        &0,
+        &GovernanceAction::CancelOwnershipTransfer(pending.clone()),
+        &0,
+    );
+    assert_eq!(
+        client.try_execute_proposal(&admin, &0),
+        Err(Ok(GovernanceError::RuntimeFailed))
+    );
+    client.cancel_proposal(&admin, &0);
+    client.create_proposal(
+        &admin,
+        &1,
+        &GovernanceAction::TransferOwnership(pending.clone()),
+        &0,
+    );
+    // A signed owner mutation is required even though ownership is held by governance.
+    env.mock_auths(&[]);
+    assert!(client.try_execute_proposal(&admin, &1).is_err());
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 1_u64).into_val(&env),
+    );
+    client.execute_proposal(&admin, &1);
+    let ttl = GovernanceAction::SetActionTtl(OperationKind::TransferOwnership, 2_000_000_000);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "create_proposal",
+        (&admin, 2_u64, &ttl, 0_u64).into_val(&env),
+    );
+    client.create_proposal(&admin, &2, &ttl, &0);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 2_u64).into_val(&env),
+    );
+    client.execute_proposal(&admin, &2);
+    for (id, owner) in [(3_u64, wrong), (4, pending.clone())] {
+        let action = GovernanceAction::CancelOwnershipTransfer(owner);
+        authorize_call(
+            &env,
+            &admin,
+            &governance,
+            "create_proposal",
+            (&admin, id, &action, 0_u64).into_val(&env),
+        );
+        assert_eq!(
+            client.create_proposal(&admin, &id, &action, &0).ttl_ns,
+            2_000_000_000
+        );
+    }
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 4_u64).into_val(&env),
+    );
+    assert_eq!(
+        client.try_execute_proposal(&admin, &4),
+        Err(Ok(GovernanceError::ProposalNotMature))
+    );
+    env.ledger().with_mut(|ledger| ledger.timestamp += 2);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 3_u64).into_val(&env),
+    );
+    assert_eq!(
+        client.try_execute_proposal(&admin, &3),
+        Err(Ok(GovernanceError::RuntimeFailed))
+    );
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 4_u64).into_val(&env),
+    );
+    client.execute_proposal(&admin, &4);
+    assert_eq!(proxy.get_owner(), Some(governance));
+    authorize_call(
+        &env,
+        &pending,
+        &proxy.address,
+        "accept_ownership",
+        Vec::new(&env),
+    );
+    assert!(proxy.try_accept_ownership().is_err());
+}
+
+fn access_control_storage_keys(env: &Env, governance: &Address) -> StdVec<soroban_sdk::Val> {
+    use soroban_sdk::Val;
+    use stellar_access::access_control::AccessControlStorageKey as Key;
+
+    let mut keys = StdVec::new();
+    for name in [
+        "Admin",
+        "ManualTripper",
+        "CircuitBreakerOperator",
+        "ProxyConfigurationManager",
+    ] {
+        let symbol = Symbol::new(env, name);
+        let count = env.as_contract(governance, || {
+            stellar_access::access_control::get_role_member_count(env, &symbol)
+        });
+        keys.push(Key::RoleAccountsCount(symbol.clone()).into_val(env));
+        for index in 0..count {
+            let member = env.as_contract(governance, || {
+                stellar_access::access_control::get_role_member(env, &symbol, index)
+            });
+            // The public enum's RoleAccountKey payload type is private.
+            let payload: soroban_sdk::Map<Symbol, Val> = soroban_sdk::map![
+                env,
+                (Symbol::new(env, "index"), index.into_val(env)),
+                (Symbol::new(env, "role"), symbol.clone().into_val(env))
+            ];
+            keys.push((Symbol::new(env, "RoleAccounts"), payload).into_val(env));
+            keys.push(Key::HasRole(member, symbol.clone()).into_val(env));
+        }
+    }
+    keys.push(Key::ExistingRoles.into_val(env));
+    keys
+}
+
+#[test]
+fn role_keeper_pages_renew_every_access_control_key_family() {
+    use soroban_sdk::Val;
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    env.ledger().with_mut(|ledger| {
+        ledger.min_persistent_entry_ttl = 4096;
+        ledger.max_entry_ttl = 6_312_000;
+    });
+    // The general fixture starts with zero TTL limits; renew its original Admin
+    // membership under the realistic ledger policy before aging dormant keys.
+    env.as_contract(&governance, || {
+        assert!(roles::has_role(&env, &admin, Role::Admin));
+    });
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    client.extend_ttl();
+    for role in Role::ALL {
+        for _ in 0..17 {
+            env.cost_estimate().budget().reset_default();
+            let member = Address::generate(&env);
+            env.as_contract(&governance, || {
+                roles::grant(&env, &member, role, &admin).unwrap();
+            });
+        }
+    }
+    let keys: StdVec<Val> = access_control_storage_keys(&env, &governance);
+    let min_ttl = keys
+        .iter()
+        .map(|key| env.as_contract(&governance, || env.storage().persistent().get_ttl(key)))
+        .min()
+        .unwrap();
+    assert!(min_ttl > 10);
+    env.ledger()
+        .with_mut(|ledger| ledger.sequence_number += min_ttl - 10);
+    assert_eq!(
+        client.try_extend_role_ttl(&Role::Admin, &0, &0),
+        Err(Ok(GovernanceError::InvalidInput))
+    );
+    assert_eq!(
+        client.try_extend_role_ttl(&Role::Admin, &0, &17),
+        Err(Ok(GovernanceError::InvalidInput))
+    );
+    env.cost_estimate().budget().reset_default();
+    client.extend_ttl();
+    for role in Role::ALL {
+        env.cost_estimate().budget().reset_default();
+        assert_eq!(client.extend_role_ttl(&role, &0, &16), Some(16));
+        assert!(env.cost_estimate().budget().cpu_instruction_cost() < 100_000_000);
+        let resources = env.cost_estimate().resources();
+        assert!(resources.disk_read_entries + resources.memory_read_entries <= 100);
+        assert!(resources.write_entries <= 50);
+        env.cost_estimate().budget().reset_default();
+        assert_eq!(client.extend_role_ttl(&role, &16, &16), None);
+        let resources = env.cost_estimate().resources();
+        assert!(resources.disk_read_entries + resources.memory_read_entries <= 100);
+        assert!(resources.write_entries <= 50);
+        assert_eq!(client.extend_role_ttl(&role, &u32::MAX, &16), None);
+    }
+    for key in &keys {
+        env.as_contract(&governance, || {
+            assert!(env.storage().persistent().get_ttl(key) > 10);
+        });
+    }
+    env.ledger().with_mut(|ledger| ledger.sequence_number += 11);
+    assert!(client.has_role(&admin, &Role::Admin));
+    assert_eq!(client.list_role(&Role::Admin).len(), 18);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "archives grouped bodies and every role family in one authenticated lifecycle"
+)]
+fn archived_proposal_groups_and_dormant_roles_restore_without_reallocating_ids() {
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    env.ledger().with_mut(|ledger| {
+        ledger.min_persistent_entry_ttl = 4096;
+        ledger.max_entry_ttl = 6_312_000;
+    });
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let delegate = Address::generate(&env);
+    for role in [
+        Role::ManualTripper,
+        Role::CircuitBreakerOperator,
+        Role::ProxyConfigurationManager,
+    ] {
+        env.as_contract(&governance, || {
+            roles::grant(&env, &delegate, role, &admin).unwrap();
+        });
+    }
+    let action = GovernanceAction::SetActionTtl(OperationKind::SetProxy, 42);
+    let mut proposals = StdVec::new();
+    for id in 0..9_u64 {
+        env.cost_estimate().budget().reset_default();
+        proposals.push(client.create_proposal(&delegate, &id, &action, &0));
+    }
+    let active_before = client.active_ids();
+    let bytes_before = env.as_contract(&governance, || storage::pending_bytes(&env).unwrap());
+    client.extend_ttl();
+    for role in Role::ALL {
+        // Renew the fixture's original Admin entries under the installed
+        // ledger policy as well as the newly created dormant delegate keys.
+        assert_eq!(client.extend_role_ttl(&role, &0, &16), None);
+    }
+    let mut keys = access_control_storage_keys(&env, &governance);
+    keys.push(DataKey::ProposalGroup(0).into_val(&env));
+    keys.push(DataKey::ProposalGroup(1).into_val(&env));
+    let longest_ttl = keys
+        .iter()
+        .map(|key| env.as_contract(&governance, || env.storage().persistent().get_ttl(key)))
+        .max()
+        .unwrap();
+    assert!(longest_ttl > 0);
+    let archived_after = env.ledger().sequence() + longest_ttl;
+    env.ledger()
+        .with_mut(|ledger| ledger.sequence_number = archived_after + 1);
+    // All recorded persistent keys are now beyond live-until. Recording mode
+    // restores them in the real host; no entries are deleted/reinserted here.
+    // The instance header remains the identity authority, not a new allocator.
+    env.cost_estimate().budget().reset_default();
+    client.extend_ttl();
+    for role in Role::ALL {
+        env.cost_estimate().budget().reset_default();
+        assert_eq!(client.extend_role_ttl(&role, &0, &16), None);
+    }
+    for key in &keys {
+        env.as_contract(&governance, || {
+            assert!(env.storage().persistent().get_ttl(key) > 4096);
+        });
+    }
+    assert_eq!(client.active_ids(), active_before);
+    assert_eq!(
+        env.as_contract(&governance, || storage::pending_bytes(&env).unwrap()),
+        bytes_before
+    );
+    assert_eq!(client.next_proposal_id(), 9);
+    for (id, proposal) in (0..9_u64).zip(proposals) {
+        env.cost_estimate().budget().reset_default();
+        assert_eq!(client.get_proposal(&id), Some(proposal));
+    }
+    assert!(client.has_role(&admin, &Role::Admin));
+    for role in [
+        Role::ManualTripper,
+        Role::CircuitBreakerOperator,
+        Role::ProxyConfigurationManager,
+    ] {
+        assert!(client.has_role(&delegate, &role));
+        assert_eq!(
+            client.list_role(&role),
+            soroban_sdk::vec![&env, delegate.clone()]
+        );
+    }
+    env.mock_auths(&[]);
+    assert!(client.try_execute_proposal(&delegate, &0).is_err());
+    assert_eq!(client.active_ids(), active_before);
+    authorize_call(
+        &env,
+        &delegate,
+        &governance,
+        "execute_proposal",
+        (&delegate, 0_u64).into_val(&env),
+    );
+    client.execute_proposal(&delegate, &0);
+    assert_eq!(client.get_operation_ttl(&OperationKind::SetProxy), 42);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "cancel_proposal",
+        (&admin, 8_u64).into_val(&env),
+    );
+    client.cancel_proposal(&admin, &8);
+    authorize_call(
+        &env,
+        &delegate,
+        &governance,
+        "create_proposal",
+        (&delegate, 0_u64, &action, 0_u64).into_val(&env),
+    );
+    assert_eq!(
+        client.try_create_proposal(&delegate, &0, &action, &0),
+        Err(Ok(GovernanceError::ProposalOutOfOrder))
+    );
+    let revoke =
+        GovernanceAction::SetRole(delegate.clone(), Role::ProxyConfigurationManager, false);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "create_proposal",
+        (&admin, 9_u64, &revoke, 0_u64).into_val(&env),
+    );
+    client.create_proposal(&admin, &9, &revoke, &0);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 9_u64).into_val(&env),
+    );
+    client.execute_proposal(&admin, &9);
+    assert!(client.active_ids().is_empty());
+    assert_eq!(
+        env.as_contract(&governance, || storage::pending_bytes(&env).unwrap()),
+        0
+    );
+    assert_eq!(client.next_proposal_id(), 10);
+    assert!(client
+        .list_role(&Role::ProxyConfigurationManager)
+        .is_empty());
+    assert!(client.has_role(&delegate, &Role::ManualTripper));
+    assert!(client.has_role(&delegate, &Role::CircuitBreakerOperator));
+}
+
+#[test]
+fn expired_but_stored_ownership_transfer_can_be_cancelled() {
+    use stellar_access::{ownable::OwnableStorageKey, role_transfer::PendingTransfer};
+    let (env, admin, runtime, governance, proxy) = setup_with_ttl(0);
+    let pending = Address::generate(&env);
+    // Model a transfer whose acceptance deadline passed while the temporary
+    // entry is still live; cancellation must not apply acceptance expiry.
+    env.as_contract(&runtime, || {
+        env.storage().temporary().set(
+            &OwnableStorageKey::PendingOwner,
+            &PendingTransfer {
+                address: pending.clone(),
+                live_until_ledger: 99,
+            },
+        );
+    });
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    client.create_proposal(
+        &admin,
+        &0,
+        &GovernanceAction::CancelOwnershipTransfer(pending),
+        &0,
+    );
+    client.execute_proposal(&admin, &0);
+    assert_eq!(proxy.get_owner(), Some(governance));
+    env.as_contract(&runtime, || {
+        assert!(!env
+            .storage()
+            .temporary()
+            .has(&OwnableStorageKey::PendingOwner));
+    });
+}
+
+#[test]
+fn revocation_preserves_admin_override_and_fails_closed_on_missing_body() {
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    let delegate = Address::generate(&env);
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    env.as_contract(&governance, || {
+        roles::grant(&env, &delegate, Role::Admin, &admin).unwrap();
+        roles::grant(&env, &delegate, Role::ProxyConfigurationManager, &admin).unwrap();
+    });
+    let action = GovernanceAction::SetActionTtl(OperationKind::SetProxy, 0);
+    client.create_proposal(&delegate, &0, &action, &0);
+    client.create_proposal(
+        &admin,
+        &1,
+        &GovernanceAction::SetRole(delegate.clone(), Role::ProxyConfigurationManager, false),
+        &0,
+    );
+    client.execute_proposal(&admin, &1);
+    assert!(client.get_proposal(&0).is_some());
+    client.create_proposal(
+        &admin,
+        &2,
+        &GovernanceAction::SetRole(delegate.clone(), Role::Admin, false),
+        &0,
+    );
+    env.as_contract(&governance, || remove_proposal(&env, 0).unwrap());
+    let bytes_before = env.as_contract(&governance, || storage::pending_bytes(&env).unwrap());
+    assert_eq!(
+        client.try_execute_proposal(&admin, &2),
+        Err(Ok(GovernanceError::ProposalNotFound))
+    );
+    assert!(client.has_role(&delegate, &Role::Admin));
+    assert!(client.get_proposal(&2).is_some());
+    assert_eq!(client.active_ids(), Vec::from_array(&env, [0, 2]));
+    assert_eq!(
+        env.as_contract(&governance, || storage::pending_bytes(&env).unwrap()),
+        bytes_before
+    );
+}
+
+#[test]
+fn idempotent_admin_grant_needs_no_new_acceptance_and_noop_revoke_does_not_sweep() {
+    use soroban_sdk::IntoVal;
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    let delegate = Address::generate(&env);
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    env.as_contract(&governance, || {
+        roles::grant(&env, &delegate, Role::Admin, &admin).unwrap();
+    });
+    let action = GovernanceAction::SetRole(delegate.clone(), Role::Admin, true);
+    client.create_proposal(&admin, &0, &action, &0);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 0_u64).into_val(&env),
+    );
+    client.execute_proposal(&admin, &0);
+    let noop = GovernanceAction::SetRole(delegate, Role::ManualTripper, false);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "create_proposal",
+        (&admin, 1_u64, &noop, 0_u64).into_val(&env),
+    );
+    client.create_proposal(&admin, &1, &noop, &0);
+    // A missing unrelated body must not be inspected on a no-op removal.
+    let pending = GovernanceAction::SetActionTtl(OperationKind::SetProxy, 0);
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "create_proposal",
+        (&admin, 2_u64, &pending, 0_u64).into_val(&env),
+    );
+    client.create_proposal(&admin, &2, &pending, &0);
+    env.as_contract(&governance, || remove_proposal(&env, 2).unwrap());
+    authorize_call(
+        &env,
+        &admin,
+        &governance,
+        "execute_proposal",
+        (&admin, 1_u64).into_val(&env),
+    );
+    client.execute_proposal(&admin, &1);
+    assert_eq!(client.active_ids(), Vec::from_array(&env, [2]));
+}
+
+#[test]
+fn proposal_groups_preserve_neighbors_and_remove_empty_entries() {
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let action = GovernanceAction::SetActionTtl(OperationKind::RemoveProxy, 0);
+    for id in 0..10 {
+        client.create_proposal(&admin, &id, &action, &0);
+    }
+    client.cancel_proposal(&admin, &7);
+    client.cancel_proposal(&admin, &8);
+    assert!(client.get_proposal(&6).is_some());
+    assert!(client.get_proposal(&7).is_none());
+    assert!(client.get_proposal(&8).is_none());
+    assert!(client.get_proposal(&9).is_some());
+    client.execute_proposal(&admin, &9);
+    env.as_contract(&governance, || {
+        assert!(env.storage().persistent().has(&DataKey::ProposalGroup(0)));
+        assert!(!env.storage().persistent().has(&DataKey::ProposalGroup(1)));
+    });
+    for id in 0..7 {
+        client.cancel_proposal(&admin, &id);
+    }
+    env.as_contract(&governance, || {
+        assert!(!env.storage().persistent().has(&DataKey::ProposalGroup(0)));
+    });
+    assert!(client.active_ids().is_empty());
+    assert_eq!(client.next_proposal_id(), 10);
+}
+
+#[test]
+fn sparse_full_queue_revocation_fits_default_transaction_resource_limits() {
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    let delegate = Address::generate(&env);
+    env.as_contract(&governance, || {
+        roles::grant(&env, &delegate, Role::ProxyConfigurationManager, &admin).unwrap();
+    });
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let action = GovernanceAction::SetActionTtl(OperationKind::RemoveProxy, 0);
+    // Retain IDs in 63 distinct historical ranges, deleting seven intervening
+    // bodies per range. Storage footprint must depend on occupancy, not ID/8.
+    for index in 0..63_u64 {
+        env.cost_estimate().budget().reset_default();
+        client.create_proposal(&delegate, &(index * 8), &action, &0);
+        for offset in 1..8 {
+            env.cost_estimate().budget().reset_default();
+            let id = index * 8 + offset;
+            client.create_proposal(&admin, &id, &action, &0);
+            client.cancel_proposal(&admin, &id);
+        }
+    }
+    client.create_proposal(
+        &admin,
+        &504,
+        &GovernanceAction::SetRole(delegate.clone(), Role::ProxyConfigurationManager, false),
+        &0,
+    );
+    assert_eq!(client.active_ids().len(), 64);
+    env.cost_estimate().budget().reset_default();
+    client.execute_proposal(&admin, &504);
+    let resources = env.cost_estimate().resources();
+    assert!(
+        resources.disk_read_entries + resources.memory_read_entries + resources.write_entries
+            <= 100
+    );
+    assert!(resources.write_entries <= 50);
+    assert!(resources.write_bytes <= 132_096);
+    assert!(resources.contract_events_size_bytes <= 8_192);
+    assert!(env.cost_estimate().budget().cpu_instruction_cost() < 100_000_000);
+    assert!(client.active_ids().is_empty());
+    assert_eq!(client.next_proposal_id(), 505);
+    for index in 0..63_u64 {
+        env.cost_estimate().budget().reset_default();
+        assert!(client.get_proposal(&(index * 8)).is_none());
+    }
+    assert!(client.get_proposal(&504).is_none());
+    env.as_contract(&governance, || {
+        for group in 0..8 {
+            assert!(!env
+                .storage()
+                .persistent()
+                .has(&DataKey::ProposalGroup(group)));
+        }
+        assert_eq!(storage::pending_bytes(&env).unwrap(), 0);
+    });
+}
+
+#[test]
+fn maximum_proposal_group_encoding_fits_ledger_entry_limit() {
+    use soroban_sdk::{xdr::ToXdr, Map};
+    let env = Env::default();
+    let creator = Address::generate(&env);
+    let asset = Asset::Other(Symbol::new(&env, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    let mut config = sample_proxy_config(&env, asset.clone(), creator.clone());
+    let mut sources = Vec::new(&env);
+    for _ in 0..16 {
+        sources.push_back(SourceConfig {
+            oracle: Address::generate(&env),
+            asset: asset.clone(),
+            expected_decimals: 18,
+        });
+    }
+    config.aggregator = templar_proxy_oracle_soroban_common::AggregatorConfig::MedianHigh(
+        templar_proxy_oracle_soroban_common::MedianConfig {
+            sources,
+            min_sources: 16,
+        },
+    );
+    let proposals = [
+        GovernanceAction::SetProxy(asset.clone(), config),
+        GovernanceAction::SetManualTrip(asset, true, Some(Bytes::from_array(&env, &[255; 1024]))),
+    ];
+    for operation in proposals {
+        let proposal = Proposal {
+            operation,
+            created_at_ns: u64::MAX,
+            ttl_ns: MAX_PROPOSAL_TTL_NS,
+            created_by: creator.clone(),
+        };
+        let mut group = Map::new(&env);
+        for id in 0..storage::PROPOSALS_PER_GROUP {
+            group.set(id, proposal.clone());
+        }
+        // SetProxy with 16 maximum-length symbolic assets is the largest
+        // admitted action; the other variable-size action is 1024-byte metadata.
+        // Leave ample room for the ledger key and LedgerEntry envelope below 64 KiB.
+        assert!(group.to_xdr(&env).len() < 60 * 1024);
+    }
+}
+
+#[test]
+fn byte_bounded_mixed_queue_rejects_atomically_and_admin_revoke_fits() {
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    let delegate = Address::generate(&env);
+    env.as_contract(&governance, || {
+        roles::grant(&env, &delegate, Role::ProxyConfigurationManager, &admin).unwrap();
+        roles::grant(&env, &delegate, Role::ManualTripper, &admin).unwrap();
+    });
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let asset = Asset::Other(Symbol::new(&env, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    let mut sources = Vec::new(&env);
+    for _ in 0..16 {
+        sources.push_back(SourceConfig {
+            oracle: Address::generate(&env),
+            asset: asset.clone(),
+            expected_decimals: 18,
+        });
+    }
+    let mut config = sample_proxy_config(&env, asset.clone(), delegate.clone());
+    config.aggregator = templar_proxy_oracle_soroban_common::AggregatorConfig::MedianHigh(
+        templar_proxy_oracle_soroban_common::MedianConfig {
+            sources,
+            min_sources: 16,
+        },
+    );
+    let large = GovernanceAction::SetProxy(asset.clone(), config);
+    let small = GovernanceAction::SetManualTrip(asset, true, None);
+    let mut large_ids = StdVec::new();
+    let mut small_ids = StdVec::new();
+    let mut id = 0_u64;
+    loop {
+        env.cost_estimate().budget().reset_default();
+        let operation = if id % 8 == 0 { &small } else { &large };
+        match client.try_create_proposal(&delegate, &id, operation, &0) {
+            Ok(_) => {
+                if id % 8 == 0 {
+                    small_ids.push(id);
+                } else {
+                    large_ids.push(id);
+                }
+                id += 1;
+            }
+            Err(Ok(GovernanceError::PendingProposalBytesExceeded)) => break,
+            other => panic!("unexpected admission result: {other:?}"),
+        }
+    }
+    assert!(!large_ids.is_empty());
+    let before_ids = client.active_ids();
+    let before_bytes = env.as_contract(&governance, || storage::pending_bytes(&env).unwrap());
+    let before_events = governance_events(&env, &governance);
+    env.cost_estimate().budget().reset_default();
+    assert_eq!(
+        client.try_create_proposal(&delegate, &id, &large, &0),
+        Err(Ok(GovernanceError::PendingProposalBytesExceeded))
+    );
+    assert_eq!(client.next_proposal_id(), id);
+    assert_eq!(client.active_ids(), before_ids);
+    assert_eq!(
+        env.as_contract(&governance, || storage::pending_bytes(&env).unwrap()),
+        before_bytes
+    );
+    assert_eq!(governance_events(&env, &governance), before_events);
+
+    loop {
+        env.cost_estimate().budget().reset_default();
+        match client.try_create_proposal(&delegate, &id, &small, &0) {
+            Ok(_) => {
+                small_ids.push(id);
+                id += 1;
+            }
+            Err(Ok(GovernanceError::PendingProposalBytesExceeded)) => break,
+            other => panic!("unexpected reserve fill result: {other:?}"),
+        }
+    }
+    let used = env.as_contract(&governance, || storage::pending_bytes(&env).unwrap());
+    assert!(used <= storage::MAX_PENDING_PROPOSAL_BYTES - storage::ADMIN_PROPOSAL_BYTE_RESERVE);
+    env.cost_estimate().budget().reset_default();
+    client.create_proposal(
+        &admin,
+        &id,
+        &GovernanceAction::SetRole(delegate.clone(), Role::ManualTripper, false),
+        &0,
+    );
+    env.cost_estimate().budget().reset_default();
+    client.execute_proposal(&admin, &id);
+    let resources = env.cost_estimate().resources();
+    assert!(env.cost_estimate().budget().cpu_instruction_cost() < 100_000_000);
+    assert!(
+        resources.disk_read_entries + resources.memory_read_entries + resources.write_entries
+            <= 100
+    );
+    assert!(resources.write_entries <= 50);
+    assert!(resources.write_bytes <= 132_096);
+    assert!(resources.contract_events_size_bytes <= 8_192);
+    assert!(!client.has_role(&delegate, &Role::ManualTripper));
+    assert_eq!(client.next_proposal_id(), id + 1);
+    for proposal_id in small_ids {
+        assert!(client.get_proposal(&proposal_id).is_none());
+    }
+    for proposal_id in large_ids {
+        assert!(client.get_proposal(&proposal_id).is_some());
+    }
+}
+
+#[test]
+fn admin_revocation_keeps_only_operations_allowed_by_remaining_roles() {
+    let (env, admin, _, governance, _) = setup_with_ttl(0);
+    let delegate = Address::generate(&env);
+    env.as_contract(&governance, || {
+        roles::grant(&env, &delegate, Role::Admin, &admin).unwrap();
+        roles::grant(&env, &delegate, Role::ManualTripper, &admin).unwrap();
+    });
+    let client = ProxyOracleGovernanceClient::new(&env, &governance);
+    let actions = [
+        GovernanceAction::SetActionTtl(OperationKind::Upgrade, 0),
+        GovernanceAction::SetActionTtl(OperationKind::SetProxy, 0),
+        GovernanceAction::SetManualTrip(Asset::Other(Symbol::new(&env, "BTC")), true, None),
+    ];
+    for id in 0..60_u64 {
+        env.cost_estimate().budget().reset_default();
+        let action = match id % 3 {
+            0 => &actions[0],
+            1 => &actions[1],
+            _ => &actions[2],
+        };
+        client.create_proposal(&delegate, &id, action, &0);
+    }
+    for id in 60..63_u64 {
+        env.cost_estimate().budget().reset_default();
+        client.create_proposal(&admin, &id, &actions[0], &0);
+    }
+    client.create_proposal(
+        &admin,
+        &63,
+        &GovernanceAction::SetRole(delegate.clone(), Role::Admin, false),
+        &0,
+    );
+    env.cost_estimate().budget().reset_default();
+    client.execute_proposal(&admin, &63);
+    let resources = env.cost_estimate().resources();
+    assert!(env.cost_estimate().budget().cpu_instruction_cost() < 100_000_000);
+    assert!(
+        resources.disk_read_entries + resources.memory_read_entries + resources.write_entries
+            <= 100
+    );
+    assert!(resources.write_entries <= 50);
+    assert!(resources.write_bytes <= 132_096);
+    assert!(resources.contract_events_size_bytes <= 8_192);
+    assert!(!client.has_role(&delegate, &Role::Admin));
+    assert!(client.has_role(&delegate, &Role::ManualTripper));
+    for id in 0..60_u64 {
+        env.cost_estimate().budget().reset_default();
+        assert_eq!(client.get_proposal(&id).is_some(), id % 3 == 2);
+    }
+    for id in 60..63_u64 {
+        assert!(client.get_proposal(&id).is_some());
+    }
+    assert_eq!(client.active_ids().len(), 23);
+    assert_eq!(client.next_proposal_id(), 64);
 }

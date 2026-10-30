@@ -30,7 +30,8 @@ pub use events::{
 use engine::{effective_ttl, execute_action, now, require_authorized};
 use storage::{
     extend_active_proposal_ttls, load_header, load_proposal, proposal_from_kernel,
-    proposal_to_kernel, remove_proposal, save_header, save_proposal, DataKey, KernelGovernance,
+    proposal_to_kernel, remove_proposal, save_header, save_pending_bytes, save_proposal, DataKey,
+    KernelGovernance,
 };
 
 const MAX_PENDING_PROPOSALS: u32 = 64;
@@ -63,7 +64,8 @@ impl ProxyOracleGovernance {
                 MAX_PENDING_PROPOSALS,
             ),
         );
-        roles::grant(&env, &admin, Role::Admin, &admin);
+        save_pending_bytes(&env, 0);
+        roles::grant(&env, &admin, Role::Admin, &admin)?;
         Ok(())
     }
 
@@ -104,6 +106,17 @@ impl ProxyOracleGovernance {
         if requested_ttl > MAX_PROPOSAL_TTL_NS {
             return Err(GovernanceError::TtlExceedsMaximum);
         }
+        let is_admin = roles::has_role(&env, &caller, Role::Admin);
+        if !is_admin
+            && header.active_ids().len()
+                >= header.max_pending_proposals().saturating_sub(1) as usize
+        {
+            // Preserve malformed-input diagnostics at the reserved-slot boundary.
+            templar_proxy_oracle_governance_kernel::OperationPolicy::validate_on_create(
+                &operation,
+            )?;
+            return Err(GovernanceError::TooManyPendingProposals);
+        }
         let kernel_proposal = header
             .create(
                 id,
@@ -117,7 +130,7 @@ impl ProxyOracleGovernance {
             return Err(GovernanceError::TtlExceedsMaximum);
         }
         let proposal = proposal_from_kernel(kernel_proposal);
-        save_proposal(&env, id, &proposal);
+        save_proposal(&env, id, &proposal, is_admin)?;
         save_header(&env, &header);
         ProposalSubmitted {
             id,
@@ -136,11 +149,14 @@ impl ProxyOracleGovernance {
 
     pub fn cancel_proposal(env: Env, caller: Address, id: u64) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
+        caller.require_auth();
         let proposal = load_proposal(&env, id).ok_or(GovernanceError::ProposalNotFound)?;
-        require_authorized(&env, &caller, &proposal.operation)?;
+        if caller != proposal.created_by && !roles::has_role(&env, &caller, Role::Admin) {
+            return Err(GovernanceError::Unauthorized);
+        }
         let mut header = load_header(&env)?;
         header.cancel(id).map_err(map_cancel_error)?;
-        remove_proposal(&env, id);
+        remove_proposal(&env, id)?;
         save_header(&env, &header);
         ProposalRevoked { id }.publish(&env);
         Ok(())
@@ -159,8 +175,8 @@ impl ProxyOracleGovernance {
         header
             .execute(id, &kernel_proposal, now(&env)?)
             .map_err(map_execute_error)?;
+        remove_proposal(&env, id)?;
         execute_action(&env, &mut header, &proposal.operation, &caller)?;
-        remove_proposal(&env, id);
         save_header(&env, &header);
         ProposalAccepted { id }.publish(&env);
         Ok(())
@@ -203,9 +219,21 @@ impl ProxyOracleGovernance {
 
     pub fn extend_ttl(env: Env) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
-        extend_active_proposal_ttls(&env, &load_header(&env)?);
+        roles::extend_ttl(&env);
+        load_header(&env)?;
+        extend_active_proposal_ttls(&env);
         TtlExtended {}.publish(&env);
         Ok(())
+    }
+
+    pub fn extend_role_ttl(
+        env: Env,
+        role: Role,
+        offset: u32,
+        count: u32,
+    ) -> Result<Option<u32>, GovernanceError> {
+        extend_instance_ttl(&env);
+        roles::extend_page(&env, role, offset, count)
     }
 }
 
@@ -213,7 +241,7 @@ fn map_create_error(error: KernelCreateError<GovernanceError>) -> GovernanceErro
     match error {
         KernelCreateError::IdOutOfOrder(_) => GovernanceError::ProposalOutOfOrder,
         KernelCreateError::IdOverflow => GovernanceError::ArithmeticOverflow,
-        KernelCreateError::TooManyPendingProposals => GovernanceError::InvalidInput,
+        KernelCreateError::TooManyPendingProposals => GovernanceError::TooManyPendingProposals,
         KernelCreateError::Validation(error) => error,
     }
 }

@@ -7,8 +7,9 @@ The runtime is **not** itself a SEP-40 contract. It exposes:
 - `refresh(asset)` — pull one asset's source prices, aggregate through `templar-proxy-oracle-kernel`, apply freshness + breakers, and write the resulting status to its cache. A failed or blocked refresh replaces an accepted cache, so readers fail closed. A candidate with a non-advancing publication timestamp is still evaluated by breakers; if accepted, the cache retains the latest source-time aggregate and `RefreshEvaluated` records the candidate when it differs. The only path that performs source IO.
 - `aggregated_latest(asset) -> Option<NormalizedPrice>` — the most recently
   accepted source-time aggregate `{ mantissa, expo, timestamp }`, or `None`
-  after its persisted acceptance deadline or any terminal cache status. Later
-  policy changes cannot resurrect an expired proof.
+  when either cache-update age or aggregate-publication age exceeds
+  `max_age_secs` (inclusive boundary, saturating subtraction), or after a
+  terminal cache status. Historical reads do not impose this freshness check.
 - `aggregated_history(asset, records)` — the last N accepted aggregates with
   strictly increasing publication timestamps, or `None` while a manual or
   enforced automatic breaker blocks the asset. It is a monotonic source-time
@@ -16,9 +17,28 @@ The runtime is **not** itself a SEP-40 contract. It exposes:
 - Introspection: `registered_assets`, `source_base`, `get_proxy`, `get_cached`,
   `get_breaker_set_view`, `get_owner`.
 
-Any changed proxy policy clears cache and accepted history. Freshness/cache-only
-changes retain breaker state; changing the ordered `(oracle, asset)` pairs or
-`min_sources` also clears breakers. Reads are storage-only and fail closed.
+Any changed proxy policy clears cache and accepted history. Freshness-only changes
+retain breakers; changing the aggregation method, ordered `(oracle, asset,
+expected_decimals)` sources, or median quorum resets breakers while retaining
+their next-ID allocator. Identical configuration is a no-op. Removing/recreating
+an asset also retains that allocator; removed-asset views hide the tombstone.
+Reads are storage-only and fail closed.
+
+`ProxyConfig` has required `u64` `max_age_secs` and `max_clock_drift_secs` fields
+and one `aggregator: AggregatorConfig`:
+
+- `MedianLow(MedianConfig { sources, min_sources })`
+- `MedianHigh(MedianConfig { sources, min_sources })`
+- `Priority(sources)` — first surviving source in configured order, not a quorum.
+
+Each source is `SourceConfig { oracle: Address, asset: Asset,
+expected_decimals: u32 }`. Medians use equal unit weights; there is no public
+weight field. Configure 1–16 distinct oracle addresses, pins ≤ 18, and median
+quorum in `1..=sources.len()`. Admission queries decimals and rejects pin
+mismatches; refresh discards sources whose decimals or base have changed.
+Freshness bounds are required (maximum seven days / one hour respectively);
+zero age means same-ledger freshness. Identity checks do not prove provider
+independence or manipulation resistance. See [configuration examples](RUNBOOK.md#5-configure-sources-breakers-and-roles).
 
 RedStone enters through its `RedStoneSep40` adapter (`CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF` on mainnet, assets keyed by SAC address); its published per-feed contracts are Chainlink-shaped, not SEP-40, and cannot be sources. Pyth Lazer enters through `PythLazerSource`. This proxy verifies no oracle payloads itself.
 
@@ -27,9 +47,19 @@ RedStone enters through its `RedStoneSep40` adapter (`CBMGLKUQZVSAIL5CPDDAWSUY7M
 The runtime's owner — normally the companion `templar-proxy-oracle-soroban-governance-contract` — is managed by `stellar_access::ownable` (two-step `transfer_ownership` / `accept_ownership` / `renounce_ownership`, plus `get_owner`). Every config mutation is `#[only_owner]`, so the owner must authorize it.
 
 - **Handoff**: an Admin `TransferOwnership(new_owner)` proposal dispatches `transfer_ownership`; the new owner finalizes with `accept_ownership` (directly, or via an `AcceptOwnership` proposal on its own governance contract).
+  `CancelOwnershipTransfer(pending_owner)` uses the same Admin role and transfer
+  timelock; a matching expired-but-stored transfer can also be cancelled.
 - **Renounce**: `RenounceOwnership` permanently clears the owner; every later `#[only_owner]` call then panics and the config is frozen. No undo.
 - **Roles** (`stellar-access` RBAC): `Admin`, `ManualTripper`, `CircuitBreakerOperator`, `ProxyConfigurationManager`. Admin overrides any action; the last Admin cannot be removed. Emergency trips use the `SetManualTrip` action (ManualTripper role).
 - **Proposals**: `create_proposal(caller, id, operation, requested_ttl)`, executed by id after maturity via `execute_proposal`; `cancel_proposal` frees a slot. At most 64 pending. Query with `active_ids`, `get_proposal`, `get_operation_ttl`, `get_effective_proposal_ttl`. Per-operation maturity (`OperationKind` / `TtlConfig`) is seeded uniform at construction and adjusted with `SetActionTtl`; `Rearm` and `SetEnforced` carry independent TTLs.
+  Delegates may occupy only 63 slots; Admin retains access to the 64th.
+  Maturity is snapshotted at creation and proposals do not expire. Cancellation
+  is creator-or-current-Admin; an authorized peer may execute but cannot cancel.
+  Revoking a creator purges proposals no longer authorized by their remaining roles.
+  Retry the exact payload with its original explicit ID; stale-ID rejection
+  does not prove whose operation succeeded. Reconcile recorded transactions or
+  a matching live proposal; if the outcome remains unknown, stop rather than
+  select a new ID or execute another caller's proposal.
 - **Upgrades**: `upgrade(new_wasm_hash, operator)` on the runtime, proposed via the Admin `Upgrade` action. NEAR's `AdminFunctionCall` arbitrary dispatch is intentionally not ported — the upgrade surface stays typed.
 
 The proposal state machine is shared with NEAR via the `no_std` `templar-proxy-oracle-governance-kernel`; each runtime owns its own authorization, storage encoding, and events.
@@ -54,6 +84,10 @@ the immutable `{ parent_oracle, asset, decimals, resolution, base }`.
 buckets; unrepresentable values and a parent-base mismatch fail closed. SEP-40
 metadata (`contractmeta!(key = "sep", val = "40")`) is declared here, not on the
 runtime. The release manifest binds the adapter Wasm, not deployed feed addresses.
+`prices` returns newest-first distinct resolution buckets, skipping unconvertible
+records. `price` buckets the requested time and returns the newest convertible
+record in that bucket (request 109 at resolution 10 resolves bucket 100).
+Parent history stays chronological and freshness-independent, but breaker-gated.
 
 ## PythLazerSource
 
@@ -139,13 +173,13 @@ renew target instance and code entries.
 
 ## Operational notes
 
-- Configure 1–16 sources; `min_sources` must be in `[1, sources.len()]`. Invalid quorum is rejected. One source with `min_sources = 1` is accepted for feeds with a single provider; it has no cross-check, so prefer several independent sources where they exist.
+- Use the typed aggregation configuration above; Priority is ordered fallback and has no median quorum or cross-check.
 - `refresh(asset)` is the only source-IO path; all reads are storage-only.
-- Manage breakers with the governed `add_breaker` / `remove_breaker` / `rearm` / `set_enforced`. Inert params and insufficient history are rejected; `MonotonicRun` requires zero sampling, while a `CumulativeChange` baseline is intentionally rebased only by remove → successful refresh → add. Any change to an asset's config clears its cache and history; changing the ordered `(oracle, asset)` pairs or `min_sources` additionally clears its breaker set, so configure and add breakers again after a source migration. Every persisted breaker set is semantically valid. An invalid stored set is unreachable; recover from genuine corruption with `remove_proxy` → `set_proxy`.
+- Manage breakers with governed `add_breaker` / `remove_breaker` / `rearm` / `set_enforced`. Inert parameters and insufficient history are rejected. Relative rules cannot establish a trusted first sample; `CumulativeChange` requires a fresh accepted baseline on installation, rebased only by remove → successful refresh → add. Window/streak rules count samples, not wall-clock time; keeper cadence and long gaps can cause conservative availability trips. `MonotonicRun` requires zero sampling. Rearm preserves histories; `ArmedAfter` intentionally permits privileged recovery during its cooldown, not a fail-closed outage. Missing/corrupt decoder state is not permission to reset an unknown allocator; archived state requires normal restoration.
 - Manual-trip metadata is event-only, capped at 1024 bytes, not stored in breaker state.
 - Schedule an ops/keeper job for Soroban TTL maintenance; do not rely on curators to remember this manually.
 - Runtime `extend_ttl(asset)` is permissionless for registered assets and renews every surviving persistent `Proxy`, `Breakers`, `Cache`, and `History` entry.
-- Governance `extend_ttl()` is permissionless and renews governance instance state plus active persistent proposal bodies.
+- Governance `extend_ttl()` renews instance state, `ExistingRoles`, and active proposal groups. Also page `extend_role_ttl` for all four roles until each returns `None`, renewing count/index/membership keys; see [TTL extension](RUNBOOK.md#7-ttl-extension).
 - SEP-40 adapter `extend_ttl()` is permissionless and renews adapter instance config. Adapter reads also refresh instance TTL when the remaining TTL is below threshold.
 - Keep optimized WASMs within budget: runtime & governance ≤ 128 KiB; adapter,
   Lazer source, and batcher ≤ 32 KiB. `size-check` is a developer gate only;
@@ -158,7 +192,7 @@ renew target instance and code entries.
 
 - Source contracts must expose the SEP-40 ABI used here. NEAR Pyth sources and NEAR price transformers are not ported.
 - Soroban storage is not permanent (unlike NEAR); a missed `extend_ttl` risks eviction. Events are compact typed events, not byte-for-byte equal to NEAR's JSON events.
-- Not an in-place migration target for earlier prototype storage layouts — redeploy/reinitialize or ship an explicit migration first.
+- **Fresh-stack only:** unified aggregation/pin XDR and eight persistent proposal groups (up to eight unchanged proposal bodies each) are incompatible with previous runtime/governance storage. In-place migration is skipped; leave existing stacks unchanged and deploy a fresh matching stack. There is no old decoder, defaulting, or overlay configuration. The independent adapter proof mounts catalog-pinned 0.1.4 and current compiled Wasms and verifies the actual swap with preserved Config/owner/decommission state; it does not approve a production upgrade.
 - **OZ `upgradeable` not adopted**: crates.io v0.7.1 needs Rust ≥ 1.87 (`is_multiple_of`) but the toolchain pins 1.86; the 1.86-compat fork is locked to soroban-sdk 23.x, not the 25.0.1 used here. The hand-rolled `upgrade` is the stopgap until the toolchain bumps or the fork rebases — don't re-investigate without one of those.
 
 ## Verification and release
@@ -178,6 +212,11 @@ canonical paths, and size limits without rebuilding. Developer `build`,
 `optimize`, and `size-check` invalidate prior PASS evidence and never emit a
 release manifest.
 
+`test-integration` first builds the optimized adapter, then explicitly enables
+`compiled-wasm-tests` to mount the verified released 0.1.4 fixture and current
+Wasm in the real Soroban host. CI runs this gate in its Soroban job; ordinary
+`just test-fast` remains native-only and needs no Stellar build tools.
+
 The live proof is testnet-only and consumes that validated release:
 
 ```bash
@@ -195,6 +234,14 @@ submission.
 Re-running re-hashes and resumes one unresolved envelope by its transaction
 hash. Use `--reinitialize` only to deliberately discard that state and plan new
 contract IDs; destructive reset refuses an unmarked non-empty output directory.
+
+The schema-2 checkpoint rejects schema-1 aggregation payloads. `configure` pins
+observed source decimals, configures the proxy, then hardens all 14 governance
+operation timelocks to 24 hours; `SetActionTtl` is hardened last so the deliberate
+zero-TTL bootstrap completes without a new waiting period. Resume accepts each
+nonzero TTL only when the checkpoint contains its matching confirmed
+create/execute pair. A changed TTL, missing receipt or ambiguous execution does
+not authorize a replacement proposal or a fresh ID.
 
 All five contracts build through `stellar contract build` with Soroban Rust
 1.99.0; host tests still use the workspace toolchain. Plain `cargo build` is not

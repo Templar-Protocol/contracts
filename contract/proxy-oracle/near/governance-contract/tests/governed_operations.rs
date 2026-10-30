@@ -255,3 +255,319 @@ async fn self_upgrade_redeploys_governance_and_keeps_it_working(
     );
     Ok(())
 }
+
+/// Unreadable bodies must abort the whole revocation receipt, even after an earlier purge.
+/// This exercises host rollback, not catch_unwind around a direct Rust call.
+#[rstest]
+#[case::missing(false)]
+#[case::corrupt(true)]
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one receipt rollback scenario binds the corrupted fixture to a complete storage snapshot"
+)]
+async fn revocation_with_unreadable_body_rolls_back_membership_ledger_and_prior_purge(
+    #[future(awt)] harness: SandboxHarness,
+    #[case] corrupt: bool,
+) -> Result<()> {
+    use templar_gateway_methods_spec::account::ViewState;
+    use templar_proxy_oracle_governance_kernel::Governance;
+    use templar_proxy_oracle_near_governance_common::{CreateProposalArgs, GovernancePolicy};
+
+    let mut governed = governed(&harness).await?;
+    let delegate = harness.create_user("delegate").await?.0;
+    governed
+        .govern(Operation::Reflexive(ReflexiveOperation::SetRole {
+            account_id: delegate.clone(),
+            role: Role::Admin,
+            set: true,
+        }))
+        .await?;
+    common::call(
+        &governed.network,
+        &governed.governance,
+        "create_proposal",
+        CreateProposalArgs {
+            id: 2,
+            operation: Operation::TargetFunctionCall(target::admin_set_manual_trip(
+                PRICE_ID, true, None, None,
+            )?),
+            requested_ttl: Nanoseconds::zero(),
+        },
+        &delegate,
+        common::ONE_YOCTO,
+    )
+    .await?;
+    common::call(
+        &governed.network,
+        &governed.governance,
+        "create_proposal",
+        CreateProposalArgs {
+            id: 3,
+            operation: Operation::Reflexive(ReflexiveOperation::SetRole {
+                account_id: delegate.clone(),
+                role: Role::Admin,
+                set: false,
+            }),
+            requested_ttl: Nanoseconds::zero(),
+        },
+        &governed.admin,
+        common::ONE_YOCTO,
+    )
+    .await?;
+
+    let client = harness.client()?;
+    let query = ViewState {
+        account_id: governed.governance.clone(),
+        prefix: Vec::new().into(),
+    };
+    let entries = client.read(query.clone()).await?;
+    let state = entries
+        .iter()
+        .find(|entry| entry.key.0 == b"STATE")
+        .expect("governance state exists");
+    // Contract and VersionedState are transparent Borsh wrappers. LookupMap stores its prefix.
+    // Check exact bytes before seeding a phantom active ID whose body is absent or undecodable.
+    let (header, prefix, oracle): (Governance<GovernancePolicy>, Vec<u8>, AccountId) =
+        near_sdk::borsh::from_slice(&state.value.0)?;
+    assert_eq!(
+        near_sdk::borsh::to_vec(&(header.clone(), prefix.clone(), oracle.clone()))?,
+        state.value.0
+    );
+    assert_eq!(header.active_ids(), &[2, 3]);
+    let header = Governance::try_from_parts(
+        5,
+        vec![2, 3, 4],
+        header.ttls().clone(),
+        header.max_pending_proposals(),
+    )
+    .unwrap();
+    let mut patch = vec![(
+        b"STATE".to_vec(),
+        near_sdk::borsh::to_vec(&(header, prefix.clone(), oracle))?,
+    )];
+    if corrupt {
+        let mut key = prefix;
+        key.extend_from_slice(&4_u32.to_le_bytes());
+        patch.push((key, vec![0xff]));
+    }
+    harness.patch_state(&governed.governance, patch).await?;
+    let mut before = client.read(query.clone()).await?;
+    let original = governed.proposal(2).await?;
+    let revocation = governed.proposal(3).await?;
+    let failed = governed
+        .try_execute_with_gas(3, common::GATEWAY_GAS)
+        .await?
+        .assert_failure();
+    let expected_error = if corrupt {
+        "Cannot deserialize element"
+    } else {
+        "called `Option::unwrap_or_reject()` on a `None` value"
+    };
+    assert!(
+        format!("{failed:?}").contains(expected_error),
+        "revocation must reach the unreadable proposal body: {failed:?}"
+    );
+    assert!(
+        failed
+            .logs()
+            .iter()
+            .all(|log| !log.contains("\"event\":\"executed\"")),
+        "failed revocation must not advertise successful execution"
+    );
+    assert!(
+        view::<bool>(
+            &governed.network,
+            &governed.governance,
+            "has_role",
+            json!({ "account_id": delegate, "role": "Admin" }),
+        )
+        .await?
+    );
+    assert_eq!(governed.proposal(2).await?, original);
+    assert_eq!(governed.proposal(3).await?, revocation);
+    assert_eq!(
+        view::<Vec<u32>>(
+            &governed.network,
+            &governed.governance,
+            "list_proposals",
+            json!({}),
+        )
+        .await?,
+        vec![2, 3, 4]
+    );
+    let mut after = client.read(query).await?;
+    before.sort_unstable_by(|a, b| a.key.0.cmp(&b.key.0));
+    after.sort_unstable_by(|a, b| a.key.0.cmp(&b.key.0));
+    assert_eq!(
+        after, before,
+        "failed receipt must revert every storage key"
+    );
+    Ok(())
+}
+
+/// A legacy (unaccounted) queue must still enforce policy recovery on execution,
+/// and a failed execution must roll back the whole receipt rather than leaving
+/// an unrecoverable policy key behind.
+#[rstest]
+#[tokio::test]
+async fn legacy_unmarked_policy_execution_rolls_back_through_real_receipt(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    use near_sdk::Gas;
+    use templar_gateway_methods_spec::account;
+    use templar_gateway_testing::{wasm, TEST_FINALITY_POLICY};
+    use templar_proxy_oracle_near_governance_common::{
+        CreateProposalArgs, GovernancePolicy, LegacyOperation, MethodPolicy, Proposal,
+    };
+
+    let oracle = harness.create_user("legacy-oracle").await?;
+    let governance = harness.create_user("legacy-governance").await?;
+    let admin = harness.create_user("legacy-admin").await?;
+    let small_legacy = LegacyOperation::SetManualTrip {
+        id: PRICE_ID,
+        is_manually_tripped: true,
+        metadata: None,
+    };
+    let small_operation = Operation::try_from(small_legacy.clone())?;
+    harness
+        .deploy_and_init(
+            &governance.0,
+            wasm::released(
+                templar_gateway_testing::ArtifactId::ProxyGovernance,
+                "0.1.0",
+            )
+            .await,
+            "new",
+            json!({
+                "proxy_oracle_id": oracle.0,
+                "admin_id": admin.0,
+                "ttls": {
+                    "set_proxy": "0",
+                    "configure_circuit_breakers": "0",
+                    "add_circuit_breaker": "0",
+                    "remove_circuit_breaker": "0",
+                    "set_manual_trip": "0",
+                    "rearm": "0",
+                    "set_enforced": "0",
+                    "set_action_ttl": "0",
+                    "set_role": "0",
+                    "admin_upgrade": "0",
+                    "admin_function_call": "0",
+                },
+            }),
+        )
+        .await?;
+    common::call(
+        &harness.network,
+        &governance.0,
+        "create_proposal",
+        CreateProposalArgs {
+            id: 0,
+            operation: small_legacy,
+            requested_ttl: Nanoseconds::zero(),
+        },
+        &admin.0,
+        common::ONE_YOCTO,
+    )
+    .await?;
+    // Migrating a real released contract produces an unmarked legacy queue;
+    // no byte accounting exists until it drains.
+    harness
+        .deploy_and_init(
+            &governance.0,
+            wasm::proxy_governance().await.to_vec(),
+            "migrate",
+            json!({"from_version": "v0"}),
+        )
+        .await?;
+
+    let method = "m".repeat(1_300_000);
+    let long_proposal = Proposal {
+        operation: Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+            method: method.clone(),
+            policy: Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::Admin,
+            }),
+        }),
+        created_at: Nanoseconds::zero(),
+        ttl: Nanoseconds::zero(),
+        created_by: admin.0.clone(),
+    };
+    let client = harness.client()?;
+    let entries = client
+        .read(account::ViewState {
+            account_id: governance.0.clone(),
+            prefix: Vec::new().into(),
+        })
+        .await?;
+    let legacy_entries = entries
+        .into_iter()
+        .map(|entry| {
+            let value = near_sdk::borsh::from_slice::<Proposal<Operation>>(&entry.value.0)
+                .ok()
+                .filter(|proposal| proposal.operation == small_operation)
+                .map_or(entry.value.0, |_| {
+                    near_sdk::borsh::to_vec(&long_proposal).expect("proposal serializes")
+                });
+            (entry.key.0, value)
+        })
+        .collect::<Vec<_>>();
+    harness.patch_state(&governance.0, legacy_entries).await?;
+    let before = {
+        let mut entries = client
+            .read(account::ViewState {
+                account_id: governance.0.clone(),
+                prefix: Vec::new().into(),
+            })
+            .await?;
+        entries.sort_by(|a, b| a.key.0.cmp(&b.key.0));
+        entries
+    };
+
+    let error = near_api::Contract(governance.0.clone())
+        .call_function("execute_proposal", json!({"id": 0}))
+        .transaction()
+        .deposit(common::ONE_YOCTO)
+        .gas(Gas::from_tgas(300))
+        .with_signer(admin.0.clone(), common::signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
+        .send_to(&harness.network)
+        .await?
+        .assert_failure();
+    assert!(
+        format!("{error:?}").contains("Governance policy exceeds recoverable working set"),
+        "unexpected failure: {error:?}"
+    );
+    assert_eq!(
+        view::<Option<Proposal<Operation>>>(
+            &harness.network,
+            &governance.0,
+            "get_proposal",
+            json!({"id": 0}),
+        )
+        .await?,
+        Some(long_proposal)
+    );
+    let policy: GovernancePolicy = view(
+        &harness.network,
+        &governance.0,
+        "get_governance_policy",
+        json!({}),
+    )
+    .await?;
+    assert!(!policy.method_policies().contains_key(&method));
+    let mut after = client
+        .read(account::ViewState {
+            account_id: governance.0.clone(),
+            prefix: Vec::new().into(),
+        })
+        .await?;
+    after.sort_by(|a, b| a.key.0.cmp(&b.key.0));
+    assert_eq!(
+        after, before,
+        "failed receipt must revert every storage key"
+    );
+    Ok(())
+}

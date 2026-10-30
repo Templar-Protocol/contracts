@@ -132,6 +132,26 @@ fn revoke_role(contract: &mut Contract, account_id: &str, role: Role) {
     <Contract as Rbac>::remove_role(contract, &account_id.parse().unwrap(), &role);
 }
 
+fn allow_immediate_role_changes(contract: &mut Contract) {
+    contract
+        .header
+        .ttls_mut()
+        .set_reflexive_ttl(ReflexiveKind::SetRole, Nanoseconds::zero())
+        .unwrap();
+}
+
+fn cancelled_ids() -> Vec<u32> {
+    get_logs()
+        .iter()
+        .filter_map(|log| {
+            let event: near_sdk::serde_json::Value =
+                near_sdk::serde_json::from_str(log.strip_prefix("EVENT_JSON:")?).unwrap();
+            (event["event"] == "cancelled")
+                .then(|| u32::try_from(event["data"]["id"].as_u64().unwrap()).unwrap())
+        })
+        .collect()
+}
+
 fn context_with_admin() -> near_sdk::VMContext {
     context_with_account("admin.near")
 }
@@ -277,16 +297,48 @@ fn role_mismatch_cannot_execute_proposal() {
 }
 
 #[test]
-fn role_based_caller_can_cancel_matching_proposal() {
-    let mut contract = contract();
-    grant_role(&mut contract, "tripper.near", Role::ManualTripper);
-
+fn same_role_peer_cannot_cancel_but_can_execute() {
     testing_env!(context_with_admin());
+    let mut contract = contract();
+    grant_role(&mut contract, "creator.near", Role::ManualTripper);
+    grant_role(&mut contract, "peer.near", Role::ManualTripper);
+
+    testing_env!(context_with_account("creator.near"));
     contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
 
-    testing_env!(context_with_account("tripper.near"));
-    contract.cancel_proposal(0);
+    testing_env!(context_with_account("peer.near"));
+    assert!(panics(|| contract.cancel_proposal(0)));
+    assert!(contract.get_proposal(0).is_some());
+    assert_eq!(contract.proposal_count(), 1);
+    assert!(get_logs().is_empty());
+    contract.execute_proposal(0);
     assert_eq!(contract.get_proposal(0), None);
+}
+
+#[test]
+fn creator_can_cancel_after_losing_action_role() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    grant_role(&mut contract, "creator.near", Role::ManualTripper);
+    testing_env!(context_with_account("creator.near"));
+    contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    // A live method-policy change can remove authorization without revoking membership.
+    contract
+        .header
+        .ttls_mut()
+        .set_method_policy(
+            "admin_set_manual_trip".to_owned(),
+            Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::CircuitBreakerOperator,
+            }),
+        )
+        .unwrap();
+    assert!(panics(|| contract.execute_proposal(0)));
+    contract.cancel_proposal(0);
+    assert_eq!(contract.proposal_count(), 0);
+    assert_eq!(contract.get_proposal(0), None);
+    assert_eq!(cancelled_ids(), vec![0]);
 }
 
 #[test]
@@ -792,4 +844,532 @@ fn self_upgrade_rejects_empty_code_in_create() {
     assert!(panics(|| {
         contract.create_proposal(0, operation, Nanoseconds::zero());
     }));
+}
+
+#[test]
+fn delegate_queue_reserves_admin_recovery_slot_and_revocation_frees_capacity() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(&mut contract, "delegate.near", Role::ManualTripper);
+    grant_role(&mut contract, "peer.near", Role::ManualTripper);
+    for id in 0..63 {
+        testing_env!(context_with_account("delegate.near"));
+        contract.create_proposal(id, manual_trip(), Nanoseconds::zero());
+    }
+    testing_env!(context_with_account("delegate.near"));
+    let header = contract.header.clone();
+    assert!(panics(|| {
+        contract.create_proposal(63, manual_trip(), Nanoseconds::zero());
+    }));
+    assert_eq!(contract.header, header);
+    assert_eq!(contract.get_proposal(63), None);
+    assert!(get_logs().is_empty());
+
+    testing_env!(context_with_admin());
+    contract.create_proposal(
+        63,
+        set_role("delegate.near", Role::ManualTripper, false),
+        Nanoseconds::zero(),
+    );
+    assert_eq!(contract.proposal_count(), 64);
+    testing_env!(context_with_admin());
+    assert!(panics(|| {
+        contract.create_proposal(64, manual_trip(), Nanoseconds::zero());
+    }));
+    assert_eq!(contract.next_proposal_id(), 64);
+    assert_eq!(contract.proposal_count(), 64);
+    assert!(get_logs().is_empty());
+
+    // A full queue still permits the reserved Admin recovery proposal to execute and purge.
+    contract.execute_proposal(63);
+    assert_eq!(contract.proposal_count(), 0);
+    assert_eq!(contract.next_proposal_id(), 64);
+    assert_eq!(cancelled_ids(), (0..63).collect::<Vec<_>>());
+    for id in 0..64 {
+        assert_eq!(contract.get_proposal(id), None);
+    }
+    testing_env!(context_with_account("peer.near"));
+    contract.create_proposal(64, manual_trip(), Nanoseconds::zero());
+    assert_eq!(contract.proposal_count(), 1);
+}
+
+#[test]
+fn revocation_preserves_other_roles_other_creators_and_uses_live_method_policy() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(&mut contract, "delegate.near", Role::ManualTripper);
+    grant_role(&mut contract, "delegate.near", Role::CircuitBreakerOperator);
+    grant_role(&mut contract, "peer.near", Role::ManualTripper);
+    testing_env!(context_with_account("delegate.near"));
+    contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    contract.create_proposal(
+        1,
+        target(LegacyOperation::SetEnforced {
+            id: pid(),
+            breaker_id: 0,
+            is_enforced: false,
+        }),
+        Nanoseconds::zero(),
+    );
+    testing_env!(context_with_account("peer.near"));
+    contract.create_proposal(2, manual_trip(), Nanoseconds::zero());
+
+    // Policy changes after creation must govern the purge, not the original role.
+    contract
+        .header
+        .ttls_mut()
+        .set_method_policy(
+            "admin_set_enforced".to_owned(),
+            Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::ManualTripper,
+            }),
+        )
+        .unwrap();
+    testing_env!(context_with_admin());
+    contract.create_proposal(
+        3,
+        set_role("delegate.near", Role::CircuitBreakerOperator, false),
+        Nanoseconds::zero(),
+    );
+    contract.execute_proposal(3);
+    assert_eq!(contract.list_proposals(None, None), vec![0, 1, 2]);
+    assert!(cancelled_ids().is_empty());
+
+    contract.create_proposal(
+        4,
+        set_role("delegate.near", Role::ManualTripper, false),
+        Nanoseconds::zero(),
+    );
+    contract.execute_proposal(4);
+    assert_eq!(contract.list_proposals(None, None), vec![2]);
+    assert_eq!(contract.get_proposal(0), None);
+    assert_eq!(contract.get_proposal(1), None);
+    assert!(contract.get_proposal(2).is_some());
+    assert_eq!(cancelled_ids(), vec![0, 1]);
+}
+
+#[test]
+fn revocation_honors_remaining_admin_override() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(&mut contract, "delegate.near", Role::Admin);
+    grant_role(&mut contract, "delegate.near", Role::ManualTripper);
+    testing_env!(context_with_account("delegate.near"));
+    contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    contract.create_proposal(1, set_proxy(), Nanoseconds::zero());
+    testing_env!(context_with_admin());
+    contract.create_proposal(
+        2,
+        set_role("delegate.near", Role::ManualTripper, false),
+        Nanoseconds::zero(),
+    );
+    contract.execute_proposal(2);
+    assert_eq!(contract.list_proposals(None, None), vec![0, 1]);
+    assert!(cancelled_ids().is_empty());
+}
+
+#[test]
+fn admin_revocation_retains_only_proposals_authorized_by_remaining_delegate_role() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(&mut contract, "delegate.near", Role::Admin);
+    grant_role(&mut contract, "delegate.near", Role::ManualTripper);
+    testing_env!(context_with_account("delegate.near"));
+    contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    contract.create_proposal(1, set_proxy(), Nanoseconds::zero());
+    contract.create_proposal(
+        2,
+        set_role("unrelated.near", Role::ManualTripper, true),
+        Nanoseconds::zero(),
+    );
+    testing_env!(context_with_admin());
+    contract.create_proposal(
+        3,
+        set_role("delegate.near", Role::Admin, false),
+        Nanoseconds::zero(),
+    );
+    contract.execute_proposal(3);
+    assert_eq!(contract.list_proposals(None, None), vec![0]);
+    assert_eq!(cancelled_ids(), vec![1, 2]);
+    assert!(contract.has_role("admin.near".parse().unwrap(), Role::Admin));
+    assert!(!contract.has_role("delegate.near".parse().unwrap(), Role::Admin));
+}
+
+#[test]
+fn no_op_revocation_does_not_sweep_even_now_unauthorized_proposals() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(&mut contract, "delegate.near", Role::ManualTripper);
+    testing_env!(context_with_account("delegate.near"));
+    contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    revoke_role(&mut contract, "delegate.near", Role::ManualTripper);
+    testing_env!(context_with_admin());
+    contract.create_proposal(
+        1,
+        set_role("delegate.near", Role::ManualTripper, false),
+        Nanoseconds::zero(),
+    );
+    contract.execute_proposal(1);
+    assert_eq!(contract.list_proposals(None, None), vec![0]);
+    assert!(contract.get_proposal(0).is_some());
+    assert!(cancelled_ids().is_empty());
+}
+
+#[test]
+fn replay_after_lost_response_cancel_or_execution_never_creates_a_new_proposal() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    for completed in [false, true] {
+        if completed {
+            contract.cancel_proposal(0);
+        }
+        testing_env!(context_with_admin());
+        let header = contract.header.clone();
+        assert!(panics(|| {
+            contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+        }));
+        assert_eq!(contract.header, header);
+        assert!(get_logs().is_empty());
+    }
+    contract.create_proposal(1, manual_trip(), Nanoseconds::zero());
+    contract.execute_proposal(1);
+    testing_env!(context_with_admin());
+    let header = contract.header.clone();
+    assert!(panics(|| {
+        contract.create_proposal_borsh(CreateProposalArgs {
+            id: 1,
+            operation: manual_trip(),
+            requested_ttl: Nanoseconds::zero(),
+        });
+    }));
+    assert_eq!(contract.header, header);
+    assert_eq!(contract.proposal_count(), 0);
+    assert!(get_logs().is_empty());
+}
+
+#[test]
+fn contending_expected_id_does_not_create_or_claim_the_winning_proposal() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    grant_role(&mut contract, "alice.near", Role::ManualTripper);
+    grant_role(&mut contract, "bob.near", Role::ManualTripper);
+    testing_env!(context_with_account("alice.near"));
+    let winning = contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    testing_env!(context_with_account("bob.near"));
+    let header = contract.header.clone();
+    assert!(panics(|| {
+        contract.create_proposal(0, manual_trip(), Nanoseconds::from_secs(1));
+    }));
+    assert_eq!(contract.header, header);
+    assert_eq!(contract.get_proposal(0), Some(winning));
+    assert_eq!(contract.next_proposal_id(), 1);
+    assert_eq!(contract.proposal_count(), 1);
+    assert!(get_logs().is_empty());
+    assert!(panics(|| contract.cancel_proposal(0)));
+}
+
+#[test]
+fn pending_byte_limit_reserves_admin_recovery_and_purge_releases_bytes() {
+    use templar_proxy_oracle_near_governance_common::{
+        proposal_body_size, ADMIN_RESERVED_PROPOSAL_BYTES, MAX_GOVERNANCE_WORKING_SET_BYTES,
+    };
+
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(&mut contract, "delegate.near", Role::ManualTripper);
+    let creator: AccountId = "delegate.near".parse().unwrap();
+    let mut operation = admin_function_call("admin_set_manual_trip", 0, Gas::from_tgas(1));
+    let base = proposal_body_size(&operation, &creator).unwrap();
+    let budget = MAX_GOVERNANCE_WORKING_SET_BYTES
+        - ADMIN_RESERVED_PROPOSAL_BYTES
+        - contract.state_size()
+        - 8;
+    let Operation::TargetFunctionCall(call) = &mut operation else {
+        unreachable!()
+    };
+    call.args
+        .0
+        .extend(vec![0; usize::try_from(budget - base).unwrap()]);
+    testing_env!(context_with_account("delegate.near"));
+    let proposal = contract.create_proposal(0, operation, Nanoseconds::zero());
+    assert_eq!(
+        near_sdk::borsh::object_length(&proposal).unwrap() as u64,
+        budget
+    );
+    let before = contract.header.clone();
+    assert!(panics(|| {
+        contract.create_proposal(1, manual_trip(), Nanoseconds::zero());
+    }));
+    assert_eq!(contract.header, before);
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.body_bytes),
+        Some(budget)
+    );
+
+    testing_env!(context_with_admin());
+    contract.create_proposal(
+        1,
+        set_role("delegate.near", Role::ManualTripper, false),
+        Nanoseconds::zero(),
+    );
+    contract.execute_proposal(1);
+    assert_eq!(contract.proposal_count(), 0);
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.body_bytes),
+        Some(0)
+    );
+    assert_eq!(cancelled_ids(), vec![0]);
+}
+
+#[test]
+fn pending_byte_accounting_releases_cancelled_and_executed_bodies() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    let first = contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    let second = contract.create_proposal(1, manual_trip(), Nanoseconds::zero());
+    let first_size = near_sdk::borsh::object_length(&first).unwrap() as u64;
+    let second_size = near_sdk::borsh::object_length(&second).unwrap() as u64;
+    let first_log =
+        templar_proxy_oracle_near_governance_common::cancellation_event_size(0, &first.operation)
+            .unwrap();
+    let second_log =
+        templar_proxy_oracle_near_governance_common::cancellation_event_size(1, &second.operation)
+            .unwrap();
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.body_bytes),
+        Some(first_size + second_size)
+    );
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.cancellation_log_bytes),
+        Some(first_log + second_log)
+    );
+    contract.cancel_proposal(0);
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.body_bytes),
+        Some(second_size)
+    );
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.cancellation_log_bytes),
+        Some(second_log)
+    );
+    contract.execute_proposal(1);
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.body_bytes),
+        Some(0)
+    );
+    assert_eq!(
+        Contract::pending_usage().map(|usage| usage.cancellation_log_bytes),
+        Some(0)
+    );
+}
+
+#[test]
+fn legacy_queue_must_drain_before_byte_accounting_activates() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(&mut contract, "delegate.near", Role::ManualTripper);
+    contract.create_proposal(0, manual_trip(), Nanoseconds::zero());
+    contract.create_proposal(
+        1,
+        set_role("delegate.near", Role::ManualTripper, false),
+        Nanoseconds::zero(),
+    );
+    let key = near_sdk::borsh::to_vec(&crate::StorageKey::PendingProposalBytes).unwrap();
+    near_sdk::env::storage_remove(&key);
+    let before = contract.header.clone();
+    assert!(panics(|| {
+        contract.create_proposal(2, manual_trip(), Nanoseconds::zero());
+    }));
+    assert!(panics(|| contract.execute_proposal(1)));
+    assert_eq!(contract.header, before);
+    assert!(contract.has_role("delegate.near".parse().unwrap(), Role::ManualTripper));
+    contract.cancel_proposal(0);
+    contract.execute_proposal(1);
+    assert_eq!(contract.proposal_count(), 0);
+    contract.create_proposal(2, manual_trip(), Nanoseconds::zero());
+    assert!(Contract::pending_usage().is_some());
+}
+
+#[test]
+fn legacy_unmarked_policy_execution_still_enforces_recovery() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    let method = "m".repeat(1_300_000);
+    contract.create_proposal(
+        0,
+        Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+            method,
+            policy: Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::Admin,
+            }),
+        }),
+        Nanoseconds::zero(),
+    );
+    // A legacy queue has no byte accounting until it drains. Policy recovery
+    // must still hold when executing that queue, or no later proposal could
+    // remove the admitted key.
+    near_sdk::env::storage_remove(
+        &near_sdk::borsh::to_vec(&crate::StorageKey::PendingProposalBytes).unwrap(),
+    );
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("admin.near".parse().unwrap())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .block_timestamp(Nanoseconds::from_secs(49 * 60 * 60).as_ns())
+        .build());
+    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        contract.execute_proposal(0);
+    }))
+    .expect_err("legacy execution must enforce policy recovery");
+    let message = error.downcast_ref::<&str>().map_or_else(
+        || error.downcast_ref::<String>().map_or("", String::as_str),
+        |message| message,
+    );
+    assert!(
+        message.contains("Governance policy exceeds recoverable working set"),
+        "unexpected failure: {message}"
+    );
+}
+
+#[test]
+fn policy_recovery_budget_covers_longest_key_removal() {
+    use templar_proxy_oracle_near_governance_common::{
+        proposal_body_size, ADMIN_RESERVED_PROPOSAL_BYTES,
+    };
+
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    let method = "m".repeat(1_000_000);
+    contract
+        .header
+        .ttls_mut()
+        .set_method_policy(
+            method.clone(),
+            Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::Admin,
+            }),
+        )
+        .unwrap();
+    contract.assert_policy_recovery();
+    let max_admin: AccountId = format!("{}.near", "a".repeat(59)).parse().unwrap();
+    let removal = Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+        method,
+        policy: None,
+    });
+    assert!(
+        proposal_body_size(&removal, &max_admin).unwrap() + 8
+            <= 1_000_000 + ADMIN_RESERVED_PROPOSAL_BYTES
+    );
+    contract
+        .header
+        .ttls_mut()
+        .set_method_policy("m".repeat(1_000_000), None)
+        .unwrap();
+    contract
+        .header
+        .ttls_mut()
+        .set_method_policy(
+            "m".repeat(1_100_000),
+            Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::Admin,
+            }),
+        )
+        .unwrap();
+    assert!(panics(|| contract.assert_policy_recovery()));
+}
+
+#[test]
+fn cancellation_budget_counts_encoded_events_and_reserves_admin_recovery() {
+    use near_sdk::AsNep297Event;
+    use templar_proxy_oracle_near_governance_common::{
+        cancellation_event_size, Event, ADMIN_RESERVED_CANCELLATION_LOG_BYTES,
+        MAX_PENDING_CANCELLATION_LOG_BYTES,
+    };
+
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(
+        &mut contract,
+        "delegate.near",
+        Role::ProxyConfigurationManager,
+    );
+    let method = "m\"\\\n".repeat(64);
+    contract
+        .header
+        .ttls_mut()
+        .set_method_policy(
+            method.clone(),
+            Some(MethodPolicy {
+                ttl: Nanoseconds::zero(),
+                role: Role::ProxyConfigurationManager,
+            }),
+        )
+        .unwrap();
+    let operation = admin_function_call(&method, 0, Gas::from_tgas(1));
+    let event = Event::Cancelled {
+        id: u32::MAX,
+        kind: operation.kind(),
+        method: operation.method(),
+    };
+    assert_eq!(
+        cancellation_event_size(u32::MAX, &operation).unwrap(),
+        event.to_nep297_event().to_event_log().len() as u64
+    );
+    assert!(
+        cancellation_event_size(
+            u32::MAX,
+            &set_role(
+                &format!("{}.near", "a".repeat(59)),
+                Role::ManualTripper,
+                false
+            ),
+        )
+        .unwrap()
+            <= ADMIN_RESERVED_CANCELLATION_LOG_BYTES
+    );
+
+    testing_env!(context_with_account("delegate.near"));
+    let mut id = 0;
+    loop {
+        if panics(|| {
+            contract.create_proposal(id, operation.clone(), Nanoseconds::zero());
+        }) {
+            break;
+        }
+        id += 1;
+        assert!(
+            id < 63,
+            "event budget should bind before the proposal count"
+        );
+    }
+    let usage = Contract::pending_usage().unwrap();
+    assert!(
+        usage.cancellation_log_bytes
+            <= MAX_PENDING_CANCELLATION_LOG_BYTES - ADMIN_RESERVED_CANCELLATION_LOG_BYTES
+    );
+    assert_eq!(contract.next_proposal_id(), id);
+    testing_env!(context_with_admin());
+    contract.create_proposal(
+        id,
+        set_role("delegate.near", Role::ProxyConfigurationManager, false),
+        Nanoseconds::zero(),
+    );
+    contract.execute_proposal(id);
+    let usage = Contract::pending_usage().unwrap();
+    assert_eq!(usage.body_bytes, 0);
+    assert_eq!(usage.cancellation_log_bytes, 0);
+    assert_eq!(contract.proposal_count(), 0);
+    assert_eq!(cancelled_ids().len(), usize::try_from(id).unwrap());
 }

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reserve the last of 64 pending proposal slots for Admin recovery without changing expected-ID
+  creation or stored proposal layouts.
+- Restrict cancellation to the creator or a current Admin; creators can cancel even when the live
+  method policy no longer authorizes their action. Authorized peers may still execute proposals.
+- On an actual role revocation, cancel that creator's queued operations only when their remaining
+  memberships and the current method policy no longer authorize them. Missing or corrupt proposal
+  bodies abort the entire revocation; no-op revocations do not sweep pending proposals.
+
 ## [0.4.0](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-near-governance-contract-v0.3.5...templar-proxy-oracle-near-governance-contract-v0.4.0) - 2026-10-14
 
 ### Changed

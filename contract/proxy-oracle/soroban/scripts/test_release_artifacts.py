@@ -78,6 +78,8 @@ def policy_entries(policy_name: str) -> list[dict[str, object]]:
                 }
             }
         )
+    for name, event in policy.events.items():
+        entries.append({"event_v0": {"name": name, **copy.deepcopy(event)}})
     return entries
 
 
@@ -428,6 +430,18 @@ class BuildEnvironmentTests(unittest.TestCase):
 
 
 class AbiPolicyTests(unittest.TestCase):
+    def test_runtime_companion_event_payloads_and_topics_are_required(self) -> None:
+        for name in catalog.RUNTIME_DETAIL_EVENTS:
+            entries = policy_entries("runtime_v1")
+            missing = [entry for entry in entries if entry.get("event_v0", {}).get("name") != name]
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, f"event {name}"):
+                catalog.validate_interface(missing, "runtime_v1")
+            for entry in entries:
+                if entry.get("event_v0", {}).get("name") == name:
+                    entry["event_v0"]["params"][0]["location"] = "data"
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, f"event {name}"):
+                catalog.validate_interface(entries, "runtime_v1")
+
     def test_reviewed_policies_accept_their_exact_required_surfaces(self) -> None:
         for artifact in catalog.ARTIFACTS:
             with self.subTest(slug=artifact.slug):

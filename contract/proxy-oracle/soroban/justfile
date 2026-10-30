@@ -34,8 +34,9 @@ test:
     @just --justfile "{{root}}/justfile" _test-fast -p templar-proxy-oracle-soroban-pyth-lazer-source-contract --features testutils
     @just --justfile "{{root}}/justfile" _test-fast -p templar-proxy-oracle-soroban-batcher-contract --features testutils
 
-test-integration:
-    @just --justfile "{{root}}/justfile" _test-fast -p templar-proxy-oracle-soroban-integration-tests
+# Mount the current compiled adapter alongside the verified released fixture.
+test-integration: optimize-sep40-adapter
+    @just --justfile "{{root}}/justfile" _test-fast -p templar-proxy-oracle-soroban-integration-tests --features compiled-wasm-tests
 
 test-scripts:
     @python3 -m unittest discover -s "{{scripts_dir}}" -p "test_*.py"

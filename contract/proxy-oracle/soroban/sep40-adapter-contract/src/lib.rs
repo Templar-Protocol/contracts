@@ -13,10 +13,8 @@ use stellar_access::ownable::{
 use stellar_macros::only_owner;
 use templar_proxy_oracle_soroban_common::{
     extend_instance_ttl, is_zero_wasm_hash, normalized_to_sep40, Asset, ContractError, PriceData,
-    PriceFeedTrait, ProxyOracleClient,
+    PriceFeedTrait, ProxyOracleClient, MAX_HISTORY_RECORDS,
 };
-
-const MAX_HISTORY_RECORDS: u32 = 32;
 
 /// Keep the deployed `Config` encoding stable; decommissioning uses a separate key.
 const CONFIG: Symbol = symbol_short!("CONFIG");
@@ -187,14 +185,15 @@ impl PriceFeedTrait for Sep40Adapter {
 
     fn price(env: Env, asset: Asset, timestamp: u64) -> Option<PriceData> {
         let config = active_config(&env, &asset)?;
-        if timestamp % u64::from(config.resolution) != 0 {
-            return None;
-        }
+        let timestamp = bucket_timestamp(timestamp, config.resolution);
         let client = ProxyOracleClient::new(&env, &config.parent_oracle);
         let history = client.aggregated_history(&asset, &MAX_HISTORY_RECORDS)?;
         for entry in history.iter().rev() {
             if bucket_timestamp(entry.timestamp, config.resolution) == timestamp {
-                return normalized_to_adapter(&entry, config.decimals, config.resolution).ok();
+                if let Ok(price) = normalized_to_adapter(&entry, config.decimals, config.resolution)
+                {
+                    return Some(price);
+                }
             }
         }
         None
@@ -206,21 +205,22 @@ impl PriceFeedTrait for Sep40Adapter {
         }
         let config = active_config(&env, &asset)?;
         let client = ProxyOracleClient::new(&env, &config.parent_oracle);
-        let history = client.aggregated_history(&asset, &records)?;
+        let history = client.aggregated_history(&asset, &MAX_HISTORY_RECORDS)?;
         let mut prices: Vec<PriceData> = Vec::new(&env);
-        for entry in history.iter() {
+        for entry in history.iter().rev() {
             let Ok(price) = normalized_to_adapter(&entry, config.decimals, config.resolution)
             else {
                 continue;
             };
-            let previous_index = prices.len().saturating_sub(1);
             if prices
-                .get(previous_index)
+                .last()
                 .is_some_and(|previous| previous.timestamp == price.timestamp)
             {
-                prices.set(previous_index, price);
-            } else {
-                prices.push_back(price);
+                continue;
+            }
+            prices.push_back(price);
+            if prices.len() >= records {
+                break;
             }
         }
         (!prices.is_empty()).then_some(prices)

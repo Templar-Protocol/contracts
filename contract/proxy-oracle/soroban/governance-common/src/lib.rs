@@ -2,10 +2,11 @@
 
 use soroban_sdk::{contracterror, contracttype, Address, Bytes, BytesN};
 use templar_primitives::Nanoseconds;
+use templar_proxy_oracle_kernel::proxy::circuit_breaker::is_valid_relative_change;
 
 use templar_proxy_oracle_soroban_common::{
-    is_zero_wasm_hash, validate_proxy_config, Asset, CircuitBreakerConfig, ProxyConfig,
-    RearmConfig, SetEnforcedConfig, MAX_MANUAL_TRIP_METADATA_LEN,
+    is_zero_wasm_hash, parse_breaker_set_config, parse_proxy_config, Asset, CircuitBreakerConfig,
+    ProxyConfig, RearmConfig, SetEnforcedConfig, MAX_MANUAL_TRIP_METADATA_LEN,
 };
 
 pub const MAX_PROPOSAL_TTL: Nanoseconds = Nanoseconds::from_secs(180 * 24 * 60 * 60);
@@ -45,6 +46,8 @@ pub enum GovernanceError {
     InvalidInput = 9,
     TtlExceedsMaximum = 10,
     LastAdmin = 11,
+    TooManyPendingProposals = 12,
+    PendingProposalBytesExceeded = 13,
 }
 
 // Generates `GovernanceAction` (the on-chain action union), the parallel
@@ -96,12 +99,14 @@ macro_rules! governance_operations {
         #[contracttype]
         pub enum GovernanceAction {
             $($ev)*
+            CancelOwnershipTransfer(Address),
         }
 
         impl GovernanceAction {
             pub fn kind(&self) -> OperationKind {
                 match self {
                     $(Self::$variant { .. } => OperationKind::$variant,)*
+                    Self::CancelOwnershipTransfer(_) => OperationKind::TransferOwnership,
                 }
             }
         }
@@ -245,8 +250,29 @@ pub fn validate_action(
     max_manual_trip_metadata_len: usize,
 ) -> Result<(), GovernanceError> {
     match action {
-        GovernanceAction::SetProxy(_, config) => {
-            validate_proxy_config(config).map_err(|_| GovernanceError::InvalidInput)
+        GovernanceAction::SetProxy(_, config) => parse_proxy_config(config)
+            .map(|_| ())
+            .map_err(|_| GovernanceError::InvalidInput),
+        GovernanceAction::ConfigureBreakers(_, sample_interval_secs, history_len) => {
+            parse_breaker_set_config(*sample_interval_secs, *history_len)
+                .map(|_| ())
+                .map_err(|_| GovernanceError::InvalidInput)
+        }
+        GovernanceAction::AddBreaker(_, CircuitBreakerConfig::CumulativeChange(config)) => {
+            if is_valid_relative_change(config.max_relative_change.to_decimal()) {
+                Ok(())
+            } else {
+                Err(GovernanceError::InvalidInput)
+            }
+        }
+        GovernanceAction::AddBreaker(_, config) => config
+            .to_kernel(None)
+            .map(|_| ())
+            .map_err(|_| GovernanceError::InvalidInput),
+        GovernanceAction::Rearm(_, _, config) => {
+            Nanoseconds::checked_from_secs(config.arming_delay_secs)
+                .map(|_| ())
+                .ok_or(GovernanceError::InvalidInput)
         }
         GovernanceAction::SetManualTrip(_, _, metadata)
             if metadata
@@ -277,6 +303,150 @@ pub struct Proposal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_proxy_static_admission_accepts_all_methods_and_rejects_bad_pins() {
+        use soroban_sdk::testutils::Address as _;
+        use templar_proxy_oracle_soroban_common::{AggregatorConfig, MedianConfig, SourceConfig};
+
+        let env = soroban_sdk::Env::default();
+        let asset = Asset::Other(soroban_sdk::Symbol::new(&env, "BTC"));
+        for decimals in [8, 19] {
+            let sources = soroban_sdk::vec![
+                &env,
+                SourceConfig {
+                    oracle: Address::generate(&env),
+                    asset: asset.clone(),
+                    expected_decimals: decimals,
+                }
+            ];
+            for aggregator in [
+                AggregatorConfig::MedianLow(MedianConfig {
+                    sources: sources.clone(),
+                    min_sources: 1,
+                }),
+                AggregatorConfig::MedianHigh(MedianConfig {
+                    sources: sources.clone(),
+                    min_sources: 1,
+                }),
+                AggregatorConfig::Priority(sources),
+            ] {
+                let action = GovernanceAction::SetProxy(
+                    asset.clone(),
+                    ProxyConfig {
+                        aggregator,
+                        max_age_secs: 0,
+                        max_clock_drift_secs: 0,
+                    },
+                );
+                assert_eq!(validate_action(&action, 1024).is_ok(), decimals <= 18);
+            }
+        }
+    }
+
+    #[test]
+    fn static_breaker_admission_checks_feasibility_without_runtime_state() {
+        use templar_primitives::Decimal;
+        use templar_proxy_oracle_soroban_common::{
+            CumulativeChangeConfig, MonotonicRunConfig, SorobanDecimal, StepwiseChangeConfig,
+            WindowedChangeDeltaConfig, MAX_HISTORY_RECORDS,
+        };
+
+        let env = soroban_sdk::Env::default();
+        let asset = Asset::Other(soroban_sdk::Symbol::new(&env, "BTC"));
+        for threshold in [Decimal::ZERO, Decimal::ONE, Decimal::TWO] {
+            let threshold_config = SorobanDecimal::from_decimal(&env, threshold);
+            for config in [
+                CircuitBreakerConfig::StepwiseChange(StepwiseChangeConfig {
+                    max_relative_change: threshold_config.clone(),
+                }),
+                CircuitBreakerConfig::MonotonicRun(MonotonicRunConfig {
+                    max_streak: MAX_HISTORY_RECORDS - 1,
+                    min_relative_step_change: threshold_config.clone(),
+                }),
+                CircuitBreakerConfig::WindowedChangeDelta(WindowedChangeDeltaConfig {
+                    window_len: 2,
+                    lookback_windows: 1,
+                    max_relative_mean_change: threshold_config.clone(),
+                }),
+                CircuitBreakerConfig::CumulativeChange(CumulativeChangeConfig {
+                    max_relative_change: threshold_config,
+                }),
+            ] {
+                assert_eq!(
+                    validate_action(&GovernanceAction::AddBreaker(asset.clone(), config), 1024)
+                        .is_ok(),
+                    threshold == Decimal::ONE
+                );
+            }
+        }
+        let threshold = SorobanDecimal::from_decimal(&env, Decimal::ONE);
+        for config in [
+            CircuitBreakerConfig::MonotonicRun(MonotonicRunConfig {
+                max_streak: MAX_HISTORY_RECORDS,
+                min_relative_step_change: threshold.clone(),
+            }),
+            CircuitBreakerConfig::WindowedChangeDelta(WindowedChangeDeltaConfig {
+                window_len: 17,
+                lookback_windows: 1,
+                max_relative_mean_change: threshold,
+            }),
+        ] {
+            assert_eq!(
+                validate_action(&GovernanceAction::AddBreaker(asset.clone(), config), 1024),
+                Err(GovernanceError::InvalidInput)
+            );
+        }
+    }
+
+    #[test]
+    fn static_interval_admission_rejects_overflow_but_retains_zero() {
+        use templar_proxy_oracle_soroban_common::MAX_HISTORY_RECORDS;
+
+        let env = soroban_sdk::Env::default();
+        let asset = Asset::Other(soroban_sdk::Symbol::new(&env, "BTC"));
+        let max_secs = u64::MAX / 1_000_000_000;
+        for seconds in [0, max_secs, max_secs + 1] {
+            let expected = if seconds <= max_secs {
+                Ok(())
+            } else {
+                Err(GovernanceError::InvalidInput)
+            };
+            assert_eq!(
+                validate_action(
+                    &GovernanceAction::ConfigureBreakers(
+                        asset.clone(),
+                        seconds,
+                        MAX_HISTORY_RECORDS,
+                    ),
+                    1024,
+                ),
+                expected
+            );
+            assert_eq!(
+                validate_action(
+                    &GovernanceAction::Rearm(
+                        asset.clone(),
+                        0,
+                        RearmConfig {
+                            arming_delay_secs: seconds,
+                        },
+                    ),
+                    1024,
+                ),
+                expected
+            );
+        }
+        for history_len in [0, MAX_HISTORY_RECORDS + 1] {
+            assert_eq!(
+                validate_action(
+                    &GovernanceAction::ConfigureBreakers(asset.clone(), 0, history_len),
+                    1024,
+                ),
+                Err(GovernanceError::InvalidInput)
+            );
+        }
+    }
 
     #[test]
     fn breaker_lifecycle_ttls_are_independent() {
@@ -349,10 +519,11 @@ mod tests {
         let asset = Asset::Other(soroban_sdk::Symbol::new(&env, "BTC"));
         let wasm_hash = BytesN::from_array(&env, &[7_u8; 32]);
         let proxy_config = ProxyConfig {
-            sources: soroban_sdk::Vec::new(&env),
-            min_sources: 1,
-            max_age_secs: None,
-            max_clock_drift_secs: None,
+            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::Priority(
+                soroban_sdk::Vec::new(&env),
+            ),
+            max_age_secs: 30,
+            max_clock_drift_secs: 5,
         };
         let stepwise = CircuitBreakerConfig::StepwiseChange(StepwiseChangeConfig {
             max_relative_change: SorobanDecimal::from_decimal(
@@ -406,10 +577,11 @@ mod tests {
                 &GovernanceAction::SetProxy(
                     asset.clone(),
                     ProxyConfig {
-                        sources: soroban_sdk::Vec::new(&env),
-                        min_sources: 1,
-                        max_age_secs: None,
-                        max_clock_drift_secs: None,
+                        aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::Priority(
+                            soroban_sdk::Vec::new(&env),
+                        ),
+                        max_age_secs: 30,
+                        max_clock_drift_secs: 5,
                     },
                 ),
                 1024,
@@ -441,13 +613,18 @@ mod tests {
             sources.push_back(templar_proxy_oracle_soroban_common::SourceConfig {
                 oracle: Address::generate(&env),
                 asset: asset.clone(),
+                expected_decimals: 8,
             });
         }
         let mut config = ProxyConfig {
-            sources,
-            min_sources: 3,
-            max_age_secs: Some(30),
-            max_clock_drift_secs: Some(5),
+            aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                templar_proxy_oracle_soroban_common::MedianConfig {
+                    sources,
+                    min_sources: 3,
+                },
+            ),
+            max_age_secs: 30,
+            max_clock_drift_secs: 5,
         };
         assert_eq!(
             validate_action(
@@ -457,7 +634,7 @@ mod tests {
             Ok(())
         );
 
-        config.max_age_secs = None;
+        config.max_age_secs = templar_proxy_oracle_soroban_common::MAX_SOURCE_AGE_SECS + 1;
         assert_eq!(
             validate_action(&GovernanceAction::SetProxy(asset, config), 1024),
             Err(GovernanceError::InvalidInput)
@@ -494,5 +671,29 @@ mod tests {
         let mut partial = [7_u8; 32];
         partial[31] = 0;
         assert!(!is_zero_wasm_hash(&BytesN::from_array(&env, &partial)));
+    }
+
+    #[test]
+    fn ownership_cancellation_reuses_existing_policy_and_error_numbers_are_stable() {
+        use soroban_sdk::{testutils::Address as _, Env};
+        use templar_proxy_oracle_governance_kernel::OperationPolicy;
+        let env = Env::default();
+        let action = GovernanceAction::CancelOwnershipTransfer(Address::generate(&env));
+        let mut ttls = TtlConfig::uniform(Nanoseconds::zero());
+        ttls.set(
+            OperationKind::TransferOwnership,
+            Nanoseconds::from_secs(123),
+        );
+        assert_eq!(action.kind(), OperationKind::TransferOwnership);
+        assert_eq!(action.required_role(), Role::Admin);
+        assert_eq!(action.action_code(), 9);
+        assert_eq!(action.minimum_ttl(&ttls), Nanoseconds::from_secs(123));
+        assert_eq!(GovernanceError::AlreadyInitialized as u32, 1);
+        assert_eq!(GovernanceError::RuntimeFailed as u32, 7);
+        assert_eq!(GovernanceError::ProposalOutOfOrder as u32, 8);
+        assert_eq!(GovernanceError::InvalidInput as u32, 9);
+        assert_eq!(GovernanceError::LastAdmin as u32, 11);
+        assert_eq!(GovernanceError::TooManyPendingProposals as u32, 12);
+        assert_eq!(GovernanceError::PendingProposalBytesExceeded as u32, 13);
     }
 }

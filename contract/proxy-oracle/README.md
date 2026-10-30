@@ -21,7 +21,7 @@ Two no-std kernels hold the runtime-agnostic logic; each chain (`near/`, `soroba
 
 ## Configuration
 
-Each proxied price should be configured with independent sources, a freshness filter, and a circuit-breaker set. Prefer multiple independent sources for important feeds; configure `min_sources` so one compromised or stale source cannot determine the price alone.
+Each proxied price should be configured with independent sources, a freshness filter, and a circuit-breaker set. Prefer multiple independent sources for important feeds; for median aggregation, configure `min_sources` so one compromised or stale source cannot determine the price alone. Priority instead selects the first surviving source in configured order and has no quorum.
 
 Freshness filters are mandatory for production feeds. Circuit breakers only compare accepted observations; they do not protect against stale or future-dated source prices.
 
@@ -33,11 +33,26 @@ History length can be configured up to 32 entries, and at most 16 breakers may b
 
 ## Operations
 
-Proxy and circuit-breaker configuration changes are proposal-governed. Configure the proxy and breaker history before installing breakers, then add breakers with explicit monotonic IDs. Governance proposals may be created, executed, or cancelled by an account holding the role required for that operation; `Role::Admin` is the global governance role and may act on any proposal.
+Proxy and circuit-breaker configuration changes are proposal-governed. Configure the proxy and breaker history before installing breakers, then add breakers with explicit monotonic IDs. Creation and execution require the operation's current role or `Role::Admin`; cancellation is restricted to the creator or current Admin. A creator may cancel without retaining the action role. Revocation purges the creator's queued proposals only where their remaining roles no longer authorize the operation under the current method policy. Delegates may fill 63 of the 64 pending slots; Admin retains access to the final slot, without a scheduling-fairness guarantee.
 
 An `Operation` is either **reflexive** — mutating the governance contract's own state (`SetReflexiveTtl`, `SetTargetDefault`, `SetMethodPolicy`, `SetRole`, `SelfUpgrade`) — or a **`TargetFunctionCall`**: a generic `(method_name, args, attached_deposit, gas)` call dispatched to the governed proxy oracle. Every proxy/circuit-breaker action is a target call to the matching `admin_*` method; adding a new one needs **no governance-contract upgrade** — an unlisted method is dispatchable immediately under `default_target`, and a `SetMethodPolicy` entry is needed only to grant it a non-default timelock or role. Governance treats the target payload as opaque bytes — semantic validation of the payload happens at the proxy oracle's `admin_*` method (and so fails only at execution, after the timelock), not at proposal-create time. Only this operation shape is accepted on the wire: pre-restructure JSON is rejected rather than converted, because the old typed variants carried their own authorization (`AdminFunctionCall` was Admin-only whatever it called) and reinterpreting them under the method-driven policy would create proposals with different privileges than the sender intended. Upgrade clients alongside the contract. The manager CLI keeps typed subcommands (`set-proxy`, `add-circuit-breaker`, …) that build the generic form client-side and still catch malformed input locally.
 
 Proposals can be submitted through either of two entrypoints, which differ only in how their arguments are encoded: `create_proposal(id, operation, requested_ttl)` takes JSON and returns the stored `Proposal`, while `create_proposal_borsh` takes the same three arguments borsh-encoded and returns nothing (read the body back with `get_proposal`). Authorization, TTL resolution, create-time validation and the `Created` event are shared, so the two are interchangeable. Borsh arguments are `CreateProposalArgs`, exported from `governance-common` so a client encodes the wire shape as a type rather than reproducing an argument order by hand. Both take exactly 1 yoctoNEAR, so a proposal cannot fund its own state: the governance account stakes the stored payload itself, and a wasm-carrying proposal needs roughly 1 NEAR of free balance per 100 KB — pre-fund it or the call panics with `LackBalanceForState`.
+
+**Expected IDs are at-most-once admission guards, not an outcome-recovery service.**
+Manager resolves an omitted proposal/breaker ID once and emits the selected IDs
+before sending. Keep those IDs and the exact payload for retries. Rerunning an
+auto-selecting CLI command is a **new request**, not a safe retry. A rejected stale
+ID might have been consumed by another actor; it does not prove your operation
+succeeded. After cancellation/execution the body may no longer establish who
+submitted it. Reconcile the original transaction/checkpoint or a matching live
+proposal; if neither establishes the result, report outcome unknown and stop.
+Never scan for a similar proposal, advance the ID automatically, or execute an
+unverified peer's proposal. The manager's default in-memory gateway store and
+`idempotency_key: None` do not provide restart-safe recovery. Only after a
+confirmed target failure may an operator deliberately prepare a new request with
+current IDs. NEAR dispatch remains detached and one-shot: `Executed` proves
+dispatch, not target receipt success, and failure does not restore the proposal.
 
 **Borsh is opt-in, and JSON is the default on purpose.** A JSON proposal shows its whole `Operation` in explorers and indexers; a borsh one is opaque base64, so choosing it trades away the readability of the single most audit-sensitive action the protocol has. Reach for it when the payload actually needs it — anything carrying wasm, meaning a `SelfUpgrade` or an `admin_upgrade` target call. There the saving is real: JSON base64 inflates a blob by 4/3, and twice over for a target upgrade whose payload is itself JSON, which costs gas to parse (measured at 102.8 vs 39.5 Tgas over 352 KB of wasm) and eats into NEAR's 1,572,864-byte `max_transaction_size`, capping a JSON-submitted target upgrade at roughly 880 KB of wasm against borsh's ~1.17 MB. Select it with `tmplrmgr proxy-oracle governance create-proposal --encoding borsh`; the gateway refuses the request against a governance contract older than `0.3.0` rather than quietly falling back to JSON.
 
@@ -51,15 +66,56 @@ The NEAR governance contract is initialized as its own contract account with `ne
 
 Enforcement and lifecycle are separate. Unenforced breakers still evaluate and can trip while the set has no existing blocking trip. Re-arming changes only the addressed breaker and preserves both shared histories.
 
-`get_proxy_circuit_breaker_set` returns only semantically valid state. Every persisted breaker set is semantically valid; recover from genuine corruption with `remove_proxy` followed by `set_proxy`.
+`get_proxy_circuit_breaker_set` exposes only registered assets with semantically valid breaker state. Removal retains a reset tombstone carrying `next_id`; recreation never reuses an old breaker ID. The tombstone keeps no rules or history. Corrupt/missing allocator state is an upgrade/recovery blocker, not permission to reset the counter: removal/recreation cannot safely repair unknown allocator history. Old code may already have deleted it, which requires an explicit operator inventory before any upgrade.
 
 The role a method requires comes from its resolved policy, so what a role can do depends entirely on the deployed policy table. A **fresh** deployment via `tmplrmgr proxy-oracle governance create --ttl-default …` starts with **no per-method overrides**: every target method resolves to `default_target` and is therefore Admin-only, and granting `ManualTripper` or `CircuitBreakerOperator` on such a deployment does nothing until overrides exist. Pass `--policy-file` (see `governance-policy.example.json` in this directory) to deploy a real table, or add entries later with `SetMethodPolicy` proposals. The natural table below is what the **v0→v1 migration** seeds, and what the example file reproduces: manual trip/untrip (`admin_set_manual_trip`) requires `Role::ManualTripper`; circuit-breaker lifecycle methods (`admin_rearm`, `admin_set_enforced`) require `Role::CircuitBreakerOperator`; proxy definitions and circuit-breaker configuration/add/remove require `Role::ProxyConfigurationManager`. All reflexive operations — policy edits (`SetReflexiveTtl`, `SetTargetDefault`, `SetMethodPolicy`), `SetRole`, and `SelfUpgrade` — require `Role::Admin`, since they govern governance itself. Governance roles are multi-role memberships managed with targeted `SetRole { account_id, role, set }` operations: `set: true` grants the named role and `set: false` revokes only that named role. `Role::Admin` is the global governance superuser role and may act on any proposal; removing the final `Role::Admin` membership is rejected.
 
 Proxy oracle contract upgrades are a `TargetFunctionCall` to the proxy's owner-gated `admin_upgrade` entrypoint (the CLI's `create-proposal oracle upgrade` subcommand attaches 280 Tgas). Any other proxy-admin action — e.g. accepting ownership after an owner transfer via `create-proposal oracle call --method own_accept_owner --deposit "1 yoctoNEAR"` — is likewise a plain target call. Attach whatever deposit the target method asserts (the ownership entrypoints require one yoctoNEAR); a call that under-attaches is a rejected receipt that still consumes the proposal. Gas is caller-supplied and baked into the stored call; if a target call is under-funded it simply fails at the proxy oracle with a rejected receipt (the proposal is still consumed), leaving nothing in a broken state. The manager CLI's `--gas` accepts either raw gas units or a formatted value such as `120 Tgas`.
 
-Every path that puts new code on an oracle first runs a read-only preflight over the state that code will load, because a release can tighten what it accepts of *already-stored* state without changing any persisted layout — so the upgrade needs no migration, yet can still leave a deployment degraded. The checks are `upgrade.breakers` (every stored breaker set still decodes and satisfies the rules the new runtime enforces at load), `upgrade.source_weights` (no median source carries a zero weight, which no longer counts toward quorum), `upgrade.governance_ledger` (the stored `active_ids` still deserialize, since a ledger that does not bricks every governance method including `migrate`), and `upgrade.pending_rearm` (no queued proposal carries a rearm payload an upgraded `admin_rearm` would reject). They run on `proxy-oracle upgrade`, on `create-proposal oracle upgrade`, and again when that proposal executes — the re-check matters because a proposal matures on a timelock, and that window is exactly where stored state can drift away from what the queued code expects. `--skip-preflight` opts out and `--skip-check <id>` drops one check; `--print` skips them, since it submits nothing.
+Every path that puts new code on an oracle first runs a read-only preflight over
+the state that code will load; a release may tighten accepted configurations
+without changing persisted layouts:
 
-Run them on their own with `tmplrmgr proxy-oracle preflight --oracle-id <oracle-id>`, which is how a release is cleared before anyone composes an upgrade. `--registry-id <registry-id>` sweeps every proxy oracle a registry has deployed, but only against a registry new enough to serve `list_deployments_by_kind` — the mainnet registry predates it, so clear that fleet one `--oracle-id` at a time. A failing `upgrade.breakers` cannot be repaired in place — the admin breaker methods all load the set first and panic on an invalid one — so recovery is `admin_set_proxy` with a null proxy followed by re-setting it.
+- `upgrade.breakers`: stored sets decode and satisfy runtime rules.
+- `upgrade.source_weights`: this stable identifier checks nonempty/distinct
+  source descriptors, median quorum, and positive weights.
+- `upgrade.governance_ledger`: the stored active-ID header remains valid.
+- `upgrade.pending_rearm`: reject old absolute-time rearm payloads, but retain
+  compatible relative-delay calls.
+- `upgrade.pending_breaker_lifecycles`: inspect current and legacy pending add,
+  remove, rearm and enforcement targets. Pending adds are validated as complete
+  `CircuitBreakerSet::add` operations, not merely by expected ID. Missing or
+  undecodable sets, stale expected add IDs, invalid add payloads and absent
+  mutation targets require inspection and drain/cancellation; compatible queued
+  adds are not rejected wholesale. Current state cannot prove allocator history
+  already deleted by old code.
+- `upgrade.pending_resources`: exact serialized state+body working set, policy
+  recoverability, and cancellation-log bytes against the same limits the new
+  contract enforces. Oversized legacy queues or an unrecoverable policy must be
+  drained/reconfigured on the old code; compatible bodies remain executable.
+
+Checks run on direct upgrades, proposal creation, and again before governed
+upgrade execution. `--skip-preflight` opts out, `--skip-check <id>` drops one
+check, and `--print` submits nothing.
+
+Run `tmplrmgr proxy-oracle preflight --oracle-id <oracle-id>` for each known deployment before preparing an upgrade. Registry sweeps require `list_deployments_by_kind`; a release catalog is not evidence of current deployment. Inventory the exact old Wasm/hash, state version, proxy/governance identities, owner/roles, proxy configs, breaker sets, and pending bodies. Drain/cancel only breaker-ID operations that may refer to a lifecycle deleted by old code; do not cancel compatible operations merely because code changes. A rejected or unknown allocator must be investigated without resetting its ID history. Production upgrade approval remains blocked when that inventory cannot be established.
+
+
+### Aggregate resource limits
+
+Governance bounds the combined serialized working set of its state and pending
+bodies (2 MiB, 1 KiB reserved for an Admin recovery proposal) and the combined
+cancellation-log bytes of one atomic revocation (12 KiB, 512 bytes reserved).
+Individual proposal payloads stay unbounded below those aggregates: a 1.25 MiB
+target-call body is still admissible when the rest of the queue is small.
+Policy edits are admitted only while the resulting policy remains removable
+within the same budget, so an accepted configuration cannot lock itself in.
+Admission counts bytes exactly (Borsh for bodies, the NEP-297 encoder for
+logs); backpressure is rejection without reservation or mutation. An unmarked
+legacy queue without accounting still drains: existing bodies can be cancelled
+or ordinarily executed, while new admissions and non-noop revocations wait
+until it is empty. This bound preserves atomic revocation liveness; it does not
+guarantee scheduling fairness.
 
 ### Bring-up and hardening
 

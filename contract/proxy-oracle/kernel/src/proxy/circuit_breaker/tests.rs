@@ -80,6 +80,79 @@ fn breaker_set(sample_interval_ns: Nanoseconds, history_len: u32) -> CircuitBrea
     })
 }
 
+#[test]
+fn relative_change_predicate_preserves_exact_boundaries() {
+    assert!(!is_valid_relative_change(Decimal::ZERO));
+    assert!(is_valid_relative_change(Decimal::ONE_HALF));
+    assert!(is_valid_relative_change(Decimal::ONE));
+    assert!(!is_valid_relative_change(Decimal::TWO));
+}
+
+#[test]
+fn lifecycle_reset_discards_state_but_never_reuses_breaker_ids() {
+    let rule = CircuitBreaker::StepwiseChange(StepwiseChange {
+        max_relative_change: Decimal::ONE_HALF,
+    });
+    let mut set = breaker_set(Nanoseconds::zero(), 2);
+    set.add(0, rule.clone()).unwrap();
+    set.add(1, rule.clone()).unwrap();
+    set.try_accept_price(price_at(100, 1), Nanoseconds::from_secs(1))
+        .unwrap();
+    set.set_manual_trip(true, actor_id(), None);
+    set.try_accept_price(price_at(200, 2), Nanoseconds::from_secs(2))
+        .unwrap();
+
+    set.reset_preserving_next_id();
+    let mut expected: UncheckedCircuitBreakerSet = CircuitBreakerSet::empty().into();
+    expected.next_id = 2;
+    assert_eq!(set, CircuitBreakerSet::try_from(expected).unwrap());
+    set.reset_preserving_next_id();
+    assert_eq!(set.next_id(), 2);
+
+    set.set_config(CircuitBreakerSetConfig {
+        sample_interval_ns: Nanoseconds::zero(),
+        history_len: 2,
+    })
+    .unwrap();
+    assert_eq!(
+        set.add(0, rule.clone()),
+        Err(CircuitBreakerError::UnexpectedBreakerId {
+            expected: 2,
+            actual: 0,
+        })
+    );
+    set.add(2, rule).unwrap();
+    let replacement = set.clone();
+    assert!(set.remove(0).is_err());
+    assert!(set.rearm(0, Nanoseconds::zero()).is_err());
+    assert!(set.set_enforced(0, false).is_err());
+    assert_eq!(set, replacement);
+}
+
+#[test]
+fn lifecycle_reset_preserves_exhausted_allocator() {
+    let mut raw: UncheckedCircuitBreakerSet = CircuitBreakerSet::empty().into();
+    raw.next_id = u32::MAX;
+    let mut set = CircuitBreakerSet::try_from(raw).unwrap();
+    set.reset_preserving_next_id();
+    set.set_config(CircuitBreakerSetConfig {
+        sample_interval_ns: Nanoseconds::zero(),
+        history_len: 2,
+    })
+    .unwrap();
+    let before = set.clone();
+    assert_eq!(
+        set.add(
+            u32::MAX,
+            CircuitBreaker::StepwiseChange(StepwiseChange {
+                max_relative_change: Decimal::ONE_HALF,
+            })
+        ),
+        Err(CircuitBreakerError::TooManyBreakers)
+    );
+    assert_eq!(set, before);
+}
+
 fn actor_id() -> AccountId {
     let mut bytes = [0; 64];
     let account_id = b"breaker.near";

@@ -378,6 +378,7 @@ GOVERNANCE_FUNCTION_NAMES = (
     "active_ids",
     "proxy_oracle",
     "extend_ttl",
+    "extend_role_ttl",
 )
 GOVERNANCE_ACTION_CASES = [
     _case("SetProxy", _udt("Asset"), _udt("ProxyConfig")),
@@ -399,6 +400,7 @@ GOVERNANCE_ACTION_CASES = [
     _case("SetActionTtl", _udt("OperationKind"), "u64"),
     _case("SetRole", "address", _udt("Role"), "bool"),
     _case("Upgrade", {"bytes_n": {"n": 32}}),
+    _case("CancelOwnershipTransfer", "address"),
 ]
 GOVERNANCE_ERROR_CODES = _codes(
     "AlreadyInitialized",
@@ -412,6 +414,8 @@ GOVERNANCE_ERROR_CODES = _codes(
     "InvalidInput",
     "TtlExceedsMaximum",
     "LastAdmin",
+    "TooManyPendingProposals",
+    "PendingProposalBytesExceeded",
 )
 
 
@@ -425,14 +429,51 @@ REFRESH_STATUS_CASES = [
 ]
 SOURCE_CONFIG_FIELDS = [
     {"name": "asset", "type_": ASSET},
+    {"name": "expected_decimals", "type_": "u32"},
     {"name": "oracle", "type_": "address"},
 ]
-PROXY_CONFIG_FIELDS = [
-    {"name": "max_age_secs", "type_": _option("u64")},
-    {"name": "max_clock_drift_secs", "type_": _option("u64")},
+MEDIAN_CONFIG_FIELDS = [
     {"name": "min_sources", "type_": "u32"},
     {"name": "sources", "type_": _vec(_udt("SourceConfig"))},
 ]
+AGGREGATOR_CONFIG_CASES = [
+    _case("MedianLow", _udt("MedianConfig")),
+    _case("MedianHigh", _udt("MedianConfig")),
+    _case("Priority", _vec(_udt("SourceConfig"))),
+]
+PROXY_CONFIG_FIELDS = [
+    {"name": "aggregator", "type_": _udt("AggregatorConfig")},
+    {"name": "max_age_secs", "type_": "u64"},
+    {"name": "max_clock_drift_secs", "type_": "u64"},
+]
+
+RUNTIME_DETAIL_EVENTS = {
+    "AggregationFailureDetail": {
+        "prefix_topics": ["aggregation_failure_detail"], "data_format": "map",
+        "params": [
+            {"name": "asset", "type_": ASSET, "location": "topic_list"},
+            {"name": "code", "type_": "u32", "location": "data"},
+            {"name": "expected", "type_": "u32", "location": "data"},
+            {"name": "actual", "type_": "u32", "location": "data"},
+        ],
+    },
+    "CacheBlockedDetail": {
+        "prefix_topics": ["cache_blocked_detail"], "data_format": "map",
+        "params": [
+            {"name": "asset", "type_": ASSET, "location": "topic_list"},
+            {"name": "blocking_breaker_ids", "type_": _vec("u32"), "location": "data"},
+        ],
+    },
+    "CircuitBreakerAddedDetail": {
+        "prefix_topics": ["circuit_breaker_added_detail"], "data_format": "map",
+        "params": [
+            {"name": "asset", "type_": ASSET, "location": "topic_list"},
+            {"name": "breaker_id", "type_": "u32", "location": "topic_list"},
+            {"name": "config", "type_": _udt("CircuitBreakerConfig"), "location": "data"},
+            {"name": "baseline", "type_": _option(_udt("NormalizedPrice")), "location": "data"},
+        ],
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -445,6 +486,7 @@ class AbiPolicy:
     error_enums: dict[str, list[dict[str, object]]] = field(
         default_factory=dict
     )
+    events: dict[str, dict[str, object]] = field(default_factory=dict)
     required: frozenset[str] = frozenset()
     forbidden: frozenset[str] = frozenset()
     exact_function_names: frozenset[str] | None = None
@@ -517,9 +559,14 @@ ABI_POLICIES = {
         structs={
             "SourceConfig": SOURCE_CONFIG_FIELDS,
             "ProxyConfig": PROXY_CONFIG_FIELDS,
+            "MedianConfig": MEDIAN_CONFIG_FIELDS,
         },
-        unions={"Asset": ASSET_CASES, "RefreshStatus": REFRESH_STATUS_CASES},
+        unions={
+            "Asset": ASSET_CASES, "RefreshStatus": REFRESH_STATUS_CASES,
+            "AggregatorConfig": AGGREGATOR_CONFIG_CASES,
+        },
         error_enums={"ContractError": CONTRACT_ERROR_CODES},
+        events=RUNTIME_DETAIL_EVENTS,
         required=OWNERSHIP_EXPORTS,
     ),
     "governance_v1": AbiPolicy(
@@ -532,12 +579,20 @@ ABI_POLICIES = {
                 ],
                 [_result("void", "GovernanceError")],
             ),
+            "extend_role_ttl": _function(
+                [("role", _udt("Role")), ("offset", "u32"), ("count", "u32")],
+                [_result(_option("u32"), "GovernanceError")],
+            ),
         },
         structs={
             "SourceConfig": SOURCE_CONFIG_FIELDS,
             "ProxyConfig": PROXY_CONFIG_FIELDS,
+            "MedianConfig": MEDIAN_CONFIG_FIELDS,
         },
-        unions={"GovernanceAction": GOVERNANCE_ACTION_CASES},
+        unions={
+            "GovernanceAction": GOVERNANCE_ACTION_CASES,
+            "AggregatorConfig": AGGREGATOR_CONFIG_CASES,
+        },
         error_enums={"GovernanceError": GOVERNANCE_ERROR_CODES},
         # Role-governed, so an ownership surface here would be a second,
         # ungoverned path to every runtime config change.
@@ -679,6 +734,18 @@ def normalize_struct(struct_: dict[str, Any]) -> list[dict[str, object]]:
     ]
 
 
+def normalize_event(event: dict[str, Any]) -> dict[str, object]:
+    return {
+        "prefix_topics": event.get("prefix_topics"),
+        "data_format": event.get("data_format"),
+        "params": [
+            {"name": param.get("name"), "type_": param.get("type_"),
+             "location": param.get("location")}
+            for param in event.get("params", []) if isinstance(param, dict)
+        ],
+    }
+
+
 def validate_interface(entries: object, policy_name: str) -> None:
     if not isinstance(entries, list) or not entries:
         fail("contract interface must be a nonempty array")
@@ -686,6 +753,7 @@ def validate_interface(entries: object, policy_name: str) -> None:
     structs: dict[str, list[dict[str, object]]] = {}
     unions: dict[str, list[dict[str, object]]] = {}
     error_enums: dict[str, list[dict[str, object]]] = {}
+    events: dict[str, dict[str, object]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             fail("contract interface entry must be an object")
@@ -718,6 +786,13 @@ def validate_interface(entries: object, policy_name: str) -> None:
                 if name in error_enums:
                     fail(f"duplicate error enum in interface: {name}")
                 error_enums[name] = normalize_error_enum(error_enum)
+        event = entry.get("event_v0")
+        if isinstance(event, dict):
+            name = event.get("name")
+            if isinstance(name, str):
+                if name in events:
+                    fail(f"duplicate event in interface: {name}")
+                events[name] = normalize_event(event)
     policy = ABI_POLICIES.get(policy_name)
     if policy is None:
         fail(f"unknown ABI policy: {policy_name}")
@@ -744,6 +819,9 @@ def validate_interface(entries: object, policy_name: str) -> None:
     for name, expected_cases in policy.error_enums.items():
         if error_enums.get(name) != expected_cases:
             fail(f"{policy_name}: ABI mismatch for error enum {name}")
+    for name, expected in policy.events.items():
+        if events.get(name) != expected:
+            fail(f"{policy_name}: ABI mismatch for event {name}")
 
 
 def canonical_interface(entries: object, policy_name: str) -> bytes:

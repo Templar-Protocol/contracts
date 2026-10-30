@@ -100,6 +100,25 @@ async fn keyless_governance_self_upgrades_carrying_its_whole_wasm(
     let mut governed = governed(&harness).await?;
     revoke_all_access_keys(&harness, &governed.governance).await?;
 
+    // Both explicit-ID wire entrypoints must keep their stored bodies and allocator across
+    // code replacement. Leave these pending while separate upgrade proposals execute.
+    let pending_operation =
+        Operation::TargetFunctionCall(target::admin_set_proxy(PRICE_ID, None, None)?);
+    let (json_id, _) = governed
+        .propose(pending_operation.clone(), Encoding::Json)
+        .await?;
+    let (borsh_id, _) = governed.propose(pending_operation, Encoding::Borsh).await?;
+    let json_body = governed.proposal(json_id).await?.unwrap();
+    let borsh_body = governed.proposal(borsh_id).await?.unwrap();
+    assert_eq!(borsh_id, json_id + 1);
+    let roles_before: Vec<templar_proxy_oracle_near_governance_common::Role> = view(
+        &governed.network,
+        &governed.governance,
+        "get_roles",
+        json!({ "account_id": governed.admin }),
+    )
+    .await?;
+
     let code = wasm::proxy_governance().await.to_vec();
     let code_len = code.len();
     let parked = park_on_global(&mut governed, code.clone()).await?;
@@ -122,6 +141,38 @@ async fn keyless_governance_self_upgrades_carrying_its_whole_wasm(
     let version = harness.contract_state_version(&governed.governance).await?;
     assert_eq!((version.stored, version.target), (1, 1));
     assert!(!version.needs_migration);
+
+    assert_eq!(governed.proposal(json_id).await?, Some(json_body));
+    assert_eq!(governed.proposal(borsh_id).await?, Some(borsh_body));
+    assert_eq!(
+        view::<u32>(
+            &governed.network,
+            &governed.governance,
+            "next_proposal_id",
+            json!({})
+        )
+        .await?,
+        id + 1,
+    );
+    let roles_after: Vec<templar_proxy_oracle_near_governance_common::Role> = view(
+        &governed.network,
+        &governed.governance,
+        "get_roles",
+        json!({ "account_id": governed.admin }),
+    )
+    .await?;
+    assert!(!roles_before.is_empty());
+    assert_eq!(roles_after, roles_before);
+    for (offset, encoding) in [(1, Encoding::Json), (2, Encoding::Borsh)] {
+        let operation =
+            Operation::TargetFunctionCall(target::admin_set_proxy(PRICE_ID, None, None)?);
+        let (created_id, _) = governed.propose(operation.clone(), encoding).await?;
+        assert_eq!(created_id, id + offset);
+        assert_eq!(
+            governed.proposal(created_id).await?.unwrap().operation,
+            operation
+        );
+    }
 
     // Still governing after replacing its own code — the one thing a code hash cannot show.
     governed

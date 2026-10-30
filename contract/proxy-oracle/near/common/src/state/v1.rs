@@ -160,6 +160,7 @@ impl State {
     }
 
     pub fn get_proxy_circuit_breaker_set(&self, id: PriceIdentifier) -> Option<CircuitBreakerSet> {
+        self.proxies.get(&id)?;
         self.load_circuit_breaker_set(id)
     }
 
@@ -242,9 +243,19 @@ impl State {
     }
 
     pub fn set_proxy(&mut self, id: PriceIdentifier, proxy: Option<Proxy<Source>>) {
+        let existing_proxy = self.proxies.get(&id);
+        let mut breaker_set = self.circuit_breakers.get(&id);
+        if breaker_set
+            .as_ref()
+            .is_some_and(|set| set.validate().is_err())
+            || (breaker_set.is_none()
+                && (existing_proxy.is_some() || self.cache_epochs.get(&id).is_some()))
+        {
+            env::panic_str("Invalid circuit breaker set");
+        }
         if let Some(proxy) = proxy {
-            let proxy_changed = self.proxies.get(&id).as_ref() != Some(&proxy);
-            let missing_breaker_set = self.circuit_breakers.get(&id).is_none();
+            let proxy_changed = existing_proxy.as_ref() != Some(&proxy);
+            let missing_breaker_set = breaker_set.is_none();
             self.proxies.insert(&id, &proxy);
             if missing_breaker_set {
                 self.circuit_breakers
@@ -254,10 +265,13 @@ impl State {
                 self.invalidate_price_cache(id);
             }
         } else {
+            if let Some(mut set) = breaker_set.take() {
+                set.reset_preserving_next_id();
+                self.circuit_breakers.insert(&id, &set);
+            }
             let proxy_removed = self.proxies.remove(&id).is_some();
-            let breaker_set_removed = self.circuit_breakers.remove(&id).is_some();
             let cached_price_removed = self.cached_prices.remove(&id).is_some();
-            let changed = proxy_removed || breaker_set_removed || cached_price_removed;
+            let changed = proxy_removed || cached_price_removed;
             if changed {
                 self.bump_cache_epoch(id);
             }
@@ -356,6 +370,233 @@ mod tests {
         CircuitBreaker::StepwiseChange(StepwiseChange {
             max_relative_change: Decimal::from_str("0.10").unwrap(),
         })
+    }
+
+    /// Hand-authored positional fixtures for the unchanged v1 layout, not captured live state.
+    /// Borsh stores Decimal::ONE as eight little-endian limbs; postcard uses its string form.
+    /// Install literal Borsh values under the real UnorderedMap value key, then use runtime views.
+    #[test]
+    fn frozen_breaker_bytes_load_through_runtime_storage() {
+        use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerStatus;
+
+        const ARMED: &[u8] = &[0, 7, 0, 0, 0, 0, 0, 0, 0];
+        const TRIPPED: &[u8] = &[
+            1, 9, 0, 0, 0, 0, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 254, 255,
+            255, 255, 8, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        const ARMED_SET: &[u8] = &[
+            0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0,
+            1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 7, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        const TRIPPED_SET: &[u8] = &[
+            0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0,
+            1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 9, 0, 0, 0, 0, 0, 0, 0, 100, 0, 0,
+            0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 254, 255, 255, 255, 8, 0, 0, 0, 0, 0, 0, 0, 9,
+            0, 0, 0, 0, 0, 0, 0,
+        ];
+        const ARMED_POSTCARD: &[u8] = b"\x00\x017";
+        const TRIPPED_POSTCARD: &[u8] = b"\x01\x019\xc8\x01\x01\x03\x018\x019";
+        const ARMED_SET_POSTCARD: &[u8] =
+            b"\x010\x02\x00\x02\x00\x04\x00\x01\x03\x00\x011\x01\x00\x017";
+        const TRIPPED_SET_POSTCARD: &[u8] =
+            b"\x010\x02\x00\x02\x00\x04\x00\x01\x03\x00\x011\x01\x01\x019\xc8\x01\x01\x03\x018\x019";
+
+        testing_env!(VMContextBuilder::new().build());
+        let price_id = PriceIdentifier([0x38; 32]);
+        let mut state = state();
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        // UnorderedMap stores values by vector index, not by the feed's serialized key.
+        let value_key = [
+            near_sdk::borsh::to_vec(&StorageKey::CircuitBreakers).unwrap(),
+            vec![b'v'],
+            0_u64.to_le_bytes().to_vec(),
+        ]
+        .concat();
+        for (set_bytes, status_bytes, set_postcard, status_postcard) in [
+            (ARMED_SET, ARMED, ARMED_SET_POSTCARD, ARMED_POSTCARD),
+            (TRIPPED_SET, TRIPPED, TRIPPED_SET_POSTCARD, TRIPPED_POSTCARD),
+        ] {
+            env::storage_write(&value_key, set_bytes);
+            let loaded = state.get_proxy_circuit_breaker_set(price_id).unwrap();
+            loaded.validate().unwrap();
+            assert_eq!(loaded.next_id(), 4);
+            assert_eq!(loaded.breaker_count(), 1);
+            let status = &loaded.breakers()[&3].status;
+            assert_eq!(near_sdk::borsh::to_vec(status).unwrap(), status_bytes);
+            assert_eq!(postcard::to_allocvec(status).unwrap(), status_postcard);
+            assert_eq!(
+                postcard::from_bytes::<CircuitBreakerStatus>(status_postcard).unwrap(),
+                *status
+            );
+            assert_eq!(near_sdk::borsh::to_vec(&loaded).unwrap(), set_bytes);
+            assert_eq!(postcard::to_allocvec(&loaded).unwrap(), set_postcard);
+            assert_eq!(
+                postcard::from_bytes::<CircuitBreakerSet>(set_postcard).unwrap(),
+                loaded
+            );
+        }
+    }
+
+    #[test]
+    fn missing_tombstone_is_not_treated_as_a_never_used_allocator() {
+        testing_env!(VMContextBuilder::new().build());
+        let price_id = PriceIdentifier([0x16; 32]);
+        let mut state = state();
+        state.set_proxy(price_id, None);
+        assert!(state.circuit_breakers.get(&price_id).is_none());
+        assert_eq!(state.cache_epoch(price_id), 0);
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        assert_eq!(
+            state
+                .get_proxy_circuit_breaker_set(price_id)
+                .unwrap()
+                .next_id(),
+            0
+        );
+        state.set_proxy(price_id, None);
+        state.circuit_breakers.remove(&price_id);
+        let before_epoch = state.cache_epoch(price_id);
+
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.set_proxy(price_id, Some(proxy(price_id)));
+        }))
+        .is_err());
+        assert!(state.get_proxy(price_id).is_none());
+        assert!(state.circuit_breakers.get(&price_id).is_none());
+        assert_eq!(state.cache_epoch(price_id), before_epoch);
+    }
+
+    #[test]
+    fn corrupt_allocator_rejects_removal_before_mutation() {
+        use templar_proxy_oracle_kernel::proxy::circuit_breaker::UncheckedCircuitBreakerSet;
+
+        testing_env!(VMContextBuilder::new().build());
+        let price_id = PriceIdentifier([0x15; 32]);
+        let mut state = state();
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        let mut entry = state.proxy_entry_mut(price_id).unwrap();
+        entry
+            .configure_circuit_breakers(CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: 2,
+            })
+            .unwrap();
+        entry.add_circuit_breaker(0, breaker()).unwrap();
+        let mut corrupt = UncheckedCircuitBreakerSet::from(
+            state.get_proxy_circuit_breaker_set(price_id).unwrap(),
+        );
+        corrupt.next_id = 0;
+        let mut raw_map: UnorderedMap<PriceIdentifier, UncheckedCircuitBreakerSet> =
+            near_sdk::borsh::from_slice(&near_sdk::borsh::to_vec(&state.circuit_breakers).unwrap())
+                .unwrap();
+        raw_map.insert(&price_id, &corrupt);
+        let before_epoch = state.cache_epoch(price_id);
+
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.set_proxy(price_id, None);
+        }))
+        .is_err());
+        assert_eq!(state.get_proxy(price_id), Some(proxy(price_id)));
+        assert_eq!(state.cache_epoch(price_id), before_epoch);
+        assert_eq!(raw_map.get(&price_id), Some(corrupt));
+    }
+
+    #[test]
+    fn removed_proxy_retains_only_breaker_allocator() {
+        use templar_proxy_oracle_kernel::proxy::circuit_breaker::UncheckedCircuitBreakerSet;
+
+        testing_env!(VMContextBuilder::new().build());
+        let price_id = PriceIdentifier([0x12; 32]);
+        let mut state = state();
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        let mut entry = state.proxy_entry_mut(price_id).unwrap();
+        entry
+            .configure_circuit_breakers(CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: 2,
+            })
+            .unwrap();
+        entry.add_circuit_breaker(0, breaker()).unwrap();
+        entry.add_circuit_breaker(1, breaker()).unwrap();
+        state.set_proxy(price_id, None);
+
+        let mut raw = UncheckedCircuitBreakerSet::from(CircuitBreakerSet::empty());
+        raw.next_id = 2;
+        let expected = CircuitBreakerSet::try_from(raw).unwrap();
+        assert_eq!(
+            state.circuit_breakers.get(&price_id),
+            Some(expected.clone())
+        );
+        assert!(state.get_proxy_circuit_breaker_set(price_id).is_none());
+        assert!(state.proxy_entry(price_id).is_none());
+        assert!(state.proxy_entry_mut(price_id).is_none());
+
+        let removed_epoch = state.cache_epoch(price_id);
+        state.set_proxy(price_id, None);
+        assert_eq!(state.cache_epoch(price_id), removed_epoch);
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        assert_eq!(
+            state.get_proxy_circuit_breaker_set(price_id),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn exhausted_allocator_survives_proxy_recreation() {
+        use templar_proxy_oracle_kernel::proxy::circuit_breaker::UncheckedCircuitBreakerSet;
+
+        testing_env!(VMContextBuilder::new().build());
+        let price_id = PriceIdentifier([0x13; 32]);
+        let mut state = state();
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        let mut raw = UncheckedCircuitBreakerSet::from(CircuitBreakerSet::empty());
+        raw.next_id = u32::MAX;
+        state
+            .circuit_breakers
+            .insert(&price_id, &CircuitBreakerSet::try_from(raw).unwrap());
+        state.set_proxy(price_id, None);
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        let mut entry = state.proxy_entry_mut(price_id).unwrap();
+        entry
+            .configure_circuit_breakers(CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: 2,
+            })
+            .unwrap();
+        assert_eq!(
+            entry.add_circuit_breaker(u32::MAX, breaker()),
+            Err(CircuitBreakerError::TooManyBreakers)
+        );
+        assert_eq!(
+            state
+                .get_proxy_circuit_breaker_set(price_id)
+                .unwrap()
+                .next_id(),
+            u32::MAX
+        );
+    }
+
+    #[test]
+    fn missing_allocator_rejects_proxy_mutation() {
+        testing_env!(VMContextBuilder::new().build());
+        let price_id = PriceIdentifier([0x14; 32]);
+        let mut state = state();
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        state.circuit_breakers.remove(&price_id);
+        let before_epoch = state.cache_epoch(price_id);
+        for replacement in [None, Some(proxy(price_id))] {
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                state.set_proxy(price_id, replacement);
+            }))
+            .is_err());
+            assert_eq!(state.get_proxy(price_id), Some(proxy(price_id)));
+            assert_eq!(state.cache_epoch(price_id), before_epoch);
+            assert!(state.circuit_breakers.get(&price_id).is_none());
+        }
     }
 
     #[test]

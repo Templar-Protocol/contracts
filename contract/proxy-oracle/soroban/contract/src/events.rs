@@ -5,13 +5,13 @@ extern crate alloc;
 
 use alloc::vec::Vec as AllocVec;
 
-use soroban_sdk::{contractevent, Bytes, BytesN, Env};
+use soroban_sdk::{contractevent, Bytes, BytesN, Env, Vec};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
-    CircuitBreakerEvent as KernelCircuitBreakerEvent, Observation,
+    CircuitBreaker, CircuitBreakerEvent as KernelCircuitBreakerEvent, Observation,
 };
-use templar_proxy_oracle_soroban_common::{Asset, NormalizedPrice};
+use templar_proxy_oracle_soroban_common::{Asset, CircuitBreakerConfig, NormalizedPrice};
 
-use crate::{codes::breaker_kind_code, RefreshStatus, SOURCE_UNAVAILABLE_CODE, UNKNOWN_ASSET_CODE};
+use crate::{codes::breaker_kind_code, conversion::kernel_price_to_normalized};
 
 #[contractevent]
 #[derive(Clone)]
@@ -43,10 +43,28 @@ pub struct RefreshFailure {
 
 #[contractevent]
 #[derive(Clone)]
+pub struct AggregationFailureDetail {
+    #[topic]
+    pub asset: Asset,
+    pub code: u32,
+    pub expected: u32,
+    pub actual: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
 pub struct CacheBlocked {
     #[topic]
     pub asset: Asset,
     pub reason_code: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct CacheBlockedDetail {
+    #[topic]
+    pub asset: Asset,
+    pub blocking_breaker_ids: Vec<u32>,
 }
 
 #[contractevent]
@@ -66,6 +84,17 @@ pub struct CircuitBreakerAdded {
     #[topic]
     pub breaker_id: u32,
     pub breaker_kind: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct CircuitBreakerAddedDetail {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub breaker_id: u32,
+    pub config: CircuitBreakerConfig,
+    pub baseline: Option<NormalizedPrice>,
 }
 
 #[contractevent]
@@ -148,52 +177,6 @@ pub struct TtlExtended {
     pub asset: Asset,
 }
 
-pub fn publish_refresh_event(
-    env: &Env,
-    asset: &Asset,
-    status: &RefreshStatus,
-    evaluated_price: Option<&NormalizedPrice>,
-) {
-    if let Some(price) = evaluated_price {
-        RefreshEvaluated {
-            asset: asset.clone(),
-            mantissa: price.mantissa,
-            expo: price.expo,
-            timestamp: price.timestamp,
-        }
-        .publish(env);
-    }
-    match status {
-        RefreshStatus::Accepted(price) => RefreshSuccess {
-            asset: asset.clone(),
-            mantissa: price.mantissa,
-            expo: price.expo,
-            timestamp: price.timestamp,
-        }
-        .publish(env),
-        RefreshStatus::Blocked(reason_code) => CacheBlocked {
-            asset: asset.clone(),
-            reason_code: *reason_code,
-        }
-        .publish(env),
-        RefreshStatus::ResolveFailed(code) => RefreshFailure {
-            asset: asset.clone(),
-            code: *code,
-        }
-        .publish(env),
-        RefreshStatus::SourceUnavailable => RefreshFailure {
-            asset: asset.clone(),
-            code: SOURCE_UNAVAILABLE_CODE,
-        }
-        .publish(env),
-        RefreshStatus::UnknownAsset => RefreshFailure {
-            asset: asset.clone(),
-            code: UNKNOWN_ASSET_CODE,
-        }
-        .publish(env),
-    }
-}
-
 pub fn publish_breaker_events(
     env: &Env,
     asset: &Asset,
@@ -218,12 +201,28 @@ fn publish_breaker_event(env: &Env, asset: &Asset, event: KernelCircuitBreakerEv
         KernelCircuitBreakerEvent::Added {
             breaker_id,
             breaker,
-        } => CircuitBreakerAdded {
-            asset: asset.clone(),
-            breaker_id,
-            breaker_kind: breaker_kind_code(&breaker),
+        } => {
+            CircuitBreakerAdded {
+                asset: asset.clone(),
+                breaker_id,
+                breaker_kind: breaker_kind_code(&breaker),
+            }
+            .publish(env);
+            CircuitBreakerAddedDetail {
+                asset: asset.clone(),
+                breaker_id,
+                config: CircuitBreakerConfig::from_kernel(env, &breaker),
+                baseline: match &breaker {
+                    CircuitBreaker::CumulativeChange(rule) => {
+                        Some(kernel_price_to_normalized(rule.baseline))
+                    }
+                    CircuitBreaker::StepwiseChange(_)
+                    | CircuitBreaker::MonotonicRun(_)
+                    | CircuitBreaker::WindowedChangeDelta(_) => None,
+                },
+            }
+            .publish(env);
         }
-        .publish(env),
         KernelCircuitBreakerEvent::Removed { breaker_id } => CircuitBreakerRemoved {
             asset: asset.clone(),
             breaker_id,

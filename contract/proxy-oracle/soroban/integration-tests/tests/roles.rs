@@ -12,24 +12,15 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
-    CircuitBreakerConfig, ProxyConfig, RearmConfig, SetEnforcedConfig, SorobanDecimal,
-    StepwiseChangeConfig,
+    CircuitBreakerConfig, RearmConfig, SetEnforcedConfig, SorobanDecimal, StepwiseChangeConfig,
 };
 use templar_proxy_oracle_soroban_governance_common::{GovernanceAction, Role};
-use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
+use templar_proxy_oracle_soroban_integration_tests::common::{default_proxy_config, Bootstrap};
 
 fn sample_setproxy(b: &Bootstrap, label: &str) -> GovernanceAction {
     let asset = templar_proxy_oracle_soroban_common::Asset::Other(Symbol::new(&b.env, label));
     let sources = b.source_configs(&asset);
-    GovernanceAction::SetProxy(
-        asset,
-        ProxyConfig {
-            sources,
-            min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
-        },
-    )
+    GovernanceAction::SetProxy(asset, default_proxy_config(sources))
 }
 
 #[test]
