@@ -82,6 +82,14 @@ Use this section as an execution checklist: read the local docs first, preserve 
 - Preserve existing crate structure and naming patterns unless there is a strong reason to change them.
 - This codebase is security-sensitive. Review changes with an auditor mindset, especially in smart contracts and cross-contract flows.
 
+## Architecture Decision Records
+
+Decisions live in `docs/src/adr/`; [ADR 1](docs/src/adr/0001-record-architecture-decisions-as-adrs.md) defines when one is required and its lifecycle. Read the related ADRs before changing a high-impact area, and if you find yourself explaining a decision in a PR description, it belongs in an ADR.
+
+- Draft with the `templar-raladr` agent skill. Its bundled `adr` (`<skill-dir>/scripts/adr --robot status|new|link|lint`) manages the log; `adr --robot new -s N "…"` supersedes ADR N.
+- Never change an ADR's status to `Accepted`, and never edit an `Accepted` ADR; a human accepts in the PR before merging.
+- An ADR-only PR is titled `docs(adr): …`.
+
 ## Commit And PR Titles
 
 PRs are squash-merged, so **the PR title becomes the commit message on `dev`**, and `release-plz` reads those messages to decide each crate's next version. A title that does not parse still bumps — release-plz falls back to a patch — but it lands with **no changelog entry**, so the release says nothing about what changed. `.github/workflows/pr-title.yml` enforces the format on every PR.
@@ -137,6 +145,7 @@ Several CI/test-infra files enumerate crates, contracts, or paths by hand. A fea
   - Root `Cargo.toml` `[workspace] members` if an existing glob (`gateway/*`, `tools/*`, …) doesn't already cover the path.
 - **Tuning sandbox parallelism**: update `sandbox_test_threads` in `justfile`; the sandbox recipe uses it for both Nextest threads and pooled node count.
 - **Adding or removing a gateway method**: update the `for_each_*_method!` macros in the spec crates — see the `gateway/*` entry under High-Impact Areas.
+- **Adding an ADR**: list it under Architecture Decisions in `docs/src/SUMMARY.md`; CI fails on an unlisted ADR or a duplicate number.
 
 ## Code Search
 
