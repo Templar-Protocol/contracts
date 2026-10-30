@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.9.1) - 2026-10-30
+
+### Added
+
+- *(deployments)* add v1 Ethena USDe/sUSDe market specs (ENG-763) ([#700](https://github.com/Templar-Protocol/contracts/pull/700))
+
 ## [0.9.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.8.1...templar-manager-v0.9.0) - 2026-10-26
 
 ### Added
