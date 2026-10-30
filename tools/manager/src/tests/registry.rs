@@ -18,7 +18,7 @@ fn temp_wasm(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
     path
 }
 
-fn add_version_spec(
+async fn add_version_spec(
     args: &[&str],
 ) -> anyhow::Result<templar_gateway_methods_spec::registry::AddVersion> {
     match Cli::try_parse_from(args.iter().copied().chain(CREDS))
@@ -27,9 +27,98 @@ fn add_version_spec(
     {
         Command::Registry {
             command: RegistryNs::AddVersion(cmd),
-        } => cmd.try_into_spec(),
+        } => cmd.try_into_spec().await,
         _ => panic!("expected Registry::AddVersion"),
     }
+}
+
+#[rstest::rstest]
+#[case(&["--contract", "market", "--deploy-mode", "global-hash"], clap::error::ErrorKind::MissingRequiredArgument)]
+#[case(&["--package", "templar-market-contract", "--deploy-mode", "global-hash"], clap::error::ErrorKind::MissingRequiredArgument)]
+#[case(&["--contract", "market", "--build", "--release", "1.6.1", "--deploy-mode", "global-hash"], clap::error::ErrorKind::ArgumentConflict)]
+#[case(&["--contract", "market", "--release", "1.6.1", "--version-key", "mislabelled", "--deploy-mode", "global-hash"], clap::error::ErrorKind::ArgumentConflict)]
+#[case(&["--wasm", "unused.wasm", "--release", "1.6.1", "--deploy-mode", "global-hash"], clap::error::ErrorKind::ArgumentConflict)]
+#[case(&["--wasm", "unused.wasm", "--build", "--deploy-mode", "global-hash"], clap::error::ErrorKind::ArgumentConflict)]
+#[case(&["--code-hash", "11111111111111111111111111111111", "--release", "1.6.1"], clap::error::ErrorKind::ArgumentConflict)]
+#[case(&["--code-hash", "11111111111111111111111111111111", "--build"], clap::error::ErrorKind::ArgumentConflict)]
+#[case(&["--contract", "market", "--no-build", "--deploy-mode", "global-hash"], clap::error::ErrorKind::UnknownArgument)]
+fn add_version_rejects_ambiguous_or_inapplicable_source_modes(
+    #[case] source_args: &[&str],
+    #[case] expected: clap::error::ErrorKind,
+) {
+    let error = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "add-version",
+            "--registry-id",
+            "registry.testnet",
+        ]
+        .into_iter()
+        .chain(source_args.iter().copied())
+        .chain(CREDS),
+    )
+    .expect_err("incoherent sources must fail before any build or download");
+    assert_eq!(error.kind(), expected);
+}
+
+#[tokio::test]
+async fn add_version_release_uses_published_bytes_and_derives_identity() {
+    let spec = add_version_spec(&[
+        "tmplrmgr",
+        "registry",
+        "add-version",
+        "--registry-id",
+        "registry.testnet",
+        "--contract",
+        "market",
+        "--release",
+        "1.6.1",
+        "--workspace-path",
+        "/unused-for-releases",
+        "--deploy-mode",
+        "global-hash",
+    ])
+    .await
+    .expect("catalogued release should resolve without a workspace or a build");
+    let VersionSource::PublishGlobal(code) = spec.source else {
+        panic!("global-hash must publish the released bytes");
+    };
+    assert_eq!(
+        templar_contract_artifacts::sha256_hex(&code.0),
+        "d75c2419527d816a8f5fcab6a585032799a38cf90e09a5a98992d5c84774562a",
+    );
+    assert_eq!(
+        spec.version_key,
+        "templar-market-contract@1.6.1#d75c2419527d816a8f5fcab6a585032799a38cf90e09a5a98992d5c84774562a",
+    );
+    assert_eq!(
+        spec.deposit.as_yoctonear(),
+        52_037_200_000_000_000_000_000_000,
+    );
+}
+
+#[tokio::test]
+async fn add_version_unknown_release_never_falls_back_to_local_source() {
+    let error = add_version_spec(&[
+        "tmplrmgr",
+        "registry",
+        "add-version",
+        "--registry-id",
+        "registry.testnet",
+        "--package",
+        "templar-market-contract",
+        "--release",
+        "999.0.0",
+        "--deploy-mode",
+        "normal",
+    ])
+    .await
+    .expect_err("an uncatalogued release must fail instead of building local source");
+    assert!(matches!(
+        error.downcast_ref::<templar_contract_artifacts::fetch::FetchError>(),
+        Some(templar_contract_artifacts::fetch::FetchError::UnknownRelease { .. }),
+    ));
 }
 
 #[test]
@@ -188,8 +277,8 @@ fn typed_registry_method_rejects_missing_required_field() {
     );
 }
 
-#[test]
-fn add_version_wasm_path_builds_global_hash_spec() {
+#[tokio::test]
+async fn add_version_wasm_path_builds_global_hash_spec() {
     let wasm = b"\0asm\x01\0\0\0global";
     let path = temp_wasm("global", wasm);
     let spec = add_version_spec(&[
@@ -205,6 +294,7 @@ fn add_version_wasm_path_builds_global_hash_spec() {
         "--deploy-mode",
         "global-hash",
     ])
+    .await
     .expect("into_spec should succeed");
     std::fs::remove_file(&path).ok();
 
@@ -219,8 +309,8 @@ fn add_version_wasm_path_builds_global_hash_spec() {
     assert_eq!(spec.deposit.as_yoctonear(), expected);
 }
 
-#[test]
-fn add_version_normal_mode_uses_minimal_deposit() {
+#[tokio::test]
+async fn add_version_normal_mode_uses_minimal_deposit() {
     let path = temp_wasm("normal", b"\0asm-normal");
     let spec = add_version_spec(&[
         "tmplrmgr",
@@ -235,6 +325,7 @@ fn add_version_normal_mode_uses_minimal_deposit() {
         "--deploy-mode",
         "normal",
     ])
+    .await
     .expect("into_spec should succeed");
     std::fs::remove_file(&path).ok();
 
@@ -246,8 +337,8 @@ fn add_version_normal_mode_uses_minimal_deposit() {
 }
 
 /// The point of the code-hash source: no bytes are read, uploaded, or priced.
-#[test]
-fn add_version_code_hash_builds_existing_global_spec() {
+#[tokio::test]
+async fn add_version_code_hash_builds_existing_global_spec() {
     let hash = Base58CryptoHash::from([7u8; 32]);
     let spec = add_version_spec(&[
         "tmplrmgr",
@@ -260,6 +351,7 @@ fn add_version_code_hash_builds_existing_global_spec() {
         "--version-key",
         "templar-universal-account@1.2.3#deadbeef",
     ])
+    .await
     .expect("into_spec should succeed");
 
     assert_eq!(spec.version_key, "templar-universal-account@1.2.3#deadbeef");
@@ -268,8 +360,8 @@ fn add_version_code_hash_builds_existing_global_spec() {
 }
 
 /// Nothing derives a version key from a hash, so it has to be supplied.
-#[test]
-fn add_version_code_hash_requires_a_version_key() {
+#[tokio::test]
+async fn add_version_code_hash_requires_a_version_key() {
     let error = add_version_spec(&[
         "tmplrmgr",
         "registry",
@@ -279,6 +371,7 @@ fn add_version_code_hash_requires_a_version_key() {
         "--code-hash",
         &String::from(&Base58CryptoHash::from([7u8; 32])),
     ])
+    .await
     .expect_err("a code hash cannot derive a version key");
 
     assert!(format!("{error:#}").contains("--version-key is required"));
@@ -364,8 +457,8 @@ fn add_version_requires_explicit_deploy_mode() {
     );
 }
 
-#[test]
-fn add_version_deposit_override_wins_over_estimate() {
+#[tokio::test]
+async fn add_version_deposit_override_wins_over_estimate() {
     let path = temp_wasm("override", b"\0asm-override");
     let spec = add_version_spec(&[
         "tmplrmgr",
@@ -382,6 +475,7 @@ fn add_version_deposit_override_wins_over_estimate() {
         "--deposit",
         "3 NEAR",
     ])
+    .await
     .expect("into_spec should succeed");
     std::fs::remove_file(&path).ok();
 
@@ -391,8 +485,8 @@ fn add_version_deposit_override_wins_over_estimate() {
     );
 }
 
-#[test]
-fn add_version_wasm_requires_explicit_version_key() {
+#[tokio::test]
+async fn add_version_wasm_requires_explicit_version_key() {
     let path = temp_wasm("no-key", b"\0asm");
     let result = add_version_spec(&[
         "tmplrmgr",
@@ -404,7 +498,8 @@ fn add_version_wasm_requires_explicit_version_key() {
         path.to_str().unwrap(),
         "--deploy-mode",
         "normal",
-    ]);
+    ])
+    .await;
     std::fs::remove_file(&path).ok();
 
     let error = result.expect_err("--wasm without --version-key must fail");

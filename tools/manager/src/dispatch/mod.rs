@@ -128,7 +128,7 @@ async fn registry(ctx: CliContext, ns: RegistryNs) -> anyhow::Result<()> {
         RegistryNs::ListDeployments(a) => ctx.read(a.into_spec()).await,
         RegistryNs::ListDeploymentsByKind(a) => ctx.read(a.into_spec()).await,
         RegistryNs::GetDeployment(a) => ctx.read(a.into_spec()).await,
-        RegistryNs::AddVersion(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        RegistryNs::AddVersion(a) => ctx.write(a.signer.clone(), a.try_into_spec().await?).await,
         RegistryNs::Deploy(a) => {
             ctx.write_with(a.signer.clone(), |auth| a.try_into_spec(auth))
                 .await
