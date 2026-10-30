@@ -250,6 +250,15 @@ jobs:
         run: |
           python3 script/docs/gen-risk-parameters.py --self-test
           python3 script/docs/gen-risk-parameters.py --check
+      - name: Check ADR numbers are unique and every ADR is in the guide
+        run: |
+          dup=$(ls docs/src/adr | grep -Eo '^[0-9]+-' | sort | uniq -d)
+          [ -z "$dup" ] || { echo "duplicate ADR numbers: $dup"; exit 1; }
+          rc=0
+          for f in docs/src/adr/[0-9]*-*.md; do
+            grep -qF "(./adr/$(basename "$f"))" docs/src/SUMMARY.md || { echo "$f is not in docs/src/SUMMARY.md"; rc=1; }
+          done
+          exit $rc
       - name: Build rustdoc
         env:
           RUSTDOCFLAGS: -D warnings
