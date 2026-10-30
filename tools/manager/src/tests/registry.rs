@@ -33,15 +33,15 @@ async fn add_version_spec(
 }
 
 #[rstest::rstest]
-#[case(&["--contract", "market"], clap::error::ErrorKind::MissingRequiredArgument)]
-#[case(&["--package", "templar-market-contract"], clap::error::ErrorKind::MissingRequiredArgument)]
-#[case(&["--contract", "market", "--build", "--release", "1.6.1"], clap::error::ErrorKind::ArgumentConflict)]
-#[case(&["--contract", "market", "--release", "1.6.1", "--version-key", "mislabelled"], clap::error::ErrorKind::ArgumentConflict)]
-#[case(&["--wasm", "unused.wasm", "--release", "1.6.1"], clap::error::ErrorKind::ArgumentConflict)]
-#[case(&["--wasm", "unused.wasm", "--build"], clap::error::ErrorKind::ArgumentConflict)]
+#[case(&["--contract", "market", "--deploy-mode", "global-hash"], clap::error::ErrorKind::MissingRequiredArgument)]
+#[case(&["--package", "templar-market-contract", "--deploy-mode", "global-hash"], clap::error::ErrorKind::MissingRequiredArgument)]
+#[case(&["--contract", "market", "--build", "--release", "1.6.1", "--deploy-mode", "global-hash"], clap::error::ErrorKind::ArgumentConflict)]
+#[case(&["--contract", "market", "--release", "1.6.1", "--version-key", "mislabelled", "--deploy-mode", "global-hash"], clap::error::ErrorKind::ArgumentConflict)]
+#[case(&["--wasm", "unused.wasm", "--release", "1.6.1", "--deploy-mode", "global-hash"], clap::error::ErrorKind::ArgumentConflict)]
+#[case(&["--wasm", "unused.wasm", "--build", "--deploy-mode", "global-hash"], clap::error::ErrorKind::ArgumentConflict)]
 #[case(&["--code-hash", "11111111111111111111111111111111", "--release", "1.6.1"], clap::error::ErrorKind::ArgumentConflict)]
 #[case(&["--code-hash", "11111111111111111111111111111111", "--build"], clap::error::ErrorKind::ArgumentConflict)]
-#[case(&["--contract", "market", "--no-build"], clap::error::ErrorKind::UnknownArgument)]
+#[case(&["--contract", "market", "--no-build", "--deploy-mode", "global-hash"], clap::error::ErrorKind::UnknownArgument)]
 fn add_version_rejects_ambiguous_or_inapplicable_source_modes(
     #[case] source_args: &[&str],
     #[case] expected: clap::error::ErrorKind,
@@ -53,8 +53,6 @@ fn add_version_rejects_ambiguous_or_inapplicable_source_modes(
             "add-version",
             "--registry-id",
             "registry.testnet",
-            "--deploy-mode",
-            "global-hash",
         ]
         .into_iter()
         .chain(source_args.iter().copied())

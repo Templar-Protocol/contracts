@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Breaking:** removed the unused `build::load_contract` wrapper after the
+  manager's `--no-build` path was removed. Explicit local builds continue to use
+  `build::build_contract`.
+
 ## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-tools-common-v0.1.3...templar-tools-common-v0.2.0) - 2026-08-07
 
 ### Changed
