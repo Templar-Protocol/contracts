@@ -5,10 +5,10 @@ use clap::{ArgGroup, Args, ValueEnum};
 use near_account_id::AccountId;
 use near_sdk::json_types::Base58CryptoHash;
 use templar_common::registry::VersionSource;
-use templar_contract_artifacts::ArtifactId;
+use templar_contract_artifacts::{fetch, version_key_from_digest, ArtifactId};
 use templar_gateway_methods_spec::registry as spec;
 use templar_gateway_types::NearToken;
-use templar_tools_common::build::{build_contract, load_contract, LoadedContract};
+use templar_tools_common::build::{build_contract, LoadedContract};
 
 use crate::commands::signer::SignerArgs;
 
@@ -78,23 +78,39 @@ impl From<ContractArg> for ArtifactId {
 /// Exactly one contract selector is required: `--contract <CONTRACT>` (a known
 /// NEAR contract), `--package` (a Cargo package name or artifact ID), `--wasm`
 /// (an explicit file), or `--code-hash` (a global contract already on chain).
-/// The `--contract`/`--package` modes resolve a workspace package and, by
-/// default, build it reproducibly (`--no-build` uploads the last `target/near`
-/// build instead); `--wasm` uploads arbitrary bytes and so requires
-/// `--version-key`, as does `--code-hash`, which uploads nothing at all.
+/// The `--contract`/`--package` modes require either a catalogued `--release`
+/// or an explicit local `--build`. `--wasm` uploads arbitrary bytes and so
+/// requires `--version-key`, as does `--code-hash`, which uploads nothing.
 #[derive(Args, Debug)]
-#[command(group(
-    ArgGroup::new("contract_source")
-        .args(["contract", "package", "wasm", "code_hash"])
-        .required(true)
-        .multiple(false)
-))]
+#[command(
+    group(
+        ArgGroup::new("contract_source")
+            .args(["contract", "package", "wasm", "code_hash"])
+            .required(true)
+            .multiple(false)
+    ),
+    group(
+        ArgGroup::new("artifact_source_mode")
+            .args(["release", "build"])
+            .multiple(false)
+    )
+)]
 pub struct ContractSource {
-    /// Known NEAR contract to build and register.
-    #[arg(long, value_enum, value_name = "CONTRACT")]
+    /// Known NEAR contract to register from a release, or build explicitly.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "CONTRACT",
+        requires = "artifact_source_mode"
+    )]
     contract: Option<ContractArg>,
     /// Contract by Cargo package name or artifact ID (e.g. `market`)
-    #[arg(long, visible_alias = "artifact", value_name = "NAME")]
+    #[arg(
+        long,
+        visible_alias = "artifact",
+        value_name = "NAME",
+        requires = "artifact_source_mode"
+    )]
     package: Option<String>,
     /// Upload this WASM file directly, skipping the build (requires --version-key)
     #[arg(long, value_name = "PATH")]
@@ -103,29 +119,48 @@ pub struct ContractSource {
     /// nothing (requires --version-key)
     #[arg(long, value_name = "HASH")]
     code_hash: Option<Base58CryptoHash>,
-    /// Upload the last `target/near` build instead of building (package modes only)
-    #[arg(long)]
-    no_build: bool,
-    /// Workspace root to build/load the package from
+    /// Published version from contract/artifacts/releases; verifies the WASM hash.
+    #[arg(long, value_name = "VERSION", conflicts_with_all = ["wasm", "code_hash"])]
+    release: Option<String>,
+    /// Explicitly build local source reproducibly instead of using a published release.
+    #[arg(long, conflicts_with_all = ["wasm", "code_hash"])]
+    build: bool,
+    /// Workspace root for --build; not used when fetching a release.
     #[arg(long, env = "WORKSPACE_PATH", default_value = ".", value_name = "PATH")]
     workspace_path: PathBuf,
 }
 
 impl ContractSource {
     fn artifact(&self) -> Option<ArtifactId> {
-        self.contract
-            .map(ArtifactId::from)
-            .or_else(|| self.package.as_deref().and_then(|p| p.parse().ok()))
+        self.contract.map(ArtifactId::from).or_else(|| {
+            self.package
+                .as_deref()
+                .and_then(|package| package.parse().ok())
+        })
     }
 
     /// Resolve the bytes to upload and, when derivable, the canonical version
     /// key (`{name}@{version}#{sha256}`). `--wasm` yields no key — the caller
     /// must supply `--version-key`.
-    fn load(&self) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+    async fn load(&self) -> anyhow::Result<(Vec<u8>, Option<String>)> {
         if let Some(path) = &self.wasm {
             let bytes = std::fs::read(path)
                 .with_context(|| format!("read WASM from {}", path.display()))?;
             return Ok((bytes, None));
+        }
+
+        if let Some(version) = &self.release {
+            let artifact = self
+                .artifact()
+                .context("--release requires a catalogued contract or package")?;
+            let metadata = artifact.metadata();
+            let bytes = fetch::released_bytes(artifact, version).await?;
+            let release = metadata
+                .release(version)
+                .context("verified release is missing from the artifact catalog")?;
+            let version_key =
+                version_key_from_digest(metadata.package_name, release.version, release.sha256);
+            return Ok((bytes, Some(version_key)));
         }
 
         let package_name = self
@@ -134,17 +169,14 @@ impl ContractSource {
             .or_else(|| self.package.clone())
             .context("no contract selected")?;
 
-        let loaded: LoadedContract<()> = if self.no_build {
-            load_contract(&self.workspace_path, &package_name)?
-        } else {
-            build_contract(&self.workspace_path, &package_name)?
-        };
+        anyhow::ensure!(self.build, "choose --release <VERSION> or --build");
+        let loaded: LoadedContract<()> = build_contract(&self.workspace_path, &package_name)?;
         let version_key = loaded.version_key();
         Ok((loaded.wasm_bytes, Some(version_key)))
     }
 }
 
-/// Build (or load) a contract and register it as a deployable version.
+/// Register a published contract release, or explicitly build/upload local code.
 #[derive(Args, Debug)]
 pub struct AddVersion {
     /// Registry to add the version to.
@@ -152,9 +184,9 @@ pub struct AddVersion {
     registry_id: AccountId,
     #[command(flatten)]
     source: ContractSource,
-    /// Version key to store. Derived from the package metadata and WASM hash
-    /// when omitted; required with --wasm or --code-hash.
-    #[arg(long, value_name = "KEY")]
+    /// Version key for local builds or explicit WASM/hash sources. Release keys
+    /// are always derived from the catalog; required with --wasm or --code-hash.
+    #[arg(long, value_name = "KEY", conflicts_with = "release")]
     version_key: Option<String>,
     /// Deployment mode for an uploaded WASM (choose explicitly). Meaningless
     /// with --code-hash, which never uploads.
@@ -173,14 +205,14 @@ pub struct AddVersion {
 }
 
 impl AddVersion {
-    pub fn try_into_spec(self) -> anyhow::Result<spec::AddVersion> {
+    pub async fn try_into_spec(self) -> anyhow::Result<spec::AddVersion> {
         let (source, derived_key) = if let Some(hash) = self.source.code_hash {
             (VersionSource::ExistingGlobal(hash), None)
         } else {
             let deploy_mode = self
                 .deploy_mode
                 .context("--deploy-mode is required unless --code-hash is used")?;
-            let (wasm_bytes, derived_key) = self.source.load()?;
+            let (wasm_bytes, derived_key) = self.source.load().await?;
             (deploy_mode.with_code(wasm_bytes), derived_key)
         };
 
@@ -223,7 +255,7 @@ mod tests {
     }
 
     fn source_for(value: &str) -> ContractSource {
-        Harness::try_parse_from(["tmplrmgr", "--contract", value])
+        Harness::try_parse_from(["tmplrmgr", "--contract", value, "--release", "1.6.1"])
             .expect("--contract value should parse")
             .source
     }
