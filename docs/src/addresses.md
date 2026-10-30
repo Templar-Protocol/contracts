@@ -53,6 +53,8 @@ The markets currently offered in the app. Their immutable parameters and oracle 
 | [`idoge-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/idoge-ixlmusdc.v1.tmplr.near) | Native DOGE (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`iethfxrp-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethfxrp-ixlmusdc.v1.tmplr.near) | FXRP on Ethereum (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`iethhemibtc-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/iethhemibtc-iethusdc.v1.tmplr.near) | hemiBTC on Ethereum (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
+| [`iethsusde-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/iethsusde-iethusdc.v1.tmplr.near) | sUSDe on Ethereum (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
+| [`iethusde-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/iethusde-iethusdc.v1.tmplr.near) | USDe on Ethereum (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
 | [`iethwbtc-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethwbtc-ixlmusdc.v1.tmplr.near) | WBTC on Ethereum (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`iltc-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iltc-ixlmusdc.v1.tmplr.near) | Native LTC (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`ixlm-ixlmpyusd.v1.tmplr.near`](https://nearblocks.io/address/ixlm-ixlmpyusd.v1.tmplr.near) | Native XLM (via NEAR Intents) | PYUSD on Stellar (via NEAR Intents) |

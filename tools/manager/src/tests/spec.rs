@@ -200,11 +200,14 @@ fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
 /// `symbol`/`reference` are asserted present but excluded from the comparison,
 /// since no exported spec can recover them.
 #[rstest]
+#[case("v1-borrow-iethusdc", "borrow", &[])]
 #[case("v1-borrow-ixlmusdc", "borrow", &["iethwbtc-ixlmusdc", "ixlm-ixlmusdc-1"])]
 #[case("v1-collateral-iada", "collateral", &["iada-ixlmusdc"])]
 #[case("v1-collateral-ibtc", "collateral", &["ibtc-ixlmusdc"])]
 #[case("v1-collateral-idoge", "collateral", &["idoge-ixlmusdc"])]
 #[case("v1-collateral-iethhemibtc", "collateral", &["iethhemibtc-iethusdc"])]
+#[case("v1-collateral-iethsusde", "collateral", &[])]
+#[case("v1-collateral-iethusde", "collateral", &[])]
 #[case("v1-collateral-iethwbtc", "collateral", &["iethwbtc-ixlmusdc"])]
 #[case("v1-collateral-iltc", "collateral", &["iltc-ixlmusdc"])]
 #[case("v1-collateral-ixlm", "collateral", &["ixlm-ixlmusdc-1"])]
