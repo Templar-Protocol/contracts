@@ -54,7 +54,9 @@ The markets currently offered in the app. Their immutable parameters and oracle 
 | [`iethfxrp-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethfxrp-ixlmusdc.v1.tmplr.near) | FXRP on Ethereum (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`iethhemibtc-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/iethhemibtc-iethusdc.v1.tmplr.near) | hemiBTC on Ethereum (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
 | [`iethsusde-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/iethsusde-iethusdc.v1.tmplr.near) | sUSDe on Ethereum (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
+| [`iethsusde-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethsusde-ixlmusdc.v1.tmplr.near) | sUSDe on Ethereum (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`iethusde-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/iethusde-iethusdc.v1.tmplr.near) | USDe on Ethereum (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
+| [`iethusde-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethusde-ixlmusdc.v1.tmplr.near) | USDe on Ethereum (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`iethwbtc-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethwbtc-ixlmusdc.v1.tmplr.near) | WBTC on Ethereum (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`iltc-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iltc-ixlmusdc.v1.tmplr.near) | Native LTC (via NEAR Intents) | USDC on Stellar (via NEAR Intents) |
 | [`ixlm-ixlmpyusd.v1.tmplr.near`](https://nearblocks.io/address/ixlm-ixlmpyusd.v1.tmplr.near) | Native XLM (via NEAR Intents) | PYUSD on Stellar (via NEAR Intents) |
@@ -99,21 +101,6 @@ Use the API's `status` field for the current operational classification. The reg
 Each market's oracle account, price identifiers, and risk parameters are available from its `get_configuration` view; see [Market Configuration](./contract/market/index.md#configuration). The declarative specifications markets were deployed from are in [`deployments/v1/`](https://github.com/Templar-Protocol/contracts/tree/dev/deployments/v1). The registry's `get_deployment` view identifies the version key and code hash used at deployment; see [Registry](./contract/registry.md#read-a-deployment-record).
 
 A separate registry, [`templar-alpha.near`](https://nearblocks.io/address/templar-alpha.near), hosts pre-release and liquidation-test markets on mainnet. Markets under it are not production markets.
-
-#### Stellar USDC markets
-
-These markets use USDe or sUSDe on Ethereum as collateral and borrow USDC on
-Stellar, with both assets held through NEAR Intents. Their deployed contract
-accounts are listed below.
-
-| Contract | Account ID |
-|---|---|
-| USDe market | [`iethusde-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethusde-ixlmusdc.v1.tmplr.near) |
-| USDe proxy oracle | [`proxy-oracle-iethusde-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/proxy-oracle-iethusde-ixlmusdc.v1.tmplr.near) |
-| USDe governance | [`proxy-gov-iethusde-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/proxy-gov-iethusde-ixlmusdc.v1.tmplr.near) |
-| sUSDe market | [`iethsusde-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/iethsusde-ixlmusdc.v1.tmplr.near) |
-| sUSDe proxy oracle | [`proxy-oracle-iethsusde-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/proxy-oracle-iethsusde-ixlmusdc.v1.tmplr.near) |
-| sUSDe governance | [`proxy-gov-iethsusde-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/proxy-gov-iethsusde-ixlmusdc.v1.tmplr.near) |
 
 ### Contract Verification
 

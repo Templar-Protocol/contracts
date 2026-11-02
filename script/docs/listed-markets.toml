@@ -19,7 +19,9 @@ listed = [
   "iethfxrp-ixlmusdc",
   "iethhemibtc-iethusdc",
   "iethsusde-iethusdc",
+  "iethsusde-ixlmusdc",
   "iethusde-iethusdc",
+  "iethusde-ixlmusdc",
   "iethwbtc-ixlmusdc",
   "iltc-ixlmusdc",
   "ixlm-ixlmpyusd",
@@ -34,11 +36,9 @@ listed = [
   "izec-ixlmusdc",
 ]
 
-# Not offered in the app; not rendered.
+# Deployed but not offered in the app: the markets deprecated on 2026-08-31,
+# and markets active in the API without an app listing. Not rendered.
 unlisted = [
-  # Stellar-USDC variants.
-  "iethsusde-ixlmusdc",
-  "iethusde-ixlmusdc",
   # Deprecated 2026-08-31 (see Smart Contract Addresses).
   "ibtc-iethusdc",
   "ibtc-usdc",
