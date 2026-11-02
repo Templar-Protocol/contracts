@@ -13555,7 +13555,7 @@ dependencies = [
 
 [[package]]
 name = "templar-manager"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -14141,7 +14141,7 @@ dependencies = [
 
 [[package]]
 name = "templar-tools-common"
-version = "0.2.6"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "cargo_metadata 0.23.1",

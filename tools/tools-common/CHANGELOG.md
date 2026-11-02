@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-tools-common-v0.2.6...templar-tools-common-v0.3.0) - 2026-11-02
+
+### Added
+
+- *(manager)* [**breaking**] register canonical contract releases ([#704](https://github.com/Templar-Protocol/contracts/pull/704))
+
 ### Removed
 
 - **Breaking:** removed the unused `build::load_contract` wrapper after the
