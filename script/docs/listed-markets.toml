@@ -34,10 +34,9 @@ listed = [
   "izec-ixlmusdc",
 ]
 
-# Not offered in the app: planned specs and deployed markets without a listing.
-# Not rendered.
+# Not offered in the app; not rendered.
 unlisted = [
-  # Planned; not deployed or offered in the app.
+  # Stellar-USDC variants.
   "iethsusde-ixlmusdc",
   "iethusde-ixlmusdc",
   # Deprecated 2026-08-31 (see Smart Contract Addresses).

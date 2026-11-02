@@ -60,7 +60,7 @@ markets are `v1-borrow-ixlmusdc`, `v1-collateral-iethwbtc`,
 must still agree with the market that holds it, and the source pair must be the
 standard shape.
 
-## Planned Stellar USDC variants
+## Stellar USDC variants
 
 - [USDe / Stellar USDC](v1/iethusde-ixlmusdc.toml)
 - [sUSDe / Stellar USDC](v1/iethsusde-ixlmusdc.toml)
@@ -70,8 +70,8 @@ market parameters, replacing only the borrow leg with `v1-borrow-ixlmusdc`
 (USDC on Stellar through NEAR Intents, with 7 decimals). They inherit market
 release 1.6.1 from the shared profile.
 
-They are planned specs, not deployed or listed markets; they remain excluded
-from the public risk-parameter tables until they are offered in the app.
+These markets are deployed under `v1.tmplr.near`. Public risk-parameter tables
+include only markets offered in the app; deployment and app listing are separate.
 
-The planned market, proxy-oracle, and governance account IDs are listed in
-[Smart Contract Addresses](../docs/src/addresses.md#planned-markets).
+The market, proxy-oracle, and governance account IDs are listed in
+[Smart Contract Addresses](../docs/src/addresses.md#stellar-usdc-markets).
