@@ -34,9 +34,12 @@ listed = [
   "izec-ixlmusdc",
 ]
 
-# Deployed but not offered in the app: the markets deprecated on 2026-08-31,
-# and markets active in the API without an app listing. Not rendered.
+# Not offered in the app: planned specs and deployed markets without a listing.
+# Not rendered.
 unlisted = [
+  # Planned; not deployed or offered in the app.
+  "iethsusde-ixlmusdc",
+  "iethusde-ixlmusdc",
   # Deprecated 2026-08-31 (see Smart Contract Addresses).
   "ibtc-iethusdc",
   "ibtc-usdc",
