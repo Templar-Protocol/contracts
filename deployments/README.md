@@ -38,6 +38,10 @@ for the bare ticker would be ambiguous.
 | `irs-standard` / `irs-stable` | one interest-rate curve |
 | `v1-borrow-*` / `v1-collateral-*` | one asset leg: token, decimals, aggregator, sources, and the `symbol`/`reference` pair the price cross-check needs |
 
+The shared `mainnet` profile selects canonical market release **1.6.1** for both
+`alpha` and `v1`. Profile changes affect future deployment plans; they do not
+upgrade existing markets.
+
 Asset profiles carry `symbol` and `reference` because neither reaches the
 chain: `market export` cannot recover them, so a spec reconstructed from a
 deployed market has neither and its `reference.price.*` checks cannot run.
