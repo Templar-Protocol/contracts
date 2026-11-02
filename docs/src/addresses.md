@@ -1,7 +1,7 @@
 # Smart Contract Addresses
 
-Deployed Templar Protocol contracts, and how to verify them. For deploying a new
-market, see [Deploying a market](./deployments.md).
+Templar Protocol contract addresses, including planned deployments, and how to
+verify deployed contracts. For deploying a new market, see [Deploying a market](./deployments.md).
 
 ## Deployments
 
@@ -99,6 +99,21 @@ Use the API's `status` field for the current operational classification. The reg
 Each market's oracle account, price identifiers, and risk parameters are available from its `get_configuration` view; see [Market Configuration](./contract/market/index.md#configuration). The declarative specifications markets were deployed from are in [`deployments/v1/`](https://github.com/Templar-Protocol/contracts/tree/dev/deployments/v1). The registry's `get_deployment` view identifies the version key and code hash used at deployment; see [Registry](./contract/registry.md#read-a-deployment-record).
 
 A separate registry, [`templar-alpha.near`](https://nearblocks.io/address/templar-alpha.near), hosts pre-release and liquidation-test markets on mainnet. Markets under it are not production markets.
+
+#### Planned markets
+
+These addresses are derived from the Stellar-USDC market specifications; they
+are planned, not deployed or app-listed. Both use Ethereum collateral through
+NEAR Intents and borrow USDC on Stellar through NEAR Intents.
+
+| Contract | Planned Account ID |
+|---|---|
+| USDe market | `iethusde-ixlmusdc.v1.tmplr.near` |
+| USDe proxy oracle | `proxy-oracle-iethusde-ixlmusdc.v1.tmplr.near` |
+| USDe governance | `proxy-gov-iethusde-ixlmusdc.v1.tmplr.near` |
+| sUSDe market | `iethsusde-ixlmusdc.v1.tmplr.near` |
+| sUSDe proxy oracle | `proxy-oracle-iethsusde-ixlmusdc.v1.tmplr.near` |
+| sUSDe governance | `proxy-gov-iethsusde-ixlmusdc.v1.tmplr.near` |
 
 ### Contract Verification
 

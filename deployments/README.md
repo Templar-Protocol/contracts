@@ -72,3 +72,6 @@ release 1.6.1 from the shared profile.
 
 They are planned specs, not deployed or listed markets; they remain excluded
 from the public risk-parameter tables until they are offered in the app.
+
+The planned market, proxy-oracle, and governance account IDs are listed in
+[Smart Contract Addresses](../docs/src/addresses.md#planned-markets).
