@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Context;
-use templar_contract_artifacts::{build_artifact, format_version_key, load_artifact};
+use templar_contract_artifacts::{build_artifact, format_version_key};
 use templar_gateway_types::Version;
 
 fn version<T>(package: &cargo_metadata::Package) -> Version<T> {
@@ -30,15 +30,6 @@ fn loaded_contract<T>(package: &cargo_metadata::Package, wasm_bytes: Vec<u8>) ->
         wasm_bytes,
         version: version(package),
     }
-}
-
-pub fn load_contract<T>(
-    workspace_dir: &Path,
-    cargo_package: &str,
-) -> anyhow::Result<LoadedContract<T>> {
-    let (bytes, package) = load_artifact(workspace_dir, cargo_package)
-        .with_context(|| format!("load contract {cargo_package}"))?;
-    Ok(loaded_contract(&package, bytes))
 }
 
 /// Run `cargo near build reproducible-wasm` in `dir`.

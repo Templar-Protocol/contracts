@@ -282,6 +282,41 @@ This is a privileged authorization checklist:
 - Verify the apply-time stamp binding and resolved-state re-derivation checks.
 - Authorize only after the complete arbitrary-storage write is understood.
 
+## Registering a contract release
+
+Prefer a canonical published release when adding a registry version:
+
+```sh
+tmplrmgr registry add-version --registry-id v1.tmplr.near \
+  --contract market --release 1.6.1 --deploy-mode global-hash \
+  --network mainnet --signer-id tmplr.near --print json
+```
+
+This only prints a transaction plan. To submit it with the registry owner's key,
+replace `--print json` with `--sign-with keychain`; confirm the current owner first.
+`global-hash` publishes the code globally and registers its hash, whereas `normal`
+stores the code in the registry. The command estimates the required deposit.
+
+`--release` selects an exact version from `contract/artifacts/releases/` compiled
+into the manager. The asset is downloaded from its recorded GitHub Release (or
+read from the shared cache) and verified against the catalog's byte length and
+SHA-256. The version key is derived automatically as
+`{package}@{version}#{sha256}` and cannot be overridden for a release.
+An uncatalogued release fails; it never falls back to a local build.
+Rebuild the manager after a release's catalog PR merges to make it available.
+
+For deliberate unpublished-code registration, use `--contract market --build`
+instead of `--release`: this runs a reproducible build from the selected workspace
+and derives the key from its package metadata and built bytes.
+`--package <Cargo-package-or-artifact-ID>` (alias `--artifact`) supports the same
+release/build selection. Both selectors require exactly one of `--release` or
+`--build`. The old `--no-build` path has been removed; existing local build output
+is not used implicitly.
+
+The explicit escape hatches `--wasm <path>` and `--code-hash <base58-hash>` still
+require `--version-key`. Neither accepts `--release` or `--build`; `--code-hash`
+registers an already-published global contract and does not take `--deploy-mode`.
+
 ## Upgrading a registry
 
 Every live registry runs 2.0.0 or later and replaces its code through its owner-only `upgrade`,
