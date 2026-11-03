@@ -8,7 +8,7 @@ This document outlines the administrative structure and governance controls of T
 |---|---|---|---|
 | Market contracts (NEAR) | No admin functions, no upgrade method, no pause. Storage can be patched only while the deployer's full-access key is retained (see below). | Nobody through the contract; the Templar DAO multisig (2-of-3) while a deployer key is retained | n/a |
 | Proxy oracles | Feed configuration and code upgradeable through a dedicated governance contract. Until the deployer's full-access key is deleted, the key holder can also change the account directly (see below). | Either the vault curators or the Templar DAO multisig (2-of-3), per proxy oracle; retained deployer keys are also held by the DAO multisig | 24h to 168h by action; emergency trips immediate; not enforced against a retained deployer key |
-| Registry | Owned. Owner can register versions, deploy new contracts, and upgrade the registry's own code. Cannot touch deployed markets. | Templar DAO multisig (2-of-3) | Two-step finalize |
+| Registry | Owner approves versions, manages roles and upgrades registry code. Uploader stages code; Deployer creates contracts. Cannot touch deployed markets. | Current Owner (intended: Templar DAO multisig, 2-of-3); explicitly granted hot-key roles | Two-step ownership transfer; global versions finalize after a probe, not a timelock |
 | Curated vaults (Stellar) | Governed; runtime upgradeable through the vault governance contract | Vault governance admin, curator, and Sentinel per vault | Configurable per action; risk-reducing actions immediate |
 
 ## Administrative Multisig
@@ -65,12 +65,31 @@ The immediate operator actions include their risk-increasing inverses (untrippin
 
 ## Registry Contract
 
-The [registry](./contract/registry.md) is an owned contract; its owner is the DAO multisig. The owner can:
+The [registry](./contract/registry.md) is owned. On role-enabled V2 registries,
+Admin is the **current Owner**, not a grantable role. Owner implicitly has every
+role and alone can approve versions by hash (`approve_version`), remove stored
+version code, upgrade the registry, and grant/revoke Uploader or Deployer.
+Legacy `add_version`, including `PublishGlobal`, remains Owner-only during caller
+migration. Ownership retains propose/accept transfer but exposes no renunciation.
 
-- Register a new contract version (`add_version`, finalized in a second step) from an audited release.
-- Remove a version so it can no longer be deployed.
-- Deploy new markets and proxy oracles from registered versions.
-- Upgrade the registry's own code.
+Uploader can stage code with a storage-charged Borsh upload and remove its own
+unapproved uploads without refund; Owner can remove any unapproved upload.
+Deployer can create contracts from approved versions, including supplying
+full-access keys. Losing Uploader also prevents removal of earlier uploads.
+Explicit grants survive ownership transfer; implicit rights move immediately to
+the new Owner. `has_role` reports effective authority; `list_role_members` lists
+explicit grants only. Older registries retain Owner-only registration/deployment.
+
+The implementation-owned deployment labels `probe` and `deploy` are reserved even
+for Owner and Deployer: neither role can occupy the scratch accounts required for
+global publication and approval. Before upgrading or publishing, operators must
+verify that no existing child at either label blocks those operations; the
+reservation does not remove an already-existing child.
+
+The intended owner is the DAO multisig; verify live `own_get_owner`, roles and
+keys rather than assuming rollout has occurred. The [canary-to-mainnet
+procedure](./deployments.md#role-enabled-v2-rollout-alpha-then-v1) requires DAO
+approval/deployment and same-code upgrade proofs before registry key deletion.
 
 The registry has no authority over contracts it has already deployed: it cannot modify, pause, or upgrade a live market. Registering a version does not change any existing deployment.
 
