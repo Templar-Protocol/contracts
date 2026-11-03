@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
+
+### Added
+
+- *(deployments)* add v1 Ethena USDe/sUSDe market specs (ENG-763) ([#700](https://github.com/Templar-Protocol/contracts/pull/700))
+- *(manager)* [**breaking**] register canonical contract releases ([#704](https://github.com/Templar-Protocol/contracts/pull/704))
+
+### Changed
+
+- **Breaking:** `registry add-version --contract/--package` now requires either
+  `--release <version>` or explicit `--build`. Release registration fetches
+  catalog-pinned published WASM and derives its version key automatically;
+  release keys cannot be overridden. Removed `--no-build` and implicit local builds.
+
 ## [0.9.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.8.1...templar-manager-v0.9.0) - 2026-10-26
 
 ### Added
