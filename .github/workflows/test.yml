@@ -252,10 +252,13 @@ jobs:
           python3 script/docs/gen-risk-parameters.py --check
       - name: Check ADR numbers are unique and every ADR is in the guide
         run: |
-          dup=$(ls docs/src/adr | grep -Eo '^[0-9]+-' | sort | uniq -d)
+          dup=$(find docs/src/adr -maxdepth 1 -type f -name '[0-9]*-*.md' -printf '%f\n' |
+            sed -E 's/^0*([0-9]+)-.*/\1/' |
+            sort -n | uniq -d)
           [ -z "$dup" ] || { echo "duplicate ADR numbers: $dup"; exit 1; }
           rc=0
           for f in docs/src/adr/[0-9]*-*.md; do
+            [ -e "$f" ] || continue
             grep -qF "(./adr/$(basename "$f"))" docs/src/SUMMARY.md || { echo "$f is not in docs/src/SUMMARY.md"; rc=1; }
           done
           exit $rc
