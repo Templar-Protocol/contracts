@@ -15,7 +15,7 @@ get re-argued and reversals lose their history.
 
 Templar already records decisions elsewhere as Nygard-style ADRs managed with a patched
 [adr-tools](https://github.com/npryce/adr-tools), with agents drafting through the `templar-raladr`
-agent skill and humans accepting. The skill bundles that patched adr-tools, and the
+agent skill and humans accepting. The skill bundles the same patched adr-tools, and the
 [`skills`](https://github.com/vercel-labs/skills) CLI installs the skill, so every repository can
 share one process.
 
