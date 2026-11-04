@@ -5,20 +5,25 @@ use std::collections::HashMap;
 use near_sdk::{
     assert_one_yocto, env,
     json_types::{Base64VecU8, U64},
-    near, AccountId, PanicOnDefault,
+    near, AccountId, Gas, PanicOnDefault, Promise,
 };
-use near_sdk_contract_tools::{rbac::Rbac, Rbac};
+use near_sdk_contract_tools::{
+    owner::{Owner, OwnerInternal},
+    rbac::Rbac,
+    Owner, Rbac,
+};
 use templar_common::{
     contract::list,
     oracle::redstone::{
-        Config, FeedData, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
-        RedStoneEvent, Role,
+        Config, ConfigPatch, FeedData, FeedId, GetPrices, RedStoneAdapter,
+        RedStoneContractInterface, RedStoneEvent, Role,
     },
+    upgrade::{UpgradeSource, MIGRATE_METHOD},
     UnwrapReject,
 };
 use templar_primitives::{strnum::SU256, time::Nanoseconds};
 
-#[derive(Rbac, PanicOnDefault)]
+#[derive(Owner, Rbac, PanicOnDefault)]
 #[rbac(roles = "Role")]
 #[near(contract_state)]
 pub struct Contract {
@@ -27,11 +32,17 @@ pub struct Contract {
 
 #[near]
 impl Contract {
+    /// Gas reserved for migration in the atomic self-deploy receipt.
+    pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
+
     #[init]
     pub fn new(config: Config, admin_id: AccountId) -> Self {
+        config.validate().unwrap_or_reject();
         let mut self_ = Self {
             adapter: RedStoneAdapter::new(b"a", config),
         };
+
+        Owner::init(&mut self_, &admin_id);
 
         <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::ModifyRoles);
         <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::TrustedUpdater);
@@ -41,6 +52,38 @@ impl Contract {
 
     pub fn get_config(&self) -> &Config {
         &self.adapter.config
+    }
+
+    /// Apply a partial verification policy to subsequent payloads, preserving cached feeds.
+    #[payable]
+    pub fn admin_update_config(&mut self, patch: ConfigPatch) {
+        assert_one_yocto();
+        Self::require_owner();
+        self.adapter.config.apply_patch(patch).unwrap_or_reject();
+    }
+
+    /// Schedule an atomic self-deploy and migration; completion is receipt-level.
+    #[payable]
+    pub fn admin_upgrade(&mut self, code: UpgradeSource, migrate_args: Base64VecU8) -> Promise {
+        assert_one_yocto();
+        Self::require_owner();
+        if code.is_empty_code() {
+            env::panic_str("admin_upgrade: empty code blob");
+        }
+        code.deploy_and_migrate(MIGRATE_METHOD, migrate_args, Self::GAS_FOR_MIGRATE)
+    }
+
+    /// Bootstrap ownership once without rewriting legacy configuration, roles, or feeds.
+    #[private]
+    pub fn migrate(&mut self, owner_id: Option<AccountId>) {
+        match (Self::slot_is_initialized().exists(), owner_id) {
+            (false, Some(owner_id)) => Owner::init(self, &owner_id),
+            (false, None) => {
+                env::panic_str("migrate: owner_id is required for uninitialized ownership");
+            }
+            (true, None) => {}
+            (true, Some(_)) => env::panic_str("migrate: owner is already initialized"),
+        }
     }
 
     pub fn has_role(&self, account_id: AccountId, role: Role) -> bool {

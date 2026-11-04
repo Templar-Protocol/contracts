@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Explicit administrator ownership, atomic validated partial configuration via
+  `admin_update_config`, and owner-controlled inline or immutable-global upgrades.
+- One-time self-only ownership bootstrap preserving historical adapter state and
+  independent RBAC; released-WASM and keyless governance regression coverage.
+
 ## [0.2.1](https://github.com/Templar-Protocol/contracts/compare/templar-redstone-adapter-contract-v0.2.0...templar-redstone-adapter-contract-v0.2.1) - 2026-08-03
 
 ### Added

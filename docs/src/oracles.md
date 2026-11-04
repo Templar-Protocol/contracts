@@ -41,6 +41,142 @@ The market calls `list_ema_prices_no_older_than` on that account, the same read 
 
 Because this configuration is immutable, an existing market cannot be repointed to a different oracle account by an administrator. Markets deployed before the proxy oracle existed were migrated to proxy oracles through a reviewed, dry-run-verified storage patch (see [Deploying a market](./deployments.md#patching-contract-storage)); new markets are deployed reading a proxy oracle from the start.
 
+## RedStone Adapter Administration
+
+This interface describes the owner-enabled adapter source, **not a live authority
+change** on an existing deployment. `new(config, admin_id)` validates configuration
+and gives the explicit `admin_id` ownership and both RBAC roles; the deploying
+registry or predecessor does not receive authority implicitly.
+
+### Authority and Ownership
+
+| Method | JSON arguments | Authority / deposit |
+|---|---|---|
+| `own_get_owner` | `{}` | View / 0; returns account or null |
+| `own_get_proposed_owner` | `{}` | View / 0; returns account or null |
+| `own_propose_owner` | `{"account_id":"governance.near"}` or `{"account_id":null}` | Owner / exactly 1 yoctoNEAR; propose or cancel |
+| `own_accept_owner` | `{}` | Proposed owner / exactly 1 yoctoNEAR |
+| `own_renounce_owner` | `{}` | Owner / exactly 1 yoctoNEAR; permanently clears owner and proposal |
+| `admin_update_config` | `{"patch":{"max_timestamp_delay_ms":120000}}` | Owner / exactly 1 yoctoNEAR |
+| `admin_upgrade` | See upgrade encodings below | Owner / exactly 1 yoctoNEAR |
+| `set_role` | `{"account_id":"operator.near","role":"TrustedUpdater","set":true}` | `ModifyRoles` / exactly 1 yoctoNEAR |
+
+Ownership and RBAC are independent. Ownership does not bypass `set_role`, and
+neither `ModifyRoles` nor `TrustedUpdater` permits configuration or upgrades.
+`set_role` retains its default `set = true`, default
+`allow_removing_last_member = false`, and last-member guard. `has_role` and
+`list_role` retain their existing interfaces. Ownership transfer never moves roles
+or removes account access keys.
+
+For direct DAO control, the DAO contract account must be Owner and a
+`ModifyRoles` member. The executing contract must be the adapter call's actual
+predecessor, not merely the external signer of a DAO proposal-execution transaction.
+
+### Atomic Partial Configuration
+
+The required `patch` is a JSON object. Omitted fields and explicit nulls preserve
+their execution-time values. Unknown fields, wrong types, and missing/null outer
+`patch` fail deserialization. Empty and all-null patches fail with
+`configuration patch must supply at least one field`; nonempty same-value patches
+succeed. A supplied zero is a value, not omission.
+
+| Patch field | Domain and effect on subsequent payloads |
+|---|---|
+| `signer_count_threshold` | Positive `u8`, no greater than signer count |
+| `signers` | 1–255 distinct, nonzero 20-byte addresses; JSON arrays of byte integers in existing order |
+| `max_timestamp_delay_ms` | Payload lag bound; full `u64` range, including 0 and maximum |
+| `max_timestamp_ahead_ms` | Payload lead bound; full `u64` range, including 0 and maximum |
+| `min_interval_between_updates_ms` | Untrusted-write spacing; full `u64` range; trusted writes retain their existing verification path |
+
+The effective signer set and quorum are validated together before any field is
+written. A single patch can replace either independently or both atomically.
+Invalid input leaves configuration, ownership, roles, and feeds unchanged.
+Unmentioned fields merge against state when execution occurs, not when a proposal
+is queued. Conflicting successful patches take effect in execution order; a
+previously valid proposal can fail if intervening changes invalidate its quorum.
+There is no revision counter or compare-and-swap.
+
+Changes are prospective: removed signers no longer authenticate new payloads,
+but already stored prices and both replay timestamps remain intact. Stored prices
+remain readable until the fixed 30-hour write-time staleness limit; these timing
+fields do not configure that limit or invalidate downstream proxy caches.
+This is not an emergency cached-price revocation mechanism. The RedStone event
+schema is unchanged; ownership uses the standard Owner component events.
+
+### Upgrades and Legacy Bootstrap
+
+`admin_upgrade` accepts either immutable source encoding:
+
+```json
+{"code":"<base64 WASM>","migrate_args":"e30="}
+```
+
+```json
+{"code":{"GlobalHash":"<base58 hash>"},"migrate_args":"e30="}
+```
+
+`e30=` encodes `{}`. Empty code is rejected with `admin_upgrade: empty code blob`.
+Deployment and migration are two actions in one self-receipt, with 250 Tgas
+reserved for migration. Failed migration reverts that receipt's code/state
+changes. Scheduling is not completion; inspect all receipt failures. Mutable
+global-by-account references and arbitrary deployment targets are unsupported.
+
+`migrate(owner_id: Option<AccountId>)` is nonpayable and self-only, not an
+initializer or an owner-callable setter. The adapter-only root, feed prefix `a`,
+and RBAC prefix `~r` remain unchanged; ownership uses separate standard `~o` slots.
+
+| Ownership sentinel exists | `owner_id` | Result |
+|---|---|---|
+| No | Account | Initialize ownership once; preserve config, roles, and feeds |
+| No | Omitted/null | Fail: `migrate: owner_id is required for uninitialized ownership` |
+| Yes | Omitted/null | No-op; preserve owner and pending transfer, including renunciation |
+| Yes | Account | Fail: `migrate: owner is already initialized` |
+
+The existing legacy deployment authority must atomically deploy the new code and
+call `migrate({"owner_id":"<DAO or governance account>"})` for the first upgrade.
+Normal subsequent upgrades call `migrate({})`. Historical configuration is not
+revalidated during migration, so it remains readable and can be corrected by a
+valid patch. Renunciation never permits re-bootstrap; on a keyless account it
+irreversibly disables configuration and upgrades. Never use it for handover.
+
+### Intermediary Governance and Handover
+
+The existing NEAR governance contract can target the adapter with
+`new(proxy_oracle_id = adapter_id, admin_id = dao_id, policy)`; despite the field
+name, `proxy_oracle_id` is its generic dispatch target. No new operation variants,
+gateway methods, or governance upgrade are required.
+
+For an already owner-enabled adapter:
+
+1. The current role administrator grants `ModifyRoles` to the intended controller.
+2. The owner proposes it with `own_propose_owner`; the controller accepts directly
+   or through a governance target proposal.
+3. The new controller revokes outgoing `ModifyRoles` memberships. Retain explicitly
+   intended `TrustedUpdater` operators; do not automatically remove writers.
+4. Verify owner, pending owner, both role lists, and an authorized configuration
+   call before considering any **separately authorized** full-access-key removal.
+
+Build `Operation::TargetFunctionCall(FunctionCall { method_name, args,
+attached_deposit: U128(1), gas })`, where `args` contains serialized JSON bytes.
+Acceptance uses `{}`, configuration uses `{"patch":{...}}`, upgrades use the
+encodings above, and roles use the existing `set_role` arguments. Both outer
+`create_proposal` and `execute_proposal` also require 1 yoctoNEAR.
+Do not reuse the proxy oracle's `target::admin_upgrade` builder: it attaches zero
+deposit, which RedStone rejects.
+
+Operators select production policies. Unlisted adapter methods inherit
+`default_target`; all patch fields share the policy for `admin_update_config`,
+without field-specific roles or timelocks. A detached target receipt can fail
+after successful governance dispatch has consumed the proposal; this does not
+roll back governance execution.
+
+The sandbox proof uses 50 Tgas for ordinary forwarded calls, 280/300 Tgas
+forwarded/outer for global-hash upgrades, and 400/500 Tgas for inline upgrades.
+These are proof budgets, not production-network limits or minimal gas estimates.
+Reproduce real released-WASM migration and keyless governance with
+`just test-sandbox -p templar-proxy-oracle-near-governance-contract --test redstone_admin`.
+No live upgrade or key deletion is authorized by this specification.
+
 ## Proxy Oracle
 
 The proxy oracle is Templar's oracle aggregation and safety layer. Each market typically has its own proxy oracle and governance contract, deployed alongside the market through the registry.

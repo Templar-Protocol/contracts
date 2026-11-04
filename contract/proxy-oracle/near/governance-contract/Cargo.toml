@@ -33,6 +33,7 @@ templar-proxy-oracle-near-governance-common.workspace = true
 [dev-dependencies]
 anyhow.workspace = true
 base64.workspace = true
+hex.workspace = true
 near-api.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 rstest.workspace = true
