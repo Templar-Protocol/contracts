@@ -34,9 +34,9 @@ Use this section as an execution checklist: read the local docs first, preserve 
   Watch for: `OpState` transitions, escrow accounting, keeper-routed withdrawals, callback ordering, idle-balance resync, fee accrual, and reconciliation after partial failures.
   Minimum verification: `just test-sandbox -p templar-vault-contract`.
 - `contract/registry` (`templar-registry-contract`)
-  Read/inspect: `contract/registry/src/lib.rs`.
+  Read/inspect: `contract/registry/src/lib.rs`, `contract/registry/src/storage_management.rs`, and `contract/registry/src/state/*`.
   Why it matters: this is a deployment/orchestration contract, not just a map of version keys.
-  Watch for: the distinction between `Reserved` and `Deployed`, deployment finalization paths, soft deletion of version code, and failure cleanup after partial deploy flows.
+  Watch for: `Reserved` versus `Deployed`, deployment/finalize cleanup, NEP-145 available-balance liabilities, and original-payer charges retained through approval until code removal. Reserve final deployment-record and standard Owner-slot growth without spending user credits; run the post-upgrade solvency check in the atomic deploy/migrate receipt. Forced storage unregister is unsupported. Preserve enum storage-key bytes and Owner slots during migration; hash uniqueness applies only to pending uploads, not historical versions.
   Minimum verification: `just test-sandbox -p templar-registry-contract`.
 - `contract/universal-account` (`templar-universal-account-contract`) and `universal-account` (`templar-universal-account`)
   Read first: `contract/universal-account/README.md`.

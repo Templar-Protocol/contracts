@@ -3,7 +3,7 @@ use near_sdk::{
     near, AccountId,
 };
 
-/// Assignable registry authority; the current Owner implicitly holds both roles.
+/// Delegated registry authority; Owner bypasses action guards without a synthetic membership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, near_sdk::BorshStorageKey)]
 #[near(serializers = [json, borsh(use_discriminant = true)])]
 #[repr(u8)]
@@ -312,18 +312,20 @@ mod tests {
         r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"upload_removed","data":{"code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","uploader":"uploader.near"}}"#
     )]
     #[case::role_granted(
-        RegistryEvent::RoleGranted {
+        RegistryEvent::RoleSet {
             account_id: "uploader.near".parse().unwrap(),
             role: Role::Uploader,
+            is_granted: true,
         },
-        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"role_granted","data":{"account_id":"uploader.near","role":"Uploader"}}"#
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"role_set","data":{"account_id":"uploader.near","role":"Uploader","is_granted":true}}"#
     )]
     #[case::role_revoked(
-        RegistryEvent::RoleRevoked {
+        RegistryEvent::RoleSet {
             account_id: "deployer.near".parse().unwrap(),
             role: Role::Deployer,
+            is_granted: false,
         },
-        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"role_revoked","data":{"account_id":"deployer.near","role":"Deployer"}}"#
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"role_set","data":{"account_id":"deployer.near","role":"Deployer","is_granted":false}}"#
     )]
     fn event_wire_format(#[case] event: RegistryEvent, #[case] expected: &str) {
         near_sdk::testing_env!(near_sdk::test_utils::VMContextBuilder::new().build());
@@ -378,16 +380,17 @@ pub enum RegistryEvent {
         uploader: AccountId,
         code_len: u32,
     },
-    /// An unapproved upload was removed without a storage refund.
+    /// A pending upload was removed and its storage credit released to the payer.
     #[event_version("1.0.0")]
     UploadRemoved {
         code_hash: Base58CryptoHash,
         uploader: AccountId,
     },
-    /// An explicit role membership was added.
+    /// A successful role setter, following the proxy oracle's historical role-set payload.
     #[event_version("1.0.0")]
-    RoleGranted { account_id: AccountId, role: Role },
-    /// An explicit role membership was removed.
-    #[event_version("1.0.0")]
-    RoleRevoked { account_id: AccountId, role: Role },
+    RoleSet {
+        account_id: AccountId,
+        role: Role,
+        is_granted: bool,
+    },
 }

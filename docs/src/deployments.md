@@ -320,9 +320,12 @@ registers an already-published global contract and does not take `--deploy-mode`
 
 ## Upgrading a registry
 
-Every live registry runs 2.0.0 or later and replaces its code through its owner-only `upgrade`,
-which deploys the new code and runs `migrate` in the same receipt, so a failed migration reverts
-the deploy. Once it lands it cannot be undone.
+The observed mainnet `v1.tmplr.near` baseline is registry release **3.1.0** with
+stored state **V1**, not release 2.0.0. Re-read each target's deployed metadata and
+state before acting; software release numbers and state versions are distinct.
+The Owner-only `upgrade` deploys code and runs `migrate` atomically in the same
+receipt, so a failed migration reverts the deploy. A successful upgrade has no
+automatic rollback.
 
 ```sh
 tmplrmgr registry upgrade --registry-id <registry> \
@@ -403,21 +406,36 @@ lint, and DAO/keyless runtime checks to have passed for that release.
    manager's replay gate intact. Verify the catalog code identity, stored and
    target version 2, `needs_migration=false`, unchanged owner, historical code
    bytes/availability and deployment entries before proceeding.
+   A V2-origin upgrade also runs private `upgrade_check_storage` after migration
+   in the same atomic receipt, including when migration arguments are empty.
+   The target release must expose this private check; it prevents newly staked
+   local code from spending users' available storage balances.
+   The V1 migration preserves typed Borsh key bytes for the historical registry
+   (`0x72`, `r`) and versions (`0x76`, `v`) and moves their map handles without
+   rewriting entries or Owner slots. New V2 keys are bounds `0x62` (`b`), upload
+   code `0x63` (`c`) plus hash, storage account `0x64` (`d`) plus account-ID hash,
+   version-payer records `0x70` (`p`), and uploads `0x75` (`u`).
+   Historical code remains registry-funded; there is no history hash-index
+   bootstrap. These are target-layout requirements, not claims of live V2.
 
 3. **Grant hot-key roles and publish the upgrade artifact before handoff.**
-   Current Owner calls `grant_role` with
-   `{"account_id":"<verified uploader>","role":"Uploader"}` and
-   `{"account_id":"<verified deployer>","role":"Deployer"}`, one yocto each.
+   Current Owner calls `set_role` with
+   `{"account_id":"<verified uploader>","role":"Uploader","set":true}` and
+   `{"account_id":"<verified deployer>","role":"Deployer","set":true}`, one yocto each.
    The generic JSON transaction syntax is:
 
    ```sh
-   near contract call-function as-transaction "$REGISTRY" grant_role \
+   near contract call-function as-transaction "$REGISTRY" set_role \
      json-args "$ROLE_JSON" prepaid-gas '30 Tgas' attached-deposit '1 yoctoNEAR' \
      sign-as "$CURRENT_OWNER" network-config mainnet sign-with-keychain send
    ```
 
-   Verify `has_role` and `list_role_members` for both operators. The latter lists
-   explicit grants only; Owner has implicit rights without appearing in it.
+   Verify `has_role` and `list_role` for both operators; both report explicit
+   membership only. Owner's action bypass does not synthesize a membership.
+   Omitted `set` defaults to true; `allow_removing_last_member` defaults to false.
+   Revocation uses `set:false`, with `allow_removing_last_member:true` required
+   when removing the last explicit member. Every successful setter emits
+   `role_set` with `account_id`, `role`, and `is_granted`, including idempotence.
    Publish the exact verified registry WASM using retained Owner-only
    `PublishGlobal`, under a reviewed unused `REGISTRY_GLOBAL_KEY`:
 
@@ -460,27 +478,54 @@ lint, and DAO/keyless runtime checks to have passed for that release.
    stored proposal kind. Record the proposal ID, votes, final status and every
    execution receipt. Require actual `own_get_owner=templar.sputnik-dao.near`
    and a cleared proposed owner. A proposal ID or vote alone proves nothing;
-   never sign a direct acceptance pretending to be the DAO. Renunciation is
-   not an exported registry method.
+   never sign a direct acceptance pretending to be the DAO. Standard
+   `own_renounce_owner` remains exported; do not renounce during handoff.
 
 5. **Prove approval, deployment, and same-code upgrade before deleting keys.**
-   Uploader sends reviewed, not-yet-approved artifact bytes as Borsh `Vec<u8>`
-   (four-byte little-endian length followed by the bytes) to payable
-   `upload_code`, attaching enough for actual map/key/uploader/blob storage.
-   Prepare and inspect `UPLOAD_BORSH` from the verified artifact (including the
-   Borsh length prefix, not the bare WASM). With `UPLOAD_DEPOSIT` expressed in
-   NEAR/yoctoNEAR units and sized from measured storage plus surplus:
+   First query the live storage minimum and uploader balance:
+
+   ```sh
+   near contract call-function as-read-only "$REGISTRY" storage_balance_bounds \
+     json-args '{}' network-config mainnet now
+   near contract call-function as-read-only "$REGISTRY" storage_balance_of \
+     json-args "{\"account_id\":\"$UPLOADER\"}" network-config mainnet now
+   ```
+
+   Bounds return yoctoNEAR strings, with `max:null`. Registration locks the
+   measured fixed-size account-record minimum; depositing only that minimum
+   leaves zero available for uploads. Set `STORAGE_DEPOSIT` to an amount in
+   NEAR/yoctoNEAR units covering registration (if needed) plus actual
+   map/key/uploader/blob storage and a reviewed surplus. Prefund the uploader:
+
+   ```sh
+   near contract call-function as-transaction "$REGISTRY" storage_deposit \
+     json-args '{"registration_only":false}' prepaid-gas '30 Tgas' \
+     attached-deposit "$STORAGE_DEPOSIT" sign-as "$UPLOADER" \
+     network-config mainnet sign-with-keychain send
+   ```
+
+   Omitted `account_id` credits the predecessor. Re-read `storage_balance_of`
+   and require sufficient available balance. `registration_only:true` on an
+   already registered target refunds the entire deposit, so do not use it for a
+   top-up. These storage methods are unrestricted by roles.
+
+   Uploader sends reviewed artifact bytes as Borsh `Vec<u8>` (four-byte
+   little-endian length followed by the bytes) to **nonpayable** `upload_code`.
+   Prepare and inspect `UPLOAD_BORSH` from the verified artifact, including the
+   length prefix, not the bare WASM:
 
    ```sh
    near contract call-function as-transaction "$REGISTRY" upload_code \
      file-args "$UPLOAD_BORSH" prepaid-gas '100 Tgas' \
-     attached-deposit "$UPLOAD_DEPOSIT" sign-as "$UPLOADER" \
+     attached-deposit '0 NEAR' sign-as "$UPLOADER" \
      network-config mainnet sign-with-keychain send
    ```
 
-   Confirm the returned base58 SHA-256 against the audited bytes and
-   `get_upload`'s uploader/length. Excess deposit is refunded to the predecessor.
-   Empty/non-WASM uploads are permitted, not evidence of deployability.
+   Confirm the returned base58 SHA-256 against the audited bytes,
+   `get_upload`'s uploader/length, and the storage balance charge. Only duplicate
+   pending uploads are rejected: already-approved bytes may be uploaded again
+   and approved under another version key. Empty/non-WASM uploads are permitted,
+   not evidence of deployability.
 
    Through the DAO proposal envelope above, execute `approve_version` with
    UTF-8 JSON `{"version_key":"<reviewed key>","code":{"Uploaded":"<upload hash>"}}`,
@@ -489,10 +534,24 @@ lint, and DAO/keyless runtime checks to have passed for that release.
    existing global code. Require successful execution receipts and VersionAdded,
    exact version hash/availability, and consumed upload. Failed probes free the
    key and preserve uploads; successful keys remain occupied even after
-   `remove_version`. Approval/conversion and explicit removal issue no upload
-   storage refund. Have the separate Deployer deploy the approved artifact;
-   verify child code identity, initialization, deployment record and the
-   explicitly reviewed `full_access_keys`.
+   `remove_version`. Uploaded approval keeps the original uploader charged for
+   retained code until `remove_version` removes it; freed pending metadata is
+   credited to that payer's available balance. Successful Global or legacy
+   matching-upload cleanup likewise credits freed pending storage. Explicit
+   `remove_upload` attaches one yocto and credits the original payer, never the
+   remover, without an immediate transfer. `storage_withdraw` attaches one yocto
+   and withdraws available funds; omitted `amount` withdraws all available.
+   `storage_unregister` attaches one yocto and can release the registration
+   reserve only after all other locked charges are gone. Forced unregister is
+   rejected for registered accounts (an unregistered target returns false).
+   There is no nonrefundable upload fee, Owner skim, or administrative withdrawal
+   method: storage liabilities remain user funds.
+
+   Have the separate Deployer deploy the approved artifact; verify child code
+   identity, initialization, deployment record and the explicitly reviewed
+   `full_access_keys`. Deployer can install its own keys and thereby control the
+   child, including replacing code: this trust boundary is not limited to the
+   approved version.
 
    Then submit a DAO `upgrade` action whose decoded UTF-8 JSON is
    `{"code":{"GlobalHash":"<REGISTRY_GLOBAL_HASH>"},"migrate_args":""}`, deposit

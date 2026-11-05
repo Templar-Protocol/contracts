@@ -66,19 +66,38 @@ The immediate operator actions include their risk-increasing inverses (untrippin
 ## Registry Contract
 
 The [registry](./contract/registry.md) is owned. On role-enabled V2 registries,
-Admin is the **current Owner**, not a grantable role. Owner implicitly has every
-role and alone can approve versions by hash (`approve_version`), remove stored
-version code, upgrade the registry, and grant/revoke Uploader or Deployer.
+Admin is the **current Owner**, not a grantable role. Owner bypasses action role
+guards and alone can approve versions by hash (`approve_version`), remove stored
+version code, upgrade the registry, and call `set_role` for Uploader or Deployer.
 Legacy `add_version`, including `PublishGlobal`, remains Owner-only during caller
-migration. Ownership retains propose/accept transfer but exposes no renunciation.
+migration. Standard Owner methods retain two-step propose/accept transfer and
+`own_renounce_owner`; Owner does **not** prevent renunciation. Owner plus RBAC
+preserves existing `own_*` clients and ownership storage. An RBAC Admin-only
+model is viable but does not justify an otherwise unnecessary API/storage cutover.
 
-Uploader can stage code with a storage-charged Borsh upload and remove its own
-unapproved uploads without refund; Owner can remove any unapproved upload.
-Deployer can create contracts from approved versions, including supplying
-full-access keys. Losing Uploader also prevents removal of earlier uploads.
-Explicit grants survive ownership transfer; implicit rights move immediately to
-the new Owner. `has_role` reports effective authority; `list_role_members` lists
-explicit grants only. Older registries retain Owner-only registration/deployment.
+Uploader pre-funds public NEP-145 storage accounting with `storage_deposit`,
+then stages Borsh bytes through `upload_code` with zero attached deposit.
+Removing its own pending upload requires one yocto and credits the original
+payer's available balance; Owner can remove any pending upload. Uploaded approval
+keeps the payer charged for retained code until `remove_version`. Freed pending
+storage is likewise credited to its payer. Users withdraw available balances
+with `storage_withdraw`; these are user liabilities, not a nonrefundable fee or
+an Owner treasury. There is no new administrative withdrawal method.
+Normal registry-funded writes also retain capacity for outstanding deployment
+callbacks and standard Owner-slot growth. V2 upgrades check backing after code
+deployment and migration within the same atomic receipt, not only before dispatch.
+
+Deployer can create contracts from approved versions and supply `full_access_keys`.
+Those keys can control the children, including replacing code; the role must be
+trusted for that authority, not only deployment from approved bytes. Losing
+Uploader also prevents removal of earlier uploads. Explicit grants survive
+ownership transfer; Owner's action bypass moves immediately to the new Owner.
+`has_role` and `list_role` report explicit membership only, not Owner bypass.
+`set_role` requires one yocto, defaults `set` to true and
+`allow_removing_last_member` to false, and emits
+`role_set {account_id, role, is_granted}` under `templar-registry` version `1.0.0`
+on every successful call, including idempotence. Older registries retain
+Owner-only registration/deployment; do not assume the V2 rollout is complete.
 
 The implementation-owned deployment labels `probe` and `deploy` are reserved even
 for Owner and Deployer: neither role can occupy the scratch accounts required for

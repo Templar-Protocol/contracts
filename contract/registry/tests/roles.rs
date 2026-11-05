@@ -56,9 +56,9 @@ async fn change_role(
     h.call_function_payable(
         owner,
         registry,
-        "grant_role",
+        "set_role",
         json!({
-            "account_id": account.0, "role": role,
+            "account_id": account.0, "role": role, "set": true,
         }),
         ONE,
     )
@@ -116,7 +116,6 @@ async fn proposal(
         completed["status"],
         if succeeds { "Approved" } else { "Failed" }
     );
-    println!("DAO proposal {id} {method}: {}", completed["status"]);
     Ok(())
 }
 
@@ -126,19 +125,20 @@ async fn upload(
     registry: &AccountId,
     code: &[u8],
 ) -> Result<String> {
-    let hash = near_api::types::CryptoHash::hash(code).to_string();
-    let len = code.len();
-    h.call_function_borsh(
+    h.call_function_payable(
         uploader,
         registry,
-        "upload_code",
-        code,
+        "storage_deposit",
+        json!({}),
         NearToken::from_near(30),
     )
     .await?;
+    let hash = near_api::types::CryptoHash::hash(code).to_string();
+    let len = code.len();
+    h.call_function_borsh(uploader, registry, "upload_code", code, NearToken::ZERO)
+        .await?;
     let metadata = view(h, registry, "get_upload", json!({"code_hash": hash})).await?;
     assert_eq!(metadata, json!({"uploader": uploader.0, "code_len": len}));
-    println!("uploaded {hash}: {metadata}");
     Ok(hash)
 }
 
@@ -162,7 +162,7 @@ async fn state_snapshot(h: &SandboxHarness, registry: &AccountId) -> Result<Valu
     for role in ["Uploader", "Deployer"] {
         snapshot.insert(
             role.to_owned(),
-            view(h, registry, "list_role_members", json!({"role": role})).await?,
+            view(h, registry, "list_role", json!({"role": role})).await?,
         );
     }
     assert_eq!(snapshot["get_stored_state_version"], 2);
@@ -228,7 +228,6 @@ async fn deploy_approved(
     let record = view(h, registry, "get_deployment", json!({"account_id": child})).await?;
     assert_eq!(record["version_key"], version);
     assert_eq!(record["code_hash"], hash);
-    println!("child {child}: hash={hash}, record={record}, keys={keys:?}");
     Ok(child)
 }
 
@@ -314,7 +313,6 @@ async fn dao_approval_and_keyless_upgrade(#[future(awt)] harness: SandboxHarness
         view(h, &registry, "own_get_proposed_owner", json!({})).await?,
         Value::Null
     );
-    println!("registry owner: {dao}");
     proposal(
         h,
         &proposer,
@@ -338,7 +336,6 @@ async fn dao_approval_and_keyless_upgrade(#[future(awt)] harness: SandboxHarness
     )
     .await?;
     assert_eq!(approved["code_hash"], hash);
-    println!("approved version: {approved}");
     deploy_approved(
         h,
         &deployer,
@@ -384,14 +381,15 @@ async fn dao_approval_and_keyless_upgrade(#[future(awt)] harness: SandboxHarness
         .await?,
         true
     );
-    for (method, expected) in [("grant_role", true), ("revoke_role", false)] {
+    for expected in [true, false] {
         proposal(
             h,
             &proposer,
             &dao,
             &registry,
-            method,
-            json!({"account_id": unrelated.0, "role": "Deployer"}),
+            "set_role",
+            json!({"account_id": unrelated.0, "role": "Deployer", "set": expected,
+                "allow_removing_last_member": true}),
             30,
             true,
         )
@@ -420,9 +418,9 @@ async fn dao_approval_and_keyless_upgrade(#[future(awt)] harness: SandboxHarness
             assert!(!keys_before.is_empty());
         }
         let snapshot = state_snapshot(h, &registry).await?;
+        let balance_before = storage_balance(h, &registry, &uploader).await?;
         let pending_before =
             view(h, &registry, "get_upload", json!({"code_hash": pending})).await?;
-        println!("before upgrade keyless={keyless}: {snapshot}, keys={keys_before:?}");
         proposal(
             h,
             &proposer,
@@ -439,16 +437,15 @@ async fn dao_approval_and_keyless_upgrade(#[future(awt)] harness: SandboxHarness
             account.contract_state,
             near_api::types::account::ContractState::GlobalHash(current_hash.parse()?)
         );
-        println!("registry code: {:?}", account.contract_state);
         assert_eq!(state_snapshot(h, &registry).await?, snapshot);
         assert_eq!(
             view(h, &registry, "get_upload", json!({"code_hash": pending})).await?,
             pending_before
         );
         assert_eq!(h.view_access_keys(&registry).await?, keys_before);
-        println!(
-            "after upgrade keyless={keyless}: {}",
-            state_snapshot(h, &registry).await?
+        assert_eq!(
+            storage_balance(h, &registry, &uploader).await?,
+            balance_before
         );
     }
     let market_hash = upload(
@@ -499,10 +496,6 @@ async fn dao_approval_and_keyless_upgrade(#[future(awt)] harness: SandboxHarness
     .await?;
     assert_eq!(h.get_configuration(&market).await?, configuration);
     assert!(h.view_access_keys(&registry).await?.is_empty());
-    let result = h
-        .try_call_function(&unrelated, &registry, "own_renounce_owner", json!({}))
-        .await?;
-    assert_rejected(&result, "MethodNotFound");
     Ok(())
 }
 
@@ -554,12 +547,9 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
             .try_call_function(actor, &registry, "new", json!({}))
             .await?;
         assert_rejected(&result, "initialized");
-        let result = h
-            .try_call_function(actor, &registry, "own_renounce_owner", json!({}))
-            .await?;
-        assert_rejected(&result, "MethodNotFound");
         for (method, args) in [
             ("migrate", json!({})),
+            ("upgrade_check_storage", json!({})),
             (
                 "add_version_01_finalize",
                 json!({"version_key": "wrapper@dao"}),
@@ -574,16 +564,21 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
             let result = h.try_call_function(actor, &registry, method, args).await?;
             assert_rejected(&result, "private");
         }
+        if matches!(index, 0 | 1 | 3) {
+            h.call_function_payable(
+                actor,
+                &registry,
+                "storage_deposit",
+                json!({}),
+                NearToken::from_near(1),
+            )
+            .await?;
+        }
         let bytes = vec![u8::try_from(index)?, 3, 2, 1];
         let hash = near_api::types::CryptoHash::hash(&bytes).to_string();
         let upload_op = tx::FunctionCall {
             args: ContractArgs::Raw(Base64Bytes(near_sdk::borsh::to_vec(&bytes)?)),
-            ..operation(
-                &registry,
-                "upload_code",
-                Value::Null,
-                NearToken::from_near(1),
-            )
+            ..operation(&registry, "upload_code", Value::Null, NearToken::ZERO)
         };
         if matches!(index, 0 | 1 | 3) {
             h.execute(actor, upload_op).await?;
@@ -722,7 +717,7 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
         ("list_versions", json!({})),
         ("list_deployments", json!({})),
         ("list_uploads", json!({})),
-        ("list_role_members", json!({"role": "Uploader"})),
+        ("list_role", json!({"role": "Uploader"})),
         (
             "has_role",
             json!({"account_id": uploader.0, "role": "Uploader"}),
@@ -741,22 +736,21 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
             let actual: Value = h
                 .call_function_json(actor, &registry, method, args.clone())
                 .await?;
-            assert_eq!(actual, expected, "{method}: {}", actor.0);
+            assert_eq!(actual, expected);
         }
     }
     // Confirmation deposits are checked by the actual exported wrappers, before domain guards.
     for deposit in [NearToken::ZERO, NearToken::from_yoctonear(2)] {
         for (method, args) in [
             (
-                "grant_role",
-                json!({"account_id": unrelated.0, "role": "Uploader"}),
-            ),
-            (
-                "revoke_role",
-                json!({"account_id": uploader.0, "role": "Uploader"}),
+                "set_role",
+                json!({"account_id": unrelated.0, "role": "Uploader", "set": true}),
             ),
             ("own_propose_owner", json!({"account_id": unrelated.0})),
             ("own_accept_owner", json!({})),
+            ("own_renounce_owner", json!({})),
+            ("storage_withdraw", json!({})),
+            ("storage_unregister", json!({})),
             ("remove_upload", json!({"code_hash": code_hash})),
             (
                 "approve_version",
@@ -833,5 +827,253 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
         view(h, &registry, "own_get_proposed_owner", json!({})).await?,
         Value::Null
     );
+    Ok(())
+}
+
+async fn storage_balance(
+    h: &SandboxHarness,
+    registry: &AccountId,
+    account: &ManagedAccountId,
+) -> Result<(u128, u128)> {
+    let balance = view(
+        h,
+        registry,
+        "storage_balance_of",
+        json!({"account_id": account.0}),
+    )
+    .await?;
+    Ok((
+        balance["total"]
+            .as_str()
+            .context("storage total")?
+            .parse()?,
+        balance["available"]
+            .as_str()
+            .context("storage available")?
+            .parse()?,
+    ))
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "storage payer lifecycle spans role revocation and ownership transfer on one registry"
+)]
+async fn storage_payer_survives_approval_revocation_and_owner_transfer(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let h = &harness;
+    let registry = h.deploy_registry().await?;
+    let owner = h.registry_signer_account_id.clone();
+    let payer = h.create_user("storage-payer").await?;
+    let successor = h.create_user("storage-successor").await?;
+    change_role(h, &owner, &registry, &payer, "Uploader").await?;
+    // Owner authority bypasses action guards, not explicit membership views.
+    assert_eq!(
+        view(
+            h,
+            &registry,
+            "has_role",
+            json!({"account_id": owner.0, "role": "Uploader"}),
+        )
+        .await?,
+        false
+    );
+    let bounds = view(h, &registry, "storage_balance_bounds", json!({})).await?;
+    let minimum: u128 = bounds["min"]
+        .as_str()
+        .context("registration minimum")?
+        .parse()?;
+    assert!(minimum > 0);
+    assert!(bounds["max"].is_null());
+    h.call_function_payable(
+        &payer,
+        &registry,
+        "storage_deposit",
+        json!({"registration_only": true}),
+        NearToken::from_yoctonear(minimum),
+    )
+    .await?;
+    assert_eq!(storage_balance(h, &registry, &payer).await?, (minimum, 0));
+    let code = vec![7_u8; 8_192];
+    let upload_op = || -> Result<tx::FunctionCall> {
+        Ok(tx::FunctionCall {
+            args: ContractArgs::Raw(Base64Bytes(near_sdk::borsh::to_vec(&code)?)),
+            ..operation(&registry, "upload_code", Value::Null, NearToken::ZERO)
+        })
+    };
+    // Registration reserve cannot be spent on code; failed receipts roll back the pending map.
+    let failed = h.try_execute(&payer, upload_op()?).await?;
+    assert_rejected(&failed, "");
+    assert_eq!(storage_balance(h, &registry, &payer).await?, (minimum, 0));
+    assert_eq!(
+        view(h, &registry, "list_uploads", json!({})).await?,
+        json!([])
+    );
+    // Repeated registration-only deposits refund the entire attachment, without increasing total.
+    h.call_function_payable(
+        &payer,
+        &registry,
+        "storage_deposit",
+        json!({"registration_only": true}),
+        NearToken::from_near(1),
+    )
+    .await?;
+    assert_eq!(storage_balance(h, &registry, &payer).await?, (minimum, 0));
+    let funding = NearToken::from_near(1);
+    h.call_function_payable(&payer, &registry, "storage_deposit", json!({}), funding)
+        .await?;
+    let funded = storage_balance(h, &registry, &payer).await?;
+    assert_eq!(
+        funded,
+        (minimum + funding.as_yoctonear(), funding.as_yoctonear())
+    );
+    h.execute(&payer, upload_op()?).await?;
+    let hash = near_api::types::CryptoHash::hash(&code).to_string();
+    let staged = storage_balance(h, &registry, &payer).await?;
+    assert_eq!(staged.0, funded.0);
+    assert!(staged.1 < funded.1);
+    // Upload is nonpayable even for an already registered, sufficiently funded uploader.
+    let mut payable_upload = upload_op()?;
+    payable_upload.deposit = ONE;
+    assert_rejected(&h.try_execute(&payer, payable_upload).await?, "");
+    for force in [false, true] {
+        let result = h
+            .try_execute(
+                &payer,
+                operation(
+                    &registry,
+                    "storage_unregister",
+                    json!({"force": force}),
+                    ONE,
+                ),
+            )
+            .await?;
+        assert_rejected(&result, "");
+        assert_eq!(storage_balance(h, &registry, &payer).await?, staged);
+    }
+    h.call_function_payable(
+        &owner,
+        &registry,
+        "approve_version",
+        json!({"version_key": "payer-retained", "code": {"Uploaded": hash}}),
+        ONE,
+    )
+    .await?;
+    let retained = storage_balance(h, &registry, &payer).await?;
+    assert_eq!(retained.0, funded.0);
+    assert!(retained.1 < funded.1);
+    assert!(view(h, &registry, "get_upload", json!({"code_hash": hash}))
+        .await?
+        .is_null());
+    for (method, args) in [
+        ("storage_unregister", json!({"force": false})),
+        (
+            "storage_withdraw",
+            json!({"amount": (retained.1 + 1).to_string()}),
+        ),
+    ] {
+        let result = h
+            .try_execute(&payer, operation(&registry, method, args, ONE))
+            .await?;
+        assert_rejected(&result, "");
+        assert_eq!(storage_balance(h, &registry, &payer).await?, retained);
+    }
+    // The same hash is accepted again after approval; only a pending duplicate is forbidden.
+    h.execute(&payer, upload_op()?).await?;
+    let pending = storage_balance(h, &registry, &payer).await?;
+    assert!(pending.1 < retained.1);
+    assert_rejected(
+        &h.try_execute(&payer, upload_op()?).await?,
+        "Code already uploaded",
+    );
+    assert_eq!(storage_balance(h, &registry, &payer).await?, pending);
+    h.call_function_payable(
+        &owner,
+        &registry,
+        "set_role",
+        json!({"account_id": payer.0, "role": "Uploader", "set": false,
+            "allow_removing_last_member": true}),
+        ONE,
+    )
+    .await?;
+    let result = h
+        .try_execute(
+            &payer,
+            operation(&registry, "remove_upload", json!({"code_hash": hash}), ONE),
+        )
+        .await?;
+    assert_rejected(&result, "Unauthorized role");
+    assert_eq!(storage_balance(h, &registry, &payer).await?, pending);
+    h.call_function_payable(
+        &owner,
+        &registry,
+        "own_propose_owner",
+        json!({"account_id": successor.0}),
+        ONE,
+    )
+    .await?;
+    h.call_function_payable(&successor, &registry, "own_accept_owner", json!({}), ONE)
+        .await?;
+    h.call_function_payable(
+        &successor,
+        &registry,
+        "remove_upload",
+        json!({"code_hash": hash}),
+        ONE,
+    )
+    .await?;
+    assert_eq!(storage_balance(h, &registry, &payer).await?, retained);
+    // Actual code removal releases the retained charge to the original payer, never the new owner.
+    h.call_function_payable(
+        &successor,
+        &registry,
+        "remove_version",
+        json!({"version_key": "payer-retained"}),
+        ONE,
+    )
+    .await?;
+    assert_eq!(storage_balance(h, &registry, &payer).await?, funded);
+    assert!(view(
+        h,
+        &registry,
+        "storage_balance_of",
+        json!({"account_id": successor.0}),
+    )
+    .await?
+    .is_null());
+    // Storage withdrawal and unregister are unrestricted by roles, including after revocation.
+    h.call_function_payable(
+        &payer,
+        &registry,
+        "storage_withdraw",
+        json!({"amount": funding.as_yoctonear().to_string()}),
+        ONE,
+    )
+    .await?;
+    assert_eq!(storage_balance(h, &registry, &payer).await?, (minimum, 0));
+    h.call_function_payable(
+        &payer,
+        &registry,
+        "storage_unregister",
+        json!({"force": false}),
+        ONE,
+    )
+    .await?;
+    assert!(view(
+        h,
+        &registry,
+        "storage_balance_of",
+        json!({"account_id": payer.0})
+    )
+    .await?
+    .is_null());
+    // Renounce is restored by the standard Owner wrapper; use the now-independent fixture owner.
+    h.call_function_payable(&successor, &registry, "own_renounce_owner", json!({}), ONE)
+        .await?;
+    assert!(view(h, &registry, "own_get_owner", json!({}))
+        .await?
+        .is_null());
     Ok(())
 }

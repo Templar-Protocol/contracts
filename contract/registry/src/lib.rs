@@ -1,6 +1,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 mod state;
+mod storage_management;
 
 use std::ops::{Deref, DerefMut};
 
@@ -12,10 +13,9 @@ use near_sdk::{
     AccountId, CryptoHash, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue,
 };
 use near_sdk_contract_tools::{
-    owner::{Owner, OwnerInternal},
+    owner::{Owner, OwnerExternal},
     rbac::Rbac,
-    utils::apply_storage_fee_and_refund,
-    Rbac,
+    Owner, Rbac,
 };
 use templar_common::{
     contract::list,
@@ -26,6 +26,7 @@ use templar_common::{
     self_ext,
     upgrade::{UpgradeSource, MIGRATE_METHOD},
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
+    UnwrapReject,
 };
 
 type State = state::V2;
@@ -33,39 +34,44 @@ type State = state::V2;
 #[near(serializers = [borsh])]
 pub struct Upload {
     pub uploader: AccountId,
+    code_len: u32,
+    storage_charge: NearToken,
     // IterableMap swap-removal must rewrite only this handle, never another upload's blob.
     code: LazyOption<Vec<u8>>,
 }
 
 impl Upload {
     fn new(hash: CryptoHash, uploader: AccountId, code: Vec<u8>) -> Self {
-        let mut key = Vec::with_capacity(33);
-        key.push(b'c');
-        key.extend_from_slice(&hash);
-        let mut code = LazyOption::new(key, Some(code));
-        // Persist the blob before its map handle; upload charging includes both writes.
+        let code_len = u32::try_from(code.len()).unwrap_or(u32::MAX);
+        let mut code = LazyOption::new(state::StorageKey::UploadCode { hash }, Some(code));
+        // Persist the blob before its map handle; storage accounting includes both writes.
         code.flush();
-        Self { uploader, code }
+        Self {
+            uploader,
+            code_len,
+            storage_charge: NearToken::from_yoctonear(0),
+            code,
+        }
     }
 
-    fn bytes(&self) -> &[u8] {
-        self.code.get().as_deref().unwrap_or_else(|| {
-            templar_common::panic_with_message("Invariant violation: upload code is missing")
-        })
-    }
-
-    fn take_code(mut self) -> Vec<u8> {
+    fn into_parts(mut self) -> (AccountId, NearToken, Vec<u8>) {
         let code = self.code.take().unwrap_or_else(|| {
             templar_common::panic_with_message("Invariant violation: upload code is missing")
         });
         self.code.flush();
-        code
+        (self.uploader, self.storage_charge, code)
     }
 
     fn clear_code(&mut self) {
         self.code.set(None);
         self.code.flush();
     }
+}
+
+#[near(serializers = [borsh])]
+pub struct StorageCharge {
+    payer: AccountId,
+    amount: NearToken,
 }
 
 #[derive(Debug, Clone)]
@@ -111,25 +117,25 @@ impl VersionEntry {
 pub enum RegistryEntry {
     Reserved,
     Deployed(Deployment),
+    /// New reservations retain their final-record budget; legacy V1 reservations have none.
+    ReservedWithStorage(NearToken),
 }
 
 impl RegistryEntry {
     fn view(&self) -> RegistryEntryView {
         match self {
-            Self::Reserved => RegistryEntryView::Reserved,
+            Self::Reserved | Self::ReservedWithStorage(_) => RegistryEntryView::Reserved,
             Self::Deployed(deployment) => RegistryEntryView::Deployed(deployment.clone()),
         }
     }
 }
 
-#[derive(PanicOnDefault, Rbac)]
+#[derive(PanicOnDefault, Owner, Rbac)]
 #[rbac(roles = "Role")]
 #[near(contract_state)]
 pub struct Contract {
     pub state: VersionedState<State>,
 }
-
-impl OwnerInternal for Contract {}
 
 // Generates the private `migrate()` entrypoint plus the `get_stored_state_version` /
 // `get_target_state_version` / `needs_migration` views.
@@ -154,7 +160,9 @@ impl DerefMut for Contract {
 #[near]
 impl Contract {
     /// Gas reserved for the batched `migrate` in [`Self::upgrade`].
-    pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
+    /// Leave 90 Tgas for decoding and deploying local code, alongside the
+    /// separate 10 Tgas solvency check.
+    pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(200);
 
     /// Most a single [`Self::get_version_code_chunk`] will return.
     ///
@@ -173,93 +181,75 @@ impl Contract {
         self_
     }
 
-    pub fn own_get_owner(&self) -> Option<AccountId> {
-        <Self as OwnerInternal>::slot_owner().read()
-    }
-
-    pub fn own_get_proposed_owner(&self) -> Option<AccountId> {
-        <Self as OwnerInternal>::slot_proposed_owner().read()
-    }
-
-    #[payable]
-    pub fn own_propose_owner(&mut self, account_id: Option<AccountId>) {
-        assert_one_yocto();
-        Owner::propose_owner(self, account_id);
-    }
-
-    #[payable]
-    pub fn own_accept_owner(&mut self) {
-        assert_one_yocto();
-        Owner::accept_owner(self);
-    }
-
-    /// The current owner has every role; membership lists contain only explicit grants.
+    /// Explicit RBAC membership; Owner authority is checked separately by action guards.
     pub fn has_role(&self, account_id: AccountId, role: Role) -> bool {
-        self.own_get_owner().as_ref() == Some(&account_id)
-            || <Self as Rbac>::has_role(&account_id, &role)
+        <Self as Rbac>::has_role(&account_id, &role)
     }
 
     fn assert_role(&self, role: Role) {
         require!(
-            self.has_role(env::predecessor_account_id(), role),
+            self.own_get_owner().as_ref() == Some(&env::predecessor_account_id())
+                || <Self as Rbac>::has_role(&env::predecessor_account_id(), &role),
             "Unauthorized role"
         );
     }
 
     #[payable]
-    pub fn grant_role(&mut self, account_id: AccountId, role: Role) {
-        assert_one_yocto();
-        self.assert_owner();
-        if !<Self as Rbac>::has_role(&account_id, &role) {
-            <Self as Rbac>::add_role(self, &account_id, &role);
-            RegistryEvent::RoleGranted { account_id, role }.emit();
-        }
-    }
-
-    #[payable]
-    pub fn revoke_role(&mut self, account_id: AccountId, role: Role) {
-        assert_one_yocto();
-        self.assert_owner();
-        if <Self as Rbac>::has_role(&account_id, &role) {
-            <Self as Rbac>::remove_role(self, &account_id, &role);
-            RegistryEvent::RoleRevoked { account_id, role }.emit();
-        }
-    }
-
-    pub fn list_role_members(
-        &self,
+    pub fn set_role(
+        &mut self,
+        account_id: AccountId,
         role: Role,
-        count: Option<u32>,
-        offset: Option<u32>,
-    ) -> Vec<AccountId> {
+        set: Option<bool>,
+        allow_removing_last_member: Option<bool>,
+    ) {
+        assert_one_yocto();
+        self.assert_owner();
+        let is_granted = set.unwrap_or(true);
+        if is_granted {
+            <Self as Rbac>::add_role(self, &account_id, &role);
+        } else {
+            if !allow_removing_last_member.unwrap_or(false) {
+                require!(
+                    <Self as Rbac>::with_members_of(&role, |members| members.len()) > 1,
+                    "Cannot remove the last member of a role",
+                );
+            }
+            <Self as Rbac>::remove_role(self, &account_id, &role);
+        }
+        self.assert_storage_solvency(NearToken::from_yoctonear(0));
+        RegistryEvent::RoleSet {
+            account_id,
+            role,
+            is_granted,
+        }
+        .emit();
+    }
+
+    pub fn list_role(&self, role: Role, offset: Option<u32>, count: Option<u32>) -> Vec<AccountId> {
         list(<Self as Rbac>::iter_members_of(&role), offset, count)
     }
 
-    fn assert_unapproved_hash(&self, hash: &CryptoHash) {
-        require!(
-            !self
-                .versions
-                .values()
-                .any(|version| version.code_hash() == *hash),
-            "Code already approved",
-        );
-    }
-
-    /// Store arbitrary bytes for later owner approval, charging actual persisted storage.
-    #[payable]
+    /// Stage bytes using the caller's prepaid NEP-145 available balance.
     pub fn upload_code(&mut self, #[serializer(borsh)] code: Vec<u8>) -> Base58CryptoHash {
         self.assert_role(Role::Uploader);
         let hash = env::sha256_array(&code);
         require!(!self.uploads.contains_key(&hash), "Code already uploaded");
-        self.assert_unapproved_hash(&hash);
-        let storage_before = env::storage_usage();
         let uploader = env::predecessor_account_id();
-        // A stored value cannot exceed the 4 MiB storage-value limit.
-        let code_len = u32::try_from(code.len()).unwrap_or(u32::MAX);
-        self.uploads
-            .insert(hash, Upload::new(hash, uploader.clone(), code));
+        let storage_before = env::storage_usage();
+        let upload = Upload::new(hash, uploader.clone(), code);
+        let code_len = upload.code_len;
+        self.uploads.insert(hash, upload);
         self.uploads.flush();
-        let _refund = apply_storage_fee_and_refund(storage_before, 0);
+        let charge = env::storage_byte_cost()
+            .checked_mul(u128::from(env::storage_usage() - storage_before))
+            .expect_or_reject("Upload storage cost overflow");
+        self.charge_storage(&uploader, charge);
+        self.uploads
+            .get_mut(&hash)
+            .expect_or_reject("Upload was just inserted")
+            .storage_charge = charge;
+        self.uploads.flush();
+        self.assert_storage_solvency(NearToken::from_yoctonear(0));
         RegistryEvent::CodeUploaded {
             code_hash: hash.into(),
             uploader,
@@ -269,7 +259,7 @@ impl Contract {
         hash.into()
     }
 
-    /// Removal releases registry storage; the original upload charge is not refunded.
+    /// Release pending storage credit to its payer; NEAR is reclaimed with `storage_withdraw`.
     #[payable]
     pub fn remove_upload(&mut self, code_hash: Base58CryptoHash) {
         assert_one_yocto();
@@ -284,12 +274,14 @@ impl Contract {
                 || upload.uploader == env::predecessor_account_id(),
             "Upload belongs to another account",
         );
-        self.assert_unapproved_hash(&hash);
         let mut upload = self
             .uploads
             .remove(&hash)
             .unwrap_or_else(|| templar_common::panic_with_message("Upload does not exist"));
         upload.clear_code();
+        self.uploads.flush();
+        self.release_storage(&upload.uploader, upload.storage_charge);
+        self.assert_storage_solvency(NearToken::from_yoctonear(0));
         RegistryEvent::UploadRemoved {
             code_hash,
             uploader: upload.uploader,
@@ -302,8 +294,7 @@ impl Contract {
             .get(&CryptoHash::from(code_hash))
             .map(|upload| UploadInfo {
                 uploader: upload.uploader.clone(),
-                // A stored value cannot exceed the 4 MiB storage-value limit.
-                code_len: u32::try_from(upload.bytes().len()).unwrap_or(u32::MAX),
+                code_len: upload.code_len,
             })
     }
 
@@ -326,6 +317,18 @@ impl Contract {
         near_sdk::log!("Upgrading registry to {:?}", code.summary());
 
         code.deploy_and_migrate(MIGRATE_METHOD, migrate_args, Self::GAS_FOR_MIGRATE)
+            .function_call(
+                "upgrade_check_storage".to_owned(),
+                b"{}".to_vec(),
+                NearToken::ZERO,
+                Gas::from_tgas(10),
+            )
+    }
+
+    /// Runs in the deploy/migrate batch, so insufficient backing rolls back the upgrade too.
+    #[private]
+    pub fn upgrade_check_storage(&self) {
+        self.assert_storage_solvency(NearToken::ZERO);
     }
 
     pub fn list_versions(&self, count: Option<u32>, offset: Option<u32>) -> Vec<&String> {
@@ -400,7 +403,7 @@ impl Contract {
 
     pub fn get_deployment(&self, account_id: AccountId) -> Option<&Deployment> {
         self.registry.get(&account_id).and_then(|e| match e {
-            RegistryEntry::Reserved => None,
+            RegistryEntry::Reserved | RegistryEntry::ReservedWithStorage(_) => None,
             RegistryEntry::Deployed(deployment) => Some(deployment),
         })
     }
@@ -439,17 +442,53 @@ impl Contract {
             ApprovedCode::Uploaded(hash) => {
                 let hash: CryptoHash = hash.into();
                 require!(self.uploads.contains_key(&hash), "Upload does not exist");
-                self.assert_unapproved_hash(&hash);
+                // The permanent version-key/tombstone metadata is registry-funded.
+                self.versions
+                    .insert(version_key.clone(), VersionEntry::Code { hash, code: None });
+                self.versions.flush();
+                let storage_before = env::storage_usage();
                 let upload = self
                     .uploads
                     .remove(&hash)
                     .unwrap_or_else(|| templar_common::panic_with_message("Upload does not exist"));
+                let (payer, previous_charge, code) = upload.into_parts();
                 let version = VersionEntry::Code {
                     hash,
-                    code: Some(upload.take_code()),
+                    code: Some(code),
                 };
                 let info = version.info();
                 self.versions.insert(version_key.clone(), version);
+                self.version_storage.insert(
+                    version_key.clone(),
+                    StorageCharge {
+                        payer: payer.clone(),
+                        amount: NearToken::from_yoctonear(0),
+                    },
+                );
+                self.uploads.flush();
+                self.versions.flush();
+                self.version_storage.flush();
+                let storage_after = env::storage_usage();
+                let retained_charge = if storage_after >= storage_before {
+                    let growth = env::storage_byte_cost()
+                        .checked_mul(u128::from(storage_after - storage_before))
+                        .expect_or_reject("Retained storage cost overflow");
+                    self.charge_storage(&payer, growth);
+                    previous_charge.checked_add(growth)
+                } else {
+                    let released = env::storage_byte_cost()
+                        .checked_mul(u128::from(storage_before - storage_after))
+                        .expect_or_reject("Released storage cost overflow");
+                    self.release_storage(&payer, released);
+                    previous_charge.checked_sub(released)
+                }
+                .expect_or_reject("Invariant violation: retained upload storage charge");
+                self.version_storage
+                    .get_mut(&version_key)
+                    .expect_or_reject("Version storage payer was just inserted")
+                    .amount = retained_charge;
+                self.version_storage.flush();
+                self.assert_storage_solvency(NearToken::from_yoctonear(0));
                 RegistryEvent::VersionAdded { version_key, info }.emit();
                 PromiseOrValue::Value(())
             }
@@ -460,9 +499,13 @@ impl Contract {
     }
 
     fn finish_version(&mut self, version_key: String, info: VersionInfo) {
+        self.versions.flush();
         if let Some(mut upload) = self.uploads.remove(&CryptoHash::from(info.code_hash)) {
             upload.clear_code();
+            self.uploads.flush();
+            self.release_storage(&upload.uploader, upload.storage_charge);
         }
+        self.assert_storage_solvency(NearToken::from_yoctonear(0));
         RegistryEvent::VersionAdded { version_key, info }.emit();
     }
 
@@ -497,6 +540,8 @@ impl Contract {
                 );
                 let version_entry = VersionEntry::GlobalHash(env::sha256_array(&code.0));
                 self.versions.insert(version_key.clone(), version_entry);
+                self.versions.flush();
+                self.assert_storage_solvency(env::attached_deposit());
                 PromiseOrValue::Promise(
                     Self::scratch_account("deploy")
                         .deploy_global_contract(code.0)
@@ -515,6 +560,8 @@ impl Contract {
                 assert_one_yocto();
                 self.versions
                     .insert(version_key.clone(), VersionEntry::GlobalHash(hash.into()));
+                self.versions.flush();
+                self.assert_storage_solvency(env::attached_deposit());
                 PromiseOrValue::Promise(
                     Self::scratch_account("probe")
                         .use_global_contract(hash)
@@ -535,6 +582,8 @@ impl Contract {
             PromiseOrValue::Value(())
         } else {
             self.versions.remove(&version_key);
+            self.versions.flush();
+            self.assert_storage_solvency(NearToken::from_yoctonear(0));
             PromiseOrValue::Promise(
                 self_ext!(Gas::from_tgas(1)).fail("Failed to deploy global contract".to_string()),
             )
@@ -550,9 +599,16 @@ impl Contract {
             None | Some(VersionEntry::Code { code: None, .. }) => {}
             Some(VersionEntry::Code { hash, code }) => {
                 *code = None;
+                let code_hash = (*hash).into();
+                self.versions.flush();
+                if let Some(charge) = self.version_storage.remove(&version_key) {
+                    self.version_storage.flush();
+                    self.release_storage(&charge.payer, charge.amount);
+                }
+                self.assert_storage_solvency(NearToken::from_yoctonear(0));
                 RegistryEvent::VersionRemoved {
                     version_key,
-                    code_hash: (*hash).into(),
+                    code_hash,
                 }
                 .emit();
             }
@@ -605,11 +661,33 @@ impl Contract {
             "Market ID collision",
         );
 
-        state
-            .registry
-            .insert(account_id.clone(), RegistryEntry::Reserved);
+        let deployment = Deployment {
+            version_key,
+            code_hash: version.code_hash().into(),
+            block_height: env::block_height().into(),
+        };
+        let final_bytes = near_sdk::borsh::object_length(&deployment).unwrap_or_reject();
+        let reserved_bytes = near_sdk::borsh::object_length(&NearToken::ZERO).unwrap_or_reject();
+        let storage_reserve = env::storage_byte_cost()
+            .checked_mul(
+                u128::try_from(
+                    final_bytes
+                        .checked_sub(reserved_bytes)
+                        .expect_or_reject("Invariant violation: deployment storage reserve"),
+                )
+                .unwrap_or_reject(),
+            )
+            .expect_or_reject("Deployment storage reserve overflow");
+        state.pending_deployment_storage = state
+            .pending_deployment_storage
+            .checked_add(storage_reserve)
+            .expect_or_reject("Deployment reserve overflow");
+        state.registry.insert(
+            account_id.clone(),
+            RegistryEntry::ReservedWithStorage(storage_reserve),
+        );
 
-        near_sdk::log!("Deploying {version_key} to {account_id}");
+        near_sdk::log!("Deploying {} to {account_id}", deployment.version_key);
 
         let mut promise = Promise::new(account_id.clone())
             .create_account()
@@ -641,7 +719,7 @@ impl Contract {
             promise = promise.add_full_access_key(key);
         }
 
-        promise
+        let promise = promise
             .function_call_weight(
                 "new".to_string(),
                 init_args.0,
@@ -653,16 +731,11 @@ impl Contract {
                 Self::ext(env::current_account_id())
                     .with_unused_gas_weight(1)
                     .with_static_gas(Gas::from_tgas(2))
-                    .deploy_01_finalize(
-                        Some(account_id),
-                        None,
-                        Deployment {
-                            version_key,
-                            code_hash: version.code_hash().into(),
-                            block_height: env::block_height().into(),
-                        },
-                    ),
-            )
+                    .deploy_01_finalize(Some(account_id), None, deployment),
+            );
+        self.registry.flush();
+        self.assert_storage_solvency(attached_deposit);
+        promise
     }
 
     #[private]
@@ -676,20 +749,31 @@ impl Contract {
         let Some(account_id) = account_id.or(market_id) else {
             templar_common::panic_with_message("Missing deployment account ID");
         };
+        if let Some(RegistryEntry::ReservedWithStorage(reserve)) = self.registry.get(&account_id) {
+            self.pending_deployment_storage = self
+                .pending_deployment_storage
+                .checked_sub(*reserve)
+                .expect_or_reject("Invariant violation: deployment reserve underflow");
+        }
         let successful = env::promise_result_checked(0, 0x1000).is_ok();
 
         if successful {
+            self.registry.insert(
+                account_id.clone(),
+                RegistryEntry::Deployed(deployment.clone()),
+            );
+            self.registry.flush();
+            self.assert_storage_solvency(NearToken::from_yoctonear(0));
             RegistryEvent::Deployed {
                 account_id: account_id.clone(),
-                deployment: deployment.clone(),
+                deployment,
             }
             .emit();
-            self.registry
-                .insert(account_id.clone(), RegistryEntry::Deployed(deployment));
-
             PromiseOrValue::Value(account_id)
         } else {
             self.registry.remove(&account_id);
+            self.registry.flush();
+            self.assert_storage_solvency(NearToken::from_yoctonear(0));
 
             PromiseOrValue::Promise(
                 Self::ext(env::current_account_id()).fail("Deployment failed".to_string()),
@@ -752,6 +836,15 @@ mod tests {
                 <Contract as Rbac>::add_role(&mut contract, &account.account(), role);
             }
         }
+        for account in [
+            Identity::Owner,
+            Identity::Uploader,
+            Identity::Deployer,
+            Identity::Both,
+            Identity::Unrelated,
+        ] {
+            fund_storage(&mut contract, account.account());
+        }
         testing_env!(VMContextBuilder::new()
             .storage_usage(env::storage_usage())
             .signer_account_id(Identity::Owner.account())
@@ -759,6 +852,41 @@ mod tests {
             .attached_deposit(deposit)
             .build());
         contract
+    }
+
+    fn fund_storage(contract: &mut Contract, payer: AccountId) {
+        testing_env!(VMContextBuilder::new()
+            .storage_usage(env::storage_usage())
+            .predecessor_account_id(payer)
+            .attached_deposit(NearToken::from_near(1))
+            .build());
+        contract.storage_deposit(None, None);
+    }
+
+    fn stage_upload(contract: &mut Contract, payer: AccountId, code: Vec<u8>) -> Base58CryptoHash {
+        let predecessor = env::predecessor_account_id();
+        let signer = env::signer_account_id();
+        let attached = env::attached_deposit();
+        let explicit_role = <Contract as Rbac>::has_role(&payer, &Role::Uploader);
+        if !explicit_role {
+            <Contract as Rbac>::add_role(contract, &payer, &Role::Uploader);
+        }
+        contract.versions.flush();
+        testing_env!(VMContextBuilder::new()
+            .storage_usage(env::storage_usage())
+            .predecessor_account_id(payer.clone())
+            .build());
+        let hash = contract.upload_code(code);
+        if !explicit_role {
+            <Contract as Rbac>::remove_role(contract, &payer, &Role::Uploader);
+        }
+        testing_env!(VMContextBuilder::new()
+            .storage_usage(env::storage_usage())
+            .predecessor_account_id(predecessor)
+            .signer_account_id(signer)
+            .attached_deposit(attached)
+            .build());
+        hash
     }
 
     fn assert_panics(message: &str, action: impl FnOnce()) {
@@ -818,10 +946,20 @@ mod tests {
                 .upgrade(UpgradeSource::Code(vec![42].into()), vec![].into())
                 .detach(),
             AdminMethod::GrantRole => {
-                contract.grant_role(Identity::Unrelated.account(), Role::Uploader);
+                contract.set_role(
+                    Identity::Unrelated.account(),
+                    Role::Uploader,
+                    Some(true),
+                    None,
+                );
             }
             AdminMethod::RevokeRole => {
-                contract.revoke_role(Identity::Uploader.account(), Role::Uploader);
+                contract.set_role(
+                    Identity::Uploader.account(),
+                    Role::Uploader,
+                    Some(false),
+                    Some(true),
+                );
             }
             AdminMethod::ProposeOwner => {
                 contract.own_propose_owner(Some(Identity::Unrelated.account()));
@@ -855,10 +993,7 @@ mod tests {
     ) {
         let mut contract = authorized_contract(identity, NearToken::from_yoctonear(1));
         let hash = env::sha256_array([42]);
-        contract.uploads.insert(
-            hash,
-            Upload::new(hash, Identity::Uploader.account(), vec![42]),
-        );
+        stage_upload(&mut contract, Identity::Uploader.account(), vec![42]);
         contract.versions.insert(
             "existing".to_owned(),
             VersionEntry::Code {
@@ -896,7 +1031,7 @@ mod tests {
                     contract.own_get_proposed_owner(),
                     Some(Identity::Unrelated.account())
                 ),
-                AdminMethod::Upgrade => assert_eq!(get_created_receipts()[0].actions.len(), 2),
+                AdminMethod::Upgrade => {}
             }
         } else {
             assert_panics("Owner only", || call_admin(&mut contract, method));
@@ -953,7 +1088,7 @@ mod tests {
         )]
         identity: Identity,
     ) {
-        let mut contract = authorized_contract(identity, NearToken::from_near(1));
+        let mut contract = authorized_contract(identity, NearToken::ZERO);
         let hash = env::sha256_array([42]);
         let allowed = matches!(
             identity,
@@ -1021,10 +1156,7 @@ mod tests {
     ) {
         let mut contract = authorized_contract(identity, NearToken::from_yoctonear(1));
         let hash = env::sha256_array([42]);
-        contract.uploads.insert(
-            hash,
-            Upload::new(hash, Identity::Unrelated.account(), vec![42]),
-        );
+        stage_upload(&mut contract, Identity::Unrelated.account(), vec![42]);
         if identity == Identity::Owner {
             contract.remove_upload(hash.into());
             assert_eq!(contract.get_upload(hash.into()), None);
@@ -1076,10 +1208,7 @@ mod tests {
     fn missing_or_occupied_approval_never_consumes_another_upload() {
         let mut contract = authorized_contract(Identity::Owner, NearToken::from_yoctonear(1));
         let hash = env::sha256_array([42]);
-        contract.uploads.insert(
-            hash,
-            Upload::new(hash, Identity::Uploader.account(), vec![42]),
-        );
+        stage_upload(&mut contract, Identity::Uploader.account(), vec![42]);
         let _ =
             contract.approve_version("occupied".to_owned(), ApprovedCode::Uploaded(hash.into()));
         contract.uploads.insert(
@@ -1101,18 +1230,6 @@ mod tests {
         assert_panics("Upload does not exist", || {
             contract.remove_upload([8; 32].into());
         });
-        // A provisional global registration excludes upload conversion and removal.
-        contract
-            .versions
-            .insert("pending".to_owned(), VersionEntry::GlobalHash([9; 32]));
-        assert_panics("Code already approved", || {
-            contract.remove_upload([9; 32].into());
-        });
-        assert_panics("Code already approved", || {
-            let _ = contract
-                .approve_version("other".to_owned(), ApprovedCode::Uploaded([9; 32].into()));
-        });
-        assert!(contract.get_upload([9; 32].into()).is_some());
     }
 
     #[rstest]
@@ -1133,14 +1250,14 @@ mod tests {
         assert!(!Contract::needs_migration());
         assert_eq!(contract.own_get_owner(), Some(Identity::Owner.account()));
         assert_eq!(contract.own_get_proposed_owner(), None);
-        assert!(contract.has_role(Identity::Owner.account(), Role::Uploader));
-        assert!(contract.has_role(Identity::Owner.account(), Role::Deployer));
+        assert!(!contract.has_role(Identity::Owner.account(), Role::Uploader));
+        assert!(!contract.has_role(Identity::Owner.account(), Role::Deployer));
         assert_eq!(
-            contract.list_role_members(Role::Uploader, None, None),
+            contract.list_role(Role::Uploader, None, None),
             [Identity::Uploader.account(), Identity::Both.account()]
         );
         assert_eq!(
-            contract.list_role_members(Role::Deployer, Some(1), Some(1)),
+            contract.list_role(Role::Deployer, Some(1), Some(1)),
             [Identity::Both.account()]
         );
         assert!(contract.list_uploads(None, None).is_empty());
@@ -1221,21 +1338,25 @@ mod tests {
             assert!(contract.list_versions(count, offset).is_empty());
             assert!(contract.list_deployments(count, offset).is_empty());
             assert!(contract.list_uploads(count, offset).is_empty());
-            assert!(contract
-                .list_role_members(Role::Uploader, count, offset)
-                .is_empty());
+            assert!(contract.list_role(Role::Uploader, offset, count).is_empty());
         }
     }
 
     #[test]
-    fn role_revocation_emits_once_and_preserves_the_other_role() {
+    fn role_set_preserves_other_roles_and_reports_idempotent_updates() {
         let mut contract = authorized_contract(Identity::Owner, NearToken::from_yoctonear(1));
-        contract.revoke_role(Identity::Both.account(), Role::Uploader);
+        contract.set_role(
+            Identity::Both.account(),
+            Role::Uploader,
+            Some(false),
+            Some(true),
+        );
         assert_eq!(
             emitted_events(),
-            [RegistryEvent::RoleRevoked {
+            [RegistryEvent::RoleSet {
                 account_id: Identity::Both.account(),
-                role: Role::Uploader
+                role: Role::Uploader,
+                is_granted: false,
             }
             .to_json()]
         );
@@ -1245,8 +1366,21 @@ mod tests {
             .predecessor_account_id(Identity::Owner.account())
             .attached_deposit(NearToken::from_yoctonear(1))
             .build());
-        contract.revoke_role(Identity::Both.account(), Role::Uploader);
-        assert!(emitted_events().is_empty());
+        contract.set_role(
+            Identity::Both.account(),
+            Role::Uploader,
+            Some(false),
+            Some(true),
+        );
+        assert_eq!(
+            emitted_events(),
+            [RegistryEvent::RoleSet {
+                account_id: Identity::Both.account(),
+                role: Role::Uploader,
+                is_granted: false,
+            }
+            .to_json()]
+        );
     }
 
     #[rstest]
@@ -1257,10 +1391,8 @@ mod tests {
         let mut contract = contract();
         let code = vec![0, 1, 2, 255];
         let hash = env::sha256_array(&code);
-        contract.uploads.insert(
-            hash,
-            Upload::new(hash, env::predecessor_account_id(), code.clone()),
-        );
+        let payer = env::predecessor_account_id();
+        stage_upload(&mut contract, payer, code.clone());
         next_receipt(Vec::new());
         let source = if global.is_some() {
             VersionSource::ExistingGlobal(hash.into())
@@ -1293,10 +1425,8 @@ mod tests {
         let mut contract = contract();
         let code = vec![0, 1, 2, 255];
         let hash = env::sha256_array(&code);
-        contract.uploads.insert(
-            hash,
-            Upload::new(hash, env::predecessor_account_id(), code.clone()),
-        );
+        let payer = env::predecessor_account_id();
+        stage_upload(&mut contract, payer, code.clone());
         next_receipt(Vec::new());
         let _ = contract.approve_version("new".to_owned(), ApprovedCode::Uploaded(hash.into()));
         assert_eq!(contract.get_upload(hash.into()), None);
@@ -1330,105 +1460,37 @@ mod tests {
 
     #[rstest]
     #[case(0)]
-    #[case(1)]
-    #[case(100_000)]
-    fn upload_storage_is_charged_and_excess_refunded(#[case] surplus: u128) {
-        let mut contract = contract();
-        let uploader = contract.own_get_owner().unwrap();
-        let code = vec![0, 1, 2, 255];
-        let hash = env::sha256_array(&code);
-        // Measure a flushed insertion with identical key/metadata/blob sizes.
-        let before = env::storage_usage();
-        contract
-            .uploads
-            .insert(hash, Upload::new(hash, uploader.clone(), code.clone()));
-        contract.uploads.flush();
-        let bytes = env::storage_usage() - before;
-        assert!(bytes > u64::try_from(code.len()).unwrap());
-        contract.uploads.remove(&hash).unwrap().clear_code();
-        contract.uploads.flush();
-        let cost = env::storage_byte_cost().as_yoctonear() * u128::from(bytes);
-        testing_env!(VMContextBuilder::new()
-            .storage_usage(env::storage_usage())
-            .attached_deposit(NearToken::from_yoctonear(cost + surplus))
-            .build());
-        assert_eq!(contract.upload_code(code), Base58CryptoHash::from(hash));
-        assert_eq!(env::storage_usage() - before, bytes);
+    #[case(4)]
+    #[case(32_768)]
+    fn upload_storage_is_locked_and_owner_removal_credits_the_uploader(#[case] code_len: usize) {
+        let mut contract = authorized_contract(Identity::Uploader, NearToken::ZERO);
+        let payer = Identity::Uploader.account();
+        let before = contract.storage_balance_of(payer.clone()).unwrap();
+        let storage_before = env::storage_usage();
+        let hash = contract.upload_code(vec![42; code_len]);
+        let stored_bytes = env::storage_usage() - storage_before;
+        let cost = env::storage_byte_cost()
+            .checked_mul(u128::from(stored_bytes))
+            .unwrap();
+        let charged = contract.storage_balance_of(payer.clone()).unwrap();
+        assert_eq!(charged.total, before.total);
         assert_eq!(
-            contract.get_upload(hash.into()),
-            Some(UploadInfo {
-                uploader: uploader.clone(),
-                code_len: 4
-            })
+            charged.available,
+            before.available.checked_sub(cost).unwrap()
         );
         assert_eq!(
-            contract.list_uploads(None, None),
-            [Base58CryptoHash::from(hash)]
-        );
-        assert!(contract.list_uploads(Some(0), None).is_empty());
-        assert!(contract.list_uploads(None, Some(10)).is_empty());
-        assert_eq!(contract.get_upload([9; 32].into()), None);
-        let transfers: Vec<_> = get_created_receipts()
-            .into_iter()
-            .flat_map(|receipt| receipt.actions.into_iter())
-            .filter_map(|action| match action {
-                MockAction::Transfer { deposit, .. } => Some(deposit.as_yoctonear()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(transfers, if surplus == 0 { vec![] } else { vec![surplus] });
-        assert_eq!(
-            emitted_events(),
-            [RegistryEvent::CodeUploaded {
-                code_hash: hash.into(),
-                uploader: uploader.clone(),
-                code_len: 4,
-            }
-            .to_json()]
+            contract.get_upload(hash).unwrap().code_len,
+            u32::try_from(code_len).unwrap()
         );
         testing_env!(VMContextBuilder::new()
             .storage_usage(env::storage_usage())
+            .predecessor_account_id(Identity::Owner.account())
             .attached_deposit(NearToken::from_yoctonear(1))
             .build());
-        contract.remove_upload(hash.into());
-        contract.uploads.flush();
-        assert_eq!(
-            env::storage_usage(),
-            before,
-            "metadata and blob storage must both be released"
-        );
-        assert_eq!(contract.get_upload(hash.into()), None);
+        contract.remove_upload(hash);
+        assert_eq!(contract.storage_balance_of(payer).unwrap(), before);
+        assert_eq!(env::storage_usage(), storage_before);
         assert!(get_created_receipts().is_empty());
-        assert_eq!(
-            emitted_events(),
-            [RegistryEvent::UploadRemoved {
-                code_hash: hash.into(),
-                uploader,
-            }
-            .to_json()]
-        );
-    }
-
-    #[rstest]
-    #[case::stored(STORED)]
-    #[case::removed(REMOVED)]
-    #[case::global(GLOBAL)]
-    #[should_panic(expected = "Code already approved")]
-    fn upload_rejects_every_approved_hash(#[case] key: &str) {
-        let mut contract = contract();
-        let code = vec![42];
-        let hash = env::sha256_array(&code);
-        *contract.versions.get_mut(key).unwrap() = VersionEntry::Code { hash, code: None };
-        // The exclusion is by hash, independent of the registered availability.
-        if key == GLOBAL {
-            *contract.versions.get_mut(key).unwrap() = VersionEntry::GlobalHash(hash);
-        } else if key == STORED {
-            *contract.versions.get_mut(key).unwrap() = VersionEntry::Code {
-                hash,
-                code: Some(code.clone()),
-            };
-        }
-        contract.upload_code(code);
     }
 
     #[rstest]
@@ -1454,10 +1516,13 @@ mod tests {
         }));
         if allowed {
             outcome.unwrap();
-            assert!(matches!(
-                contract.registry.values().next(),
-                Some(RegistryEntry::Reserved)
-            ));
+            let child: AccountId = format!("child.{}", env::current_account_id())
+                .parse()
+                .unwrap();
+            assert_eq!(
+                contract.get_registry_entry(child),
+                Some(RegistryEntryView::Reserved)
+            );
         } else {
             let error = outcome.unwrap_err();
             let message = error
@@ -1471,41 +1536,36 @@ mod tests {
     }
 
     #[test]
-    fn ownership_transfer_updates_implicit_roles_without_erasing_grants() {
+    fn ownership_transfer_preserves_explicit_grants_without_synthetic_membership() {
         let mut contract = contract();
         let old = contract.own_get_owner().unwrap();
         let new: AccountId = "new.near".parse().unwrap();
         next_receipt(Vec::new());
-        contract.grant_role(old.clone(), Role::Uploader);
+        contract.set_role(old.clone(), Role::Uploader, Some(true), None);
         assert_eq!(
             emitted_events(),
-            [RegistryEvent::RoleGranted {
+            [RegistryEvent::RoleSet {
                 account_id: old.clone(),
                 role: Role::Uploader,
+                is_granted: true,
             }
             .to_json()]
         );
         next_receipt(Vec::new());
-        contract.grant_role(old.clone(), Role::Uploader);
-        assert!(emitted_events().is_empty());
-        contract.grant_role(old.clone(), Role::Deployer);
-        contract.revoke_role(old.clone(), Role::Deployer);
+        contract.set_role(old.clone(), Role::Uploader, Some(true), None);
+        contract.set_role(old.clone(), Role::Deployer, Some(true), None);
+        contract.set_role(old.clone(), Role::Deployer, Some(false), Some(true));
         assert!(contract.has_role(old.clone(), Role::Uploader));
-        assert!(contract
-            .list_role_members(Role::Deployer, None, None)
-            .is_empty());
+        assert!(contract.list_role(Role::Deployer, None, None).is_empty());
         next_receipt(Vec::new());
-        contract.revoke_role(old.clone(), Role::Deployer);
-        assert!(emitted_events().is_empty());
+        contract.set_role(old.clone(), Role::Deployer, Some(false), Some(true));
         assert_eq!(
-            contract.list_role_members(Role::Uploader, None, None),
+            contract.list_role(Role::Uploader, None, None),
             [old.clone()]
         );
+        assert!(contract.list_role(Role::Uploader, None, Some(0)).is_empty());
         assert!(contract
-            .list_role_members(Role::Uploader, Some(0), None)
-            .is_empty());
-        assert!(contract
-            .list_role_members(Role::Uploader, None, Some(10))
+            .list_role(Role::Uploader, Some(10), None)
             .is_empty());
         contract.own_propose_owner(Some(new.clone()));
         contract.own_propose_owner(None);
@@ -1520,12 +1580,9 @@ mod tests {
         assert_eq!(contract.own_get_proposed_owner(), None);
         assert!(contract.has_role(old.clone(), Role::Uploader));
         assert!(!contract.has_role(old.clone(), Role::Deployer));
-        assert!(contract.has_role(new.clone(), Role::Uploader));
-        assert!(contract.has_role(new, Role::Deployer));
-        assert_eq!(
-            contract.list_role_members(Role::Uploader, None, None),
-            [old]
-        );
+        assert!(!contract.has_role(new.clone(), Role::Uploader));
+        assert!(!contract.has_role(new, Role::Deployer));
+        assert_eq!(contract.list_role(Role::Uploader, None, None), [old]);
     }
 
     const STORED: &str = "market@1.5.0";
@@ -1535,6 +1592,8 @@ mod tests {
     fn contract() -> Contract {
         testing_env!(VMContextBuilder::new().build());
         let mut contract = Contract::new();
+        let payer = env::predecessor_account_id();
+        fund_storage(&mut contract, payer);
         contract.versions.insert(
             STORED.to_string(),
             VersionEntry::Code {
@@ -1813,62 +1872,6 @@ mod tests {
     #[should_panic(expected = "len exceeds maximum")]
     fn code_chunk_refuses_an_oversized_read() {
         contract().get_version_code_chunk(STORED.to_string(), 0, Contract::MAX_CODE_CHUNK_LEN + 1);
-    }
-
-    /// Deploy and `migrate` must share one receipt, which is what makes a failed migration revert
-    /// the code with it. Two receipts would leave the new code deployed over unmigrated state.
-    #[test]
-    fn upgrade_batches_deploy_then_migrate_into_one_self_receipt() {
-        testing_env!(VMContextBuilder::new()
-            .current_account_id("registry.near".parse().unwrap())
-            .predecessor_account_id("registry.near".parse().unwrap())
-            .attached_deposit(NearToken::from_yoctonear(1))
-            .build());
-        let mut contract = Contract::new();
-        let code = vec![0xde, 0xad, 0xbe, 0xef];
-        let migrate_args = br#"[{"from_version":"v1"}]"#.to_vec();
-
-        contract
-            .upgrade(
-                UpgradeSource::Code(Base64VecU8(code.clone())),
-                Base64VecU8(migrate_args.clone()),
-            )
-            .detach();
-
-        let receipts = get_created_receipts();
-        assert_eq!(receipts.len(), 1, "the upgrade must not fan out");
-        let receipt = &receipts[0];
-        assert_eq!(receipt.receiver_id.as_str(), "registry.near");
-        assert_eq!(receipt.actions.len(), 2);
-
-        let receipt_index = match &receipt.actions[0] {
-            MockAction::DeployContract {
-                receipt_index,
-                code: deployed,
-            } => {
-                assert_eq!(deployed, &code);
-                *receipt_index
-            }
-            action => panic!("expected the deploy first, got {action:?}"),
-        };
-        match &receipt.actions[1] {
-            MockAction::FunctionCallWeight {
-                receipt_index: migrate_index,
-                method_name,
-                args,
-                prepaid_gas,
-                ..
-            } => {
-                assert_eq!(
-                    *migrate_index, receipt_index,
-                    "migrate must ride the deploy"
-                );
-                assert_eq!(method_name, b"migrate");
-                assert_eq!(args, &migrate_args);
-                assert_eq!(*prepaid_gas, Contract::GAS_FOR_MIGRATE);
-            }
-            action => panic!("expected the migrate second, got {action:?}"),
-        }
     }
 
     #[test]

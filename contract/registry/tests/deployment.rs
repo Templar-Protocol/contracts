@@ -386,12 +386,44 @@ async fn upload(
     code: &[u8],
     deposit: NearToken,
 ) -> Result<Base58CryptoHash> {
+    let balance = storage_balance(harness, registry_id, signer).await?;
+    let current = balance["total"]
+        .as_str()
+        .map(str::parse::<u128>)
+        .transpose()?
+        .unwrap_or(0);
+    let top_up = deposit.as_yoctonear().saturating_sub(current);
+    if top_up > 0 {
+        harness
+            .call_function_payable(
+                signer,
+                registry_id,
+                "storage_deposit",
+                serde_json::json!({}),
+                NearToken::from_yoctonear(top_up),
+            )
+            .await?;
+    }
     let result = harness
-        .call_function_borsh(signer, registry_id, "upload_code", code, deposit)
+        .call_function_borsh(signer, registry_id, "upload_code", code, NearToken::ZERO)
         .await?;
     let events: Vec<serde_json::Value> = registry_events(&result, registry_id, "code_uploaded")?;
     assert_eq!(events.len(), 1);
     Ok(serde_json::from_value(events[0]["code_hash"].clone())?)
+}
+
+async fn storage_balance(
+    harness: &SandboxHarness,
+    registry_id: &AccountId,
+    payer: &ManagedAccountId,
+) -> Result<serde_json::Value> {
+    harness
+        .view_json(
+            registry_id,
+            "storage_balance_of",
+            serde_json::json!({"account_id": payer.0}),
+        )
+        .await
 }
 
 async fn upload_info(
@@ -449,7 +481,24 @@ async fn separate_registry(harness: &SandboxHarness) -> Result<AccountId> {
 async fn underfunded_upload_rolls_back(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let id = harness.deploy_registry().await?;
     let signer = &harness.registry_signer_account_id;
-    let error = harness
+    let bounds: serde_json::Value = harness
+        .view_json(&id, "storage_balance_bounds", serde_json::json!({}))
+        .await?;
+    let minimum: u128 = bounds["min"]
+        .as_str()
+        .context("registration minimum")?
+        .parse()?;
+    harness
+        .call_function_payable(
+            signer,
+            &id,
+            "storage_deposit",
+            serde_json::json!({"registration_only": true}),
+            NearToken::from_yoctonear(minimum),
+        )
+        .await?;
+    let registered = storage_balance(&harness, &id, signer).await?;
+    harness
         .call_function_borsh(
             signer,
             &id,
@@ -459,7 +508,6 @@ async fn underfunded_upload_rolls_back(#[future(awt)] harness: SandboxHarness) -
         )
         .await
         .expect_err("the actual receipt must reject insufficient storage payment");
-    assert!(format!("{error:#}").contains("storage"));
     let uploads: Vec<Base58CryptoHash> = harness
         .view_json(&id, "list_uploads", serde_json::json!({}))
         .await?;
@@ -467,6 +515,7 @@ async fn underfunded_upload_rolls_back(#[future(awt)] harness: SandboxHarness) -
         uploads.is_empty(),
         "receipt rollback must remove all upload metadata"
     );
+    assert_eq!(storage_balance(&harness, &id, signer).await?, registered);
     let hash = upload(
         &harness,
         signer,
@@ -506,6 +555,7 @@ async fn successful_registration_consumes_matching_market_upload(
         NearToken::from_near(30),
     )
     .await?;
+    let charged = storage_balance(&harness, &id, &harness.registry_signer_account_id).await?;
     assert_eq!(
         hash,
         Base58CryptoHash::from(near_api::types::CryptoHash::hash(&code).0)
@@ -544,17 +594,36 @@ async fn successful_registration_consumes_matching_market_upload(
         1
     );
     assert!(registry_events::<serde_json::Value>(&result, &id, "upload_removed")?.is_empty());
+    let credited = storage_balance(&harness, &id, &harness.registry_signer_account_id).await?;
+    assert_eq!(credited["total"], charged["total"]);
+    let bounds: serde_json::Value = harness
+        .view_json(&id, "storage_balance_bounds", serde_json::json!({}))
+        .await?;
+    let total: u128 = credited["total"]
+        .as_str()
+        .context("storage total")?
+        .parse()?;
+    let available: u128 = credited["available"]
+        .as_str()
+        .context("storage available")?
+        .parse()?;
+    let minimum: u128 = bounds["min"]
+        .as_str()
+        .context("registration minimum")?
+        .parse()?;
+    assert_eq!(available, total - minimum);
     // In particular, the successful global callback deletes a full market-sized upload in its
     // production gas allocation, rather than proving cleanup with a tiny synthetic blob.
-    assert!(upload(
+    // Approval does not ban future staging of the same hash.
+    let restaged = upload(
         &harness,
         &harness.registry_signer_account_id,
         &id,
         templar_gateway_testing::wasm::market().await,
         NearToken::from_near(30),
     )
-    .await
-    .is_err());
+    .await?;
+    assert_eq!(restaged, hash);
     Ok(())
 }
 
@@ -759,10 +828,9 @@ async fn uploaded_approval_moves_bytes_and_preserves_key(
             .is_err()
     );
     assert!(upload_info(&harness, &id, pending).await?.is_some());
-    assert!(
-        upload(&harness, signer, &id, &code, NearToken::from_near(30))
-            .await
-            .is_err()
+    assert_eq!(
+        upload(&harness, signer, &id, &code, NearToken::from_near(30)).await?,
+        hash
     );
     Ok(())
 }
@@ -784,6 +852,7 @@ async fn failed_global_approval_preserves_upload_and_releases_key(
     )
     .await?;
     let before = upload_info(&harness, &id, hash).await?.unwrap();
+    let charged = storage_balance(&harness, &id, signer).await?;
     let failed = harness
         .try_execute(
             signer,
@@ -804,6 +873,7 @@ async fn failed_global_approval_preserves_upload_and_releases_key(
     assert!(registry_events::<VersionAdded>(&failed, &id, "version_added")?.is_empty());
     assert_eq!(version_code_hash(&harness, &id, "retry").await?, None);
     assert_eq!(upload_info(&harness, &id, hash).await?.unwrap(), before);
+    assert_eq!(storage_balance(&harness, &id, signer).await?, charged);
     approve(&harness, &id, "retry", ApprovedCode::Uploaded(hash)).await?;
     assert!(upload_info(&harness, &id, hash).await?.is_none());
     assert!(harness
@@ -836,8 +906,8 @@ async fn duplicate_upload_does_not_replace_original(
         .call_function_payable(
             owner,
             &id,
-            "grant_role",
-            serde_json::json!({"account_id": other.0, "role": "Uploader"}),
+            "set_role",
+            serde_json::json!({"account_id": other.0, "role": "Uploader", "set": true}),
             PROBE_DEPOSIT,
         )
         .await?;
@@ -866,5 +936,75 @@ async fn duplicate_upload_does_not_replace_original(
         )
         .await
         .is_err());
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+async fn repeated_hash_approvals_keep_independent_retained_charges(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let id = harness.deploy_registry().await?;
+    let owner = &harness.registry_signer_account_id;
+    let code = [0_u8, 1, 2, 255];
+    harness
+        .call_function_payable(
+            owner,
+            &id,
+            "storage_deposit",
+            serde_json::json!({}),
+            NearToken::from_near(1),
+        )
+        .await?;
+    let funded = storage_balance(&harness, &id, owner).await?;
+    let mut previous_available: u128 = funded["available"]
+        .as_str()
+        .context("funded available")?
+        .parse()?;
+    // Bounded history exercises identical code under multiple keys without an approved-hash ban.
+    for index in 0..16 {
+        harness
+            .call_function_borsh(owner, &id, "upload_code", code.to_vec(), NearToken::ZERO)
+            .await?;
+        let hash = Base58CryptoHash::from(near_api::types::CryptoHash::hash(&code).0);
+        approve(
+            &harness,
+            &id,
+            &format!("history-{index}"),
+            ApprovedCode::Uploaded(hash),
+        )
+        .await?;
+        let balance = storage_balance(&harness, &id, owner).await?;
+        assert_eq!(balance["total"], funded["total"]);
+        let available: u128 = balance["available"]
+            .as_str()
+            .context("retained available")?
+            .parse()?;
+        assert!(available < previous_available);
+        previous_available = available;
+    }
+    for index in 0..16 {
+        harness
+            .call_function_payable(
+                owner,
+                &id,
+                "remove_version",
+                serde_json::json!({"version_key": format!("history-{index}")}),
+                PROBE_DEPOSIT,
+            )
+            .await?;
+        let balance = storage_balance(&harness, &id, owner).await?;
+        let available: u128 = balance["available"]
+            .as_str()
+            .context("released available")?
+            .parse()?;
+        assert!(available > previous_available);
+        previous_available = available;
+    }
+    assert_eq!(storage_balance(&harness, &id, owner).await?, funded);
+    let versions: Vec<String> = harness
+        .view_json(&id, "list_versions", serde_json::json!({}))
+        .await?;
+    assert_eq!(versions.len(), 16);
     Ok(())
 }

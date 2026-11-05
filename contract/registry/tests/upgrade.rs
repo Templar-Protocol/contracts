@@ -1,5 +1,5 @@
-//! Upgrade a registry through its owner-only `upgrade`, starting from 2.0.0 — the release every
-//! live registry runs — so a change that cannot carry one of them fails here rather than on chain.
+//! Upgrade deployed V1 registries, including the mainnet 3.1.0 release, through owner-only
+//! `upgrade`. Retain the 2.0.0 in-flight callback compatibility case.
 
 use anyhow::{Context, Result};
 use near_api::types::AccountId;
@@ -22,7 +22,7 @@ use templar_gateway_types::{
     ActionInput, Base64Bytes, ContractMethodName, ManagedAccountId, NearGas,
 };
 
-const LIVE_RELEASE: &str = "2.0.0";
+const LIVE_RELEASE: &str = "3.1.0";
 const MARKET_VERSION: &str = "market@0.0.0";
 const REMOVED_VERSION: &str = "market@0.0.0-removed";
 /// Current source, published as a global contract so `upgrade` can name it by hash.
@@ -312,7 +312,7 @@ async fn a_keyless_registry_still_upgrades_through_its_owner(
 async fn a_deploy_in_flight_across_the_upgrade_still_finalizes(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
-    let registry_id = harness.deploy_registry_version(LIVE_RELEASE).await?;
+    let registry_id = harness.deploy_registry_version("2.0.0").await?;
     populate(&harness, &registry_id).await?;
     let in_flight: AccountId = format!("in-flight.{registry_id}").parse()?;
 
@@ -456,12 +456,21 @@ async fn a_v2_same_code_upgrade_preserves_uploads_roles_and_registry_state(
             .call_function_payable(
                 &owner,
                 &registry_id,
-                "grant_role",
-                serde_json::json!({"account_id": operator.0, "role": role}),
+                "set_role",
+                serde_json::json!({"account_id": operator.0, "role": role, "set": true}),
                 NearToken::from_yoctonear(1),
             )
             .await?;
     }
+    harness
+        .call_function_payable(
+            &operator,
+            &registry_id,
+            "storage_deposit",
+            serde_json::json!({}),
+            NearToken::from_near(1),
+        )
+        .await?;
     let upload = vec![0_u8, 1, 2, 255];
     let upload_hash = Base58CryptoHash::from(near_api::types::CryptoHash::hash(&upload).0);
     harness
@@ -470,7 +479,27 @@ async fn a_v2_same_code_upgrade_preserves_uploads_roles_and_registry_state(
             &registry_id,
             "upload_code",
             upload,
-            NearToken::from_near(1),
+            NearToken::ZERO,
+        )
+        .await?;
+    let retained = vec![9_u8, 8, 7, 6];
+    let retained_hash = Base58CryptoHash::from(near_api::types::CryptoHash::hash(&retained).0);
+    harness
+        .call_function_borsh(
+            &operator,
+            &registry_id,
+            "upload_code",
+            retained,
+            NearToken::ZERO,
+        )
+        .await?;
+    harness
+        .call_function_payable(
+            &owner,
+            &registry_id,
+            "approve_version",
+            serde_json::json!({"version_key": "retained", "code": {"Uploaded": retained_hash}}),
+            NearToken::from_yoctonear(1),
         )
         .await?;
     harness
@@ -488,8 +517,8 @@ async fn a_v2_same_code_upgrade_preserves_uploads_roles_and_registry_state(
         ("own_get_proposed_owner", serde_json::json!({})),
         ("get_upload", serde_json::json!({"code_hash": upload_hash})),
         ("list_uploads", serde_json::json!({})),
-        ("list_role_members", serde_json::json!({"role": "Uploader"})),
-        ("list_role_members", serde_json::json!({"role": "Deployer"})),
+        ("list_role", serde_json::json!({"role": "Uploader"})),
+        ("list_role", serde_json::json!({"role": "Deployer"})),
         (
             "has_role",
             serde_json::json!({"account_id": operator.0, "role": "Uploader"}),
@@ -497,6 +526,10 @@ async fn a_v2_same_code_upgrade_preserves_uploads_roles_and_registry_state(
         (
             "has_role",
             serde_json::json!({"account_id": operator.0, "role": "Deployer"}),
+        ),
+        (
+            "storage_balance_of",
+            serde_json::json!({"account_id": operator.0}),
         ),
     ];
     let mut before_views = Vec::new();
@@ -535,5 +568,36 @@ async fn a_v2_same_code_upgrade_preserves_uploads_roles_and_registry_state(
             "{method} changed across a same-version upgrade",
         );
     }
+    let before_removal: serde_json::Value = harness
+        .view_json(
+            &registry_id,
+            "storage_balance_of",
+            serde_json::json!({"account_id": operator.0}),
+        )
+        .await?;
+    harness
+        .call_function_payable(
+            &owner,
+            &registry_id,
+            "remove_version",
+            serde_json::json!({"version_key": "retained"}),
+            NearToken::from_yoctonear(1),
+        )
+        .await?;
+    let after_removal: serde_json::Value = harness
+        .view_json(
+            &registry_id,
+            "storage_balance_of",
+            serde_json::json!({"account_id": operator.0}),
+        )
+        .await?;
+    assert_eq!(before_removal["total"], after_removal["total"]);
+    let available = |balance: &serde_json::Value| -> Result<u128> {
+        Ok(balance["available"]
+            .as_str()
+            .context("available balance")?
+            .parse()?)
+    };
+    assert!(available(&after_removal)? > available(&before_removal)?);
     Ok(())
 }
