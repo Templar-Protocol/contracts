@@ -13783,7 +13783,6 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "getrandom 0.2.17",
- "hex",
  "near-api",
  "near-sdk",
  "near-sdk-contract-tools",

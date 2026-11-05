@@ -17,7 +17,7 @@ pub enum RedStoneEvent<'a> {
         updated_feeds: Vec<(FeedId, FeedData)>,
     },
 
-    /// The effective policy after a successful administrative patch. Signers are
+    /// The effective policy after a successful configuration replacement. Signers are
     /// lowercase hex strings in this event only, bounding even 255 signers below
     /// NEAR's 16 KiB receipt-log limit without copying the stored configuration.
     #[event_version("1.0.0")]

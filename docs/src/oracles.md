@@ -43,10 +43,12 @@ Because this configuration is immutable, an existing market cannot be repointed 
 
 ## RedStone Adapter Administration
 
-This interface describes the owner-enabled adapter source, **not a live authority
-change** on an existing deployment. `new(config, admin_id)` validates configuration
+The adapter exposes owner-controlled configuration and upgrades independently of
+its RBAC roles. The owner may be an account or a contract; this interface does not
+select a controller implementation. `new(config, admin_id)` validates configuration
 and gives the explicit `admin_id` ownership and both RBAC roles; the deploying
-registry or predecessor does not receive authority implicitly.
+registry or predecessor does not receive authority implicitly. Production owner
+selection, deployment, and access-key removal are outside this chapter's scope.
 
 ### Authority and Ownership
 
@@ -54,7 +56,7 @@ registry or predecessor does not receive authority implicitly.
 |---|---|---|
 | `own_get_owner` | `{}` | View / 0; returns account or null |
 | `own_get_proposed_owner` | `{}` | View / 0; returns account or null |
-| `own_propose_owner` | `{"account_id":"governance.near"}` or `{"account_id":null}` | Owner / exactly 1 yoctoNEAR; propose or cancel |
+| `own_propose_owner` | `{"account_id":"next-owner.near"}` or `{"account_id":null}` | Owner / exactly 1 yoctoNEAR; propose or cancel |
 | `own_accept_owner` | `{}` | Proposed owner / exactly 1 yoctoNEAR |
 | `own_renounce_owner` | `{}` | Owner / exactly 1 yoctoNEAR; permanently clears owner and proposal |
 | `admin_set_config` | `{"config":{...}}`; all five fields required (see below) | Owner / exactly 1 yoctoNEAR |
@@ -66,11 +68,8 @@ neither `ModifyRoles` nor `TrustedUpdater` permits configuration or upgrades.
 `set_role` retains its default `set = true`, default
 `allow_removing_last_member = false`, and last-member guard. `has_role` and
 `list_role` retain their existing interfaces. Ownership transfer never moves roles
-or removes account access keys.
-
-For direct DAO control, the DAO contract account must be Owner and a
-`ModifyRoles` member. The executing contract must be the adapter call's actual
-predecessor, not merely the external signer of a DAO proposal-execution transaction.
+or removes account access keys. Authorization checks the actual predecessor,
+not the transaction signer when a contract makes the call.
 
 ### Atomic Full Configuration
 
@@ -105,12 +104,13 @@ The signer above is illustrative, not a recommended production signer.
 
 The supplied signer set and quorum are validated together before replacing state.
 Invalid input leaves configuration, ownership, roles, and feeds unchanged.
-A later successful call overwrites every prior configuration field. In particular,
-queued proposals carry full snapshots: if snapshots A and B start from the same
-configuration, B changes the lead bound, and A changes only the lag bound relative
-to that starting snapshot, executing B then A restores the old lead bound from A.
-Review the complete snapshot and proposal execution order to avoid unintentionally
-restoring stale settings. There is no revision counter or compare-and-swap.
+A later successful call overwrites every prior configuration field. Queued calls
+carry full snapshots: if snapshots A and B start from the same configuration,
+B changes the lead bound, and A changes only the lag bound relative to that
+starting snapshot, executing B then A restores the old lead bound from A.
+Owners must review the complete snapshot and execution order; there is no
+revision counter or compare-and-swap. `get_config` returns the applied configuration,
+and `unique_signer_threshold` reflects its quorum.
 
 Changes are prospective: removed signers no longer authenticate new payloads,
 but already stored prices and both replay timestamps remain intact. Stored prices
@@ -124,8 +124,8 @@ After a validated `admin_set_config` call replaces configuration, the adapter em
 `config_updated`, version `1.0.0`, under the `redstone-adapter` standard.
 Its `data` object contains:
 
-- `updater`: the actual predecessor account (the governance contract for a
-  mediated call, not the external proposal executor).
+- `updater`: the actual predecessor account, which may differ from the transaction
+  signer for a contract call.
 - `config`: the complete applied configuration, with all five
   fields. Signers are ordered **40-character lowercase hex strings without `0x`**
   in this event only; `get_config`, configuration inputs, and stored configuration retain
@@ -140,8 +140,6 @@ alone are not proof that a receipt's state changes committed.
 The existing `write_prices` version `1.0.0` payload is unchanged. Ownership uses
 the standard Owner component's separate `x-own` events. Consumers should dispatch
 by standard, event name, and version, and tolerate unrelated event names.
-Before release, verify compatibility with deployed and external event consumers.
-Emitting these records does not itself install monitoring alert rules.
 
 ### Upgrades and Legacy Bootstrap
 
@@ -172,51 +170,21 @@ and RBAC prefix `~r` remain unchanged; ownership uses separate standard `~o` slo
 | Yes | Omitted/null | No-op; preserve owner and pending transfer, including renunciation |
 | Yes | Account | Fail: `migrate: owner is already initialized` |
 
-The existing legacy deployment authority must atomically deploy the new code and
-call `migrate({"owner_id":"<DAO or governance account>"})` for the first upgrade.
+The first legacy upgrade requires an atomic deploy and
+`migrate({"owner_id":"<owner account>"})` call by the existing deployment authority.
 Normal subsequent upgrades call `migrate({})`. Historical configuration is not
 revalidated during migration, so it remains readable and can be corrected by a
-valid full configuration. Renunciation never permits re-bootstrap; on a keyless account it
-irreversibly disables configuration and upgrades. Never use it for handover.
+valid full configuration. Renunciation never permits re-bootstrap; on a keyless
+account it irreversibly disables configuration and upgrades. Never use it for handover.
 
-### Intermediary Governance and Handover
+### Adapter Regression Coverage
 
-The existing NEAR governance contract can target the adapter with
-`new(proxy_oracle_id = adapter_id, admin_id = dao_id, policy)`; despite the field
-name, `proxy_oracle_id` is its generic dispatch target. No new operation variants,
-gateway methods, or governance upgrade are required.
+Released-WASM migration and direct owner-controlled administration are covered by
+the adapter sandbox target:
 
-For an already owner-enabled adapter:
-
-1. The current role administrator grants `ModifyRoles` to the intended controller.
-2. The owner proposes it with `own_propose_owner`; the controller accepts directly
-   or through a governance target proposal.
-3. The new controller revokes outgoing `ModifyRoles` memberships. Retain explicitly
-   intended `TrustedUpdater` operators; do not automatically remove writers.
-4. Verify owner, pending owner, both role lists, and an authorized configuration
-   call before considering any **separately authorized** full-access-key removal.
-
-Build `Operation::TargetFunctionCall(FunctionCall { method_name, args,
-attached_deposit: U128(1), gas })`, where `args` contains serialized JSON bytes.
-Acceptance uses `{}`, configuration uses `admin_set_config` with the complete
-`{"config":{...}}` encoding above, upgrades use their encodings above, and roles
-use the existing `set_role` arguments. Both outer
-`create_proposal` and `execute_proposal` also require 1 yoctoNEAR.
-Do not reuse the proxy oracle's `target::admin_upgrade` builder: it attaches zero
-deposit, which RedStone rejects.
-
-Operators select production policies. Unlisted adapter methods inherit
-`default_target`; all configuration fields share the policy for `admin_set_config`,
-without field-specific roles or timelocks. A detached target receipt can fail
-after successful governance dispatch has consumed the proposal; this does not
-roll back governance execution.
-
-The sandbox proof uses 50 Tgas for ordinary forwarded calls, 280/300 Tgas
-forwarded/outer for global-hash upgrades, and 400/500 Tgas for inline upgrades.
-These are proof budgets, not production-network limits or minimal gas estimates.
-Reproduce real released-WASM migration and keyless governance with
-`just test-sandbox -p templar-proxy-oracle-near-governance-contract --test redstone_admin`.
-No live upgrade or key deletion is authorized by this specification.
+```text
+just test-sandbox -p templar-gateway-testing --test redstone_admin
+```
 
 ## Proxy Oracle
 
