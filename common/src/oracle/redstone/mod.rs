@@ -13,7 +13,7 @@ pub const DECIMALS: i32 = 8;
 mod adapter;
 pub use adapter::*;
 pub mod config;
-pub use config::{Config, ConfigPatch};
+pub use config::Config;
 mod event;
 pub use event::*;
 mod feed_data;

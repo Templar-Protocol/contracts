@@ -15,8 +15,8 @@ use near_sdk_contract_tools::{
 use templar_common::{
     contract::list,
     oracle::redstone::{
-        Config, ConfigPatch, FeedData, FeedId, GetPrices, RedStoneAdapter,
-        RedStoneContractInterface, RedStoneEvent, Role,
+        Config, FeedData, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
+        RedStoneEvent, Role,
     },
     upgrade::{UpgradeSource, MIGRATE_METHOD},
     UnwrapReject,
@@ -54,12 +54,13 @@ impl Contract {
         &self.adapter.config
     }
 
-    /// Apply a partial verification policy to subsequent payloads, preserving cached feeds.
+    /// Replace the verification policy for subsequent payloads, preserving cached feeds.
     #[payable]
-    pub fn admin_update_config(&mut self, patch: ConfigPatch) {
+    pub fn admin_set_config(&mut self, config: Config) {
         assert_one_yocto();
         Self::require_owner();
-        self.adapter.config.apply_patch(patch).unwrap_or_reject();
+        config.validate().unwrap_or_reject();
+        self.adapter.config = config;
         RedStoneEvent::ConfigUpdated {
             updater: env::predecessor_account_id(),
             config: &self.adapter.config,

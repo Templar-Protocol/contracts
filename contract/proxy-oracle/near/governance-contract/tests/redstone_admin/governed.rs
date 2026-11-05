@@ -8,7 +8,7 @@ use near_sdk::json_types::{Base64VecU8, U128};
 use near_sdk::{serde, Gas, NearToken};
 use rstest::rstest;
 use serde_json::{json, Value};
-use templar_common::{upgrade::UpgradeSource, Nanoseconds};
+use templar_common::{oracle::redstone::Config, upgrade::UpgradeSource, Nanoseconds};
 use templar_gateway_testing::{harness, wasm, SandboxHarness, TEST_FINALITY_POLICY};
 use templar_proxy_oracle_near_governance_common::{FunctionCall, Operation};
 
@@ -38,27 +38,13 @@ fn config_events(logs: &[&str]) -> Vec<Value> {
     clippy::expect_used,
     reason = "event policy must losslessly match the viewed configuration"
 )]
-fn assert_config_event(outcome: &ExecutionSuccess, updater: &AccountId, config: &Value) {
-    let mut encoded = config.clone();
+fn assert_config_event(outcome: &ExecutionSuccess, updater: &AccountId, config: &Config) {
+    let mut encoded = serde_json::to_value(config).expect("config serializes");
     encoded["signers"] = Value::Array(
-        config["signers"]
-            .as_array()
-            .expect("config signer array")
+        config
+            .signers
             .iter()
-            .map(|address| {
-                let bytes: Vec<u8> = address
-                    .as_array()
-                    .expect("signer byte array")
-                    .iter()
-                    .map(|byte| {
-                        u8::try_from(byte.as_u64().expect("signer byte"))
-                            .expect("signer byte fits u8")
-                    })
-                    .collect();
-                let hex = hex::encode(bytes);
-                assert_eq!(hex.len(), 40);
-                Value::String(hex)
-            })
+            .map(|address| Value::String(hex::encode(address)))
             .collect(),
     );
     assert_eq!(
@@ -197,21 +183,27 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
     let admin = harness.create_user("redstone-dao-admin").await?.0;
     let pending = harness.create_user("redstone-pending-owner").await?.0;
 
-    // Exercise the actual generated WASM argument boundary, not just ConfigPatch's serde impl.
+    // Exercise the actual generated WASM argument boundary, not just Config's serde impl.
     let before_invalid = snapshot(&harness, &adapter).await?;
     let before_invalid_owner = ownership(&harness, &adapter).await?;
+    let mut missing_field = before_invalid["config"].clone();
+    missing_field
+        .as_object_mut()
+        .expect("config is an object")
+        .remove("signers");
+    let mut wrong_type = before_invalid["config"].clone();
+    wrong_type["max_timestamp_delay_ms"] = json!("120000");
     for args in [
         json!({}),
-        json!({"patch": null}),
-        json!({"patch": {"unknown": 1}}),
-        json!({"patch": [1, vec![vec![1u8; 20]], 120_000, 60_000, 0]}),
-        json!({"patch": {"max_timestamp_delay_ms": "120000"}}),
+        json!({"config": null}),
+        json!({"config": missing_field}),
+        json!({"config": wrong_type}),
     ] {
         let result = send(
             &harness,
             &adapter,
             &adapter,
-            "admin_update_config",
+            "admin_set_config",
             &args,
             ONE_YOCTO,
             ORDINARY_GAS,
@@ -219,8 +211,8 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
         .await?;
         let error = result
             .into_result()
-            .expect_err("malformed patch must fail in real WASM");
-        println!("RedStone rejected malformed admin_update_config {args}: {error:?}");
+            .expect_err("malformed config must fail in real WASM");
+        println!("RedStone rejected malformed admin_set_config {args}: {error:?}");
         let TransactionResultError::Failure(failure) = &error else {
             panic!("expected a completed failed transaction: {error:?}");
         };
@@ -287,14 +279,23 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
     );
 
     // Both proposals exist against the same old configuration before either is dispatched.
+    let base_config: Config = serde_json::from_value(handed_over["config"].clone())?;
+    let config_a = Config {
+        max_timestamp_delay_ms: 120_000,
+        ..base_config.clone()
+    };
+    let config_b = Config {
+        max_timestamp_ahead_ms: 60_000,
+        ..base_config
+    };
     propose(
         &harness,
         &governance,
         &admin,
         2,
         target(
-            "admin_update_config",
-            json!({"patch": {"max_timestamp_delay_ms": 120_000}}),
+            "admin_set_config",
+            json!({"config": config_a}),
             ORDINARY_GAS,
         )?,
         false,
@@ -306,8 +307,8 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
         &admin,
         3,
         target(
-            "admin_update_config",
-            json!({"patch": {"max_timestamp_ahead_ms": 60_000}}),
+            "admin_set_config",
+            json!({"config": config_b}),
             ORDINARY_GAS,
         )?,
         false,
@@ -317,8 +318,8 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
         &harness,
         &adapter,
         &admin,
-        "admin_update_config",
-        json!({"patch": {"max_timestamp_delay_ms": 1}}),
+        "admin_set_config",
+        json!({"config": config_a}),
         ONE_YOCTO,
         ORDINARY_GAS,
     )
@@ -334,35 +335,43 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
     assert_eq!(snapshot(&harness, &adapter).await?, handed_over);
     let executed_b =
         successful(execute(&harness, &governance, &admin, 3, Gas::from_tgas(300)).await?);
-    let mut after_b = handed_over["config"].clone();
-    after_b["max_timestamp_ahead_ms"] = json!(60_000);
-    assert_config_event(&executed_b, &governance, &after_b);
-    assert_eq!(snapshot(&harness, &adapter).await?["config"], after_b);
+    assert_config_event(&executed_b, &governance, &config_b);
+    assert_eq!(
+        snapshot(&harness, &adapter).await?["config"],
+        serde_json::to_value(&config_b)?
+    );
     let executed_a =
         successful(execute(&harness, &governance, &admin, 2, Gas::from_tgas(300)).await?);
-    let merged = snapshot(&harness, &adapter).await?;
+    let replaced = snapshot(&harness, &adapter).await?;
     let mut expected = handed_over.clone();
-    expected["config"]["max_timestamp_delay_ms"] = json!(120_000);
-    expected["config"]["max_timestamp_ahead_ms"] = json!(60_000);
+    expected["config"] = serde_json::to_value(&config_a)?;
     assert_eq!(
-        merged, expected,
-        "queued patches merge with execution-time state"
+        replaced, expected,
+        "queued snapshot A replaces every field, restoring B's changed lead bound"
     );
-    assert_config_event(&executed_a, &governance, &merged["config"]);
-    println!("RedStone reverse-order queued patches: {merged}");
+    assert_ne!(
+        config_a.max_timestamp_ahead_ms,
+        config_b.max_timestamp_ahead_ms
+    );
+    assert_config_event(&executed_a, &governance, &config_a);
+    println!("RedStone reverse-order queued full configurations: {replaced}");
 
     revoke_all_access_keys(&harness, &adapter).await?;
     revoke_all_access_keys(&harness, &governance).await?;
+    let keyless_config = Config {
+        min_interval_between_updates_ms: 7,
+        ..config_a
+    };
     govern(
         &harness,
         &governance,
         &admin,
         4,
-        "admin_update_config",
-        json!({"patch": {"min_interval_between_updates_ms": 7}}),
+        "admin_set_config",
+        json!({"config": keyless_config}),
     )
     .await?;
-    expected["config"]["min_interval_between_updates_ms"] = json!(7);
+    expected["config"] = serde_json::to_value(&keyless_config)?;
     assert_eq!(snapshot(&harness, &adapter).await?, expected);
     govern(
         &harness,
@@ -503,21 +512,21 @@ async fn maximum_signer_policy_emits_complete_bounded_event(
             address
         })
         .collect();
-    let config = json!({
-        "signer_count_threshold": 255,
-        "signers": signers,
-        "max_timestamp_delay_ms": u64::MAX,
-        "max_timestamp_ahead_ms": u64::MAX,
-        "min_interval_between_updates_ms": u64::MAX,
-    });
+    let config = Config {
+        signer_count_threshold: 255,
+        signers,
+        max_timestamp_delay_ms: u64::MAX,
+        max_timestamp_ahead_ms: u64::MAX,
+        min_interval_between_updates_ms: u64::MAX,
+    };
     // This maximum-policy smoke uses 300 Tgas, not a claim that ordinary 50 Tgas suffices.
     let outcome = successful(
         send(
             &harness,
             &adapter,
             &adapter,
-            "admin_update_config",
-            json!({"patch": config}),
+            "admin_set_config",
+            json!({"config": config}),
             ONE_YOCTO,
             Gas::from_tgas(300),
         )
@@ -528,7 +537,7 @@ async fn maximum_signer_policy_emits_complete_bounded_event(
     let logged: usize = logs.iter().map(|log| log.len()).sum();
     assert!(logged <= 16 * 1024, "maximum policy logged {logged} bytes");
     let mut expected = before;
-    expected["config"] = config;
+    expected["config"] = serde_json::to_value(&config)?;
     assert_eq!(snapshot(&harness, &adapter).await?, expected);
     println!("RedStone config_updated emitted {logged} bytes for all 255 signers and maximum timing values");
     Ok(())

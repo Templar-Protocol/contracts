@@ -4,7 +4,7 @@ use near_sdk::{
     test_utils::{get_logs, VMContextBuilder},
     testing_env, NearToken,
 };
-use templar_common::oracle::redstone::{Config, ConfigPatch, RedStoneContractInterface};
+use templar_common::oracle::redstone::{Config, RedStoneContractInterface};
 use templar_redstone_adapter_contract::Contract;
 
 #[allow(
@@ -34,25 +34,22 @@ fn event_records_complete_effective_policy_and_signer_rotation() {
     context("owner.near", 0);
     let mut adapter = Contract::new(config(), "owner.near".parse().unwrap());
     context("owner.near", 1);
-    adapter.admin_update_config(ConfigPatch {
-        max_timestamp_delay_ms: Some(0),
-        ..ConfigPatch::default()
+    adapter.admin_set_config(Config {
+        max_timestamp_delay_ms: 0,
+        ..config()
     });
     let expected = r#"EVENT_JSON:{"standard":"redstone-adapter","version":"1.0.0","event":"config_updated","data":{"updater":"owner.near","config":{"signer_count_threshold":1,"signers":["0101010101010101010101010101010101010101","fefefefefefefefefefefefefefefefefefefefe"],"max_timestamp_delay_ms":0,"max_timestamp_ahead_ms":20,"min_interval_between_updates_ms":30}}}"#;
     assert_eq!(get_logs(), vec![expected]);
 
     // Successful same-value calls still leave an audit record.
     context("owner.near", 1);
-    adapter.admin_update_config(ConfigPatch {
-        max_timestamp_delay_ms: Some(0),
-        ..ConfigPatch::default()
-    });
+    adapter.admin_set_config(adapter.get_config().clone());
     assert_eq!(get_logs(), vec![expected]);
 
     context("owner.near", 1);
-    adapter.admin_update_config(ConfigPatch {
-        signers: Some(vec![[0xab; 20]]),
-        ..ConfigPatch::default()
+    adapter.admin_set_config(Config {
+        signers: vec![[0xab; 20]],
+        ..adapter.get_config().clone()
     });
     let logs = get_logs();
     let event: Value = serde_json::from_str(logs[0].strip_prefix("EVENT_JSON:").unwrap()).unwrap();
@@ -74,23 +71,23 @@ fn event_records_complete_effective_policy_and_signer_rotation() {
 }
 
 #[rstest::rstest]
-#[case::invalid_policy("owner.near", 1, Some(0))]
-#[case::unauthorized("stranger.near", 1, Some(1))]
-#[case::wrong_deposit("owner.near", 0, Some(1))]
-#[case::empty_patch("owner.near", 1, None)]
-fn rejected_patch_never_advertises_a_configuration_update(
+#[case::zero_threshold("owner.near", 1, 0)]
+#[case::unauthorized("stranger.near", 1, 1)]
+#[case::wrong_deposit("owner.near", 0, 1)]
+#[case::excess_threshold("owner.near", 1, 3)]
+fn rejected_config_never_advertises_a_configuration_update(
     #[case] caller: &str,
     #[case] deposit: u128,
-    #[case] threshold: Option<u8>,
+    #[case] threshold: u8,
 ) {
     context("owner.near", 0);
     let mut adapter = Contract::new(config(), "owner.near".parse().unwrap());
     context(caller, deposit);
     let before = adapter.get_config().clone();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        adapter.admin_update_config(ConfigPatch {
+        adapter.admin_set_config(Config {
             signer_count_threshold: threshold,
-            ..ConfigPatch::default()
+            ..config()
         });
     }));
     assert!(result.is_err());
@@ -113,12 +110,12 @@ fn maximum_signer_policy_emits_losslessly_within_receipt_log_budget() {
         })
         .collect();
     context(&owner, 1);
-    adapter.admin_update_config(ConfigPatch {
-        signer_count_threshold: Some(u8::MAX),
-        signers: Some(signers.clone()),
-        max_timestamp_delay_ms: Some(u64::MAX),
-        max_timestamp_ahead_ms: Some(u64::MAX),
-        min_interval_between_updates_ms: Some(u64::MAX),
+    adapter.admin_set_config(Config {
+        signer_count_threshold: u8::MAX,
+        signers: signers.clone(),
+        max_timestamp_delay_ms: u64::MAX,
+        max_timestamp_ahead_ms: u64::MAX,
+        min_interval_between_updates_ms: u64::MAX,
     });
     let logs = get_logs();
     assert!(logs.iter().map(String::len).sum::<usize>() < 16 * 1024);

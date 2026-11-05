@@ -11,7 +11,7 @@ use near_sdk::{
 use near_sdk_contract_tools::owner::OwnerExternal;
 use primitive_types::U256;
 use templar_common::oracle::redstone::{
-    config, Config, ConfigPatch, FeedData, FeedId, RedStoneContractInterface, Role,
+    config, Config, FeedData, FeedId, RedStoneContractInterface, Role,
 };
 use templar_primitives::time::Nanoseconds;
 
@@ -57,9 +57,9 @@ fn new_adapter() -> Contract {
     Contract::new(config::prod(), "owner.near".parse().unwrap())
 }
 
-fn patch(adapter: &mut Contract, patch: ConfigPatch) {
+fn set_config(adapter: &mut Contract, config: Config) {
     context("owner.near", FIXTURE_TIMESTAMP_MS, 1);
-    adapter.admin_update_config(patch);
+    adapter.admin_set_config(config);
 }
 
 #[allow(
@@ -216,9 +216,9 @@ fn config_update_requires_owner_and_one_yocto(
     context(caller, FIXTURE_TIMESTAMP_MS, deposit);
     assert_rejected(
         || {
-            adapter.admin_update_config(ConfigPatch {
-                max_timestamp_delay_ms: Some(0),
-                ..ConfigPatch::default()
+            adapter.admin_set_config(Config {
+                max_timestamp_delay_ms: 0,
+                ..config.clone()
             });
         },
         expected,
@@ -234,7 +234,7 @@ fn config_update_requires_owner_and_one_yocto(
 }
 
 #[test]
-fn owner_without_roles_can_patch_configuration() {
+fn owner_without_roles_can_replace_configuration() {
     let mut adapter = new_adapter();
     context("owner.near", FIXTURE_TIMESTAMP_MS, 1);
     adapter.set_role("roles.near".parse().unwrap(), Role::ModifyRoles, None, None);
@@ -259,13 +259,11 @@ fn owner_without_roles_can_patch_configuration() {
     );
     let roles = role_members(&adapter);
 
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            max_timestamp_delay_ms: Some(0),
-            ..ConfigPatch::default()
-        },
-    );
+    let config = Config {
+        max_timestamp_delay_ms: 0,
+        ..adapter.get_config().clone()
+    };
+    set_config(&mut adapter, config);
 
     assert_eq!(adapter.get_config().max_timestamp_delay_ms, 0);
     assert_eq!(role_members(&adapter), roles);
@@ -274,54 +272,20 @@ fn owner_without_roles_can_patch_configuration() {
 }
 
 #[test]
-fn partial_patches_merge_live_values_and_preserve_signer_order() {
+fn later_snapshot_overwrites_every_prior_field() {
     let mut adapter = new_adapter();
     let original = adapter.get_config().clone();
-    patch(
-        &mut adapter,
-        near_sdk::serde_json::from_str(
-            r#"{"max_timestamp_delay_ms":0,"signers":null,"signer_count_threshold":null}"#,
-        )
-        .unwrap(),
-    );
-    assert_eq!(
-        adapter.get_config(),
-        &Config {
-            max_timestamp_delay_ms: 0,
-            ..original.clone()
-        }
-    );
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            max_timestamp_ahead_ms: Some(u64::MAX),
-            ..ConfigPatch::default()
-        },
-    );
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            min_interval_between_updates_ms: Some(0),
-            ..ConfigPatch::default()
-        },
-    );
-    let expected = Config {
+    let replacement = Config {
+        signer_count_threshold: 1,
+        signers: vec![[1; 20]],
         max_timestamp_delay_ms: 0,
         max_timestamp_ahead_ms: u64::MAX,
         min_interval_between_updates_ms: 0,
-        ..original
     };
-    assert_eq!(adapter.get_config(), &expected);
-
-    // A supplied value equal to state is still a valid, nonempty patch.
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            max_timestamp_delay_ms: Some(0),
-            ..ConfigPatch::default()
-        },
-    );
-    assert_eq!(adapter.get_config(), &expected);
+    set_config(&mut adapter, replacement.clone());
+    assert_eq!(adapter.get_config(), &replacement);
+    set_config(&mut adapter, original.clone());
+    assert_eq!(adapter.get_config(), &original);
 }
 
 fn signer_addresses(count: u16) -> Vec<[u8; 20]> {
@@ -346,31 +310,25 @@ fn all_five_fields_can_be_replaced_atomically(#[case] signer_count: u8) {
         max_timestamp_ahead_ms: 0,
         min_interval_between_updates_ms: u64::MAX,
     };
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            signer_count_threshold: Some(expected.signer_count_threshold),
-            signers: Some(expected.signers.clone()),
-            max_timestamp_delay_ms: Some(expected.max_timestamp_delay_ms),
-            max_timestamp_ahead_ms: Some(expected.max_timestamp_ahead_ms),
-            min_interval_between_updates_ms: Some(expected.min_interval_between_updates_ms),
-        },
-    );
+    set_config(&mut adapter, expected.clone());
     assert_eq!(adapter.get_config(), &expected);
     assert_eq!(adapter.unique_signer_threshold().0, u64::from(signer_count));
 }
 
 #[rstest::rstest]
-#[case::zero_quorum(Some(0), None, "signer_count_threshold must be greater than zero")]
-#[case::empty_signers(None, Some(vec![]), "Wrong configuration signer count")]
-#[case::excess_quorum(Some(6), None, "Wrong configuration signer count")]
-#[case::too_few_signers(None, Some(vec![[1; 20]]), "Wrong configuration signer count")]
-#[case::duplicate_signers(None, Some(vec![[1; 20]; 5]), "is reoccurring")]
-#[case::zero_address(Some(1), Some(vec![[0; 20]]), "invalid signer")]
-#[case::too_many_signers(Some(1), Some(signer_addresses(256)), "allowed maximum")]
-fn invalid_patch_leaves_all_state_unchanged(
-    #[case] threshold: Option<u8>,
-    #[case] signers: Option<Vec<[u8; 20]>>,
+#[case::zero_quorum(
+    0,
+    signer_addresses(5),
+    "signer_count_threshold must be greater than zero"
+)]
+#[case::empty_signers(1, vec![], "Wrong configuration signer count")]
+#[case::excess_quorum(6, signer_addresses(5), "Wrong configuration signer count")]
+#[case::duplicate_signers(1, vec![[1; 20]; 5], "is reoccurring")]
+#[case::zero_address(1, vec![[0; 20]], "invalid signer")]
+#[case::too_many_signers(1, signer_addresses(256), "allowed maximum")]
+fn invalid_config_leaves_all_state_unchanged(
+    #[case] threshold: u8,
+    #[case] signers: Vec<[u8; 20]>,
     #[case] expected: &str,
 ) {
     let mut adapter = new_adapter();
@@ -387,11 +345,11 @@ fn invalid_patch_leaves_all_state_unchanged(
 
     assert_rejected(
         || {
-            adapter.admin_update_config(ConfigPatch {
+            adapter.admin_set_config(Config {
                 signer_count_threshold: threshold,
                 signers,
-                max_timestamp_delay_ms: Some(0),
-                ..ConfigPatch::default()
+                max_timestamp_delay_ms: 0,
+                ..config.clone()
             });
         },
         expected,
@@ -408,58 +366,6 @@ fn invalid_patch_leaves_all_state_unchanged(
         adapter.own_get_proposed_owner(),
         Some("next.near".parse().unwrap())
     );
-}
-
-#[rstest::rstest]
-#[case::empty("{}")]
-#[case::all_null(r#"{"signer_count_threshold":null,"signers":null,"max_timestamp_delay_ms":null,"max_timestamp_ahead_ms":null,"min_interval_between_updates_ms":null}"#)]
-fn empty_or_all_null_patch_is_rejected(#[case] json: &str) {
-    let mut adapter = new_adapter();
-    let config = adapter.get_config().clone();
-    let patch = near_sdk::serde_json::from_str(json).unwrap();
-    context("owner.near", FIXTURE_TIMESTAMP_MS, 1);
-    assert_rejected(
-        || adapter.admin_update_config(patch),
-        "configuration patch must supply at least one field",
-    );
-    assert_eq!(adapter.get_config(), &config);
-}
-
-#[test]
-fn signer_policy_is_validated_against_execution_time_state() {
-    let mut adapter = new_adapter();
-    let queued_patch = ConfigPatch {
-        signers: Some(adapter.get_config().signers[..3].to_vec()),
-        ..ConfigPatch::default()
-    };
-    let mut preview = adapter.get_config().clone();
-    preview.apply_patch(queued_patch.clone()).unwrap();
-
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            signer_count_threshold: Some(5),
-            ..ConfigPatch::default()
-        },
-    );
-    let config = adapter.get_config().clone();
-    context("owner.near", FIXTURE_TIMESTAMP_MS, 1);
-    assert_rejected(
-        || adapter.admin_update_config(queued_patch),
-        "Wrong configuration signer count",
-    );
-    assert_eq!(adapter.get_config(), &config);
-
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            signers: Some(vec![[1; 20]]),
-            signer_count_threshold: Some(1),
-            ..ConfigPatch::default()
-        },
-    );
-    assert_eq!(adapter.get_config().signers, vec![[1; 20]]);
-    assert_eq!(adapter.unique_signer_threshold().0, 1);
 }
 
 #[rstest::rstest]
@@ -485,10 +391,19 @@ fn tightening_timestamp_bounds_changes_payload_acceptance(
         .contains_key(&"ETH".into()));
 
     context("owner.near", now, 1);
-    adapter.admin_update_config(ConfigPatch {
-        max_timestamp_delay_ms: (!future).then_some(9_999),
-        max_timestamp_ahead_ms: future.then_some(9_999),
-        ..ConfigPatch::default()
+    let config = adapter.get_config().clone();
+    adapter.admin_set_config(Config {
+        max_timestamp_delay_ms: if future {
+            config.max_timestamp_delay_ms
+        } else {
+            9_999
+        },
+        max_timestamp_ahead_ms: if future {
+            9_999
+        } else {
+            config.max_timestamp_ahead_ms
+        },
+        ..config
     });
     context("reader.near", now, 0);
     assert_rejected(
@@ -505,16 +420,14 @@ fn tightening_timestamp_bounds_changes_payload_acceptance(
 #[rstest::rstest]
 #[case::untrusted(false)]
 #[case::trusted(true)]
-fn interval_patch_preserves_trusted_path_and_package_replay_guard(#[case] trusted: bool) {
+fn interval_replacement_preserves_trusted_path_and_package_replay_guard(#[case] trusted: bool) {
     let mut adapter = new_adapter();
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            max_timestamp_delay_ms: Some(u64::MAX),
-            min_interval_between_updates_ms: Some(0),
-            ..ConfigPatch::default()
-        },
-    );
+    let config = Config {
+        max_timestamp_delay_ms: u64::MAX,
+        min_interval_between_updates_ms: 0,
+        ..adapter.get_config().clone()
+    };
+    set_config(&mut adapter, config);
     let initial_write = LATER_FIXTURE_TIMESTAMP_MS - 1_000;
     context("writer.near", initial_write, 0);
     adapter.write_prices(
@@ -525,9 +438,9 @@ fn interval_patch_preserves_trusted_path_and_package_replay_guard(#[case] truste
     assert_eq!(initial.len(), 2);
 
     context("owner.near", LATER_FIXTURE_TIMESTAMP_MS, 1);
-    adapter.admin_update_config(ConfigPatch {
-        min_interval_between_updates_ms: Some(60_000),
-        ..ConfigPatch::default()
+    adapter.admin_set_config(Config {
+        min_interval_between_updates_ms: 60_000,
+        ..adapter.get_config().clone()
     });
     let writer = if trusted { "owner.near" } else { "writer.near" };
     context(writer, LATER_FIXTURE_TIMESTAMP_MS, 0);
@@ -548,9 +461,9 @@ fn interval_patch_preserves_trusted_path_and_package_replay_guard(#[case] truste
     }
 
     context("owner.near", LATER_FIXTURE_TIMESTAMP_MS + 1, 1);
-    adapter.admin_update_config(ConfigPatch {
-        min_interval_between_updates_ms: Some(0),
-        ..ConfigPatch::default()
+    adapter.admin_set_config(Config {
+        min_interval_between_updates_ms: 0,
+        ..adapter.get_config().clone()
     });
     context(writer, LATER_FIXTURE_TIMESTAMP_MS + 1, 0);
     adapter.write_prices(
@@ -569,9 +482,9 @@ fn interval_patch_preserves_trusted_path_and_package_replay_guard(#[case] truste
     );
 
     context("owner.near", LATER_FIXTURE_TIMESTAMP_MS + 2, 1);
-    adapter.admin_update_config(ConfigPatch {
-        max_timestamp_ahead_ms: Some(0),
-        ..ConfigPatch::default()
+    adapter.admin_set_config(Config {
+        max_timestamp_ahead_ms: 0,
+        ..adapter.get_config().clone()
     });
     context(writer, LATER_FIXTURE_TIMESTAMP_MS + 2, 0);
     adapter.write_prices(
@@ -604,14 +517,12 @@ fn signer_rotation_changes_new_verification_without_revoking_cached_prices() {
     );
     let roles = role_members(&adapter);
 
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            signers: Some(vec![[1; 20]]),
-            signer_count_threshold: Some(1),
-            ..ConfigPatch::default()
-        },
-    );
+    let config = Config {
+        signers: vec![[1; 20]],
+        signer_count_threshold: 1,
+        ..adapter.get_config().clone()
+    };
+    set_config(&mut adapter, config);
     context("owner.near", FIXTURE_TIMESTAMP_MS + 1, 0);
     let verified = adapter.get_prices(
         vec!["ETH".into(), "BTC".into()],
@@ -631,45 +542,4 @@ fn signer_rotation_changes_new_verification_without_revoking_cached_prices() {
         cached[&FeedId::from("ETH")].price
     );
     assert_eq!(role_members(&adapter), roles);
-}
-
-#[test]
-fn signer_set_and_quorum_can_each_change_independently() {
-    let mut adapter = new_adapter();
-    let original = adapter.get_config().clone();
-    let signers = original.signers[..3]
-        .iter()
-        .copied()
-        .rev()
-        .collect::<Vec<_>>();
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            signers: Some(signers.clone()),
-            ..ConfigPatch::default()
-        },
-    );
-    assert_eq!(
-        adapter.get_config(),
-        &Config {
-            signers: signers.clone(),
-            ..original.clone()
-        }
-    );
-    patch(
-        &mut adapter,
-        ConfigPatch {
-            signer_count_threshold: Some(1),
-            ..ConfigPatch::default()
-        },
-    );
-    assert_eq!(
-        adapter.get_config(),
-        &Config {
-            signers,
-            signer_count_threshold: 1,
-            ..original
-        }
-    );
-    assert_eq!(adapter.unique_signer_threshold().0, 1);
 }

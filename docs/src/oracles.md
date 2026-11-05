@@ -57,7 +57,7 @@ registry or predecessor does not receive authority implicitly.
 | `own_propose_owner` | `{"account_id":"governance.near"}` or `{"account_id":null}` | Owner / exactly 1 yoctoNEAR; propose or cancel |
 | `own_accept_owner` | `{}` | Proposed owner / exactly 1 yoctoNEAR |
 | `own_renounce_owner` | `{}` | Owner / exactly 1 yoctoNEAR; permanently clears owner and proposal |
-| `admin_update_config` | `{"patch":{"max_timestamp_delay_ms":120000}}` | Owner / exactly 1 yoctoNEAR |
+| `admin_set_config` | `{"config":{...}}`; all five fields required (see below) | Owner / exactly 1 yoctoNEAR |
 | `admin_upgrade` | See upgrade encodings below | Owner / exactly 1 yoctoNEAR |
 | `set_role` | `{"account_id":"operator.near","role":"TrustedUpdater","set":true}` | `ModifyRoles` / exactly 1 yoctoNEAR |
 
@@ -72,15 +72,30 @@ For direct DAO control, the DAO contract account must be Owner and a
 `ModifyRoles` member. The executing contract must be the adapter call's actual
 predecessor, not merely the external signer of a DAO proposal-execution transaction.
 
-### Atomic Partial Configuration
+### Atomic Full Configuration
 
-The required `patch` is a JSON object. Omitted fields and explicit nulls preserve
-their execution-time values. Unknown fields, wrong types, and missing/null outer
-`patch` fail deserialization. Empty and all-null patches fail with
-`configuration patch must supply at least one field`; nonempty same-value patches
-succeed. A supplied zero is a value, not omission.
+`admin_set_config(config: Config)` replaces the entire configuration atomically.
+The required `config` object must supply all five fields with their existing JSON
+types. Missing fields, null configuration, null field values, and wrong field types
+fail deserialization. Supplying the same complete configuration succeeds.
 
-| Patch field | Domain and effect on subsequent payloads |
+For example, this complete configuration uses one nonzero signer and quorum 1:
+
+```json
+{
+  "config": {
+    "signer_count_threshold": 1,
+    "signers": [[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]],
+    "max_timestamp_delay_ms": 120000,
+    "max_timestamp_ahead_ms": 60000,
+    "min_interval_between_updates_ms": 0
+  }
+}
+```
+
+The signer above is illustrative, not a recommended production signer.
+
+| Required config field | Domain and effect on subsequent payloads |
 |---|---|
 | `signer_count_threshold` | Positive `u8`, no greater than signer count |
 | `signers` | 1–255 distinct, nonzero 20-byte addresses; JSON arrays of byte integers in existing order |
@@ -88,13 +103,14 @@ succeed. A supplied zero is a value, not omission.
 | `max_timestamp_ahead_ms` | Payload lead bound; full `u64` range, including 0 and maximum |
 | `min_interval_between_updates_ms` | Untrusted-write spacing; full `u64` range; trusted writes retain their existing verification path |
 
-The effective signer set and quorum are validated together before any field is
-written. A single patch can replace either independently or both atomically.
+The supplied signer set and quorum are validated together before replacing state.
 Invalid input leaves configuration, ownership, roles, and feeds unchanged.
-Unmentioned fields merge against state when execution occurs, not when a proposal
-is queued. Conflicting successful patches take effect in execution order; a
-previously valid proposal can fail if intervening changes invalidate its quorum.
-There is no revision counter or compare-and-swap.
+A later successful call overwrites every prior configuration field. In particular,
+queued proposals carry full snapshots: if snapshots A and B start from the same
+configuration, B changes the lead bound, and A changes only the lag bound relative
+to that starting snapshot, executing B then A restores the old lead bound from A.
+Review the complete snapshot and proposal execution order to avoid unintentionally
+restoring stale settings. There is no revision counter or compare-and-swap.
 
 Changes are prospective: removed signers no longer authenticate new payloads,
 but already stored prices and both replay timestamps remain intact. Stored prices
@@ -104,20 +120,20 @@ This is not an emergency cached-price revocation mechanism.
 
 ### Configuration Events
 
-After a validated `admin_update_config` patch is applied, the adapter emits
+After a validated `admin_set_config` call replaces configuration, the adapter emits
 `config_updated`, version `1.0.0`, under the `redstone-adapter` standard.
 Its `data` object contains:
 
 - `updater`: the actual predecessor account (the governance contract for a
   mediated call, not the external proposal executor).
-- `config`: the complete effective configuration after merging, with all five
+- `config`: the complete applied configuration, with all five
   fields. Signers are ordered **40-character lowercase hex strings without `0x`**
-  in this event only; `get_config`, patch inputs, and stored configuration retain
+  in this event only; `get_config`, configuration inputs, and stored configuration retain
   the existing arrays of byte integers.
 
 The compact signer encoding keeps the complete 255-signer policy within NEAR's
-16 KiB receipt-log budget. A nonempty same-value patch emits an audit record;
-empty, invalid, unauthorized, and wrong-deposit patches emit no configuration
+16 KiB receipt-log budget. A same-config call emits an audit record;
+malformed, invalid, unauthorized, and wrong-deposit calls emit no configuration
 event. Treat an event as committed only if its emitting receipt succeeds: logs
 alone are not proof that a receipt's state changes committed.
 
@@ -160,7 +176,7 @@ The existing legacy deployment authority must atomically deploy the new code and
 call `migrate({"owner_id":"<DAO or governance account>"})` for the first upgrade.
 Normal subsequent upgrades call `migrate({})`. Historical configuration is not
 revalidated during migration, so it remains readable and can be corrected by a
-valid patch. Renunciation never permits re-bootstrap; on a keyless account it
+valid full configuration. Renunciation never permits re-bootstrap; on a keyless account it
 irreversibly disables configuration and upgrades. Never use it for handover.
 
 ### Intermediary Governance and Handover
@@ -182,14 +198,15 @@ For an already owner-enabled adapter:
 
 Build `Operation::TargetFunctionCall(FunctionCall { method_name, args,
 attached_deposit: U128(1), gas })`, where `args` contains serialized JSON bytes.
-Acceptance uses `{}`, configuration uses `{"patch":{...}}`, upgrades use the
-encodings above, and roles use the existing `set_role` arguments. Both outer
+Acceptance uses `{}`, configuration uses `admin_set_config` with the complete
+`{"config":{...}}` encoding above, upgrades use their encodings above, and roles
+use the existing `set_role` arguments. Both outer
 `create_proposal` and `execute_proposal` also require 1 yoctoNEAR.
 Do not reuse the proxy oracle's `target::admin_upgrade` builder: it attaches zero
 deposit, which RedStone rejects.
 
 Operators select production policies. Unlisted adapter methods inherit
-`default_target`; all patch fields share the policy for `admin_update_config`,
+`default_target`; all configuration fields share the policy for `admin_set_config`,
 without field-specific roles or timelocks. A detached target receipt can fail
 after successful governance dispatch has consumed the proposal; this does not
 roll back governance execution.
