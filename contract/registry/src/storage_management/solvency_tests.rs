@@ -466,3 +466,34 @@ fn failed_finalization_cleans_up_even_when_protocol_backing_is_short() {
             .add_version("still-short".into(), VersionSource::Stored(vec![7].into()));
     });
 }
+
+#[test]
+fn failed_global_finalization_frees_key_when_protocol_backing_is_short() {
+    let (mut contract, _owner_capacity) = setup();
+    register(&mut contract, NearToken::from_near(1));
+    receipt(
+        OWNER,
+        NearToken::from_yoctonear(1),
+        NearToken::from_near(100),
+    );
+    let _ = contract.add_version(
+        "retry-global".into(),
+        VersionSource::ExistingGlobal([7; 32].into()),
+    );
+    assert!(contract.get_version("retry-global".into()).is_some());
+
+    // The callback omits the payer's available credit from its balance. Cleanup
+    // only removes the provisional GlobalHash; it must still release the key.
+    let short_balance = physical_storage_cost();
+    testing_env!(
+        context(REGISTRY, NearToken::ZERO, short_balance).build(),
+        near_sdk::test_vm_config(),
+        near_sdk::RuntimeFeesConfig::test(),
+        std::collections::HashMap::default(),
+        vec![PromiseResult::Failed],
+    );
+    let finalized = contract.add_version_01_finalize("retry-global".into());
+    assert!(matches!(finalized, PromiseOrValue::Promise(_)));
+    assert_eq!(contract.get_version("retry-global".into()), None);
+    assert!(contract.list_versions(None, None).is_empty());
+}

@@ -583,7 +583,8 @@ impl Contract {
         } else {
             self.versions.remove(&version_key);
             self.versions.flush();
-            self.assert_storage_solvency(NearToken::from_yoctonear(0));
+            // This only releases the provisional key. An existing backing
+            // shortfall must not roll back failed-global cleanup.
             PromiseOrValue::Promise(
                 self_ext!(Gas::from_tgas(1)).fail("Failed to deploy global contract".to_string()),
             )
