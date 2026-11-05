@@ -23,6 +23,6 @@
 - [Testing](./testing.md)
 - [Architecture Decisions](./adr/index.md)
   - [1. Record architecture decisions as ADRs](./adr/0001-record-architecture-decisions-as-adrs.md)
-  - [2. Expose owner-controlled RedStone adapter administration](./adr/0002-expose-owner-controlled-redstone-adapter-administration.md)
+  - [2. Expose RBAC-controlled RedStone adapter administration](./adr/0002-expose-rbac-controlled-redstone-adapter-administration.md)
 - [Glossary](./glossary.md)
 - [Notes](./notes.md)
