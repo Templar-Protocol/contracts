@@ -429,3 +429,40 @@ fn finalization_releases_its_budget_after_an_intervening_protocol_write(
     );
     assert_free_balance(&fixture.contract, free);
 }
+
+#[test]
+fn failed_finalization_cleans_up_even_when_protocol_backing_is_short() {
+    let mut fixture = in_flight(false);
+    let payer_balance = fixture.contract.storage_balance_of(account(PAYER)).unwrap();
+    let available_credit = fixture.contract.available_storage_balance;
+    let short_balance = fixture
+        .balance
+        .checked_sub(payer_balance.available)
+        .unwrap();
+    testing_env!(
+        context(REGISTRY, NearToken::ZERO, short_balance).build(),
+        near_sdk::test_vm_config(),
+        near_sdk::RuntimeFeesConfig::test(),
+        std::collections::HashMap::default(),
+        vec![PromiseResult::Failed],
+    );
+
+    let _ =
+        fixture
+            .contract
+            .deploy_01_finalize(Some(fixture.child.clone()), None, fixture.deployment);
+    assert_eq!(fixture.contract.get_registry_entry(fixture.child), None);
+    assert_eq!(fixture.contract.pending_deployment_storage, NearToken::ZERO);
+    assert_eq!(
+        fixture.contract.storage_balance_of(account(PAYER)),
+        Some(payer_balance)
+    );
+    assert_eq!(fixture.contract.available_storage_balance, available_credit);
+    // Cleanup repairs the reservation; it does not authorize new spending.
+    receipt(OWNER, NearToken::from_yoctonear(1), short_balance);
+    assert_panics(SOLVENCY_ERROR, || {
+        let _ = fixture
+            .contract
+            .add_version("still-short".into(), VersionSource::Stored(vec![7].into()));
+    });
+}

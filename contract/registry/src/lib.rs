@@ -773,7 +773,8 @@ impl Contract {
         } else {
             self.registry.remove(&account_id);
             self.registry.flush();
-            self.assert_storage_solvency(NearToken::from_yoctonear(0));
+            // This only releases storage and the held reserve. An existing
+            // backing shortfall must not roll back failed-deployment cleanup.
 
             PromiseOrValue::Promise(
                 Self::ext(env::current_account_id()).fail("Deployment failed".to_string()),

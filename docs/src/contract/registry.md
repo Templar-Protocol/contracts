@@ -43,6 +43,9 @@ already registered account refunds the entire attached deposit.
 `upload_code` attaches **zero NEAR** and charges the predecessor's available
 balance. Uploaded approval moves the bytes into a version: the original payer
 remains charged for retained code until `remove_version` actually removes it.
+If the version key and version-storage entry exceed the freed upload metadata,
+approval charges the net growth to the original payer; top up that payer's
+available balance first or approval fails without changing approval state.
 Freed upload metadata and any matching pending storage removed by successful
 Global or legacy registration are credited to the original payer. A current
 Uploader can call `remove_upload` for its own pending upload; Owner can remove

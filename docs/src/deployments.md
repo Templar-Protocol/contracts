@@ -527,6 +527,11 @@ lint, and DAO/keyless runtime checks to have passed for that release.
    and approved under another version key. Empty/non-WASM uploads are permitted,
    not evidence of deployability.
 
+   For Uploaded approval, compare the planned key/version-entry growth with the
+   freed upload metadata and top up the original payer for any net increase.
+   The DAO's one-yocto deposit is not uploader storage funding; insufficient
+   available balance rejects approval.
+
    Through the DAO proposal envelope above, execute `approve_version` with
    UTF-8 JSON `{"version_key":"<reviewed key>","code":{"Uploaded":"<upload hash>"}}`,
    base64-encoded into the action's `args`, deposit `"1"` and gas
