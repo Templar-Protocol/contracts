@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `admin_update_config`, and owner-controlled inline or immutable-global upgrades.
 - One-time self-only ownership bootstrap preserving historical adapter state and
   independent RBAC; released-WASM and keyless governance regression coverage.
+- Versioned `config_updated` audit events containing the actual caller and full
+  effective policy after validated patches; event-only hex signer encoding keeps
+  the maximum 255-signer policy within the receipt log limit while preserving the
+  existing configuration and `write_prices` wire formats.
 
 ## [0.2.1](https://github.com/Templar-Protocol/contracts/compare/templar-redstone-adapter-contract-v0.2.0...templar-redstone-adapter-contract-v0.2.1) - 2026-08-03
 

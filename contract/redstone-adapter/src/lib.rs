@@ -60,6 +60,11 @@ impl Contract {
         assert_one_yocto();
         Self::require_owner();
         self.adapter.config.apply_patch(patch).unwrap_or_reject();
+        RedStoneEvent::ConfigUpdated {
+            updater: env::predecessor_account_id(),
+            config: &self.adapter.config,
+        }
+        .emit();
     }
 
     /// Schedule an atomic self-deploy and migration; completion is receipt-level.

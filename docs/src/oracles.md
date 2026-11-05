@@ -100,8 +100,33 @@ Changes are prospective: removed signers no longer authenticate new payloads,
 but already stored prices and both replay timestamps remain intact. Stored prices
 remain readable until the fixed 30-hour write-time staleness limit; these timing
 fields do not configure that limit or invalidate downstream proxy caches.
-This is not an emergency cached-price revocation mechanism. The RedStone event
-schema is unchanged; ownership uses the standard Owner component events.
+This is not an emergency cached-price revocation mechanism.
+
+### Configuration Events
+
+After a validated `admin_update_config` patch is applied, the adapter emits
+`config_updated`, version `1.0.0`, under the `redstone-adapter` standard.
+Its `data` object contains:
+
+- `updater`: the actual predecessor account (the governance contract for a
+  mediated call, not the external proposal executor).
+- `config`: the complete effective configuration after merging, with all five
+  fields. Signers are ordered **40-character lowercase hex strings without `0x`**
+  in this event only; `get_config`, patch inputs, and stored configuration retain
+  the existing arrays of byte integers.
+
+The compact signer encoding keeps the complete 255-signer policy within NEAR's
+16 KiB receipt-log budget. A nonempty same-value patch emits an audit record;
+empty, invalid, unauthorized, and wrong-deposit patches emit no configuration
+event. Treat an event as committed only if its emitting receipt succeeds: logs
+alone are not proof that a receipt's state changes committed.
+
+The existing `write_prices` version `1.0.0` payload is unchanged. Ownership uses
+the standard Owner component's separate `x-own` events. Consumers should dispatch
+by standard, event name, and version, and tolerate unrelated event names. No
+RedStone event decoder was found in this repository or the checked
+`templar-monitoring` source; external indexer compatibility remains a release-time
+check. Emitting these records does not itself install monitoring alert rules.
 
 ### Upgrades and Legacy Bootstrap
 

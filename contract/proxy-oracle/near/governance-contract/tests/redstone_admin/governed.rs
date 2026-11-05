@@ -1,5 +1,7 @@
 use anyhow::Result;
-use near_api::types::transaction::result::{ExecutionSuccess, TransactionResult};
+use near_api::types::transaction::result::{
+    ExecutionSuccess, TransactionResult, TransactionResultError,
+};
 use near_api::types::AccountId;
 use near_api::Contract;
 use near_sdk::json_types::{Base64VecU8, U128};
@@ -17,6 +19,58 @@ use super::common::{
 use super::{ownership, payload, snapshot};
 
 const ORDINARY_GAS: Gas = Gas::from_tgas(50);
+
+#[allow(
+    clippy::expect_used,
+    reason = "malformed emitted JSON must fail the sandbox proof"
+)]
+fn config_events(logs: &[&str]) -> Vec<Value> {
+    logs.iter()
+        .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
+        .map(|event| serde_json::from_str::<Value>(event).expect("complete event JSON"))
+        .filter(|event| {
+            event["standard"] == "redstone-adapter" && event["event"] == "config_updated"
+        })
+        .collect()
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "event policy must losslessly match the viewed configuration"
+)]
+fn assert_config_event(outcome: &ExecutionSuccess, updater: &AccountId, config: &Value) {
+    let mut encoded = config.clone();
+    encoded["signers"] = Value::Array(
+        config["signers"]
+            .as_array()
+            .expect("config signer array")
+            .iter()
+            .map(|address| {
+                let bytes: Vec<u8> = address
+                    .as_array()
+                    .expect("signer byte array")
+                    .iter()
+                    .map(|byte| {
+                        u8::try_from(byte.as_u64().expect("signer byte"))
+                            .expect("signer byte fits u8")
+                    })
+                    .collect();
+                let hex = hex::encode(bytes);
+                assert_eq!(hex.len(), 40);
+                Value::String(hex)
+            })
+            .collect(),
+    );
+    assert_eq!(
+        config_events(&outcome.logs()),
+        vec![json!({
+            "standard": "redstone-adapter",
+            "version": "1.0.0",
+            "event": "config_updated",
+            "data": {"updater": updater, "config": encoded},
+        })],
+    );
+}
 
 fn target(method: &str, args: impl serde::Serialize, gas: Gas) -> Result<Operation> {
     Ok(Operation::TargetFunctionCall(FunctionCall {
@@ -167,6 +221,11 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
             .into_result()
             .expect_err("malformed patch must fail in real WASM");
         println!("RedStone rejected malformed admin_update_config {args}: {error:?}");
+        let TransactionResultError::Failure(failure) = &error else {
+            panic!("expected a completed failed transaction: {error:?}");
+        };
+        let logs = failure.logs();
+        assert!(config_events(&logs).is_empty(), "{logs:?}");
         assert_eq!(snapshot(&harness, &adapter).await?, before_invalid);
         assert_eq!(ownership(&harness, &adapter).await?, before_invalid_owner);
     }
@@ -267,9 +326,20 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
     .into_result()
     .expect_err("the DAO signer is not the governance predecessor");
     assert!(format!("{direct:?}").contains("Owner only"), "{direct:?}");
+    let TransactionResultError::Failure(failure) = &direct else {
+        panic!("expected a completed failed transaction: {direct:?}");
+    };
+    let logs = failure.logs();
+    assert!(config_events(&logs).is_empty(), "{logs:?}");
     assert_eq!(snapshot(&harness, &adapter).await?, handed_over);
-    successful(execute(&harness, &governance, &admin, 3, Gas::from_tgas(300)).await?);
-    successful(execute(&harness, &governance, &admin, 2, Gas::from_tgas(300)).await?);
+    let executed_b =
+        successful(execute(&harness, &governance, &admin, 3, Gas::from_tgas(300)).await?);
+    let mut after_b = handed_over["config"].clone();
+    after_b["max_timestamp_ahead_ms"] = json!(60_000);
+    assert_config_event(&executed_b, &governance, &after_b);
+    assert_eq!(snapshot(&harness, &adapter).await?["config"], after_b);
+    let executed_a =
+        successful(execute(&harness, &governance, &admin, 2, Gas::from_tgas(300)).await?);
     let merged = snapshot(&harness, &adapter).await?;
     let mut expected = handed_over.clone();
     expected["config"]["max_timestamp_delay_ms"] = json!(120_000);
@@ -278,6 +348,7 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
         merged, expected,
         "queued patches merge with execution-time state"
     );
+    assert_config_event(&executed_a, &governance, &merged["config"]);
     println!("RedStone reverse-order queued patches: {merged}");
 
     revoke_all_access_keys(&harness, &adapter).await?;
@@ -415,5 +486,52 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
     assert!(harness.view_access_keys(&adapter).await?.is_empty());
     assert!(harness.view_access_keys(&governance).await?.is_empty());
     println!("keyless RedStone inline upgrade: {global_identity} -> {inline_identity}; gas {}; preserved state {preserved}; ownership {preserved_owner}; both key lists empty", inline_outcome.total_gas_burnt);
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+async fn maximum_signer_policy_emits_complete_bounded_event(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let adapter = harness
+        .deploy_redstone_adapter("max-policy-redstone")
+        .await?;
+    let before = snapshot(&harness, &adapter).await?;
+    let signers: Vec<_> = (0u8..255)
+        .map(|index| {
+            let mut address = [255u8; 20];
+            address[19] = index;
+            address
+        })
+        .collect();
+    let config = json!({
+        "signer_count_threshold": 255,
+        "signers": signers,
+        "max_timestamp_delay_ms": u64::MAX,
+        "max_timestamp_ahead_ms": u64::MAX,
+        "min_interval_between_updates_ms": u64::MAX,
+    });
+    // This maximum-policy smoke uses 300 Tgas, not a claim that ordinary 50 Tgas suffices.
+    let outcome = successful(
+        send(
+            &harness,
+            &adapter,
+            &adapter,
+            "admin_update_config",
+            json!({"patch": config}),
+            ONE_YOCTO,
+            Gas::from_tgas(300),
+        )
+        .await?,
+    );
+    assert_config_event(&outcome, &adapter, &config);
+    let logs = outcome.logs();
+    let logged: usize = logs.iter().map(|log| log.len()).sum();
+    assert!(logged <= 16 * 1024, "maximum policy logged {logged} bytes");
+    let mut expected = before;
+    expected["config"] = config;
+    assert_eq!(snapshot(&harness, &adapter).await?, expected);
+    println!("RedStone config_updated emitted {logged} bytes for all 255 signers and maximum timing values");
     Ok(())
 }
