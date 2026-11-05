@@ -123,10 +123,9 @@ alone are not proof that a receipt's state changes committed.
 
 The existing `write_prices` version `1.0.0` payload is unchanged. Ownership uses
 the standard Owner component's separate `x-own` events. Consumers should dispatch
-by standard, event name, and version, and tolerate unrelated event names. No
-RedStone event decoder was found in this repository or the checked
-`templar-monitoring` source; external indexer compatibility remains a release-time
-check. Emitting these records does not itself install monitoring alert rules.
+by standard, event name, and version, and tolerate unrelated event names.
+Before release, verify compatibility with deployed and external event consumers.
+Emitting these records does not itself install monitoring alert rules.
 
 ### Upgrades and Legacy Bootstrap
 

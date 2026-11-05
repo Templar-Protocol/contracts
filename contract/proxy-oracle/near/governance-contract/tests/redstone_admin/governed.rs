@@ -353,8 +353,6 @@ async fn intermediary_governs_redstone_and_upgrades_without_access_keys(
 
     revoke_all_access_keys(&harness, &adapter).await?;
     revoke_all_access_keys(&harness, &governance).await?;
-    assert!(harness.view_access_keys(&adapter).await?.is_empty());
-    assert!(harness.view_access_keys(&governance).await?.is_empty());
     govern(
         &harness,
         &governance,

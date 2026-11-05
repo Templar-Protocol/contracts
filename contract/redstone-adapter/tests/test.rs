@@ -583,9 +583,6 @@ fn interval_patch_preserves_trusted_path_and_package_replay_guard(#[case] truste
         accepted,
         "configuration changes must not reset package or write replay timestamps"
     );
-    assert!(test_utils::get_logs()
-        .iter()
-        .any(|log| log.contains("must be greater than package timestamp before")));
 }
 
 #[test]

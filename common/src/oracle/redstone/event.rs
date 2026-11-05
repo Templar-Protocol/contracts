@@ -29,14 +29,22 @@ pub enum RedStoneEvent<'a> {
 }
 
 fn serialize_config<S: Serializer>(config: &Config, serializer: S) -> Result<S::Ok, S::Error> {
+    // Keep exhaustive so new config fields require an event-schema decision.
+    let Config {
+        signer_count_threshold,
+        signers,
+        max_timestamp_delay_ms,
+        max_timestamp_ahead_ms,
+        min_interval_between_updates_ms,
+    } = config;
     let mut data = serializer.serialize_struct("Config", 5)?;
-    data.serialize_field("signer_count_threshold", &config.signer_count_threshold)?;
-    data.serialize_field("signers", &HexSigners(&config.signers))?;
-    data.serialize_field("max_timestamp_delay_ms", &config.max_timestamp_delay_ms)?;
-    data.serialize_field("max_timestamp_ahead_ms", &config.max_timestamp_ahead_ms)?;
+    data.serialize_field("signer_count_threshold", signer_count_threshold)?;
+    data.serialize_field("signers", &HexSigners(signers))?;
+    data.serialize_field("max_timestamp_delay_ms", max_timestamp_delay_ms)?;
+    data.serialize_field("max_timestamp_ahead_ms", max_timestamp_ahead_ms)?;
     data.serialize_field(
         "min_interval_between_updates_ms",
-        &config.min_interval_between_updates_ms,
+        min_interval_between_updates_ms,
     )?;
     data.end()
 }
