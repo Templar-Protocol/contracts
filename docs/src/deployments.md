@@ -15,9 +15,10 @@ tmplrmgr market apply --plan plan.json \
     --network mainnet --signer-id "$REGISTRY_OWNER" --sign-with keychain
 ```
 
-The signer is not a personal account: `registry.deploy` asserts the registry's
-owner, and a proxy spec additionally requires it to equal `governance.admin`,
-which the mainnet profiles set to the registry itself.
+On role-enabled registries, `registry.deploy` requires the Deployer role or current
+Owner; older registries require Owner. A proxy spec additionally requires the
+signer to equal `governance.admin`, which the mainnet profiles set to the registry
+itself. A role grant does not override that separate governance requirement.
 
 `plan` reads prices and chain configuration and writes a file; it sends nothing
 and takes no signing credential. Provider reads may need API credentials.
@@ -319,9 +320,12 @@ registers an already-published global contract and does not take `--deploy-mode`
 
 ## Upgrading a registry
 
-Every live registry runs 2.0.0 or later and replaces its code through its owner-only `upgrade`,
-which deploys the new code and runs `migrate` in the same receipt, so a failed migration reverts
-the deploy. Once it lands it cannot be undone.
+The observed mainnet `v1.tmplr.near` baseline is registry release **3.1.0** with
+stored state **V1**, not release 2.0.0. Re-read each target's deployed metadata and
+state before acting; software release numbers and state versions are distinct.
+The Owner-only `upgrade` deploys code and runs `migrate` atomically in the same
+receipt, so a failed migration reverts the deploy. A successful upgrade has no
+automatic rollback.
 
 ```sh
 tmplrmgr registry upgrade --registry-id <registry> \
@@ -358,3 +362,230 @@ sign and prints the planned transaction instead of signing it; the checks hold o
 they read, so sign it straight away or re-run. Like `patch export`, the snapshot needs an RPC that
 pages `view_state` past the stock 50 kB limit, such as FastNEAR's
 (`--rpc-url https://rpc.mainnet.fastnear.com`).
+
+### Role-enabled V2 rollout: alpha, then v1
+
+This is an operator procedure, **not authorization to publish, transact, vote, or
+delete keys**. Complete the entire sequence on `templar-alpha.near` before
+starting it on `v1.tmplr.near`. Use a reviewed, tagged registry release whose
+immutable WASM is published and catalogued; require the fast, sandbox, Wasm,
+lint, and DAO/keyless runtime checks to have passed for that release.
+
+1. **Record the baseline and approve the operators.** Set `REGISTRY` to the
+   current canary/production target, `RELEASE` to the audited version, and
+   `CURRENT_OWNER` from `own_get_owner`, not from an example. Record finalized
+   local/global code identity, stored/target state versions, `needs_migration`,
+   owner/proposed owner, every version and deployment/registry entry, balance,
+   and access keys. Page through the lists; `get_registry_entry` distinguishes
+   Reserved from Deployed. Require no in-flight deployment or global
+   registration, including provisional Global entries whose callbacks have
+   not finalized. Resolve the release's catalog SHA-256 and verified bytes.
+   Before upgrade or global publication, also verify that `probe.$REGISTRY` and
+   `deploy.$REGISTRY` do not already exist as child accounts and have no blocking
+   registry entries. These implementation-owned labels are now reserved from
+   deployment for Owner and every Deployer; reservation does not evict historical
+   children. Halt and reconcile any blocker rather than assuming the new guard
+   repairs it. This is a required live check, not a claim about either target.
+   The intended DAO is `templar.sputnik-dao.near`: verify its deployed policy,
+   proposal bond, council and operator approval before any proposal. Obtain
+   real `UPLOADER` and `DEPLOYER` account IDs, confirm they exist and have usable
+   signing keys, and fund the registry for owner-funded metadata/role storage.
+   Never infer credentials or copy an example operator.
+
+2. **Upgrade while the verified current owner can still sign.** For stored V1,
+   `MIGRATION_JSON` must contain exactly `{"from_version":"v1"}`:
+
+   ```sh
+   tmplrmgr registry upgrade --registry-id "$REGISTRY" --release "$RELEASE" \
+     --migrate-args-file "$MIGRATION_JSON" --network mainnet \
+     --signer-id "$CURRENT_OWNER" --sign-with keychain
+   ```
+
+   For already-current V2 replacing code only, omit `--migrate-args-file`.
+   Halt on any other stored layout; do not invent migration arguments. Keep the
+   manager's replay gate intact. Verify the catalog code identity, stored and
+   target version 2, `needs_migration=false`, unchanged owner, historical code
+   bytes/availability and deployment entries before proceeding.
+   A V2-origin upgrade also runs private `upgrade_check_storage` after migration
+   in the same atomic receipt, including when migration arguments are empty.
+   The target release must expose this private check; it prevents newly staked
+   local code from spending users' available storage balances.
+   The V1 migration preserves typed Borsh key bytes for the historical registry
+   (`0x72`, `r`) and versions (`0x76`, `v`) and moves their map handles without
+   rewriting entries or Owner slots. New V2 keys are bounds `0x62` (`b`), upload
+   code `0x63` (`c`) plus hash, storage account `0x64` (`d`) plus account-ID hash,
+   version-payer records `0x70` (`p`), and uploads `0x75` (`u`).
+   Historical code remains registry-funded; there is no history hash-index
+   bootstrap. These are target-layout requirements, not claims of live V2.
+
+3. **Grant hot-key roles and publish the upgrade artifact before handoff.**
+   Current Owner calls `set_role` with
+   `{"account_id":"<verified uploader>","role":"Uploader","set":true}` and
+   `{"account_id":"<verified deployer>","role":"Deployer","set":true}`, one yocto each.
+   The generic JSON transaction syntax is:
+
+   ```sh
+   near contract call-function as-transaction "$REGISTRY" set_role \
+     json-args "$ROLE_JSON" prepaid-gas '30 Tgas' attached-deposit '1 yoctoNEAR' \
+     sign-as "$CURRENT_OWNER" network-config mainnet sign-with-keychain send
+   ```
+
+   Verify `has_role` and `list_role` for both operators; both report explicit
+   membership only. Owner's action bypass does not synthesize a membership.
+   Omitted `set` defaults to true; `allow_removing_last_member` defaults to false.
+   Revocation uses `set:false`, with `allow_removing_last_member:true` required
+   when removing the last explicit member. Every successful setter emits
+   `role_set` with `account_id`, `role`, and `is_granted`, including idempotence.
+   Publish the exact verified registry WASM using retained Owner-only
+   `PublishGlobal`, under a reviewed unused `REGISTRY_GLOBAL_KEY`:
+
+   ```sh
+   tmplrmgr registry add-version --registry-id "$REGISTRY" \
+     --wasm "$REGISTRY_WASM" --version-key "$REGISTRY_GLOBAL_KEY" \
+     --deploy-mode global-hash --network mainnet \
+     --signer-id "$CURRENT_OWNER" --sign-with keychain
+   ```
+
+   Confirm all receipts succeed, `get_version` reports Global, and its base58
+   SHA-256 equals the audited release's bytes. Save that hash as
+   `REGISTRY_GLOBAL_HASH`. An already-finalized matching Global registration
+   may be reused; do not overwrite a key or treat a pending probe as approval.
+
+4. **Transfer ownership through the DAO itself.** The issue names `tmplr.near`
+   as transferring owner; use it only if the live owner view agrees. If alpha
+   is self-owned, its verified current owner signs instead. Call
+   `own_propose_owner` with `{"account_id":"templar.sputnik-dao.near"}`, one
+   yocto. Submit a real DAO FunctionCall proposal containing this action:
+
+   ```json
+   {
+     "FunctionCall": {
+       "receiver_id": "<REGISTRY>",
+       "actions": [{
+         "method_name": "own_accept_owner",
+         "args": "e30=",
+         "deposit": "1",
+         "gas": "30000000000000"
+       }]
+     }
+   }
+   ```
+
+   `<REGISTRY>` is the verified current target. Wrap the kind in
+   `{"proposal":{"description":"<reviewed rationale>","kind":<kind above>}}`
+   for `add_proposal`, attaching the DAO's **actual** proposal bond. Follow its
+   normal review/vote process; when voting via `act_proposal`, echo the exact
+   stored proposal kind. Record the proposal ID, votes, final status and every
+   execution receipt. Require actual `own_get_owner=templar.sputnik-dao.near`
+   and a cleared proposed owner. A proposal ID or vote alone proves nothing;
+   never sign a direct acceptance pretending to be the DAO. Standard
+   `own_renounce_owner` remains exported; do not renounce during handoff.
+
+5. **Prove approval, deployment, and same-code upgrade before deleting keys.**
+   First query the live storage minimum and uploader balance:
+
+   ```sh
+   near contract call-function as-read-only "$REGISTRY" storage_balance_bounds \
+     json-args '{}' network-config mainnet now
+   near contract call-function as-read-only "$REGISTRY" storage_balance_of \
+     json-args "{\"account_id\":\"$UPLOADER\"}" network-config mainnet now
+   ```
+
+   Bounds return yoctoNEAR strings, with `max:null`. Registration locks the
+   measured fixed-size account-record minimum; depositing only that minimum
+   leaves zero available for uploads. Set `STORAGE_DEPOSIT` to an amount in
+   NEAR/yoctoNEAR units covering registration (if needed) plus actual
+   map/key/uploader/blob storage and a reviewed surplus. Prefund the uploader:
+
+   ```sh
+   near contract call-function as-transaction "$REGISTRY" storage_deposit \
+     json-args '{"registration_only":false}' prepaid-gas '30 Tgas' \
+     attached-deposit "$STORAGE_DEPOSIT" sign-as "$UPLOADER" \
+     network-config mainnet sign-with-keychain send
+   ```
+
+   Omitted `account_id` credits the predecessor. Re-read `storage_balance_of`
+   and require sufficient available balance. `registration_only:true` on an
+   already registered target refunds the entire deposit, so do not use it for a
+   top-up. These storage methods are unrestricted by roles.
+
+   Uploader sends reviewed artifact bytes as Borsh `Vec<u8>` (four-byte
+   little-endian length followed by the bytes) to **nonpayable** `upload_code`.
+   Prepare and inspect `UPLOAD_BORSH` from the verified artifact, including the
+   length prefix, not the bare WASM:
+
+   ```sh
+   near contract call-function as-transaction "$REGISTRY" upload_code \
+     file-args "$UPLOAD_BORSH" prepaid-gas '100 Tgas' \
+     attached-deposit '0 NEAR' sign-as "$UPLOADER" \
+     network-config mainnet sign-with-keychain send
+   ```
+
+   Confirm the returned base58 SHA-256 against the audited bytes,
+   `get_upload`'s uploader/length, and the storage balance charge. Only duplicate
+   pending uploads are rejected: already-approved bytes may be uploaded again
+   and approved under another version key. Empty/non-WASM uploads are permitted,
+   not evidence of deployability.
+
+   For Uploaded approval, compare the planned key/version-entry growth with the
+   freed upload metadata and top up the original payer for any net increase.
+   The DAO's one-yocto deposit is not uploader storage funding; insufficient
+   available balance rejects approval.
+
+   Through the DAO proposal envelope above, execute `approve_version` with
+   UTF-8 JSON `{"version_key":"<reviewed key>","code":{"Uploaded":"<upload hash>"}}`,
+   base64-encoded into the action's `args`, deposit `"1"` and gas
+   `"80000000000000"`. Alternatively `{"Global":"<published hash>"}` probes
+   existing global code. Require successful execution receipts and VersionAdded,
+   exact version hash/availability, and consumed upload. Failed probes free the
+   key and preserve uploads; successful keys remain occupied even after
+   `remove_version`. Uploaded approval keeps the original uploader charged for
+   retained code until `remove_version` removes it; freed pending metadata is
+   credited to that payer's available balance. Successful Global or legacy
+   matching-upload cleanup likewise credits freed pending storage. Explicit
+   `remove_upload` attaches one yocto and credits the original payer, never the
+   remover, without an immediate transfer. `storage_withdraw` attaches one yocto
+   and withdraws available funds; omitted `amount` withdraws all available.
+   `storage_unregister` attaches one yocto and can release the registration
+   reserve only after all other locked charges are gone. Forced unregister is
+   rejected for registered accounts (an unregistered target returns false).
+   There is no nonrefundable upload fee, Owner skim, or administrative withdrawal
+   method: storage liabilities remain user funds.
+
+   Have the separate Deployer deploy the approved artifact; verify child code
+   identity, initialization, deployment record and the explicitly reviewed
+   `full_access_keys`. Deployer can install its own keys and thereby control the
+   child, including replacing code: this trust boundary is not limited to the
+   approved version.
+
+   Then submit a DAO `upgrade` action whose decoded UTF-8 JSON is
+   `{"code":{"GlobalHash":"<REGISTRY_GLOBAL_HASH>"},"migrate_args":""}`, deposit
+   `"1"` and gas `"280000000000000"`. The voting transaction needs 300 Tgas;
+   verify that the live DAO's execution/callback policy supports this allocation.
+   Require all receipts to succeed, effective GlobalHash equal to the audited
+   registry release, current V2, unchanged owner, grants, uploads, versions and
+   deployments. The mock DAO tests prove predecessor/callback behavior, not the
+   production council's threshold or gas policy.
+
+6. **Delete keys last, then prove operation again.** Only after every preceding
+   gate passes, enumerate and delete **every** registry full-access key using
+   the registry account's existing authorized signing path:
+
+   ```sh
+   tmplrmgr account delete-key --key "$PUBLIC_KEY" --network mainnet \
+     --signer-id "$REGISTRY" --sign-with keychain
+   ```
+
+   This is a registry-account transaction, not an Owner contract call. Review
+   remaining function-call keys for forbidden authority; record deletion
+   receipts and the final key list. With no registry signing key, repeat the DAO
+   same-code upgrade and a distinct Uploader→DAO approval→Deployer deployment.
+   Verify successful receipts and preserved state again before promoting alpha
+   to v1. Key deletion is irreversible unless another authorized path remains.
+
+If any proposal fails or its outcome is unknown, inspect finalized DAO and
+registry state before retrying; never remove keys with incomplete evidence.
+The manager upgrade command requires an owner full-access signer and cannot
+impersonate a DAO after handoff: subsequent upgrades are direct DAO proposals.
+Gateway/tmplrmgr upload/approval UX and removal of legacy `PublishGlobal` are
+separate follow-ups; this rollout does not depend on them.

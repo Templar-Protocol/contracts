@@ -9,13 +9,15 @@ use rstest::rstest;
 use templar_common::{
     market::MarketConfiguration,
     market::YieldWeights,
-    registry::{Deployment, VersionAvailability, VersionSource},
+    registry::{ApprovedCode, Deployment, VersionAvailability, VersionSource},
 };
-use templar_gateway_methods_spec::registry;
+use templar_gateway_methods_spec::{registry, tx};
 use templar_gateway_testing::{harness, publish_deposit_for, SandboxHarness};
 use templar_gateway_types::{
-    common::WriteOperationResult, operation::ReceiptStatus, primitive::PublicKey, Base64Bytes,
-    ManagedAccountId,
+    common::{ContractArgs, StorageBalance, WriteOperationResult},
+    operation::ReceiptStatus,
+    primitive::PublicKey,
+    Base64Bytes, ContractMethodName, ManagedAccountId,
 };
 
 const MARKET_VERSION: &str = "market@0.0.0";
@@ -34,12 +36,10 @@ struct Registry {
     configuration: MarketConfiguration,
 }
 
-/// Deploy a registry, register the market wasm as a version, and build the
-/// market configuration the deploy tests use.
-async fn setup_registry(harness: &SandboxHarness) -> Result<Registry> {
+/// Deploy a registry and publish the market WASM as a global version.
+async fn publish_market(harness: &SandboxHarness) -> Result<(AccountId, ManagedAccountId)> {
     let registry_id = harness.deploy_registry().await?;
     let deployer = harness.registry_signer_account_id.clone();
-
     let market_wasm = templar_gateway_testing::wasm::market().await.to_vec();
     let deposit = publish_deposit_for(market_wasm.len());
     harness
@@ -51,26 +51,28 @@ async fn setup_registry(harness: &SandboxHarness) -> Result<Registry> {
             deposit,
         )
         .await?;
+    Ok((registry_id, deployer))
+}
 
-    // The assets only need to be valid ids in the configuration — the deployed
-    // market validates the config's shape, not that these accounts exist.
-    let oracle = harness.create_user("oracle").await?;
-    let borrow = harness.create_user("borrow").await?;
-    let collateral = harness.create_user("collateral").await?;
-    let protocol = harness.create_user("protocol").await?;
-    let configuration = test_utils::market_configuration(
-        oracle.0,
-        borrow.0,
-        collateral.0,
-        protocol.0,
-        YieldWeights::new_with_supply_weight(1),
-    );
-
+/// Compose publication with the market configuration the deploy tests use.
+async fn setup_registry(harness: &SandboxHarness) -> Result<Registry> {
+    let (id, deployer) = publish_market(harness).await?;
+    let configuration = market_configuration(harness).await?;
     Ok(Registry {
-        id: registry_id,
+        id,
         deployer,
         configuration,
     })
+}
+
+async fn market_configuration(harness: &SandboxHarness) -> Result<MarketConfiguration> {
+    Ok(test_utils::market_configuration(
+        harness.create_user("oracle").await?.0,
+        harness.create_user("borrow").await?.0,
+        harness.create_user("collateral").await?.0,
+        harness.create_user("protocol").await?.0,
+        YieldWeights::new_with_supply_weight(1),
+    ))
 }
 
 fn init_args(configuration: &MarketConfiguration) -> Result<Vec<u8>> {
@@ -375,5 +377,613 @@ async fn a_taken_name_collides(#[future(awt)] harness: SandboxHarness) -> Result
         "expected the collision panic, got: {failure:?}",
     );
 
+    Ok(())
+}
+
+/// Top up to `target_storage_total`, upload Borsh, and return the emitted code hash.
+async fn upload(
+    harness: &SandboxHarness,
+    signer: &ManagedAccountId,
+    registry_id: &AccountId,
+    code: &[u8],
+    target_storage_total: NearToken,
+) -> Result<Base58CryptoHash> {
+    let current_storage_total = harness
+        .storage_balance_of(registry_id, &signer.0)
+        .await?
+        .map_or(0, |balance| balance.total.as_yoctonear());
+    let top_up = target_storage_total
+        .as_yoctonear()
+        .saturating_sub(current_storage_total);
+    if top_up > 0 {
+        harness
+            .call_function_payable(
+                signer,
+                registry_id,
+                "storage_deposit",
+                serde_json::json!({}),
+                NearToken::from_yoctonear(top_up),
+            )
+            .await?;
+    }
+    let result = harness
+        .call_function_borsh(signer, registry_id, "upload_code", code, NearToken::ZERO)
+        .await?;
+    let events: Vec<serde_json::Value> = registry_events(&result, registry_id, "code_uploaded")?;
+    assert_eq!(events.len(), 1);
+    Ok(serde_json::from_value(events[0]["code_hash"].clone())?)
+}
+
+async fn storage_balance(
+    harness: &SandboxHarness,
+    registry_id: &AccountId,
+    payer: &ManagedAccountId,
+) -> Result<StorageBalance> {
+    harness
+        .storage_balance_of(registry_id, &payer.0)
+        .await?
+        .context("registered storage balance")
+}
+
+async fn upload_info(
+    harness: &SandboxHarness,
+    registry_id: &AccountId,
+    hash: Base58CryptoHash,
+) -> Result<Option<templar_common::registry::UploadInfo>> {
+    harness
+        .view_json(
+            registry_id,
+            "get_upload",
+            serde_json::json!({"code_hash": hash}),
+        )
+        .await
+}
+
+async fn approve(
+    harness: &SandboxHarness,
+    registry_id: &AccountId,
+    key: &str,
+    code: ApprovedCode,
+) -> Result<WriteOperationResult> {
+    harness
+        .call_function_payable(
+            &harness.registry_signer_account_id,
+            registry_id,
+            "approve_version",
+            serde_json::json!({"version_key": key, "code": code}),
+            PROBE_DEPOSIT,
+        )
+        .await
+}
+
+async fn separate_registry(harness: &SandboxHarness) -> Result<AccountId> {
+    let account = harness.create_user("approval-registry").await?;
+    harness
+        .deploy_code(
+            &account.0,
+            templar_gateway_testing::wasm::registry().await.to_vec(),
+        )
+        .await?;
+    harness
+        .call_function(
+            &harness.registry_signer_account_id,
+            &account.0,
+            "new",
+            serde_json::json!({}),
+        )
+        .await?;
+    Ok(account.0)
+}
+
+#[rstest]
+#[tokio::test]
+async fn underfunded_upload_rolls_back(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let id = harness.deploy_registry().await?;
+    let signer = &harness.registry_signer_account_id;
+    let bounds: serde_json::Value = harness
+        .view_json(&id, "storage_balance_bounds", serde_json::json!({}))
+        .await?;
+    let minimum: u128 = bounds["min"]
+        .as_str()
+        .context("registration minimum")?
+        .parse()?;
+    harness
+        .call_function_payable(
+            signer,
+            &id,
+            "storage_deposit",
+            serde_json::json!({"registration_only": true}),
+            NearToken::from_yoctonear(minimum),
+        )
+        .await?;
+    let registered = storage_balance(&harness, &id, signer).await?;
+    harness
+        .call_function_borsh(
+            signer,
+            &id,
+            "upload_code",
+            vec![0_u8, 1, 2, 255],
+            NearToken::ZERO,
+        )
+        .await
+        .expect_err("the actual receipt must reject insufficient storage payment");
+    let uploads: Vec<Base58CryptoHash> = harness
+        .view_json(&id, "list_uploads", serde_json::json!({}))
+        .await?;
+    assert!(
+        uploads.is_empty(),
+        "receipt rollback must remove all upload metadata"
+    );
+    assert_eq!(storage_balance(&harness, &id, signer).await?, registered);
+    let hash = upload(
+        &harness,
+        signer,
+        &id,
+        &[0, 1, 2, 255],
+        NearToken::from_near(1),
+    )
+    .await?;
+    let info = upload_info(&harness, &id, hash).await?.unwrap();
+    assert_eq!(info.uploader, signer.0);
+    assert_eq!(info.code_len, 4);
+    Ok(())
+}
+
+#[rstest]
+#[case("Stored")]
+#[case("PublishGlobal")]
+#[case("ExistingGlobal")]
+#[case("Global")]
+#[tokio::test]
+async fn successful_registration_consumes_matching_market_upload(
+    #[future(awt)] harness: SandboxHarness,
+    #[case] path: &str,
+) -> Result<()> {
+    // Hash-only paths require publication elsewhere; publishing twice would exhaust the
+    // fixture owner's balance before reaching the callback under test.
+    if matches!(path, "ExistingGlobal" | "Global") {
+        publish_market(&harness).await?;
+    }
+    let id = separate_registry(&harness).await?;
+    let code = templar_gateway_testing::wasm::market().await;
+    let hash = upload(
+        &harness,
+        &harness.registry_signer_account_id,
+        &id,
+        code,
+        NearToken::from_near(30),
+    )
+    .await?;
+    let charged = storage_balance(&harness, &id, &harness.registry_signer_account_id).await?;
+    assert_eq!(
+        hash,
+        Base58CryptoHash::from(near_api::types::CryptoHash::hash(code).0)
+    );
+    let result = if path == "Global" {
+        approve(&harness, &id, "approved", ApprovedCode::Global(hash)).await?
+    } else {
+        let source = match path {
+            "Stored" => VersionSource::Stored(code.to_vec().into()),
+            "PublishGlobal" => VersionSource::PublishGlobal(code.to_vec().into()),
+            "ExistingGlobal" => VersionSource::ExistingGlobal(hash),
+            _ => unreachable!(),
+        };
+        let deposit = if path == "PublishGlobal" {
+            publish_deposit_for(templar_gateway_testing::wasm::market().await.len())
+        } else {
+            PROBE_DEPOSIT
+        };
+        harness
+            .registry_add_version(
+                &harness.registry_signer_account_id,
+                &id,
+                "approved",
+                source,
+                deposit,
+            )
+            .await?
+    };
+    assert!(upload_info(&harness, &id, hash).await?.is_none());
+    assert_eq!(
+        Some(hash),
+        version_code_hash(&harness, &id, "approved").await?
+    );
+    assert_eq!(
+        registry_events::<VersionAdded>(&result, &id, "version_added")?.len(),
+        1
+    );
+    assert!(registry_events::<serde_json::Value>(&result, &id, "upload_removed")?.is_empty());
+    let credited = storage_balance(&harness, &id, &harness.registry_signer_account_id).await?;
+    assert_eq!(credited.total, charged.total);
+    let bounds = harness.storage_balance_bounds(&id).await?;
+    let total = credited.total.as_yoctonear();
+    let available = credited.available.as_yoctonear();
+    let minimum = bounds.min.as_yoctonear();
+    assert_eq!(available, total - minimum);
+    // In particular, the successful global callback deletes a full market-sized upload in its
+    // production gas allocation, rather than proving cleanup with a tiny synthetic blob.
+    // Approval does not ban future staging of the same hash.
+    let restaged = upload(
+        &harness,
+        &harness.registry_signer_account_id,
+        &id,
+        templar_gateway_testing::wasm::market().await,
+        NearToken::from_near(30),
+    )
+    .await?;
+    assert_eq!(restaged, hash);
+    Ok(())
+}
+
+/// Read stored versions through the public chunk API, checking the complete byte sequence.
+async fn assert_version_bytes(
+    harness: &SandboxHarness,
+    registry_id: &AccountId,
+    key: &str,
+    expected: &[u8],
+) -> Result<()> {
+    let mut restored = Vec::new();
+    while restored.len() < expected.len() {
+        let chunk = near_api::Contract(registry_id.clone())
+            .call_function(
+                "get_version_code_chunk",
+                serde_json::json!({
+                    "version_key": key, "offset": restored.len(), "len": 16_384,
+                }),
+            )
+            .read_only_borsh::<Option<Vec<u8>>>()
+            .fetch_from(&harness.network)
+            .await?
+            .data
+            .context("approved bytes must remain available")?;
+        assert!(!chunk.is_empty());
+        restored.extend(chunk);
+    }
+    assert_eq!(restored, expected);
+    Ok(())
+}
+
+#[rstest]
+#[case("Global")]
+#[case("Uploaded")]
+#[case("Remove")]
+#[tokio::test]
+async fn non_tail_upload_cleanup_preserves_unrelated_blob(
+    #[future(awt)] harness: SandboxHarness,
+    #[case] path: &str,
+) -> Result<()> {
+    let signer = &harness.registry_signer_account_id;
+    let head = templar_gateway_testing::wasm::mock_dao().await;
+    if path == "Global" {
+        let source = harness.deploy_registry().await?;
+        harness
+            .registry_add_version(
+                signer,
+                &source,
+                "published",
+                VersionSource::PublishGlobal(head.to_vec().into()),
+                publish_deposit_for(head.len()),
+            )
+            .await?;
+    }
+    let id = separate_registry(&harness).await?;
+    let head_hash = upload(&harness, signer, &id, head, NearToken::from_near(3)).await?;
+    // Distinct, nonuniform arbitrary bytes make byte-for-byte preservation meaningful.
+    let tail: Vec<u8> = (0_u8..251).cycle().take(1_048_576).collect();
+    let tail_hash = upload(&harness, signer, &id, &tail, NearToken::from_near(15)).await?;
+    let tail_before = upload_info(&harness, &id, tail_hash).await?.unwrap();
+
+    let result = if path == "Remove" {
+        harness
+            .call_function_payable(
+                signer,
+                &id,
+                "remove_upload",
+                serde_json::json!({"code_hash": head_hash}),
+                PROBE_DEPOSIT,
+            )
+            .await?
+    } else {
+        let code = if path == "Global" {
+            ApprovedCode::Global(head_hash)
+        } else {
+            ApprovedCode::Uploaded(head_hash)
+        };
+        // Match the DAO action's budget, not the harness's default 300 Tgas.
+        harness
+            .try_execute(
+                signer,
+                tx::FunctionCall {
+                    receiver_id: id.clone(),
+                    method_name: ContractMethodName("approve_version".to_owned()),
+                    args: ContractArgs::Json(serde_json::json!({
+                        "version_key": "head", "code": code,
+                    })),
+                    gas: near_api::types::NearGas::from_tgas(80),
+                    deposit: PROBE_DEPOSIT,
+                },
+            )
+            .await?
+    };
+    assert!(templar_gateway_testing::failed_receipts(&result)
+        .next()
+        .is_none());
+    let added = registry_events::<VersionAdded>(&result, &id, "version_added")?;
+    if path == "Remove" {
+        assert!(added.is_empty());
+        let removed = registry_events::<serde_json::Value>(&result, &id, "upload_removed")?;
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0]["code_hash"], serde_json::to_value(head_hash)?);
+        // No refund promise: explicit removal executes solely on the registry.
+        assert!(result
+            .operation
+            .final_outcome()
+            .context("removal has an outcome")?
+            .receipts
+            .iter()
+            .all(|receipt| receipt.contract_id == id));
+    } else {
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].version_key, "head");
+        assert_eq!(added[0].code_hash, head_hash);
+        assert_eq!(
+            version_code_hash(&harness, &id, "head").await?,
+            Some(head_hash)
+        );
+        assert!(registry_events::<serde_json::Value>(&result, &id, "upload_removed")?.is_empty());
+        if path == "Uploaded" {
+            assert_version_bytes(&harness, &id, "head", head).await?;
+        }
+    }
+    assert!(upload_info(&harness, &id, head_hash).await?.is_none());
+    assert_eq!(
+        upload_info(&harness, &id, tail_hash).await?.unwrap(),
+        tail_before
+    );
+    let converted = approve(&harness, &id, "tail", ApprovedCode::Uploaded(tail_hash)).await?;
+    assert!(templar_gateway_testing::failed_receipts(&converted)
+        .next()
+        .is_none());
+    assert!(upload_info(&harness, &id, tail_hash).await?.is_none());
+    assert_version_bytes(&harness, &id, "tail", &tail).await?;
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+async fn uploaded_approval_moves_bytes_and_preserves_key(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let configuration = market_configuration(&harness).await?;
+    let id = separate_registry(&harness).await?;
+    let signer = &harness.registry_signer_account_id;
+    let code = templar_gateway_testing::wasm::market().await;
+    let hash = upload(&harness, signer, &id, code, NearToken::from_near(30)).await?;
+    assert!(approve(
+        &harness,
+        &id,
+        "missing",
+        ApprovedCode::Uploaded([0xab; 32].into())
+    )
+    .await
+    .is_err());
+    assert!(upload_info(&harness, &id, hash).await?.is_some());
+    let result = approve(&harness, &id, "market", ApprovedCode::Uploaded(hash)).await?;
+    let added = registry_events::<VersionAdded>(&result, &id, "version_added")?;
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0].code_hash, hash);
+    assert!(upload_info(&harness, &id, hash).await?.is_none());
+    assert_version_bytes(&harness, &id, "market", code).await?;
+    harness
+        .registry_deploy_without_abi_check(
+            signer,
+            &id,
+            "market",
+            "market",
+            init_args(&configuration)?,
+            None,
+            NearToken::from_near(10),
+        )
+        .await?;
+    let child: AccountId = format!("market.{id}").parse()?;
+    assert_eq!(harness.get_configuration(&child).await?, configuration);
+    assert_eq!(
+        harness
+            .code_hash(&child)
+            .await?
+            .parse::<Base58CryptoHash>()?,
+        hash
+    );
+    let pending = upload(&harness, signer, &id, &[1, 2, 3], NearToken::from_near(1)).await?;
+    assert!(
+        approve(&harness, &id, "market", ApprovedCode::Uploaded(pending))
+            .await
+            .is_err()
+    );
+    assert!(upload_info(&harness, &id, pending).await?.is_some());
+    harness
+        .call_function_payable(
+            signer,
+            &id,
+            "remove_version",
+            serde_json::json!({"version_key": "market"}),
+            PROBE_DEPOSIT,
+        )
+        .await?;
+    assert!(
+        approve(&harness, &id, "market", ApprovedCode::Uploaded(pending))
+            .await
+            .is_err()
+    );
+    assert!(upload_info(&harness, &id, pending).await?.is_some());
+    assert_eq!(
+        upload(&harness, signer, &id, code, NearToken::from_near(30)).await?,
+        hash
+    );
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+async fn failed_global_approval_preserves_upload_and_releases_key(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let id = harness.deploy_registry().await?;
+    let signer = &harness.registry_signer_account_id;
+    // Arbitrary bytes are valid upload payloads, but this hash has never been published.
+    let hash = upload(
+        &harness,
+        signer,
+        &id,
+        &[0, 1, 2, 255],
+        NearToken::from_near(1),
+    )
+    .await?;
+    let before = upload_info(&harness, &id, hash).await?.unwrap();
+    let charged = storage_balance(&harness, &id, signer).await?;
+    let failed = harness
+        .try_execute(
+            signer,
+            tx::FunctionCall {
+                receiver_id: id.clone(),
+                method_name: ContractMethodName("approve_version".to_owned()),
+                args: ContractArgs::Json(serde_json::json!({
+                    "version_key": "retry", "code": {"Global": hash},
+                })),
+                gas: near_api::types::NearGas::from_tgas(300),
+                deposit: PROBE_DEPOSIT,
+            },
+        )
+        .await?;
+    assert!(templar_gateway_testing::failed_receipts(&failed)
+        .next()
+        .is_some());
+    assert!(registry_events::<VersionAdded>(&failed, &id, "version_added")?.is_empty());
+    assert_eq!(version_code_hash(&harness, &id, "retry").await?, None);
+    assert_eq!(upload_info(&harness, &id, hash).await?.unwrap(), before);
+    assert_eq!(storage_balance(&harness, &id, signer).await?, charged);
+    approve(&harness, &id, "retry", ApprovedCode::Uploaded(hash)).await?;
+    assert!(upload_info(&harness, &id, hash).await?.is_none());
+    assert!(harness
+        .registry_deploy_without_abi_check(
+            signer,
+            &id,
+            "invalid",
+            "retry",
+            b"{}".to_vec(),
+            None,
+            NearToken::from_near(10),
+        )
+        .await
+        .is_err());
+    Ok(())
+}
+
+#[rstest]
+#[case(Vec::new())]
+#[case(vec![0, 1, 2, 255])]
+#[tokio::test]
+async fn duplicate_upload_does_not_replace_original(
+    #[future(awt)] harness: SandboxHarness,
+    #[case] bytes: Vec<u8>,
+) -> Result<()> {
+    let id = harness.deploy_registry().await?;
+    let owner = &harness.registry_signer_account_id;
+    let other = harness.create_user("other-uploader").await?;
+    harness
+        .call_function_payable(
+            owner,
+            &id,
+            "set_role",
+            serde_json::json!({"account_id": other.0, "role": "Uploader", "set": true}),
+            PROBE_DEPOSIT,
+        )
+        .await?;
+    let hash = upload(&harness, owner, &id, &bytes, NearToken::from_near(1)).await?;
+    for signer in [owner, &other] {
+        assert!(
+            upload(&harness, signer, &id, &bytes, NearToken::from_near(1))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            upload_info(&harness, &id, hash).await?.unwrap().uploader,
+            owner.0
+        );
+    }
+    approve(&harness, &id, "invalid", ApprovedCode::Uploaded(hash)).await?;
+    assert!(harness
+        .registry_deploy_without_abi_check(
+            owner,
+            &id,
+            "invalid",
+            "invalid",
+            b"{}".to_vec(),
+            None,
+            NearToken::from_near(10),
+        )
+        .await
+        .is_err());
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+async fn repeated_hash_approvals_keep_independent_retained_charges(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let id = harness.deploy_registry().await?;
+    let owner = &harness.registry_signer_account_id;
+    let code = [0_u8, 1, 2, 255];
+    harness
+        .call_function_payable(
+            owner,
+            &id,
+            "storage_deposit",
+            serde_json::json!({}),
+            NearToken::from_near(1),
+        )
+        .await?;
+    let funded = storage_balance(&harness, &id, owner).await?;
+    let mut previous_available = funded.available.as_yoctonear();
+    // Bounded history exercises identical code under multiple keys without an approved-hash ban.
+    for index in 0..16 {
+        harness
+            .call_function_borsh(owner, &id, "upload_code", code.to_vec(), NearToken::ZERO)
+            .await?;
+        let hash = Base58CryptoHash::from(near_api::types::CryptoHash::hash(&code).0);
+        approve(
+            &harness,
+            &id,
+            &format!("history-{index}"),
+            ApprovedCode::Uploaded(hash),
+        )
+        .await?;
+        let balance = storage_balance(&harness, &id, owner).await?;
+        assert_eq!(balance.total, funded.total);
+        let available = balance.available.as_yoctonear();
+        assert!(available < previous_available);
+        previous_available = available;
+    }
+    for index in 0..16 {
+        harness
+            .call_function_payable(
+                owner,
+                &id,
+                "remove_version",
+                serde_json::json!({"version_key": format!("history-{index}")}),
+                PROBE_DEPOSIT,
+            )
+            .await?;
+        let balance = storage_balance(&harness, &id, owner).await?;
+        let available = balance.available.as_yoctonear();
+        assert!(available > previous_available);
+        previous_available = available;
+    }
+    assert_eq!(storage_balance(&harness, &id, owner).await?, funded);
+    let versions: Vec<String> = harness
+        .view_json(&id, "list_versions", serde_json::json!({}))
+        .await?;
+    assert_eq!(versions.len(), 16);
     Ok(())
 }
