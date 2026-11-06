@@ -1,0 +1,39 @@
+set dotenv-load := false
+
+help:
+    @echo "Templar Market Monitor"
+    @echo ""
+    @echo "Available commands:"
+    @echo "  just build    - Build Docker image"
+    @echo "  just run      - Start service in background"
+    @echo "  just stop     - Stop service"
+    @echo "  just restart  - Restart service"
+    @echo "  just logs     - View logs (follow mode)"
+    @echo "  just test     - Run test scan (dry-run, once)"
+    @echo "  just clean    - Remove containers and images"
+
+build:
+    @echo "Building Docker image..."
+    docker-compose build
+
+run:
+    docker-compose up -d
+    @echo "Market monitor started"
+    @echo "View logs with: just logs"
+
+stop:
+    docker-compose down
+
+restart: stop run
+
+logs:
+    docker-compose logs -f
+
+test:
+    @echo "Running test scan..."
+    cargo run --release
+
+clean:
+    docker-compose down -v
+    docker rmi templar-market-monitor 2>/dev/null || true
+    @echo "Cleanup complete"

@@ -1,0 +1,60 @@
+# Templar Liquidator Bot
+
+set dotenv-load := false
+
+IMAGE := "templar-liquidator"
+TAG := "latest"
+COMPOSE := "docker compose"
+ENV_FILE := ".env"
+
+# Show available commands
+help:
+    @just --list --unsorted
+
+# Build Docker image
+build:
+    docker build -t {{IMAGE}}:{{TAG}} -f Dockerfile ../..
+
+# Build without cache
+build-clean:
+    docker build --no-cache -t {{IMAGE}}:{{TAG}} -f Dockerfile ../..
+
+# Start in dry-run mode
+start:
+    {{COMPOSE}} --env-file {{ENV_FILE}} up -d
+
+# Start in production mode
+start-prod:
+    {{COMPOSE}} --env-file {{ENV_FILE}} -f docker-compose.prod.yml up -d
+
+# Stop all containers
+stop:
+    {{COMPOSE}} down
+
+# Restart in dry-run mode
+restart: stop start
+
+# Follow container logs
+logs:
+    {{COMPOSE}} logs -f
+
+# Show last 100 log lines
+logs-tail:
+    {{COMPOSE}} logs --tail=100
+
+# Open shell in container
+shell:
+    docker exec -it templar-liquidator /bin/bash
+
+# Remove containers and images
+clean:
+    {{COMPOSE}} down -v
+    docker rmi {{IMAGE}}:{{TAG}} 2>/dev/null || true
+
+# Show container status
+ps:
+    {{COMPOSE}} ps
+
+# Show resource usage
+stats:
+    docker stats templar-liquidator --no-stream

@@ -23,7 +23,7 @@ Position health monitoring service for Templar Protocol lending markets on NEAR 
 cd service/market-monitor
 cp .env.example .env
 # Edit .env - set TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID
-make build && make run
+just build && just run
 ```
 
 ## Configuration

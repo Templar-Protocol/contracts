@@ -106,7 +106,7 @@ deploy_local_build() {
     
     # Build image
     cd "$(dirname "$0")/.."
-    make build
+    just build
     
     log_info "Saving Docker image..."
     docker save templar-liquidator:latest | gzip > /tmp/templar-liquidator.tar.gz
@@ -227,7 +227,7 @@ update_deployment() {
             docker compose down
             
             echo "Rebuilding..."
-            make build
+            docker build -t templar-liquidator:latest -f Dockerfile ../..
             
             echo "Starting updated liquidator..."
             docker compose up -d
