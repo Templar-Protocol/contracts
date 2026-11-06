@@ -12,7 +12,7 @@ use templar_gateway_testing::harness;
 use templar_gateway_testing::{failed_receipts, publish_deposit_for, SandboxHarness};
 use templar_gateway_types::Base64Bytes;
 use templar_gateway_types::{
-    common::{ContractArgs, WriteOperationResult},
+    common::{ContractArgs, StorageBalance, WriteOperationResult},
     ContractMethodName, ManagedAccountId, NearGas,
 };
 
@@ -681,12 +681,13 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
         }
     }
     // Reserved-name rejections must leave the implementation's scratch accounts usable.
+    let publish_deposit = publish_deposit_for(code.len());
     h.registry_add_version(
         &owner,
         &registry,
         "wrapper@published",
-        VersionSource::PublishGlobal(code.clone().into()),
-        publish_deposit_for(code.len()),
+        VersionSource::PublishGlobal(code.into()),
+        publish_deposit,
     )
     .await?;
     h.registry_add_version(
@@ -834,24 +835,10 @@ async fn storage_balance(
     h: &SandboxHarness,
     registry: &AccountId,
     account: &ManagedAccountId,
-) -> Result<(u128, u128)> {
-    let balance = view(
-        h,
-        registry,
-        "storage_balance_of",
-        json!({"account_id": account.0}),
-    )
-    .await?;
-    Ok((
-        balance["total"]
-            .as_str()
-            .context("storage total")?
-            .parse()?,
-        balance["available"]
-            .as_str()
-            .context("storage available")?
-            .parse()?,
-    ))
+) -> Result<StorageBalance> {
+    h.storage_balance_of(registry, &account.0)
+        .await?
+        .context("registered storage balance")
 }
 
 #[rstest::rstest]
@@ -886,6 +873,10 @@ async fn storage_payer_survives_approval_revocation_and_owner_transfer(
         .context("registration minimum")?
         .parse()?;
     assert!(minimum > 0);
+    let registration_only = StorageBalance {
+        total: NearToken::from_yoctonear(minimum),
+        available: NearToken::ZERO,
+    };
     assert!(bounds["max"].is_null());
     h.call_function_payable(
         &payer,
@@ -895,7 +886,10 @@ async fn storage_payer_survives_approval_revocation_and_owner_transfer(
         NearToken::from_yoctonear(minimum),
     )
     .await?;
-    assert_eq!(storage_balance(h, &registry, &payer).await?, (minimum, 0));
+    assert_eq!(
+        storage_balance(h, &registry, &payer).await?,
+        registration_only
+    );
     let code = vec![7_u8; 8_192];
     let upload_op = || -> Result<tx::FunctionCall> {
         Ok(tx::FunctionCall {
@@ -906,7 +900,10 @@ async fn storage_payer_survives_approval_revocation_and_owner_transfer(
     // Registration reserve cannot be spent on code; failed receipts roll back the pending map.
     let failed = h.try_execute(&payer, upload_op()?).await?;
     assert_rejected(&failed, "");
-    assert_eq!(storage_balance(h, &registry, &payer).await?, (minimum, 0));
+    assert_eq!(
+        storage_balance(h, &registry, &payer).await?,
+        registration_only
+    );
     assert_eq!(
         view(h, &registry, "list_uploads", json!({})).await?,
         json!([])
@@ -920,24 +917,33 @@ async fn storage_payer_survives_approval_revocation_and_owner_transfer(
         NearToken::from_near(1),
     )
     .await?;
-    assert_eq!(storage_balance(h, &registry, &payer).await?, (minimum, 0));
+    assert_eq!(
+        storage_balance(h, &registry, &payer).await?,
+        registration_only
+    );
     let funding = NearToken::from_near(1);
     h.call_function_payable(&payer, &registry, "storage_deposit", json!({}), funding)
         .await?;
     let funded = storage_balance(h, &registry, &payer).await?;
     assert_eq!(
         funded,
-        (minimum + funding.as_yoctonear(), funding.as_yoctonear())
+        StorageBalance {
+            total: NearToken::from_yoctonear(minimum + funding.as_yoctonear()),
+            available: funding,
+        }
     );
     h.execute(&payer, upload_op()?).await?;
     let hash = near_api::types::CryptoHash::hash(&code).to_string();
     let staged = storage_balance(h, &registry, &payer).await?;
-    assert_eq!(staged.0, funded.0);
-    assert!(staged.1 < funded.1);
+    assert_eq!(staged.total, funded.total);
+    assert!(staged.available < funded.available);
     // Upload is nonpayable even for an already registered, sufficiently funded uploader.
     let mut payable_upload = upload_op()?;
     payable_upload.deposit = ONE;
-    assert_rejected(&h.try_execute(&payer, payable_upload).await?, "");
+    assert_rejected(
+        &h.try_execute(&payer, payable_upload).await?,
+        "Method upload_code doesn't accept deposit",
+    );
     for force in [false, true] {
         let result = h
             .try_execute(
@@ -962,8 +968,8 @@ async fn storage_payer_survives_approval_revocation_and_owner_transfer(
     )
     .await?;
     let retained = storage_balance(h, &registry, &payer).await?;
-    assert_eq!(retained.0, funded.0);
-    assert!(retained.1 < funded.1);
+    assert_eq!(retained.total, funded.total);
+    assert!(retained.available < funded.available);
     assert!(view(h, &registry, "get_upload", json!({"code_hash": hash}))
         .await?
         .is_null());
@@ -971,7 +977,7 @@ async fn storage_payer_survives_approval_revocation_and_owner_transfer(
         ("storage_unregister", json!({"force": false})),
         (
             "storage_withdraw",
-            json!({"amount": (retained.1 + 1).to_string()}),
+            json!({"amount": (retained.available.as_yoctonear() + 1).to_string()}),
         ),
     ] {
         let result = h
@@ -983,7 +989,7 @@ async fn storage_payer_survives_approval_revocation_and_owner_transfer(
     // The same hash is accepted again after approval; only a pending duplicate is forbidden.
     h.execute(&payer, upload_op()?).await?;
     let pending = storage_balance(h, &registry, &payer).await?;
-    assert!(pending.1 < retained.1);
+    assert!(pending.available < retained.available);
     assert_rejected(
         &h.try_execute(&payer, upload_op()?).await?,
         "Code already uploaded",
@@ -1052,7 +1058,10 @@ async fn storage_payer_survives_approval_revocation_and_owner_transfer(
         ONE,
     )
     .await?;
-    assert_eq!(storage_balance(h, &registry, &payer).await?, (minimum, 0));
+    assert_eq!(
+        storage_balance(h, &registry, &payer).await?,
+        registration_only
+    );
     h.call_function_payable(
         &payer,
         &registry,

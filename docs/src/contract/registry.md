@@ -197,7 +197,4 @@ Owner changes are logged by `near-sdk-contract-tools` under its own standard.
 The Rust variant is `RegistryEvent::RoleSet { account_id, role, is_granted }`;
 for example its NEP-297 data is
 `{"account_id":"operator.near","role":"Uploader","is_granted":true}`, under
-`templar-registry`, version `1.0.0`. Historical proxy-oracle
-`CircuitBreakerRoleSet { account_id, role, is_granted }` is precedent for the
-field schema, not a current proxy event: it was removed in `53a216ce`. Current
-NEAR governance reports generic `Executed` events with kind `SetRole`.
+`templar-registry`, version `1.0.0`.

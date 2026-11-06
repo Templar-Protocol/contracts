@@ -568,13 +568,10 @@ async fn a_v2_same_code_upgrade_preserves_uploads_roles_and_registry_state(
             "{method} changed across a same-version upgrade",
         );
     }
-    let before_removal: serde_json::Value = harness
-        .view_json(
-            &registry_id,
-            "storage_balance_of",
-            serde_json::json!({"account_id": operator.0}),
-        )
-        .await?;
+    let before_removal = harness
+        .storage_balance_of(&registry_id, &operator.0)
+        .await?
+        .context("registered operator storage balance")?;
     harness
         .call_function_payable(
             &owner,
@@ -584,20 +581,11 @@ async fn a_v2_same_code_upgrade_preserves_uploads_roles_and_registry_state(
             NearToken::from_yoctonear(1),
         )
         .await?;
-    let after_removal: serde_json::Value = harness
-        .view_json(
-            &registry_id,
-            "storage_balance_of",
-            serde_json::json!({"account_id": operator.0}),
-        )
-        .await?;
-    assert_eq!(before_removal["total"], after_removal["total"]);
-    let available = |balance: &serde_json::Value| -> Result<u128> {
-        Ok(balance["available"]
-            .as_str()
-            .context("available balance")?
-            .parse()?)
-    };
-    assert!(available(&after_removal)? > available(&before_removal)?);
+    let after_removal = harness
+        .storage_balance_of(&registry_id, &operator.0)
+        .await?
+        .context("registered operator storage balance")?;
+    assert_eq!(before_removal.total, after_removal.total);
+    assert!(after_removal.available > before_removal.available);
     Ok(())
 }

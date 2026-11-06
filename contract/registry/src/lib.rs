@@ -163,6 +163,8 @@ impl Contract {
     /// Leave 90 Tgas for decoding and deploying local code, alongside the
     /// separate 10 Tgas solvency check.
     pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(200);
+    const GLOBAL_PUBLISH_ACCOUNT: &str = "deploy";
+    const GLOBAL_PROBE_ACCOUNT: &str = "probe";
 
     /// Most a single [`Self::get_version_code_chunk`] will return.
     ///
@@ -259,6 +261,14 @@ impl Contract {
         hash.into()
     }
 
+    fn remove_pending_upload(&mut self, hash: &CryptoHash) -> Option<AccountId> {
+        let mut upload = self.uploads.remove(hash)?;
+        upload.clear_code();
+        self.uploads.flush();
+        self.release_storage(&upload.uploader, upload.storage_charge);
+        Some(upload.uploader)
+    }
+
     /// Release pending storage credit to its payer; NEAR is reclaimed with `storage_withdraw`.
     #[payable]
     pub fn remove_upload(&mut self, code_hash: Base58CryptoHash) {
@@ -274,17 +284,13 @@ impl Contract {
                 || upload.uploader == env::predecessor_account_id(),
             "Upload belongs to another account",
         );
-        let mut upload = self
-            .uploads
-            .remove(&hash)
+        let uploader = self
+            .remove_pending_upload(&hash)
             .unwrap_or_else(|| templar_common::panic_with_message("Upload does not exist"));
-        upload.clear_code();
-        self.uploads.flush();
-        self.release_storage(&upload.uploader, upload.storage_charge);
         self.assert_storage_solvency(NearToken::from_yoctonear(0));
         RegistryEvent::UploadRemoved {
             code_hash,
-            uploader: upload.uploader,
+            uploader,
         }
         .emit();
     }
@@ -500,11 +506,7 @@ impl Contract {
 
     fn finish_version(&mut self, version_key: String, info: VersionInfo) {
         self.versions.flush();
-        if let Some(mut upload) = self.uploads.remove(&CryptoHash::from(info.code_hash)) {
-            upload.clear_code();
-            self.uploads.flush();
-            self.release_storage(&upload.uploader, upload.storage_charge);
-        }
+        let _ = self.remove_pending_upload(&CryptoHash::from(info.code_hash));
         self.assert_storage_solvency(NearToken::from_yoctonear(0));
         RegistryEvent::VersionAdded { version_key, info }.emit();
     }
@@ -543,7 +545,7 @@ impl Contract {
                 self.versions.flush();
                 self.assert_storage_solvency(env::attached_deposit());
                 PromiseOrValue::Promise(
-                    Self::scratch_account("deploy")
+                    Self::scratch_account(Self::GLOBAL_PUBLISH_ACCOUNT)
                         .deploy_global_contract(code.0)
                         .delete_account(env::current_account_id())
                         .then(self_ext!(Gas::from_tgas(20)).add_version_01_finalize(version_key)),
@@ -563,7 +565,7 @@ impl Contract {
                 self.versions.flush();
                 self.assert_storage_solvency(env::attached_deposit());
                 PromiseOrValue::Promise(
-                    Self::scratch_account("probe")
+                    Self::scratch_account(Self::GLOBAL_PROBE_ACCOUNT)
                         .use_global_contract(hash)
                         .delete_account(env::current_account_id())
                         .then(self_ext!(Gas::from_tgas(20)).add_version_01_finalize(version_key)),
@@ -630,7 +632,10 @@ impl Contract {
         require!(!name.is_empty(), "Name must not be empty");
         self.assert_role(Role::Deployer);
         require!(
-            !matches!(name.as_str(), "probe" | "deploy"),
+            !matches!(
+                name.as_str(),
+                Self::GLOBAL_PROBE_ACCOUNT | Self::GLOBAL_PUBLISH_ACCOUNT
+            ),
             "Deployment name is reserved",
         );
 

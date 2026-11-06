@@ -14,7 +14,7 @@ use templar_common::{
 use templar_gateway_methods_spec::{registry, tx};
 use templar_gateway_testing::{harness, publish_deposit_for, SandboxHarness};
 use templar_gateway_types::{
-    common::{ContractArgs, WriteOperationResult},
+    common::{ContractArgs, StorageBalance, WriteOperationResult},
     operation::ReceiptStatus,
     primitive::PublicKey,
     Base64Bytes, ContractMethodName, ManagedAccountId,
@@ -36,12 +36,10 @@ struct Registry {
     configuration: MarketConfiguration,
 }
 
-/// Deploy a registry, register the market wasm as a version, and build the
-/// market configuration the deploy tests use.
-async fn setup_registry(harness: &SandboxHarness) -> Result<Registry> {
+/// Deploy a registry and publish the market WASM as a global version.
+async fn publish_market(harness: &SandboxHarness) -> Result<(AccountId, ManagedAccountId)> {
     let registry_id = harness.deploy_registry().await?;
     let deployer = harness.registry_signer_account_id.clone();
-
     let market_wasm = templar_gateway_testing::wasm::market().await.to_vec();
     let deposit = publish_deposit_for(market_wasm.len());
     harness
@@ -53,11 +51,15 @@ async fn setup_registry(harness: &SandboxHarness) -> Result<Registry> {
             deposit,
         )
         .await?;
+    Ok((registry_id, deployer))
+}
 
+/// Compose publication with the market configuration the deploy tests use.
+async fn setup_registry(harness: &SandboxHarness) -> Result<Registry> {
+    let (id, deployer) = publish_market(harness).await?;
     let configuration = market_configuration(harness).await?;
-
     Ok(Registry {
-        id: registry_id,
+        id,
         deployer,
         configuration,
     })
@@ -378,21 +380,21 @@ async fn a_taken_name_collides(#[future(awt)] harness: SandboxHarness) -> Result
     Ok(())
 }
 
-/// Upload through the actual Borsh wrapper and recover the contract-computed hash from its event.
+/// Top up to `target_storage_total`, upload Borsh, and return the emitted code hash.
 async fn upload(
     harness: &SandboxHarness,
     signer: &ManagedAccountId,
     registry_id: &AccountId,
     code: &[u8],
-    deposit: NearToken,
+    target_storage_total: NearToken,
 ) -> Result<Base58CryptoHash> {
-    let balance = storage_balance(harness, registry_id, signer).await?;
-    let current = balance["total"]
-        .as_str()
-        .map(str::parse::<u128>)
-        .transpose()?
-        .unwrap_or(0);
-    let top_up = deposit.as_yoctonear().saturating_sub(current);
+    let current_storage_total = harness
+        .storage_balance_of(registry_id, &signer.0)
+        .await?
+        .map_or(0, |balance| balance.total.as_yoctonear());
+    let top_up = target_storage_total
+        .as_yoctonear()
+        .saturating_sub(current_storage_total);
     if top_up > 0 {
         harness
             .call_function_payable(
@@ -416,14 +418,11 @@ async fn storage_balance(
     harness: &SandboxHarness,
     registry_id: &AccountId,
     payer: &ManagedAccountId,
-) -> Result<serde_json::Value> {
+) -> Result<StorageBalance> {
     harness
-        .view_json(
-            registry_id,
-            "storage_balance_of",
-            serde_json::json!({"account_id": payer.0}),
-        )
-        .await
+        .storage_balance_of(registry_id, &payer.0)
+        .await?
+        .context("registered storage balance")
 }
 
 async fn upload_info(
@@ -543,29 +542,29 @@ async fn successful_registration_consumes_matching_market_upload(
     // Hash-only paths require publication elsewhere; publishing twice would exhaust the
     // fixture owner's balance before reaching the callback under test.
     if matches!(path, "ExistingGlobal" | "Global") {
-        setup_registry(&harness).await?;
+        publish_market(&harness).await?;
     }
     let id = separate_registry(&harness).await?;
-    let code = templar_gateway_testing::wasm::market().await.to_vec();
+    let code = templar_gateway_testing::wasm::market().await;
     let hash = upload(
         &harness,
         &harness.registry_signer_account_id,
         &id,
-        &code,
+        code,
         NearToken::from_near(30),
     )
     .await?;
     let charged = storage_balance(&harness, &id, &harness.registry_signer_account_id).await?;
     assert_eq!(
         hash,
-        Base58CryptoHash::from(near_api::types::CryptoHash::hash(&code).0)
+        Base58CryptoHash::from(near_api::types::CryptoHash::hash(code).0)
     );
     let result = if path == "Global" {
         approve(&harness, &id, "approved", ApprovedCode::Global(hash)).await?
     } else {
         let source = match path {
-            "Stored" => VersionSource::Stored(code.into()),
-            "PublishGlobal" => VersionSource::PublishGlobal(code.into()),
+            "Stored" => VersionSource::Stored(code.to_vec().into()),
+            "PublishGlobal" => VersionSource::PublishGlobal(code.to_vec().into()),
             "ExistingGlobal" => VersionSource::ExistingGlobal(hash),
             _ => unreachable!(),
         };
@@ -595,22 +594,11 @@ async fn successful_registration_consumes_matching_market_upload(
     );
     assert!(registry_events::<serde_json::Value>(&result, &id, "upload_removed")?.is_empty());
     let credited = storage_balance(&harness, &id, &harness.registry_signer_account_id).await?;
-    assert_eq!(credited["total"], charged["total"]);
-    let bounds: serde_json::Value = harness
-        .view_json(&id, "storage_balance_bounds", serde_json::json!({}))
-        .await?;
-    let total: u128 = credited["total"]
-        .as_str()
-        .context("storage total")?
-        .parse()?;
-    let available: u128 = credited["available"]
-        .as_str()
-        .context("storage available")?
-        .parse()?;
-    let minimum: u128 = bounds["min"]
-        .as_str()
-        .context("registration minimum")?
-        .parse()?;
+    assert_eq!(credited.total, charged.total);
+    let bounds = harness.storage_balance_bounds(&id).await?;
+    let total = credited.total.as_yoctonear();
+    let available = credited.available.as_yoctonear();
+    let minimum = bounds.min.as_yoctonear();
     assert_eq!(available, total - minimum);
     // In particular, the successful global callback deletes a full market-sized upload in its
     // production gas allocation, rather than proving cleanup with a tiny synthetic blob.
@@ -769,8 +757,8 @@ async fn uploaded_approval_moves_bytes_and_preserves_key(
     let configuration = market_configuration(&harness).await?;
     let id = separate_registry(&harness).await?;
     let signer = &harness.registry_signer_account_id;
-    let code = templar_gateway_testing::wasm::market().await.to_vec();
-    let hash = upload(&harness, signer, &id, &code, NearToken::from_near(30)).await?;
+    let code = templar_gateway_testing::wasm::market().await;
+    let hash = upload(&harness, signer, &id, code, NearToken::from_near(30)).await?;
     assert!(approve(
         &harness,
         &id,
@@ -785,7 +773,7 @@ async fn uploaded_approval_moves_bytes_and_preserves_key(
     assert_eq!(added.len(), 1);
     assert_eq!(added[0].code_hash, hash);
     assert!(upload_info(&harness, &id, hash).await?.is_none());
-    assert_version_bytes(&harness, &id, "market", &code).await?;
+    assert_version_bytes(&harness, &id, "market", code).await?;
     harness
         .registry_deploy_without_abi_check(
             signer,
@@ -829,7 +817,7 @@ async fn uploaded_approval_moves_bytes_and_preserves_key(
     );
     assert!(upload_info(&harness, &id, pending).await?.is_some());
     assert_eq!(
-        upload(&harness, signer, &id, &code, NearToken::from_near(30)).await?,
+        upload(&harness, signer, &id, code, NearToken::from_near(30)).await?,
         hash
     );
     Ok(())
@@ -957,10 +945,7 @@ async fn repeated_hash_approvals_keep_independent_retained_charges(
         )
         .await?;
     let funded = storage_balance(&harness, &id, owner).await?;
-    let mut previous_available: u128 = funded["available"]
-        .as_str()
-        .context("funded available")?
-        .parse()?;
+    let mut previous_available = funded.available.as_yoctonear();
     // Bounded history exercises identical code under multiple keys without an approved-hash ban.
     for index in 0..16 {
         harness
@@ -975,11 +960,8 @@ async fn repeated_hash_approvals_keep_independent_retained_charges(
         )
         .await?;
         let balance = storage_balance(&harness, &id, owner).await?;
-        assert_eq!(balance["total"], funded["total"]);
-        let available: u128 = balance["available"]
-            .as_str()
-            .context("retained available")?
-            .parse()?;
+        assert_eq!(balance.total, funded.total);
+        let available = balance.available.as_yoctonear();
         assert!(available < previous_available);
         previous_available = available;
     }
@@ -994,10 +976,7 @@ async fn repeated_hash_approvals_keep_independent_retained_charges(
             )
             .await?;
         let balance = storage_balance(&harness, &id, owner).await?;
-        let available: u128 = balance["available"]
-            .as_str()
-            .context("released available")?
-            .parse()?;
+        let available = balance.available.as_yoctonear();
         assert!(available > previous_available);
         previous_available = available;
     }
