@@ -1,0 +1,43 @@
+set dotenv-load := false
+# A local justfile otherwise hides the workspace root's recipes from this
+# directory, so `just test` (the full suite) would be shadowed by the recipe
+# below rather than reaching the root justfile.
+set fallback := true
+
+help:
+    @echo "Templar Market Monitor"
+    @echo ""
+    @echo "Available commands:"
+    @echo "  just build    - Build Docker image"
+    @echo "  just run      - Start service in background"
+    @echo "  just stop     - Stop service"
+    @echo "  just restart  - Restart service"
+    @echo "  just logs     - View logs (follow mode)"
+    @echo "  just smoke    - Run from source as a one-off check (loops until Ctrl-C; sends real alerts)"
+    @echo "  just clean    - Remove containers and images"
+
+build:
+    @echo "Building Docker image..."
+    docker-compose build
+
+run:
+    docker-compose up -d
+    @echo "Market monitor started"
+    @echo "View logs with: just logs"
+
+stop:
+    docker-compose down
+
+restart: stop run
+
+logs:
+    docker-compose logs -f
+
+smoke:
+    @echo "Running test scan..."
+    cargo run --release
+
+clean:
+    docker-compose down -v
+    docker rmi templar-market-monitor 2>/dev/null || true
+    @echo "Cleanup complete"
