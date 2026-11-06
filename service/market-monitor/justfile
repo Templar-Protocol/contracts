@@ -1,4 +1,8 @@
 set dotenv-load := false
+# A local justfile otherwise hides the workspace root's recipes from this
+# directory, so `just test` (the full suite) would be shadowed by the recipe
+# below rather than reaching the root justfile.
+set fallback := true
 
 help:
     @echo "Templar Market Monitor"
@@ -9,7 +13,7 @@ help:
     @echo "  just stop     - Stop service"
     @echo "  just restart  - Restart service"
     @echo "  just logs     - View logs (follow mode)"
-    @echo "  just test     - Run test scan (dry-run, once)"
+    @echo "  just smoke    - Run from source as a one-off check (loops until Ctrl-C; sends real alerts)"
     @echo "  just clean    - Remove containers and images"
 
 build:
@@ -29,7 +33,7 @@ restart: stop run
 logs:
     docker-compose logs -f
 
-test:
+smoke:
     @echo "Running test scan..."
     cargo run --release
 

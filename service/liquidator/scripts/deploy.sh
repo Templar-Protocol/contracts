@@ -106,7 +106,7 @@ deploy_local_build() {
     
     # Build image
     cd "$(dirname "$0")/.."
-    just build
+    docker build -t templar-liquidator:latest -f Dockerfile ../..
     
     log_info "Saving Docker image..."
     docker save templar-liquidator:latest | gzip > /tmp/templar-liquidator.tar.gz

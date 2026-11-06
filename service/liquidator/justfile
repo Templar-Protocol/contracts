@@ -1,6 +1,9 @@
 # Templar Liquidator Bot
 
 set dotenv-load := false
+# Keep the workspace root's recipes reachable from this directory; a local
+# justfile otherwise hides them from `just`.
+set fallback := true
 
 IMAGE := "templar-liquidator"
 TAG := "latest"
