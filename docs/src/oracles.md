@@ -43,33 +43,41 @@ Because this configuration is immutable, an existing market cannot be repointed 
 
 ## RedStone Adapter Administration
 
-The adapter exposes owner-controlled configuration and upgrades independently of
-its RBAC roles. The owner may be an account or a contract; this interface does not
-select a controller implementation. `new(config, admin_id)` validates configuration
-and gives the explicit `admin_id` ownership and both RBAC roles; the deploying
-registry or predecessor does not receive authority implicitly. Production owner
-selection, deployment, and access-key removal are outside this chapter's scope.
+The adapter uses one **Admin** RBAC capability for role management, configuration,
+and upgrades. `TrustedUpdater` remains an independent writer permission.
+`new(config, admin_id)` validates configuration and gives the explicit `admin_id`
+both roles; the deploying registry or predecessor does not receive authority
+implicitly. This interface does not select a controller implementation or
+authorize deployment or access-key removal.
 
-### Authority and Ownership
+### Authority and Compatible Role Names
 
 | Method | JSON arguments | Authority / deposit |
 |---|---|---|
-| `own_get_owner` | `{}` | View / 0; returns account or null |
-| `own_get_proposed_owner` | `{}` | View / 0; returns account or null |
-| `own_propose_owner` | `{"account_id":"next-owner.near"}` or `{"account_id":null}` | Owner / exactly 1 yoctoNEAR; propose or cancel |
-| `own_accept_owner` | `{}` | Proposed owner / exactly 1 yoctoNEAR |
-| `own_renounce_owner` | `{}` | Owner / exactly 1 yoctoNEAR; permanently clears owner and proposal |
-| `admin_set_config` | `{"config":{...}}`; all five fields required (see below) | Owner / exactly 1 yoctoNEAR |
-| `admin_upgrade` | See upgrade encodings below | Owner / exactly 1 yoctoNEAR |
-| `set_role` | `{"account_id":"operator.near","role":"TrustedUpdater","set":true}` | `ModifyRoles` / exactly 1 yoctoNEAR |
+| `admin_set_config` | `{"config":{...}}`; all five fields required (see below) | Admin / exactly 1 yoctoNEAR |
+| `admin_upgrade` | See upgrade encodings below | Admin / exactly 1 yoctoNEAR |
+| `set_role` | `{"account_id":"operator.near","role":"TrustedUpdater","set":true}` | Admin / exactly 1 yoctoNEAR |
 
-Ownership and RBAC are independent. Ownership does not bypass `set_role`, and
-neither `ModifyRoles` nor `TrustedUpdater` permits configuration or upgrades.
+Admin is the same persisted role historically named `ModifyRoles`, not an
+additional role. The contract accepts both `"Admin"` and `"ModifyRoles"` and
+continues to serialize the canonical `"ModifyRoles"` spelling. Gateway JSON
+accepts `admin` and `modify_roles`, retaining canonical `modify_roles`; the manager
+accepts `--role admin` and the legacy `--role modify-roles`. Rust callers may use
+`Role::Admin` or `RoleValue::Admin` while legacy `ModifyRoles` variants and imports
+remain valid. Canonical schemas and Borsh role tags remain unchanged: Admin is
+tag 0 and `TrustedUpdater` is tag 1. Updated tooling can therefore address both
+legacy and upgraded deployments without version-dependent role dispatch.
+
+Every existing role administrator gains configuration and arbitrary-code upgrade
+authority. `TrustedUpdater` alone permits none of these administrative operations.
+There is no separate Owner component or ownership-transfer interface.
+
 `set_role` retains its default `set = true`, default
-`allow_removing_last_member = false`, and last-member guard. `has_role` and
-`list_role` retain their existing interfaces. Ownership transfer never moves roles
-or removes account access keys. Authorization checks the actual predecessor,
-not the transaction signer when a contract makes the call.
+`allow_removing_last_member = false`, and last-member guard. Explicitly overriding
+that guard to remove the last Admin can disable administration on a keyless
+account. `get_config`, `has_role`, and `list_role` retain their interfaces. Role
+changes do not remove account access keys. Authorization checks the actual
+predecessor, not the transaction signer when a contract makes the call.
 
 ### Atomic Full Configuration
 
@@ -103,12 +111,12 @@ The signer above is illustrative, not a recommended production signer.
 | `min_interval_between_updates_ms` | Untrusted-write spacing; full `u64` range; trusted writes retain their existing verification path |
 
 The supplied signer set and quorum are validated together before replacing state.
-Invalid input leaves configuration, ownership, roles, and feeds unchanged.
+Invalid input leaves configuration, roles, and feeds unchanged.
 A later successful call overwrites every prior configuration field. Queued calls
 carry full snapshots: if snapshots A and B start from the same configuration,
 B changes the lead bound, and A changes only the lag bound relative to that
 starting snapshot, executing B then A restores the old lead bound from A.
-Owners must review the complete snapshot and execution order; there is no
+Admins must review the complete snapshot and execution order; there is no
 revision counter or compare-and-swap. `get_config` returns the applied configuration,
 and `unique_signer_threshold` reflects its quorum.
 
@@ -137,50 +145,55 @@ malformed, invalid, unauthorized, and wrong-deposit calls emit no configuration
 event. Treat an event as committed only if its emitting receipt succeeds: logs
 alone are not proof that a receipt's state changes committed.
 
-The existing `write_prices` version `1.0.0` payload is unchanged. Ownership uses
-the standard Owner component's separate `x-own` events. Consumers should dispatch
-by standard, event name, and version, and tolerate unrelated event names.
+The existing `write_prices` version `1.0.0` payload is unchanged. Consumers should
+dispatch by standard, event name, and version, and tolerate unrelated event names.
 
-### Upgrades and Legacy Bootstrap
+### Upgrades and Versioned Migration
 
-`admin_upgrade` accepts either immutable source encoding:
+For an already-current state version, `admin_upgrade` accepts either immutable
+source encoding with empty migration bytes:
 
 ```json
-{"code":"<base64 WASM>","migrate_args":"e30="}
+{"code":"<base64 WASM>","migrate_args":""}
 ```
 
 ```json
-{"code":{"GlobalHash":"<base58 hash>"},"migrate_args":"e30="}
+{"code":{"GlobalHash":"<base58 hash>"},"migrate_args":""}
 ```
 
-`e30=` encodes `{}`. Empty code is rejected with `admin_upgrade: empty code blob`.
-Deployment and migration are two actions in one self-receipt, with 250 Tgas
-reserved for migration. Failed migration reverts that receipt's code/state
-changes. Scheduling is not completion; inspect all receipt failures. Mutable
-global-by-account references and arbitrary deployment targets are unsupported.
+Empty code is rejected with `admin_upgrade: empty code blob`. Deployment and
+migration are two actions in one self-receipt, with 250 Tgas reserved for migration.
+Failed migration reverts that receipt's code/state changes. Scheduling is not
+completion; inspect all receipt failures. Mutable global-by-account references
+and arbitrary deployment targets are unsupported.
 
-`migrate(owner_id: Option<AccountId>)` is nonpayable and self-only, not an
-initializer or an owner-callable setter. The adapter-only root, feed prefix `a`,
-and RBAC prefix `~r` remain unchanged; ownership uses separate standard `~o` slots.
+The adapter uses the shared `VersionedState<State>` and `impl_versioned_state!`
+framework. Its generated views are `get_stored_state_version`,
+`get_target_state_version`, and `needs_migration`. Fresh deployments record
+version 1. Legacy deployments with no `__v` metadata are version 0.
 
-| Ownership sentinel exists | `owner_id` | Result |
-|---|---|---|
-| No | Account | Initialize ownership once; preserve config, roles, and feeds |
-| No | Omitted/null | Fail: `migrate: owner_id is required for uninitialized ownership` |
-| Yes | Omitted/null | No-op; preserve owner and pending transfer, including renunciation |
-| Yes | Account | Fail: `migrate: owner is already initialized` |
+The first legacy upgrade requires an atomic deploy and self-only `migrate` call
+by the existing deployment authority, supplying the standard typed migration:
 
-The first legacy upgrade requires an atomic deploy and
-`migrate({"owner_id":"<owner account>"})` call by the existing deployment authority.
-Normal subsequent upgrades call `migrate({})`. Historical configuration is not
-revalidated during migration, so it remains readable and can be corrected by a
-valid full configuration. Renunciation never permits re-bootstrap; on a keyless
-account it irreversibly disables configuration and upgrades. Never use it for handover.
+```json
+{"from_version":"v0"}
+```
+
+When supplied through `admin_upgrade`, serialize the migration JSON and base64
+encode those bytes as `migrate_args`. The V0-to-V1 transformer preserves the
+existing adapter, feed prefix `a`, RBAC prefix `~r`, cached prices, replay
+timestamps, and role memberships. Historical configuration is not revalidated;
+it remains readable and can be corrected by a valid full replacement. Existing
+`ModifyRoles` members become Admins without a new grant or owner selection.
+
+The framework validates the entire migration chain before applying it. When the
+stored version is already current, migration requires **empty raw input**, not
+the bytes of `{}` or a stale migration. There is no `owner_id` bootstrap argument.
 
 ### Adapter Regression Coverage
 
-Released-WASM migration and direct owner-controlled administration are covered by
-the adapter sandbox target:
+Released-WASM versioned migration and direct Admin-controlled administration are
+covered by the adapter sandbox target:
 
 ```text
 just test-sandbox -p templar-gateway-testing --test redstone_admin

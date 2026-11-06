@@ -1,17 +1,19 @@
-//! Actual-WASM ownership bootstrap, configuration, and keyless self-upgrade receipts.
+//! Actual-WASM Admin RBAC, versioned migration, and keyless self-upgrade receipts.
 use std::fmt::Write;
 
 use anyhow::Result;
+use near_api::types::account::ContractState;
 use near_api::types::transaction::result::{ExecutionSuccess, TransactionResult};
 use near_api::types::AccountId;
 use near_api::{Account, Contract};
 use near_sdk::json_types::Base64VecU8;
 use near_sdk::{Gas, NearToken};
 use serde_json::{json, Value};
-use templar_common::oracle::redstone::{config, Config};
+use templar_common::oracle::redstone::{config, Config, Role};
 use templar_common::upgrade::UpgradeSource;
+use templar_gateway_methods_spec::redstone::{self, RoleValue};
 use templar_gateway_testing::{
-    test_signer, wasm, ArtifactId, SandboxHarness, TEST_FINALITY_POLICY,
+    failed_receipts, test_signer, wasm, ArtifactId, SandboxHarness, TEST_FINALITY_POLICY,
 };
 
 const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
@@ -43,24 +45,31 @@ async fn snapshot(h: &SandboxHarness, adapter: &AccountId) -> Result<Value> {
     }))
 }
 
-async fn ownership(h: &SandboxHarness, adapter: &AccountId) -> Result<Value> {
-    Ok(json!({
-        "owner": h.view_json::<Value>(adapter, "own_get_owner", json!({})).await?,
-        "proposed": h.view_json::<Value>(adapter, "own_get_proposed_owner", json!({})).await?,
-    }))
+async fn stored_version(h: &SandboxHarness, adapter: &AccountId) -> Result<Option<u32>> {
+    let entries = h
+        .gateway_client()
+        .contract(adapter.clone())
+        .state_with_prefix(b"__v".to_vec())
+        .await?;
+    entries
+        .into_iter()
+        .find(|(key, _)| key.0.as_slice() == b"__v")
+        .map(|(_, value)| {
+            Ok(u32::from_le_bytes(value.0.try_into().map_err(|value| {
+                anyhow::anyhow!("invalid state version bytes: {value:?}")
+            })?))
+        })
+        .transpose()
 }
 
-async fn code_identity(h: &SandboxHarness, adapter: &AccountId) -> Result<String> {
-    Ok(format!(
-        "{:?}",
-        Account(adapter.clone())
-            .view()
-            .at(TEST_FINALITY_POLICY.query_reference())
-            .fetch_from(&h.network)
-            .await?
-            .data
-            .contract_state
-    ))
+async fn code_identity(h: &SandboxHarness, adapter: &AccountId) -> Result<ContractState> {
+    Ok(Account(adapter.clone())
+        .view()
+        .at(TEST_FINALITY_POLICY.query_reference())
+        .fetch_from(&h.network)
+        .await?
+        .data
+        .contract_state)
 }
 
 async fn call(
@@ -94,7 +103,7 @@ fn successful(result: TransactionResult) -> ExecutionSuccess {
 }
 
 // Keep one ordered lifecycle so the same released feed records and roles are compared
-// across bootstrap, configuration, and both code-linkage transitions.
+// across migration, configuration, and both code-linkage transitions.
 #[allow(
     clippy::too_many_lines,
     reason = "one released-state lifecycle proves preservation across atomic upgrade receipts"
@@ -103,9 +112,8 @@ fn successful(result: TransactionResult) -> ExecutionSuccess {
 async fn released_state_survives_direct_administration_and_keyless_upgrades() -> Result<()> {
     let h = SandboxHarness::start().await?;
     let adapter = h.create_user("redstone-legacy").await?;
-    let owner = h.create_user("redstone-owner").await?;
+    let admin = h.create_user("redstone-admin").await?;
     let updater = h.create_user("redstone-updater").await?;
-    let pending = h.create_user("redstone-pending").await?;
     let mut config = config::prod();
     config.max_timestamp_delay_ms = u64::MAX;
     config.max_timestamp_ahead_ms = u64::MAX;
@@ -117,16 +125,33 @@ async fn released_state_survives_direct_administration_and_keyless_upgrades() ->
         json!({"config": config}),
     )
     .await?;
-    for role in ["ModifyRoles", "TrustedUpdater"] {
-        h.call_function_payable(
-            &adapter,
-            &adapter.0,
-            "set_role",
-            json!({"account_id": updater.0, "role": role, "set": true}),
-            ONE_YOCTO,
-        )
+    // The new gateway alias must still serialize the old contract's canonical role name.
+    h.execute(
+        &adapter,
+        redstone::SetRole {
+            oracle_id: adapter.0.clone(),
+            account_id: admin.0.clone(),
+            role: RoleValue::Admin,
+            set: true,
+        },
+    )
+    .await?;
+    let members = h
+        .client()?
+        .read(redstone::ListRole {
+            oracle_id: adapter.0.clone(),
+            role: RoleValue::Admin,
+        })
         .await?;
-    }
+    assert!(members.contains(&admin.0));
+    h.call_function_payable(
+        &adapter,
+        &adapter.0,
+        "set_role",
+        json!({"account_id": updater.0, "role": Role::TrustedUpdater, "set": true}),
+        ONE_YOCTO,
+    )
+    .await?;
     h.call_function(
         &updater,
         &adapter.0,
@@ -146,38 +171,90 @@ async fn released_state_survives_direct_administration_and_keyless_upgrades() ->
     }
     let released_code = code_identity(&h, &adapter.0).await?;
     let code = wasm::redstone_adapter().await.to_vec();
+    assert_eq!(stored_version(&h, &adapter.0).await?, None);
     let rejected = h
-        .try_deploy_and_init(&adapter.0, code.clone(), "migrate", json!({}))
+        .try_deploy_and_init(
+            &adapter.0,
+            code.clone(),
+            "migrate",
+            json!([{"from_version": "v0"}, {"from_version": "v0"}]),
+        )
         .await?;
+    let failures: Vec<_> = failed_receipts(&rejected).collect();
+    assert!(
+        !failures.is_empty(),
+        "invalid migration must fail a receipt"
+    );
     assert!(rejected
         .operation
         .failure_message()
         .unwrap_or_default()
-        .contains("migrate: owner_id is required for uninitialized ownership"));
+        .contains("migration output version 1 != next migration input version 0"));
     assert_eq!(code_identity(&h, &adapter.0).await?, released_code);
     assert_eq!(snapshot(&h, &adapter.0).await?, before);
+    assert_eq!(stored_version(&h, &adapter.0).await?, None);
     h.deploy_and_init(
         &adapter.0,
         code.clone(),
         "migrate",
-        json!({"owner_id": owner.0}),
+        json!({"from_version": "v0"}),
     )
     .await?;
     assert_ne!(code_identity(&h, &adapter.0).await?, released_code);
     assert_eq!(snapshot(&h, &adapter.0).await?, before);
+    assert_eq!(stored_version(&h, &adapter.0).await?, Some(1));
     assert_eq!(
-        ownership(&h, &adapter.0).await?,
-        json!({"owner": owner.0, "proposed": null})
+        h.view_json::<u32>(&adapter.0, "get_stored_state_version", json!({}))
+            .await?,
+        1
+    );
+    assert_eq!(
+        h.view_json::<u32>(&adapter.0, "get_target_state_version", json!({}))
+            .await?,
+        1
+    );
+    assert!(
+        !h.view_json::<bool>(&adapter.0, "needs_migration", json!({}))
+            .await?
     );
     let rejected = h
-        .try_call_function(&owner, &adapter.0, "migrate", json!({}))
+        .try_call_function(&admin, &adapter.0, "migrate", json!({}))
         .await?;
+    assert!(!failed_receipts(&rejected).collect::<Vec<_>>().is_empty());
     assert!(rejected
         .operation
         .failure_message()
         .unwrap_or_default()
         .contains("private"));
     assert_eq!(snapshot(&h, &adapter.0).await?, before);
+    assert_eq!(stored_version(&h, &adapter.0).await?, Some(1));
+
+    // A current self-migration takes raw empty bytes, not a JSON object.
+    successful(
+        Contract(adapter.0.clone())
+            .call_function_raw("migrate", Vec::new())
+            .transaction()
+            .gas(Gas::from_tgas(50))
+            .with_signer(adapter.0.clone(), test_signer())
+            .wait_until(TEST_FINALITY_POLICY.transaction_status())
+            .send_to(&h.network)
+            .await?,
+    );
+    let rejected = call(
+        &h,
+        &adapter.0,
+        &adapter.0,
+        "migrate",
+        json!({}),
+        NearToken::from_yoctonear(0),
+        Gas::from_tgas(50),
+    )
+    .await?
+    .assert_failure();
+    assert!(!rejected.receipt_failures().is_empty());
+    assert!(format!("{rejected:?}").contains("migrate_args must be empty"));
+    assert_eq!(snapshot(&h, &adapter.0).await?, before);
+    assert_eq!(stored_version(&h, &adapter.0).await?, Some(1));
 
     let mut replacement: Config = serde_json::from_value(before["config"].clone())?;
     replacement.max_timestamp_delay_ms = 120_000;
@@ -185,7 +262,7 @@ async fn released_state_survives_direct_administration_and_keyless_upgrades() ->
         call(
             &h,
             &adapter.0,
-            &owner.0,
+            &admin.0,
             "admin_set_config",
             json!({"config": replacement}),
             ONE_YOCTO,
@@ -219,26 +296,31 @@ async fn released_state_survives_direct_administration_and_keyless_upgrades() ->
         events,
         vec![json!({
             "standard": "redstone-adapter", "version": "1.0.0", "event": "config_updated",
-            "data": {"updater": owner.0, "config": event_config}
+            "data": {"updater": admin.0, "config": event_config}
         })]
     );
-    h.call_function_payable(
-        &owner,
-        &adapter.0,
-        "own_propose_owner",
-        json!({"account_id": pending.0}),
-        ONE_YOCTO,
-    )
-    .await?;
     let preserved = snapshot(&h, &adapter.0).await?;
     assert_eq!(preserved["config"], serde_json::to_value(replacement)?);
     assert_eq!(preserved["feeds"], before["feeds"]);
     assert_eq!(preserved["roles"], before["roles"]);
-    let preserved_owner = ownership(&h, &adapter.0).await?;
+    assert_eq!(stored_version(&h, &adapter.0).await?, Some(1));
     h.revoke_all_access_keys(&adapter.0).await?;
-    assert!(!h.view_access_keys(&owner.0).await?.is_empty());
+    assert!(!h.view_access_keys(&admin.0).await?.is_empty());
+    successful(
+        call(
+            &h,
+            &adapter.0,
+            &admin.0,
+            "admin_set_config",
+            json!({"config": preserved["config"]}),
+            ONE_YOCTO,
+            Gas::from_tgas(50),
+        )
+        .await?,
+    );
+    assert_eq!(snapshot(&h, &adapter.0).await?, preserved);
     let local_identity = code_identity(&h, &adapter.0).await?;
-    assert!(local_identity.contains("LocalHash"));
+    assert!(matches!(local_identity, ContractState::LocalHash(_)));
     let global_hash = h.deploy_global_contract(code.clone()).await?;
     for source in [
         UpgradeSource::GlobalHash(global_hash.0.into()),
@@ -248,46 +330,47 @@ async fn released_state_survives_direct_administration_and_keyless_upgrades() ->
             call(
                 &h,
                 &adapter.0,
-                &owner.0,
+                &admin.0,
                 "admin_upgrade",
                 json!({
-                    "code": source, "migrate_args": Base64VecU8(b"{}".to_vec())
+                    "code": source, "migrate_args": Base64VecU8(vec![])
                 }),
                 ONE_YOCTO,
-                Gas::from_tgas(500),
+                Gas::from_tgas(if matches!(source, UpgradeSource::GlobalHash(_)) {
+                    300
+                } else {
+                    500
+                }),
             )
             .await?,
         );
         let identity = code_identity(&h, &adapter.0).await?;
-        assert!(
-            identity.contains(if matches!(source, UpgradeSource::GlobalHash(_)) {
-                "GlobalHash"
-            } else {
-                "LocalHash"
-            })
-        );
+        assert!(matches!(
+            (&source, &identity),
+            (UpgradeSource::GlobalHash(_), ContractState::GlobalHash(_))
+                | (UpgradeSource::Code(_), ContractState::LocalHash(_))
+        ));
         assert_eq!(snapshot(&h, &adapter.0).await?, preserved);
-        assert_eq!(ownership(&h, &adapter.0).await?, preserved_owner);
+        assert_eq!(stored_version(&h, &adapter.0).await?, Some(1));
         let rejected = call(
             &h,
             &adapter.0,
-            &owner.0,
+            &admin.0,
             "admin_upgrade",
             json!({
                 "code": UpgradeSource::Code(Base64VecU8(wasm::redstone_adapter().await.to_vec())),
-                "migrate_args": Base64VecU8(serde_json::to_vec(&json!({"owner_id": owner.0}))?)
+                "migrate_args": Base64VecU8(b"{}".to_vec())
             }),
             ONE_YOCTO,
             Gas::from_tgas(500),
         )
         .await?;
-        let error = rejected
-            .into_result()
-            .expect_err("initialized ownership cannot be bootstrapped again");
-        assert!(format!("{error:?}").contains("migrate: owner is already initialized"));
+        let error = rejected.assert_failure();
+        assert!(!error.receipt_failures().is_empty());
+        assert!(format!("{error:?}").contains("migrate_args must be empty"));
         assert_eq!(code_identity(&h, &adapter.0).await?, identity);
         assert_eq!(snapshot(&h, &adapter.0).await?, preserved);
-        assert_eq!(ownership(&h, &adapter.0).await?, preserved_owner);
+        assert_eq!(stored_version(&h, &adapter.0).await?, Some(1));
     }
     assert_eq!(code_identity(&h, &adapter.0).await?, local_identity);
     assert!(h.view_access_keys(&adapter.0).await?.is_empty());

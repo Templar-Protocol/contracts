@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Explicit administrator ownership, atomic validated full configuration via
-  `admin_set_config`, and owner-controlled inline or immutable-global upgrades.
-- One-time self-only ownership bootstrap preserving historical adapter state and
-  independent RBAC; released-WASM migration and direct owner-administration coverage.
+- Atomic validated full configuration via `admin_set_config` and inline or
+  immutable-global upgrades, authorized by the existing administrative RBAC role.
+- Compatible `Admin` role naming with legacy Rust, JSON, CLI, and Borsh identities
+  preserved; `TrustedUpdater` remains independent.
+- Standard versioned state and a typed V0-to-V1 migration preserving historical
+  adapter data and RBAC memberships, with direct released-WASM upgrade coverage.
 - Versioned `config_updated` audit events containing the actual caller and full
   policy after validated configuration replacement; event-only hex signer encoding keeps
   the maximum 255-signer policy within the receipt log limit while preserving the

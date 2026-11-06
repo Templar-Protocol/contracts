@@ -8,7 +8,6 @@ use near_sdk::{
     test_utils::{self, VMContextBuilder},
     testing_env, AccountId, NearToken,
 };
-use near_sdk_contract_tools::owner::OwnerExternal;
 use primitive_types::U256;
 use templar_common::oracle::redstone::{
     config, Config, FeedData, FeedId, RedStoneContractInterface, Role,
@@ -50,7 +49,7 @@ fn context(predecessor: &str, timestamp_ms: u64, deposit: u128) {
 
 #[allow(
     clippy::unwrap_used,
-    reason = "the test owner is a fixed valid account literal"
+    reason = "the test administrator is a fixed valid account literal"
 )]
 fn new_adapter() -> Contract {
     context("registry.near", FIXTURE_TIMESTAMP_MS, 0);
@@ -78,7 +77,7 @@ fn assert_rejected(action: impl FnOnce(), expected: &str) {
 
 fn role_members(adapter: &Contract) -> (Vec<AccountId>, Vec<AccountId>) {
     (
-        adapter.list_role(Role::ModifyRoles, None, None),
+        adapter.list_role(Role::Admin, None, None),
         adapter.list_role(Role::TrustedUpdater, None, None),
     )
 }
@@ -95,12 +94,9 @@ fn new_seeds_roles_on_explicit_admin() {
     let admin = "operator.near".parse::<near_sdk::AccountId>().unwrap();
     let predecessor = "registry.near".parse::<near_sdk::AccountId>().unwrap();
 
-    assert_eq!(adapter.own_get_owner(), Some(admin.clone()));
-    assert_eq!(adapter.own_get_proposed_owner(), None);
-
-    assert!(adapter.has_role(admin.clone(), Role::ModifyRoles));
+    assert!(adapter.has_role(admin.clone(), Role::Admin));
     assert!(adapter.has_role(admin, Role::TrustedUpdater));
-    assert!(!adapter.has_role(predecessor.clone(), Role::ModifyRoles));
+    assert!(!adapter.has_role(predecessor.clone(), Role::Admin));
     assert!(!adapter.has_role(predecessor, Role::TrustedUpdater));
 }
 
@@ -190,26 +186,24 @@ fn output() {
 }
 
 #[rstest::rstest]
-#[case::stranger("stranger.near", 1, "Owner only")]
-#[case::role_administrator("roles.near", 1, "Owner only")]
-#[case::trusted_updater("updater.near", 1, "Owner only")]
+#[case::stranger("stranger.near", 1, "Unauthorized role")]
+#[case::trusted_updater("updater.near", 1, "Unauthorized role")]
 #[case::no_deposit("owner.near", 0, "exactly 1 yoctoNEAR")]
 #[case::excess_deposit("owner.near", 2, "exactly 1 yoctoNEAR")]
-fn config_update_requires_owner_and_one_yocto(
+fn config_update_requires_admin_and_one_yocto(
     #[case] caller: &str,
     #[case] deposit: u128,
     #[case] expected: &str,
 ) {
     let mut adapter = new_adapter();
     context("owner.near", FIXTURE_TIMESTAMP_MS, 1);
-    adapter.set_role("roles.near".parse().unwrap(), Role::ModifyRoles, None, None);
+    adapter.set_role("roles.near".parse().unwrap(), Role::Admin, None, None);
     adapter.set_role(
         "updater.near".parse().unwrap(),
         Role::TrustedUpdater,
         None,
         None,
     );
-    adapter.own_propose_owner(Some("next.near".parse().unwrap()));
     let config = adapter.get_config().clone();
     let roles = role_members(&adapter);
 
@@ -226,28 +220,17 @@ fn config_update_requires_owner_and_one_yocto(
 
     assert_eq!(adapter.get_config(), &config);
     assert_eq!(role_members(&adapter), roles);
-    assert_eq!(adapter.own_get_owner(), Some("owner.near".parse().unwrap()));
-    assert_eq!(
-        adapter.own_get_proposed_owner(),
-        Some("next.near".parse().unwrap())
-    );
 }
 
 #[test]
-fn owner_without_roles_can_replace_configuration() {
+fn admin_without_updater_role_can_replace_configuration() {
     let mut adapter = new_adapter();
     context("owner.near", FIXTURE_TIMESTAMP_MS, 1);
-    adapter.set_role("roles.near".parse().unwrap(), Role::ModifyRoles, None, None);
+    adapter.set_role("roles.near".parse().unwrap(), Role::Admin, None, None);
     adapter.set_role(
         "updater.near".parse().unwrap(),
         Role::TrustedUpdater,
         None,
-        None,
-    );
-    adapter.set_role(
-        "owner.near".parse().unwrap(),
-        Role::ModifyRoles,
-        Some(false),
         None,
     );
     context("roles.near", FIXTURE_TIMESTAMP_MS, 1);
@@ -267,7 +250,7 @@ fn owner_without_roles_can_replace_configuration() {
 
     assert_eq!(adapter.get_config().max_timestamp_delay_ms, 0);
     assert_eq!(role_members(&adapter), roles);
-    assert!(!adapter.has_role("owner.near".parse().unwrap(), Role::ModifyRoles));
+    assert!(adapter.has_role("owner.near".parse().unwrap(), Role::Admin));
     assert!(!adapter.has_role("owner.near".parse().unwrap(), Role::TrustedUpdater));
 }
 
@@ -338,7 +321,6 @@ fn invalid_config_leaves_all_state_unchanged(
         signed_payload(ETH_BTC).into(),
     );
     context("owner.near", FIXTURE_TIMESTAMP_MS, 1);
-    adapter.own_propose_owner(Some("next.near".parse().unwrap()));
     let config = adapter.get_config().clone();
     let feeds = adapter.read_price_data(vec!["ETH".into(), "BTC".into()]);
     let roles = role_members(&adapter);
@@ -361,11 +343,6 @@ fn invalid_config_leaves_all_state_unchanged(
         feeds
     );
     assert_eq!(role_members(&adapter), roles);
-    assert_eq!(adapter.own_get_owner(), Some("owner.near".parse().unwrap()));
-    assert_eq!(
-        adapter.own_get_proposed_owner(),
-        Some("next.near".parse().unwrap())
-    );
 }
 
 #[rstest::rstest]
@@ -542,4 +519,71 @@ fn signer_rotation_changes_new_verification_without_revoking_cached_prices() {
         cached[&FeedId::from("ETH")].price
     );
     assert_eq!(role_members(&adapter), roles);
+}
+
+#[rstest::rstest]
+#[case::stranger("stranger.near", 1, "Unauthorized role")]
+#[case::updater("updater.near", 1, "Unauthorized role")]
+#[case::zero_deposit("owner.near", 0, "exactly 1 yoctoNEAR")]
+#[case::excess_deposit("owner.near", 2, "exactly 1 yoctoNEAR")]
+fn role_updates_require_admin_and_one_yocto(
+    #[case] caller: &str,
+    #[case] deposit: u128,
+    #[case] expected: &str,
+) {
+    let mut adapter = new_adapter();
+    context("owner.near", FIXTURE_TIMESTAMP_MS, 1);
+    adapter.set_role(
+        "updater.near".parse().unwrap(),
+        Role::TrustedUpdater,
+        None,
+        None,
+    );
+    let members = role_members(&adapter);
+    context(caller, FIXTURE_TIMESTAMP_MS, deposit);
+    assert_rejected(
+        || adapter.set_role("stranger.near".parse().unwrap(), Role::Admin, None, None),
+        expected,
+    );
+    assert_eq!(role_members(&adapter), members);
+}
+
+#[test]
+fn role_defaults_and_last_admin_override_remain_explicit() {
+    let mut adapter = new_adapter();
+    context("owner.near", FIXTURE_TIMESTAMP_MS, 1);
+    assert_rejected(
+        || {
+            adapter.set_role(
+                "owner.near".parse().unwrap(),
+                Role::Admin,
+                Some(false),
+                None,
+            );
+        },
+        "Cannot remove the last member of a role",
+    );
+    adapter.set_role("roles.near".parse().unwrap(), Role::Admin, None, None);
+    adapter.set_role(
+        "owner.near".parse().unwrap(),
+        Role::Admin,
+        Some(false),
+        None,
+    );
+    assert!(!adapter.has_role("owner.near".parse().unwrap(), Role::Admin));
+    let config = adapter.get_config().clone();
+    assert_rejected(
+        || adapter.admin_set_config(config.clone()),
+        "Unauthorized role",
+    );
+    context("roles.near", FIXTURE_TIMESTAMP_MS, 1);
+    adapter.admin_set_config(config);
+    adapter.set_role(
+        "roles.near".parse().unwrap(),
+        Role::Admin,
+        Some(false),
+        Some(true),
+    );
+    assert!(adapter.list_role(Role::Admin, None, None).is_empty());
+    assert!(adapter.has_role("owner.near".parse().unwrap(), Role::TrustedUpdater));
 }
