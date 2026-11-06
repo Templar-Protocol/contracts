@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Atomic validated full configuration via `admin_set_config` and inline or
+  immutable-global upgrades, authorized by the existing administrative RBAC role.
+- Compatible `Admin` role naming with legacy Rust, JSON, CLI, and Borsh identities
+  preserved; `TrustedUpdater` remains independent.
+- Standard versioned state and a typed V0-to-V1 migration preserving historical
+  adapter data and RBAC memberships, with direct released-WASM upgrade coverage.
+- Versioned `config_updated` audit events containing the actual caller and full
+  policy after validated configuration replacement; event-only hex signer encoding keeps
+  the maximum 255-signer policy within the receipt log limit while preserving the
+  existing configuration and `write_prices` wire formats.
+
 ## [0.2.1](https://github.com/Templar-Protocol/contracts/compare/templar-redstone-adapter-contract-v0.2.0...templar-redstone-adapter-contract-v0.2.1) - 2026-08-03
 
 ### Added
