@@ -142,8 +142,9 @@ The following checks are required before rollout:
    authority before any child-key removal; revoking Deployer alone does not contain Owner's
    bypass. If Owner cannot be secured or transferred, stop using affected children, disclose the
    compromise, and migrate users where feasible instead of treating role revocation as containment.
-2. After containing any compromised Owner authority, revoke the compromised Deployer through
-   `set_role` before any child-key removal.
+2. After containing any compromised Owner authority, enumerate explicit Deployer membership and
+   revoke every unauthorized grant through `set_role`, including the compromised account's, before
+   any child-key removal.
 3. Wait for deployment receipts and callbacks authorized before revocation to settle, so no
    in-flight deployment can create another child after the role is revoked.
 4. Re-enumerate child keys, including children created after the compromise. Remove every
