@@ -138,15 +138,19 @@ The following checks are required before rollout:
 
 ### Compromised-Deployer recovery
 
-1. Revoke the compromised Deployer through `set_role` before any child-key removal.
-2. Wait for deployment receipts and callbacks authorized before revocation to settle, so no
+1. Determine whether the compromised Deployer is also Owner. If so, secure or transfer Owner
+   authority before any child-key removal; revoking Deployer alone does not contain Owner's
+   bypass. If Owner cannot be secured or transferred, stop using affected children, disclose the
+   compromise, and migrate users where feasible instead of treating role revocation as containment.
+2. Otherwise, revoke the compromised Deployer through `set_role` before any child-key removal.
+3. Wait for deployment receipts and callbacks authorized before revocation to settle, so no
    in-flight deployment can create another child after the role is revoked.
-3. Re-enumerate child keys, including children created after the compromise. Remove every
+4. Re-enumerate child keys, including children created after the compromise. Remove every
    unauthorized key using a trusted full-access key on that child, if one remains.
-4. Once the key list is clean, grant a reviewed replacement Deployer role if continued deployment
+5. Once the key list is clean, grant a reviewed replacement Deployer role if continued deployment
    is required. Rotating to a replacement does not revoke any child keys.
-5. Verify the final key list and establish trusted child code and state before resuming use.
-6. If integrity cannot be established or safely restored, disclose the compromise and migrate users
+6. Verify the final key list and establish trusted child code and state before resuming use.
+7. If integrity cannot be established or safely restored, disclose the compromise and migrate users
    to a newly reviewed market where feasible, even if a trusted child key remains. If no trusted
    child key or authorized removal method exists, stop using that Deployer and apply the same
    disclosure/migration fallback. A keyless market cannot be patched; recovery then requires a new
