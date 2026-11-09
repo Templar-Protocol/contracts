@@ -332,5 +332,8 @@ Two secrets must be present:
   `GITHUB_TOKEN` does not trigger other workflows, so without a PAT the Release
   PR never runs `test.yml` and the release tags never run the artifact/CLI
   workflows. Both release-plz jobs fail fast if it is unset. The release job also
-  pushes `release-baseline` with it.
+  pushes `release-baseline` with it and dispatches the release WASM builds with
+  it: a build the job's own token starts never fires `catalog-pr.yml`. A
+  fine-grained PAT therefore needs Actions write access as well as Contents and
+  Pull requests.
 - **`CARGO_REGISTRY_TOKEN`.** Only consulted once Tier A starts publishing.

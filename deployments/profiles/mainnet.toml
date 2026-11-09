@@ -1,7 +1,7 @@
 schema = 5
 
 [versions]
-market = "v1.3.0"
+market = "templar-market-contract@1.6.1#d75c2419527d816a8f5fcab6a585032799a38cf90e09a5a98992d5c84774562a"
 proxy_oracle = "templar-proxy-oracle-near-contract@0.4.1#fb9b3b46bbedd16665dbc31f0efc605c8ef49acfa5ff17608fbc3b490b4a6cb3"
 proxy_governance = "templar-proxy-oracle-near-governance-contract@0.3.1#40b1719a525dae7117a776ccefa281f97470e1213e83bbf054bd77eae5b0568a"
 

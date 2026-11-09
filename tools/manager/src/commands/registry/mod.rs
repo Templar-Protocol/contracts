@@ -34,7 +34,7 @@ pub enum RegistryNs {
     ListDeploymentsByKind(ListDeploymentsByKind),
     /// Read a single deployment record.
     GetDeployment(GetDeployment),
-    /// Build (or load) a contract and register it as a deployable version.
+    /// Register a published contract release, or explicitly build/upload local code.
     AddVersion(AddVersion),
     /// Deploy a registered version to a new account.
     Deploy(Deploy),

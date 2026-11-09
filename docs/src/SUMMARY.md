@@ -21,5 +21,7 @@
   - [Security Reporting](./security.md)
 - [Monitoring and Risk Management](./monitoring.md)
 - [Testing](./testing.md)
+- [Architecture Decisions](./adr/index.md)
+  - [1. Record architecture decisions as ADRs](./adr/0001-record-architecture-decisions-as-adrs.md)
 - [Glossary](./glossary.md)
 - [Notes](./notes.md)

@@ -39,7 +39,6 @@ jobs:
     permissions:
       contents: write # create tags and GitHub Releases
       pull-requests: read # release-plz checks for an existing release PR
-      actions: write # dispatch release-artifacts.yml for released contracts
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -95,9 +94,10 @@ jobs:
         if: steps.release.outputs.releases_created == 'true'
         env:
           RELEASES: ${{ steps.release.outputs.releases }}
-          # `actions: write` on this job's own token starts the run; the PAT is
-          # not needed, and is kept out of a step that only calls `gh`.
-          GH_TOKEN: ${{ github.token }}
+          # The PAT, not this job's own token: GitHub fires no `workflow_run`
+          # for a run the job token started, so a build dispatched with it
+          # would never start `catalog-pr.yml` and its row would go unrecorded.
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
         run: |
           set -euo pipefail
           # Parse every tag before dispatching any: a `jq` failure in a process
