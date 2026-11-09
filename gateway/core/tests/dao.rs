@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use near_account_id::AccountId;
 use serde_json::{json, Value};
-use templar_gateway_core::{GatewayContext, PlanWrite};
+use templar_gateway_core::{GatewayContext, GatewayError, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_methods_spec::{dao, tx};
 use templar_gateway_testing::{failed_receipts, SandboxHarness};
@@ -26,6 +26,27 @@ fn proposal(dao_id: &AccountId, receiver_id: &AccountId) -> Result<dao::AddPropo
             }}
         }
     }))?)
+}
+
+fn assert_dao_rejection(
+    result: &WriteOperationResult,
+    dao_id: &AccountId,
+    reason: &str,
+) -> Result<()> {
+    assert!(failed_receipts(result).any(|receipt| &receipt.contract_id == dao_id));
+    let outcome = result
+        .operation
+        .final_outcome()
+        .context("rejected DAO call must have a final outcome")?;
+    assert!(
+        outcome
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains(reason)),
+        "expected {reason}, got {:?}",
+        outcome.failure
+    );
+    Ok(())
 }
 
 fn proposal_id(result: &WriteOperationResult) -> Result<u64> {
@@ -121,16 +142,23 @@ async fn dao_proposals_enforce_live_bond_policy_and_threshold() -> Result<()> {
         GatewayContext::from_near_client(harness.gateway_client()),
     )
     .await;
-    assert!(rejected.is_err());
+    assert!(matches!(
+        rejected,
+        Err(GatewayError::RequestPreconditionFailed(_))
+    ));
     let count: u64 = harness
         .view_json(&dao_id, "get_last_proposal_id", json!({}))
         .await?;
     assert_eq!(count, 0);
 
     // Bypass the planner to verify the deployed contract also enforces authorization and bond.
-    for (signer, deposit) in [
-        (&outsider, NearToken::from_millinear(100)),
-        (&proposer, NearToken::ZERO),
+    for (signer, deposit, reason) in [
+        (
+            &outsider,
+            NearToken::from_millinear(100),
+            "ERR_PERMISSION_DENIED",
+        ),
+        (&proposer, NearToken::ZERO, "ERR_MIN_BOND"),
     ] {
         let input = proposal(&dao_id, &harness.ft_contract_id)?;
         let rejected = harness
@@ -145,7 +173,7 @@ async fn dao_proposals_enforce_live_bond_policy_and_threshold() -> Result<()> {
                 },
             )
             .await?;
-        assert!(failed_receipts(&rejected).any(|receipt| receipt.contract_id == dao_id));
+        assert_dao_rejection(&rejected, &dao_id, reason)?;
         assert_eq!(
             harness
                 .view_json::<u64>(&dao_id, "get_last_proposal_id", json!({}))
@@ -166,7 +194,8 @@ async fn dao_proposals_enforce_live_bond_policy_and_threshold() -> Result<()> {
     assert_eq!(stored["status"], "InProgress");
 
     let unauthorized = vote(&harness, &outsider, &dao_id, &stored).await?;
-    assert!(failed_receipts(&unauthorized).any(|receipt| receipt.contract_id == dao_id));
+    assert_dao_rejection(&unauthorized, &dao_id, "ERR_PERMISSION_DENIED")?;
+    assert_eq!(get_proposal(&harness, &dao_id, id).await?, stored);
     let first = vote(&harness, &council_a, &dao_id, &stored).await?;
     assert!(failed_receipts(&first).next().is_none());
     assert_eq!(
@@ -219,5 +248,101 @@ async fn dao_proposals_enforce_live_bond_policy_and_threshold() -> Result<()> {
         get_proposal(&harness, &dao_id, proposal_id(&subsequent)?).await?["status"],
         "InProgress"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn dao_preflight_matches_contract_wildcards_and_duplicate_roles() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let member = harness.create_user("member").await?;
+    let outsider = harness.create_user("outsider").await?;
+    let role = |kind: Value, permissions: &[&str]| json!({"name": "same", "kind": kind, "permissions": permissions, "vote_policy": {}});
+    let cases = [
+        (
+            "wildcard",
+            vec![role(json!("Everyone"), &["*:AddProposal"])],
+            [true, true],
+        ),
+        (
+            "group-overrides",
+            vec![
+                role(json!("Everyone"), &["*:AddProposal"]),
+                role(json!({"Group": [member]}), &[]),
+            ],
+            [false, true],
+        ),
+        (
+            "everyone-overrides",
+            vec![
+                role(json!({"Group": [member]}), &[]),
+                role(json!("Everyone"), &["call:*"]),
+            ],
+            [true, true],
+        ),
+    ];
+    for (name, roles, expected) in cases {
+        let policy: dao::Policy = serde_json::from_value(json!({
+            "roles": roles,
+            "default_vote_policy": {
+                "weight_kind": "RoleWeight", "quorum": "1", "threshold": "1"
+            },
+            "proposal_bond": NearToken::from_millinear(100),
+            "proposal_period": "604800000000000",
+            "bounty_bond": "0",
+            "bounty_forgiveness_period": "86400000000000"
+        }))?;
+        let dao_id = harness.deploy_sputnik_dao(name, policy.0).await?;
+        let mut count = 0_u64;
+        for (signer, permitted) in [&member, &outsider].into_iter().zip(expected) {
+            let input = proposal(&dao_id, &harness.ft_contract_id)?;
+            let planned = <Dispatch as PlanWrite<dao::AddProposal, GatewayContext>>::plan(
+                WriteRequest {
+                    signer_account_id: signer.clone(),
+                    idempotency_key: None,
+                    body: input.clone(),
+                },
+                GatewayContext::from_near_client(harness.gateway_client()),
+            )
+            .await;
+            if permitted {
+                planned?;
+            } else {
+                assert!(matches!(
+                    planned,
+                    Err(GatewayError::RequestPreconditionFailed(_))
+                ));
+            }
+            // Bypass preflight so the pinned contract independently checks the same policy.
+            let result = harness
+                .try_execute(
+                    signer,
+                    tx::FunctionCall {
+                        receiver_id: dao_id.clone(),
+                        method_name: ContractMethodName("add_proposal".to_owned()),
+                        args: ContractArgs::Json(json!({"proposal": input.proposal})),
+                        gas: NearGas::from_tgas(30),
+                        deposit: NearToken::from_millinear(100),
+                    },
+                )
+                .await?;
+            if permitted {
+                assert!(failed_receipts(&result).next().is_none());
+                let id = proposal_id(&result)?;
+                assert_eq!(id, count);
+                let stored = get_proposal(&harness, &dao_id, id).await?;
+                assert_eq!(stored["proposer"], signer.as_str());
+                assert_eq!(stored["status"], "InProgress");
+                count += 1;
+            } else {
+                assert_dao_rejection(&result, &dao_id, "ERR_PERMISSION_DENIED")?;
+            }
+            assert_eq!(
+                harness
+                    .view_json::<u64>(&dao_id, "get_last_proposal_id", json!({}))
+                    .await?,
+                count
+            );
+        }
+    }
     Ok(())
 }
