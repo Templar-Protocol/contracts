@@ -92,7 +92,7 @@ Execution and downstream receipt success must be verified separately.
 ## Snapshot-Bound Market Reads
 
 Rust callers comparing a market's raw storage snapshot with its configuration can use
-`NearClient::market(account).get_configuration_at(block_hash)`. This typed read bypasses the ordinary
+`near_client.market(account).get_configuration_at(block_hash).await`. This typed read bypasses the ordinary
 configuration cache and uses the exact snapshot block rather than a newer finalized block.
 
 ## Local DB
