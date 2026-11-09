@@ -38,16 +38,25 @@ impl PatchSpec {
              `tmplrmgr patch plan`.",
         )?;
         spec.extends.clear();
+        spec.validate_view_checks()?;
         Ok(spec)
     }
     pub fn view_checks(&self) -> impl Iterator<Item = &PatchViewCheck> {
         self.checks.iter().filter_map(|check| match check {
-            PatchCheck::View(check) => Some(check),
+            PatchCheck::View(check) => Some(check.as_ref()),
             PatchCheck::Storage(_) => None,
         })
     }
 
+    pub fn validate_view_checks(&self) -> anyhow::Result<()> {
+        for check in self.view_checks() {
+            check.expected()?;
+        }
+        Ok(())
+    }
+
     pub fn resolve(&self, source_path: &Path) -> anyhow::Result<ResolvedPatch> {
+        self.validate_view_checks()?;
         let base = source_path.parent().unwrap_or_else(|| Path::new("."));
         let mut ops = Vec::with_capacity(self.checks.len() + self.ops.len());
         for check in &self.checks {
@@ -69,7 +78,7 @@ impl PatchSpec {
 #[serde(untagged)]
 pub enum PatchCheck {
     Storage(PatchStorageCheck),
-    View(PatchViewCheck),
+    View(Box<PatchViewCheck>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -89,6 +98,55 @@ pub struct PatchViewCheck {
     pub args: serde_json::Value,
     #[serde(default)]
     pub expect: Option<serde_json::Value>,
+    /// Exact JSON expectation encoded as text, including nulls TOML cannot express.
+    /// Mutually exclusive with `expect`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub expect_json: Option<JsonText>,
+}
+
+impl PatchViewCheck {
+    pub fn expected(&self) -> anyhow::Result<Option<&serde_json::Value>> {
+        anyhow::ensure!(
+            self.expect.is_none() || self.expect_json.is_none(),
+            "view check cannot specify both expect and expect_json"
+        );
+        Ok(self
+            .expect
+            .as_ref()
+            .or_else(|| self.expect_json.as_ref().map(|text| &text.value)))
+    }
+}
+
+/// Validated JSON text kept as a string in TOML and plan JSON. Retaining the
+/// original text makes round trips and plan digests independent of reparsing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsonText {
+    text: String,
+    value: serde_json::Value,
+}
+
+impl JsonText {
+    pub fn from_value(value: serde_json::Value) -> anyhow::Result<Self> {
+        Ok(Self {
+            text: serde_json::to_string(&value)?,
+            value,
+        })
+    }
+}
+
+impl Serialize for JsonText {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
+}
+
+impl<'de> Deserialize<'de> for JsonText {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let value = serde_json::from_str(&text).map_err(D::Error::custom)?;
+        Ok(Self { text, value })
+    }
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
@@ -316,4 +374,112 @@ pub enum ResolvedOperation {
     RemovePrefix {
         prefix: Base64Bytes,
     },
+}
+
+#[cfg(test)]
+mod view_expectation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn check(expect: Option<serde_json::Value>, expect_json: Option<JsonText>) -> PatchViewCheck {
+        PatchViewCheck {
+            method_name: "get_configuration".to_owned().into(),
+            args: json!({}),
+            expect,
+            expect_json,
+        }
+    }
+
+    #[test]
+    fn legacy_view_expectation_json_wire_is_unchanged() {
+        for (expect, expected_json) in [
+            (
+                None,
+                r#"{"method_name":"get_configuration","args":{},"expect":null}"#,
+            ),
+            (
+                Some(json!({"enabled":true})),
+                r#"{"method_name":"get_configuration","args":{},"expect":{"enabled":true}}"#,
+            ),
+        ] {
+            let original = check(expect, None);
+            assert_eq!(serde_json::to_string(&original).unwrap(), expected_json);
+            let restored: PatchViewCheck = serde_json::from_str(expected_json).unwrap();
+            assert_eq!(restored, original);
+        }
+    }
+
+    #[test]
+    fn typed_json_text_preserves_nested_and_root_null_through_toml_and_json() {
+        for expected in [
+            json!({"maximum":null,"array":[null,{"nested":null}]}),
+            json!(null),
+        ] {
+            let original = check(None, Some(JsonText::from_value(expected.clone()).unwrap()));
+            let toml = toml::to_string_pretty(&original).unwrap();
+            let loaded: PatchViewCheck = toml::from_str(&toml).unwrap();
+            assert_eq!(loaded.expected().unwrap(), Some(&expected));
+            let restored: PatchViewCheck =
+                serde_json::from_slice(&serde_json::to_vec(&loaded).unwrap()).unwrap();
+            assert_eq!(restored, original);
+            assert_eq!(restored.expected().unwrap(), Some(&expected));
+        }
+        let text = " { \"maximum\" : null } ";
+        let parsed: JsonText = serde_json::from_value(json!(text)).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), json!(text));
+    }
+
+    #[test]
+    fn rejects_malformed_text_nonstring_input_and_conflicting_expectations() {
+        for invalid in [json!("{"), json!(123), json!({"maximum":null})] {
+            assert!(serde_json::from_value::<JsonText>(invalid).is_err());
+        }
+        let conflict = check(
+            Some(json!({"old":true})),
+            Some(JsonText::from_value(json!({"new":true})).unwrap()),
+        );
+        assert!(conflict.expected().is_err());
+        let spec = PatchSpec {
+            schema: PATCH_SCHEMA_VERSION,
+            extends: Vec::new(),
+            account_id: "market.near".parse().unwrap(),
+            ops: Vec::new(),
+            checks: vec![PatchCheck::View(Box::new(conflict))],
+        };
+        assert!(spec.resolve(Path::new("unused.toml")).is_err());
+    }
+
+    #[test]
+    fn loader_accepts_nullable_text_and_rejects_conflicts_before_resolution() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "tmplrmgr-view-expectation-{}-{unique}",
+            std::process::id(),
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("patch.toml");
+        let base = "schema = 3\naccount_id = 'market.near'\n[[check]]\nmethod_name = 'get_configuration'\n";
+        std::fs::write(
+            &path,
+            format!("{base}expect_json = '{{\"maximum\":null}}'\n"),
+        )
+        .unwrap();
+        let spec = PatchSpec::load(&path).unwrap();
+        assert_eq!(
+            spec.view_checks().next().unwrap().expected().unwrap(),
+            Some(&json!({"maximum":null})),
+        );
+        std::fs::write(
+            &path,
+            format!("{base}expect = {{ enabled = true }}\nexpect_json = '{{\"maximum\":null}}'\n"),
+        )
+        .unwrap();
+        assert!(PatchSpec::load(&path).is_err());
+        std::fs::write(&path, format!("{base}expect_json = '{{'\n")).unwrap();
+        assert!(PatchSpec::load(&path).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

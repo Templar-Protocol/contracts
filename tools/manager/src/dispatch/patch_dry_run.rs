@@ -110,7 +110,7 @@ pub(super) async fn dry_run(ctx: CliContext, args: DryRun) -> Result<()> {
         .await;
     let batch_status = execution_status(&execution);
     let views_after = evaluate_views(&local_client, &plan).await;
-    let views = merge_views(&plan, &views_before, &views_after);
+    let views = merge_views(&plan, &views_before, &views_after)?;
     let restored = restore_matches(&local_client, &plan).await.unwrap_or(false);
     let dry_status = if batch_status.0 && restored {
         Status::passed("sandbox batch succeeded and reviewed code/linkage was restored")
@@ -181,6 +181,7 @@ fn load_plan(path: &PathBuf) -> Result<PatchPlan> {
         "patch plan schema {} is unsupported; re-run `patch plan`",
         plan.schema
     );
+    plan.spec.validate_view_checks()?;
     Ok(plan)
 }
 
@@ -315,7 +316,7 @@ fn merge_views(
     plan: &PatchPlan,
     before: &[Result<serde_json::Value, String>],
     after: &[Result<serde_json::Value, String>],
-) -> Vec<ViewCheckReport> {
+) -> Result<Vec<ViewCheckReport>> {
     plan.spec
         .view_checks()
         .enumerate()
@@ -326,15 +327,15 @@ fn merge_views(
                 (Ok(before), Ok(after)) => Some(json_patch::diff(before, after)),
                 _ => None,
             };
-            let verdict = view_verdict(check.expect.as_ref(), &after[index]);
-            ViewCheckReport {
+            let verdict = view_verdict(check.expected()?, &after[index]);
+            Ok(ViewCheckReport {
                 id: format!("patch.view.{index}"),
                 method_name: check.method_name.clone(),
                 before: before_outcome,
                 after: after_outcome,
                 diff,
                 verdict,
-            }
+            })
         })
         .collect()
 }
@@ -443,5 +444,22 @@ mod tests {
                 .is_failure()
         );
         assert!(view_verdict(Some(&expect), &Err("before only".to_owned())).is_failure());
+    }
+
+    #[test]
+    fn json_text_expectations_compare_exact_nullable_values() {
+        use crate::spec::patch::{JsonText, PatchViewCheck};
+        use serde_json::json;
+
+        for expected in [json!(null), json!({"maximum":null})] {
+            let check = PatchViewCheck {
+                method_name: "get_configuration".to_owned().into(),
+                args: json!({}),
+                expect: None,
+                expect_json: Some(JsonText::from_value(expected.clone()).unwrap()),
+            };
+            assert!(!view_verdict(check.expected().unwrap(), &Ok(expected)).is_failure());
+            assert!(view_verdict(check.expected().unwrap(), &Ok(json!("null"))).is_failure());
+        }
     }
 }
