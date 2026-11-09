@@ -13262,6 +13262,7 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.10.9",
+ "sputnikdao2",
  "templar-common",
  "templar-contract-artifacts",
  "templar-gateway-core",
@@ -13282,10 +13283,12 @@ dependencies = [
 name = "templar-gateway-methods-spec"
 version = "0.6.1"
 dependencies = [
+ "jsonschema",
  "near-account-id",
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "sputnikdao2",
  "templar-common",
  "templar-gateway-macros",
  "templar-gateway-types",
@@ -13457,6 +13460,8 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "sputnikdao2",
  "templar-common",
  "templar-contract-artifacts",
  "templar-gateway-client",

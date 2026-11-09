@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/near-daos/sputnik-dao-contract",
+  "revision": "5434a59dec23ee0c49df8c8c4350c208a7e75b0b",
+  "wasm_sha256": "389494bc38a43140edc2717f364c8bb8bcf05a9dcc5ace3dfdb956d574a6bbb3",
+  "cargo_lock_sha256": "9c1910d9a74424a4e9fa163a2786002e5cf2514b54c8f8908b23091959cfb075",
+  "rust_toolchain_sha256": "708f520fc0c18734c8e96cd697a0f963060065b2537696822709ccf24c7fac8c",
+  "cargo_near_version": "0.19.2",
+  "build_image": "sourcescan/cargo-near:0.19.0-rust-1.86.0",
+  "build_image_digest": "sha256:772638e343baeeea24e49062c7d424274f3441452cc06ce97fc4e5695b19fecc",
+  "container_build_command": ["cargo", "near", "build", "non-reproducible-wasm", "--locked"]
+}

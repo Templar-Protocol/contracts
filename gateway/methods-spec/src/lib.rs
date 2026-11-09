@@ -1,6 +1,7 @@
 pub mod account;
 pub mod chain;
 pub mod contract;
+pub mod dao;
 pub mod ft;
 pub mod intents;
 pub mod lazer;
@@ -50,6 +51,8 @@ macro_rules! for_each_read_method {
         $callback!($crate::contract::GetKind);
         $callback!($crate::contract::GetVersion);
         $callback!($crate::contract::GetStateVersion);
+        $callback!($crate::dao::GetPolicy);
+        $callback!($crate::dao::GetProposal);
         $callback!($crate::ft::GetBalanceOf);
         $callback!($crate::lazer::GetFeedsData);
         $callback!($crate::lst_oracle::GetOracleId);
@@ -151,6 +154,7 @@ macro_rules! for_each_write_method {
         $callback!($crate::account::AddKey);
         $callback!($crate::account::DeleteKey);
         $callback!($crate::account::Delete);
+        $callback!($crate::dao::AddProposal);
         $callback!($crate::ft::Transfer);
         $callback!($crate::ft::TransferCall);
         $callback!($crate::intents::ExecuteIntents);

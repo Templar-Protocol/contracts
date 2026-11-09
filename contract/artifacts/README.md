@@ -149,6 +149,43 @@ artifacts are missing from `target/near` and exit non-zero without building.
 ./script/prebuild-test-contracts.sh --artifact market,mock-ft
 ```
 
+### Pinned external Sputnik DAO fixture
+
+The complete test prebuild also provisions a **real Sputnik DAO** from revision
+`5434a59dec23ee0c49df8c8c4350c208a7e75b0b`. It is external test data, not an
+`ArtifactId`, a mock, or a Templar release. Explicit `--artifact` selections keep
+building only the selected workspace contracts. The full `--check` path and
+`just test-sandbox --stale` verify the external fixture as well.
+
+```bash
+just build-sputnik-fixture
+just build-sputnik-fixture --check
+just build-sputnik-fixture --rebuild
+```
+
+Prerequisites: Python 3.11+, Git, the repository's pinned cargo-near 0.19.2,
+and a running Docker daemon with access to the pinned upstream build image.
+A cold build needs network access to the exact Git revision, container image,
+and locked Cargo dependencies. A warm fixture check requires none of these
+network services. The builder can reuse Cargo's cached Sputnik Git checkout.
+
+`gateway/testing/fixtures/sputnik-dao.json` pins the source revision, upstream
+`Cargo.lock` and toolchain checksums, immutable container digest, locked build
+command, and resulting Wasm checksum. The unmodified upstream Rust 1.86 recipe
+runs `cargo near build reproducible-wasm`; it does not inherit this workspace's
+dependency resolution or substitute the upstream repository's old Wasm file.
+Output is published atomically only after checksum verification at
+`target/test-fixtures/sputnik-dao/sputnikdao2.wasm`. A mismatching existing
+artifact fails closed; `--rebuild` explicitly rebuilds it against the same pins.
+Changing a pin requires a reviewed source/build change and a newly established
+output checksum, not accepting whatever a build happened to produce.
+
+Rust sandbox tests use `wasm::sputnik_dao().await` or
+`SandboxHarness::deploy_sputnik_dao(label, policy).await`. The deployment helper
+accepts the pinned dependency's complete `sputnikdao2::Policy`, including
+multi-member groups, vote thresholds, and restricted proposer permissions.
+The loader rechecks the fixture's checksum before caching its bytes.
+
 ## Cutting a release
 
 Merging the release PR tags the version but builds nothing. Cut the WASM for a

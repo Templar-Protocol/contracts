@@ -12,6 +12,7 @@ near-account-id = { workspace = true, features = ["serde", "schemars"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sputnikdao2.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-gateway-macros.workspace = true
 templar-gateway-types.workspace = true
@@ -20,6 +21,9 @@ templar-proxy-oracle-kernel = { workspace = true, features = ["serde", "schemars
 templar-proxy-oracle-near-common.workspace = true
 templar-proxy-oracle-near-governance-common.workspace = true
 templar-universal-account.workspace = true
+
+[dev-dependencies]
+jsonschema = { version = "0.51.0", default-features = false }
 
 [lints]
 workspace = true

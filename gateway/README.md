@@ -68,12 +68,26 @@ Methods in the same namespace should stay at roughly the same level of abstracti
 - `storage.*`: NEP-145 standard operations
 - `artifact.*`: contract artifact (WASM byte) operations across the artifact catalog and `registry.addArtifactVersion`
 - `registry.*`, `market.*`, `ua.*`: protocol/domain-specific operations
+- `dao.*`: typed Sputnik policy reads and proposal submission
 
 ## Guidance
 
 - Prefer a domain namespace over a low-level namespace when the method represents a standard or protocol concept.
 - For token transfers and balances where the token standard is not fixed at the call site (e.g. an asset that may be NEP-141 or NEP-245), prefer the standard-agnostic `token.*` methods over `ft.*`/`mt.*`. They dispatch on the standard internally, so a caller cannot pick the wrong one.
 - A method must not carry an opaque payload when this codebase has types for it. Give it typed fields; leave the passthrough to the one designated escape-hatch method per namespace (`registry.deploy` for deploys, `contract.viewFunction` for reads). A command with typed args for some inputs and passthrough for others belongs on the typed method — the passthrough case is the escape hatch's.
+
+## Sputnik DAO Proposals
+
+`dao.getPolicy { dao_id }` returns the native policy; `dao.getProposal { dao_id, id }`
+returns the native flattened proposal, including its ID. Both use the pinned Sputnik wire types.
+`dao.addProposal { dao_id, proposal }` plans `add_proposal` with the current exact proposal bond
+and 30 Tgas. Policy preflight rejects known-ineligible proposers, including proposal-kind-specific
+permissions; delegated-token membership is left to the contract. Authorization and the bond can
+change after planning, so contract checks remain authoritative.
+
+Submission success means a proposal was created, not approved or executed. Read the ID returned by
+the submission, then fetch that exact proposal. Do not derive it from a later proposal counter.
+Execution and downstream receipt success must be verified separately.
 
 ## Local DB
 
