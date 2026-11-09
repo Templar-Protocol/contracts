@@ -1,7 +1,17 @@
-use near_sdk::{env, json_types::U128, near, store::LookupMap, NearToken, PanicOnDefault};
+use near_sdk::{
+    env,
+    json_types::{U128, U64},
+    near,
+    store::LookupMap,
+    NearToken, PanicOnDefault,
+};
+use near_sdk_contract_tools::mt::metadata::{
+    BaseMetadata, ContractMetadata, MetadataController, TokenMetadata,
+};
 use near_sdk_contract_tools::mt::*;
 
-#[derive(PanicOnDefault, Nep245)]
+// Keep permissive mock token hooks; expose real storage sponsorship and metadata controllers.
+#[derive(PanicOnDefault, near_sdk_contract_tools::Nep145, Nep245, Nep245Metadata)]
 #[near(contract_state)]
 pub struct Contract {
     pub redemption_rate: LookupMap<String, U128>,
@@ -9,14 +19,29 @@ pub struct Contract {
 
 #[near]
 impl Contract {
+    /// `{}` keeps the existing two-token fixture. `extra_token_ids` optionally
+    /// creates additional opaque IDs with the same 24 raw-unit decimals.
     #[init]
-    pub fn new() -> Self {
+    pub fn new(extra_token_ids: Option<Vec<String>>) -> Self {
         let mut self_ = Self {
             redemption_rate: LookupMap::new(b"r"),
         };
 
-        self_.create_token("mt_collateral".to_string()).unwrap();
-        self_.create_token("mt_borrow".to_string()).unwrap();
+        self_.set_contract_metadata(&ContractMetadata::new("Mock MT"));
+        for token_id in ["mt_collateral".to_string(), "mt_borrow".to_string()]
+            .into_iter()
+            .chain(extra_token_ids.into_iter().flatten())
+        {
+            self_.create_token(token_id.clone()).unwrap();
+            self_
+                .create_base_metadata(
+                    BaseMetadata::new(token_id.clone(), token_id.clone()).decimals(U64(24)),
+                )
+                .unwrap();
+            self_
+                .set_token_metadata(&token_id, token_id.clone(), TokenMetadata::default())
+                .unwrap();
+        }
 
         self_
     }

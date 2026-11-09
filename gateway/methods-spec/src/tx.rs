@@ -46,6 +46,10 @@ pub enum Status {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct GetResult {
+    /// The original top-level transaction, never a receipt or an inner delegate
+    /// action. Absent while execution is pending or metadata is unavailable.
+    #[serde(default)]
+    pub transaction: Option<TransactionInspection>,
     pub status: Status,
     pub total_gas_burnt: NearGas,
     /// Total NEAR burnt across the transaction and all its receipts — the
@@ -64,6 +68,34 @@ pub struct GetResult {
     /// only; a value an inner receipt returned is found here.
     #[serde(default)]
     pub receipts: Vec<ReceiptRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TransactionInspection {
+    pub hash: CryptoHash,
+    pub signer_id: AccountId,
+    pub receiver_id: AccountId,
+    /// Includes all action kinds, not just function calls.
+    pub action_count: u32,
+    pub function_calls: Vec<FunctionCallInspection>,
+    /// Canonical NEP-461 authority hashes of original top-level delegate actions.
+    pub delegate_actions: Vec<DelegateActionInspection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DelegateActionInspection {
+    pub index: u32,
+    pub payload_hash: CryptoHash,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FunctionCallInspection {
+    /// Position in the original transaction's complete action list.
+    pub index: u32,
+    pub method_name: ContractMethodName,
+    pub args: Base64Bytes,
+    pub gas: NearGas,
+    pub deposit: NearToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

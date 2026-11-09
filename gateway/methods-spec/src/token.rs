@@ -3,6 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::asset::{AssetClass, FungibleAsset};
 use templar_gateway_macros::MethodSpec;
+use templar_gateway_types::TokenMetadata;
 use templar_primitives::SU128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -38,6 +39,13 @@ impl<T: AssetClass> From<&FungibleAsset<T>> for TokenReference {
             None => Self::Ft { contract_id },
         }
     }
+}
+
+/// Get observed token metadata without inferring an underlying wrapped asset.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "token.getMetadata", output = TokenMetadata)]
+pub struct GetMetadata {
+    pub token: TokenReference,
 }
 
 /// Get a token balance across supported standards.

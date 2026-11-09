@@ -95,6 +95,30 @@ Rust callers comparing a market's raw storage snapshot with its configuration ca
 `near_client.market(account).get_configuration_at(block_hash).await`. This typed read bypasses the ordinary
 configuration cache and uses the exact snapshot block rather than a newer finalized block.
 
+## Safety Inspection Reads
+
+- `chain.getIdentity` takes JSON `null` and returns the node's chain ID and actual
+  genesis block hash from `status`; it does not require archival block access.
+- `token.getMetadata { token }` uses the existing typed FT/MT token reference and
+  returns decimals plus optional name/symbol. MT identity is the complete opaque
+  token ID: missing IDs, ambiguous metadata, and absent/out-of-range decimals
+  fail rather than falling back to an embedded FT contract or inferred precision.
+- `proxyOracle.getCachedPrice { oracle_id, id, age }` reads the proxy's accepted
+  EMA cache directly. A live source does not imply a populated or usable cache;
+  clearing a manual trip still requires a successful refresh.
+- `proxyOracle.getFreshSourcePrice { oracle_id, id, age }` requires every effective
+  stored source to be present, transformable, positive, convertible, nonfuture,
+  and fresh under both the deployed filter and requested age, using the chain's
+  block timestamp. This is a conservative readiness read, not an atomic guarantee
+  about a later transaction. It does not change `oracle.getPrice` or the supplied
+  `oracle.resolvePriceAllSources` resolver's existing semantics.
+- `tx.get` includes optional original transaction inspection: reported hash,
+  signer, receiver, total action count, indexed top-level function calls, and
+  indexed canonical NEP-461 delegate payload hashes. Inner delegated calls are
+  not presented as top-level calls. Pending results have no inspection; mismatched
+  requested hash/sender metadata fails closed. Receipt success alone does not
+  establish that a transaction executed the expected proposal or signed payload.
+
 ## Local DB
 
 - Use a local Postgres server with separate databases per crate.

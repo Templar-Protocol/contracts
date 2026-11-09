@@ -1,3 +1,4 @@
+use near_contract_standards::fungible_token::metadata::FungibleTokenMetadata;
 use templar_primitives::SU128;
 
 use crate::client::{
@@ -46,6 +47,7 @@ impl BoundContractClient for FtClient<'_> {
 impl FtClient<'_> {
     contract_views! {
         pub fn ft_balance_of(GetBalanceOfArgs) -> SU128;
+        pub fn ft_metadata(()) -> FungibleTokenMetadata;
     }
 
     contract_writes! {
