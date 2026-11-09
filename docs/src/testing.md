@@ -126,3 +126,16 @@ records or relaxing finalized-state checks.
 The pinned RPC waits for committed state, not finalized visibility. Continue
 waiting for the patched key or exact metadata to reach `Final` before signing
 or capturing a replay checkpoint.
+
+### Settled Account Checkpoints
+
+`SandboxHarness` uses `ExecutedOptimistic` for ordinary setup transactions; that
+status does not include every gas refund. Before comparing complete account
+checkpoints, wait for the relevant transaction with `tx.get` and
+`wait_until: "FINAL"`, and verify its downstream receipts. A fixed number of
+`fast_forward` blocks is a time advance, not that transaction's settlement proof.
+
+Keep native amount, locked balance, storage usage, code/global identity,
+effective code bytes, access keys/nonces, and raw storage comparisons separate
+so a failure identifies the changed component. Do not drop a component merely
+because asynchronous setup makes a composite digest differ.

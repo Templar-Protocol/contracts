@@ -18,7 +18,8 @@ use templar_common::market::MarketConfiguration;
 use templar_gateway_methods_spec::{chain, tx};
 use templar_gateway_testing::{DeployedMarket, SandboxHarness};
 use templar_gateway_types::{
-    ActionInput, Base64Bytes, GlobalContractIdentifierInput, ManagedAccountId,
+    common::TxExecutionStatus, ActionInput, Base64Bytes, GlobalContractIdentifierInput,
+    ManagedAccountId,
 };
 
 use crate::{
@@ -39,6 +40,30 @@ fn fixture_path() -> PathBuf {
 
 fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn assert_account_unchanged(before: &StateSnapshot, after: &StateSnapshot) {
+    assert_eq!(before.amount, after.amount, "native balance changed");
+    assert_eq!(before.locked, after.locked, "locked balance changed");
+    assert_eq!(
+        before.storage_usage, after.storage_usage,
+        "storage usage changed"
+    );
+    assert_eq!(
+        before.contract, after.contract,
+        "code/global identity changed"
+    );
+    assert!(
+        before.code == after.code,
+        "effective code changed: before={} after={}",
+        sha256(&before.code),
+        sha256(&after.code),
+    );
+    assert_eq!(
+        before.access_keys, after.access_keys,
+        "access keys or nonces changed"
+    );
+    assert_eq!(before.entries, after.entries, "raw market storage changed");
 }
 
 struct OutputDir(PathBuf);
@@ -439,7 +464,7 @@ async fn exercise_patch(restore: RestoreFixture, assets: bool) -> Result<()> {
         }
     };
     if let Some(contract_identifier) = global {
-        harness
+        let use_global = harness
             .execute(
                 &ManagedAccountId(seeded.market.market_id.clone()),
                 tx::Batch {
@@ -450,6 +475,22 @@ async fn exercise_patch(restore: RestoreFixture, assets: bool) -> Result<()> {
                 },
             )
             .await?;
+        let finality = harness
+            .client()?
+            .read(tx::Get {
+                tx_hash: use_global
+                    .operation
+                    .latest_tx_hash()
+                    .context("UseGlobal transaction hash")?,
+                sender_account_id: seeded.market.market_id.clone(),
+                wait_until: Some(TxExecutionStatus::Final),
+                encoding: tx::ValueEncoding::Json,
+            })
+            .await?;
+        ensure!(
+            finality.status == tx::Status::Succeeded && finality.failed_receipts.is_empty(),
+            "UseGlobal must finalize including refunds before account checkpoints"
+        );
     }
     harness.fast_forward(10).await?;
     let before = snapshot(harness, &seeded.market.market_id).await?;
@@ -466,11 +507,7 @@ async fn exercise_patch(restore: RestoreFixture, assets: bool) -> Result<()> {
     };
     generate(&seeded, &changes, &spec).await?;
     let authored = snapshot(harness, &seeded.market.market_id).await?;
-    assert_eq!(
-        before.digest()?,
-        authored.digest()?,
-        "generation must not write chain state, code, keys, or balances"
-    );
+    assert_account_unchanged(&before, &authored);
     let blobs = dir.0.join("patch.blobs");
     assert_eq!(std::fs::read(blobs.join("old-state.bin"))?, state(&before)?);
     let expected_state = std::fs::read(blobs.join("new-state.bin"))?;
@@ -664,7 +701,7 @@ async fn requires_sandbox_config_patch_invalid_documents_publish_nothing() -> Re
         b"operator-sidecar"
     );
     let after = snapshot(&seeded.harness, &seeded.market.market_id).await?;
-    assert_eq!(before.digest()?, after.digest()?);
+    assert_account_unchanged(&before, &after);
     seeded
         .harness
         .execute(
@@ -687,11 +724,9 @@ async fn requires_sandbox_config_patch_invalid_documents_publish_nothing() -> Re
     .is_err());
     assert!(!output.exists());
     assert!(!dir.0.join("unsupported.blobs").exists());
-    assert_eq!(
-        unsupported.digest()?,
-        snapshot(&seeded.harness, &seeded.market.market_id)
-            .await?
-            .digest()?
+    assert_account_unchanged(
+        &unsupported,
+        &snapshot(&seeded.harness, &seeded.market.market_id).await?,
     );
     Ok(())
 }
