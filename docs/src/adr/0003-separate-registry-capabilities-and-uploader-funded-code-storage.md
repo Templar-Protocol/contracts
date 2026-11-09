@@ -31,9 +31,12 @@ Adopt one registry capability and storage model with these boundaries:
 
 1. **Owner administers; Uploader stages; Deployer deploys.** Keep the standard `Owner` derive and
    two-step ownership transfer, including renunciation. Use conventional RBAC for explicit
-   `Uploader` and `Deployer` membership. Only Owner changes roles, approves versions, removes
-   versions, or upgrades the registry. Owner bypasses action guards without becoming a synthetic
-   role member. `set_role` emits the conventional `role_set` event with `account_id`, `role`, and
+   `Uploader` and `Deployer` membership. Through the contract API, only Owner changes roles,
+   approves versions, removes versions, or upgrades the registry. Owner bypasses action guards
+   without becoming a synthetic role member. Holders of any retained registry full-access keys
+   remain trusted to deploy code directly, outside Owner and role guards, until those keys are
+   deleted.
+   `set_role` emits the conventional `role_set` event with `account_id`, `role`, and
    `is_granted` (`common/src/registry.rs:390-394`). A Deployer may attach explicitly supplied
    full-access keys to children it creates, so that role is a trusted deployment capability, not a
    guarantee of keyless children (`contract/registry/src/lib.rs:624-633,720-726`).
@@ -108,10 +111,12 @@ The following checks are required before rollout:
 - **Sandbox/end-to-end:** the real authorization matrix, DAO-as-predecessor approval and keyless
   upgrade, released-V1 migration, in-flight callback compatibility, non-tail blob cleanup, and
   actual withdrawal to the original payer. The implementation evidence is 466 native tests and 84
-  affected sandbox scenarios. DAO coverage begins at
-  `contract/registry/tests/roles.rs:241`; migration evidence begins at
-  `contract/registry/src/state/migration.rs:139-198`; upgrade solvency coverage begins at
-  `contract/registry/tests/solvency.rs:52`.
+  affected sandbox scenarios. DAO coverage begins at revision `b73acb7a` in
+  [`roles.rs:241`](https://github.com/Templar-Protocol/contracts/blob/b73acb7a519a49d4920ade35f22a58a043dcfb6a/contract/registry/tests/roles.rs#L241);
+  migration evidence is in
+  [`migration.rs:139-198`](https://github.com/Templar-Protocol/contracts/blob/b73acb7a519a49d4920ade35f22a58a043dcfb6a/contract/registry/src/state/migration.rs#L139-L198);
+  upgrade solvency coverage begins at
+  [`solvency.rs:52`](https://github.com/Templar-Protocol/contracts/blob/b73acb7a519a49d4920ade35f22a58a043dcfb6a/contract/registry/tests/solvency.rs#L52).
 - **Static checks:** affected all-target Clippy, registry Wasm compilation, formatting, generated
   documentation, and mdBook link checks.
 - **Operational verification:** compare finalized code hashes, owner/roles, state versions, access
@@ -125,7 +130,7 @@ The following checks are required before rollout:
 | Protocol writes try to consume user credit | `Insufficient registry balance to cover storage liabilities`; reduced available balance | Reserve physical storage, Owner growth, and in-flight final records; compare liabilities before and after writes | Top up protocol-owned NEAR, then retry the rejected write; the failed receipt must not change credit or metadata |
 | A failed deployment/probe would strand its key under an existing shortfall | Reserved deployment or provisional `GlobalHash` remains after callback failure | Cleanup releases storage and reservations without a new solvency assertion; query the entry and pending reserve | With the cleanup rule in place, the entry and reserve are released even though the intentional failure receipt still reports failure |
 | An upgrade targets the wrong migration or lacks backing for local code | `needs_migration`, changed history/owner, failed post-upgrade check, or unexpected code hash | Validate the migration chain, drain legacy callbacks, and run deploy/migrate/check atomically; verify V2 data and exact code identity | The failed atomic receipt restores prior code/state. Correct the target or protocol funding, then retry after rechecking finalized state |
-| A compromised Deployer attaches an unintended child key | Unexpected child full-access key, code change, or storage patch | Treat Deployer as trusted deployment authority; review `full_access_keys` and enumerate actual child keys after deployment | Remove the unintended key with an authorized account key and rotate the Deployer. A keyless market cannot be patched; recovery then requires a new market and user migration |
+| A compromised Deployer attaches an unintended child key | Unexpected child full-access key, code change, or storage patch | Treat Deployer as trusted deployment authority; review `full_access_keys` and enumerate actual child keys after deployment | Remove the unintended key with another authorized full-access key on that child, if one exists, and rotate the Deployer. Rotating Deployer alone does not revoke the child key. If the unintended key is the only child key and the contract has no authorized removal method, stop using that Deployer, disclose the compromise, and migrate users to a newly reviewed market where feasible. A keyless market cannot be patched; recovery then requires a new market and user migration |
 
 Human acceptance of this ADR is a design decision only. Production execution remains separately
 reviewed and authorized.
