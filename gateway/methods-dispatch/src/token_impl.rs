@@ -1,9 +1,27 @@
 use async_trait::async_trait;
+use templar_common::asset::{BorrowAsset, FungibleAsset};
 use templar_gateway_core::{DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite};
 use templar_gateway_methods_spec::token;
 use templar_primitives::SU128;
 
 use crate::Dispatch;
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<token::GetMetadata, C> for Dispatch {
+    async fn dispatch(
+        request: token::GetMetadata,
+        ctx: C,
+    ) -> GatewayResult<templar_gateway_types::TokenMetadata> {
+        let asset: FungibleAsset<BorrowAsset> = match request.token {
+            token::TokenReference::Ft { contract_id } => FungibleAsset::nep141(contract_id),
+            token::TokenReference::Mt {
+                contract_id,
+                token_id,
+            } => FungibleAsset::nep245(contract_id, token_id),
+        };
+        ctx.near_client().token(asset).metadata().await
+    }
+}
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<token::GetBalanceOf, C> for Dispatch {
