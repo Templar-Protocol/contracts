@@ -46,6 +46,7 @@ macro_rules! for_each_read_method {
         $callback!($crate::account::GetAccessKey);
         $callback!($crate::account::ListAccessKeys);
         $callback!($crate::chain::GetBlock);
+        $callback!($crate::chain::GetIdentity);
         $callback!($crate::chain::GetProtocolLimits);
         $callback!($crate::contract::ViewFunction);
         $callback!($crate::contract::GetKind);
@@ -106,6 +107,8 @@ macro_rules! for_each_read_method {
         $callback!($crate::mt::GetBatchSupply);
         $callback!($crate::proxy_oracle::ListProxies);
         $callback!($crate::proxy_oracle::GetProxy);
+        $callback!($crate::proxy_oracle::GetCachedPrice);
+        $callback!($crate::proxy_oracle::GetFreshSourcePrice);
         $callback!($crate::proxy_oracle::PriceFeedExists);
         $callback!($crate::proxy_oracle::GetProxyCircuitBreakerSet);
         $callback!($crate::proxy_oracle_governance::NextProposalId);
@@ -129,6 +132,7 @@ macro_rules! for_each_read_method {
         $callback!($crate::storage::GetBalanceBounds);
         $callback!($crate::storage::GetBalanceOf);
         $callback!($crate::token::GetBalanceOf);
+        $callback!($crate::token::GetMetadata);
         $callback!($crate::tx::Get);
         $callback!($crate::universal_account::GetKey);
         $callback!($crate::oracle::GetPriceResolutionDependencies);

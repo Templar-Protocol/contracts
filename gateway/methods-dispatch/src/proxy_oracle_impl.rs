@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use near_api::types::transaction::actions::Action;
 use serde::Serialize;
-use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::oracle::pyth::{Price, PriceIdentifier};
 use templar_common::upgrade::MIGRATE_METHOD;
 use templar_gateway_core::{
     client::proxy_oracle::{
@@ -144,6 +144,42 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle::Upgrade, C> for Dispatch {
             body.oracle_id,
             actions,
         ))
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<proxy_oracle::GetFreshSourcePrice, C> for Dispatch {
+    async fn dispatch(
+        request: proxy_oracle::GetFreshSourcePrice,
+        ctx: C,
+    ) -> GatewayResult<Option<Price>> {
+        crate::oracle_impl::get_fresh_proxy_source_price(
+            &ctx,
+            request.oracle_id,
+            request.id,
+            templar_common::Nanoseconds::from_secs(request.age),
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<proxy_oracle::GetCachedPrice, C> for Dispatch {
+    async fn dispatch(
+        request: proxy_oracle::GetCachedPrice,
+        ctx: C,
+    ) -> GatewayResult<Option<Price>> {
+        let mut prices = ctx
+            .near_client()
+            .pyth_oracle(request.oracle_id)
+            .list_ema_prices_no_older_than(
+                templar_gateway_core::client::pyth_oracle::ListEmaPricesNoOlderThanArgs {
+                    price_ids: vec![request.id],
+                    age: request.age,
+                },
+            )
+            .await?;
+        Ok(prices.remove(&request.id).flatten())
     }
 }
 
