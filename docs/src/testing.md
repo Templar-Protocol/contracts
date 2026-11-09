@@ -102,3 +102,16 @@ Because local blocks are faster than CI's, a test that leans on *incidental*
 block cadence to cross a time boundary will pass in one place and fail in the
 other. Advance chain time explicitly with `fast_forward` rather than relying on
 how long some operations happen to take.
+
+### Settled Account Checkpoints
+
+`SandboxHarness` uses `ExecutedOptimistic` for ordinary setup transactions; that
+status does not include every gas refund. Before comparing complete account
+checkpoints, wait for the relevant transaction with `tx.get` and
+`wait_until: "FINAL"`, and verify its downstream receipts. A fixed number of
+`fast_forward` blocks is a time advance, not that transaction's settlement proof.
+
+Keep native amount, locked balance, storage usage, code/global identity,
+effective code bytes, access keys/nonces, and raw storage comparisons separate
+so a failure identifies the changed component. Do not drop a component merely
+because asynchronous setup makes a composite digest differ.
