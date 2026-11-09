@@ -166,7 +166,7 @@ fn ensure_patch_has_operations(plan: &PatchPlan) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn restore_from_state(state: &StateSnapshot) -> anyhow::Result<RestoreCode> {
+pub(super) fn restore_from_state(state: &StateSnapshot) -> anyhow::Result<RestoreCode> {
     let expected_hash = CryptoHash::from(near_api::types::CryptoHash::hash(&state.code));
     match &state.contract {
         near_primitives::account::AccountContract::Local(hash) => {
@@ -1006,6 +1006,37 @@ mod tests {
     }
 
     #[test]
+    fn nullable_view_expectation_survives_plan_json_and_digest_roundtrip() {
+        let mut plan = stamp_plan();
+        let expected = serde_json::json!({"maximum":null,"nested":[null,{"maximum":null}]});
+        plan.spec
+            .checks
+            .push(PatchCheck::View(Box::new(PatchViewCheck {
+                method_name: "get_configuration".to_owned().into(),
+                args: serde_json::json!({}),
+                expect: None,
+                expect_json: Some(
+                    crate::spec::patch::JsonText::from_value(expected.clone()).unwrap(),
+                ),
+            })));
+        let digest = plan.unstamped_digest().unwrap();
+        let restored: PatchPlan =
+            serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert_eq!(restored, plan);
+        assert_eq!(restored.unstamped_digest().unwrap(), digest);
+        assert_eq!(
+            restored
+                .spec
+                .view_checks()
+                .next()
+                .unwrap()
+                .expected()
+                .unwrap(),
+            Some(&expected),
+        );
+    }
+
+    #[test]
     fn empty_patch_plan_cannot_be_applied() {
         let error = ensure_patch_has_operations(&stamp_plan()).expect_err("empty patch rejected");
         assert_eq!(
@@ -1050,11 +1081,14 @@ mod tests {
     #[case::warned(Status::warned("view proof incomplete"))]
     fn dry_run_stamp_rejects_non_passed_view_checks(#[case] view_status: Status) {
         let mut plan = stamp_plan();
-        plan.spec.checks.push(PatchCheck::View(PatchViewCheck {
-            method_name: "view".to_owned().into(),
-            args: serde_json::Value::Null,
-            expect: None,
-        }));
+        plan.spec
+            .checks
+            .push(PatchCheck::View(Box::new(PatchViewCheck {
+                method_name: "view".to_owned().into(),
+                args: serde_json::Value::Null,
+                expect: None,
+                expect_json: None,
+            })));
         let preflight = vec![Check::new(
             "patch.network",
             Status::passed("network matches"),

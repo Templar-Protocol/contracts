@@ -1,5 +1,6 @@
 mod create;
 mod export;
+mod generate_patch;
 mod plan;
 mod remove;
 pub mod static_yield;
@@ -7,6 +8,7 @@ mod verify;
 
 pub use create::Create;
 pub use export::Export;
+pub use generate_patch::{Config as GenerateConfigPatch, GeneratePatchNs};
 pub use plan::{Apply, Plan};
 pub use remove::Remove;
 pub use static_yield::StaticYieldNs;
@@ -21,6 +23,9 @@ pub enum MarketNs {
     Create(Create),
     /// Reconstruct a deployment spec from a deployed market.
     Export(Export),
+    /// Author guarded storage patches from finalized market state.
+    #[command(subcommand)]
+    GeneratePatch(GeneratePatchNs),
     /// Generate a deployment from a spec as a reviewable plan file.
     Plan(Plan),
     /// Send a plan file produced by `market plan`.

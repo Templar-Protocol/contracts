@@ -193,6 +193,51 @@ reported complete: the re-derivation runs before the journal is consulted.
 key is still held: deploy the pinned PatchState WASM, apply guarded storage
 operations, then restore the exact local code or global-contract linkage.
 
+### Generate a market configuration patch
+
+```sh
+tmplrmgr market generate-patch config "$MARKET" \
+  --changes changes.json --out config-patch.toml --network testnet
+```
+
+This command reads finalized chain state and writes local artifacts only. It has no
+signer or submission options. `--changes` names a JSON file; `-` reads stdin.
+The generic configuration editor accepts ordered RFC 6902 `test` and `replace`
+operations, including nested JSON Pointers. For example:
+
+```json
+[
+  {"op":"test","path":"/borrow_asset","value":{"Nep141":"old-token.testnet"}},
+  {"op":"replace","path":"/borrow_asset","value":{"Nep141":"new-token.testnet"}}
+]
+```
+
+NEP-245 configuration assets use
+`{"Nep245":{"contract_id":"tokens.testnet","token_id":"chain:asset:id"}}`.
+These are market configuration values, not gateway `TokenReference` values.
+One changes file can replace both asset fields or edit another configuration field.
+
+Only the exact released Market 1.6.1 WASM is initially admitted. The layout is backed
+by the real deployed-state capture in `tools/manager/fixtures/market-layouts/`;
+catalog membership, an account name, or a successful view alone is insufficient.
+Unknown/current-source code requires separate layout evidence before admission.
+Generation cross-checks the decoded configuration against a view at the same block,
+preserves every opaque byte outside its Borsh span, and guards the entire old `STATE`.
+
+The output is a schema-3 patch spec plus `<stem>.blobs/` containing old/new `STATE`,
+canonical before/after JSON, and `report.json`. The report binds the snapshot,
+code/restore identity, byte offsets, hashes, changes, and economic caveats.
+Existing outputs are never overwritten. Use the ordinary plan/replay/apply workflow below.
+
+Actual edits to `time_chunk_configuration` or `borrow_interest_rate_strategy` are
+rejected because they require migration of persisted derived interest state.
+Other valid edits are not certified economically safe: asset changes do not convert
+inventory or establish raw-unit equivalence; MCR, fees, ranges, duration, oracle,
+yield-weight, and recipient changes can affect existing positions and history.
+Oracle pause is not market isolation. State drift requires a fresh reviewed plan.
+
+### Author and execute a storage patch
+
 Export complete, block-pinned contract storage before authoring guards:
 
 ```sh
@@ -220,11 +265,14 @@ tmplrmgr patch dry-run --plan patch-plan.json --network mainnet
 `patch dry-run` reconstructs the target under its literal account ID in a fresh
 sandbox, installs the fetched code and complete state, and executes the exact
 reviewed `tx.batch`. Each view `[[check]]` is called before and after. An
-`expect` compares only the after JSON; a check without `expect` passes after a
-successful call and still reports its observed value. Before failures and
-before/after differences are diagnostic; after failures and expectation
-mismatches fail the check. JSON Patch diffs are present when both calls return
-JSON.
+`expect` or `expect_json` compares only the after JSON; a check without either
+passes after a successful call and still reports its observed value. Before
+failures and before/after differences are diagnostic; after failures and
+expectation mismatches fail the check. JSON Patch diffs are present when both
+calls return JSON. Use `expect_json = '{"maximum":null}'` for an exact JSON
+expectation containing nulls, which TOML cannot represent natively. It contains
+validated JSON text and is mutually exclusive with `expect`; existing schema-3
+specs and plan encodings are unchanged when this optional field is absent.
 
 The dry-run prints one machine-readable JSON report on stdout, including the
 transaction, target code hash, every before/after view result, JSON diff, and

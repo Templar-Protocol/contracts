@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `create-proposal --execute-when-ready --execute-call-gas`, without changing
   the stored operation's child gas or argument bytes.
 
+### Added
+
+- Read-only `market generate-patch config` authors guarded schema-3 configuration
+  patches from a complete finalized snapshot, with exact released-layout admission,
+  opaque-state preservation, typed validation, and review artifacts.
+- Optional `expect_json` view postconditions preserve exact nullable JSON values
+  through TOML specs and stamped patch plans without changing existing encodings.
+
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 
 ### Added
