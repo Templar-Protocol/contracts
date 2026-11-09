@@ -97,6 +97,10 @@ configuration cache and uses the exact snapshot block rather than a newer finali
 
 ## Safety Inspection Reads
 
+- `account.getSpendableBalance { account_id }` returns liquid NEAR after storage
+  backing not already covered by locked stake, using the live protocol byte cost.
+  `account.get.amount` alone is not a spendable funding budget; gas and attached
+  deposits must still fit within the returned amount.
 - `chain.getIdentity` takes JSON `null` and returns the node's chain ID and actual
   genesis block hash from `status`; it does not require archival block access.
 - `token.getMetadata { token }` uses the existing typed FT/MT token reference and

@@ -10,7 +10,7 @@ use near_openapi_client::types::{
     JsonRpcResponseForRpcStatusResponseAndRpcStatusError, RpcProtocolConfigRequest,
     RpcProtocolConfigResponse, RpcStatusRequest,
 };
-use templar_gateway_types::{BlockSummary, ChainIdentity, CryptoHash, ProtocolLimits};
+use templar_gateway_types::{BlockSummary, ChainIdentity, CryptoHash, NearToken, ProtocolLimits};
 
 use crate::{client::NearClient, GatewayError, GatewayResult, ReadNear};
 
@@ -64,13 +64,12 @@ impl ChainClient<'_> {
     }
 
     pub async fn protocol_limits(&self) -> GatewayResult<ProtocolLimits> {
-        let request = JsonRpcRequestForExperimentalProtocolConfig {
-            id: "0".to_owned(),
-            jsonrpc: "2.0".to_owned(),
-            method: JsonRpcRequestForExperimentalProtocolConfigMethod::ExperimentalProtocolConfig,
-            params: RpcProtocolConfigRequest::Finality(Finality::Final),
-        };
-        self.rpc(&request).await
+        self.rpc(&protocol_config_request()).await
+    }
+
+    pub(crate) async fn storage_byte_cost(&self) -> GatewayResult<NearToken> {
+        self.rpc(&StorageByteCostRequest(protocol_config_request()))
+            .await
     }
 
     // near-api 0.8.6 keeps its custom-RPC retry plumbing private.
@@ -150,6 +149,34 @@ trait ChainRpcRequest {
         &self,
         client: &near_openapi_client::Client,
     ) -> impl Future<Output = Result<Result<Self::Output, String>, near_openapi_client::Error<()>>> + Send;
+}
+
+fn protocol_config_request() -> JsonRpcRequestForExperimentalProtocolConfig {
+    JsonRpcRequestForExperimentalProtocolConfig {
+        id: "0".to_owned(),
+        jsonrpc: "2.0".to_owned(),
+        method: JsonRpcRequestForExperimentalProtocolConfigMethod::ExperimentalProtocolConfig,
+        params: RpcProtocolConfigRequest::Finality(Finality::Final),
+    }
+}
+
+struct StorageByteCostRequest(JsonRpcRequestForExperimentalProtocolConfig);
+
+impl ChainRpcRequest for StorageByteCostRequest {
+    type Output = NearToken;
+
+    async fn query(
+        &self,
+        client: &near_openapi_client::Client,
+    ) -> Result<Result<Self::Output, String>, near_openapi_client::Error<()>> {
+        Ok(match client.experimental_protocol_config(&self.0).await?.into_inner() {
+            JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant0 { result, .. } => {
+                result.runtime_config.and_then(|runtime| runtime.storage_amount_per_byte)
+                    .ok_or_else(|| "protocol config does not include storage byte cost".to_owned())
+            }
+            JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant1 { error, .. } => Err(error.to_string()),
+        })
+    }
 }
 
 impl ChainRpcRequest for JsonRpcRequestForStatus {
