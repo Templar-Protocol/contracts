@@ -89,6 +89,12 @@ Submission success means a proposal was created, not approved or executed. Read 
 the submission, then fetch that exact proposal. Do not derive it from a later proposal counter.
 Execution and downstream receipt success must be verified separately.
 
+## Snapshot-Bound Market Reads
+
+Rust callers comparing a market's raw storage snapshot with its configuration can use
+`NearClient::market(account).get_configuration_at(block_hash)`. This typed read bypasses the ordinary
+configuration cache and uses the exact snapshot block rather than a newer finalized block.
+
 ## Local DB
 
 - Use a local Postgres server with separate databases per crate.
