@@ -3,12 +3,13 @@ use clap::{error::ErrorKind, Parser};
 use super::CREDS;
 use crate::cli::{Cli, Command};
 use crate::commands::account::AccountNs;
-use crate::commands::mpc::MpcNs;
+use crate::commands::dao::{mpc::MpcNs, DaoNs};
 use crate::mpc::payload::PayloadKind;
 use templar_gateway_methods_spec::account as spec;
 
-const PROPOSE: [&str; 8] = [
+const PROPOSE: [&str; 9] = [
     "tmplrmgr",
+    "dao",
     "mpc",
     "propose",
     "--dao",
@@ -23,6 +24,7 @@ fn propose_defaults_to_a_delegate_action_and_the_conventional_path() {
     let cli = Cli::try_parse_from(
         [
             "tmplrmgr",
+            "dao",
             "mpc",
             "propose",
             "--dao",
@@ -34,8 +36,8 @@ fn propose_defaults_to_a_delegate_action_and_the_conventional_path() {
         .chain(CREDS),
     )
     .expect("propose should parse");
-    let Command::Mpc {
-        command: MpcNs::Propose(propose),
+    let Command::Dao {
+        command: DaoNs::Mpc(MpcNs::Propose(propose)),
     } = cli.command
     else {
         panic!("expected Mpc::Propose")
@@ -61,8 +63,8 @@ fn propose_defaults_to_a_delegate_action_and_the_conventional_path() {
 fn propose_accepts_the_transaction_kind() {
     let cli = Cli::try_parse_from(PROPOSE.into_iter().chain(["transaction"]).chain(CREDS))
         .expect("propose should parse");
-    let Command::Mpc {
-        command: MpcNs::Propose(propose),
+    let Command::Dao {
+        command: DaoNs::Mpc(MpcNs::Propose(propose)),
     } = cli.command
     else {
         panic!("expected Mpc::Propose")
@@ -92,7 +94,7 @@ fn blind_requires_out() {
     .expect("--blind with --out parses");
 }
 
-const EXECUTED: [&str; 8] = [
+const EXECUTED: [&str; 10] = [
     "--dao",
     "dao.testnet",
     "--proposal-id",
@@ -101,16 +103,34 @@ const EXECUTED: [&str; 8] = [
     "11111111111111111111111111111111",
     "--tx-signer",
     "voter.testnet",
+    "--plan",
+    "plan.json",
 ];
+
+#[test]
+fn execution_requires_one_plan_and_old_namespace_is_removed() {
+    for command in ["relay", "broadcast"] {
+        let error = Cli::try_parse_from(
+            ["tmplrmgr", "dao", "mpc", command]
+                .into_iter()
+                .chain(EXECUTED[..8].iter().copied()),
+        )
+        .expect_err("execution without a source plan");
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+    assert!(Cli::try_parse_from(["tmplrmgr", "mpc", "derive-key"]).is_err());
+}
 
 /// A delegate action needs a fee payer; a signed transaction needs nobody, so
 /// `broadcast` must parse with no credentials at all.
 #[test]
 fn relay_needs_a_relayer_and_broadcast_needs_none() {
-    let relay = ["tmplrmgr", "mpc", "relay"].into_iter().chain(EXECUTED);
+    let relay = ["tmplrmgr", "dao", "mpc", "relay"]
+        .into_iter()
+        .chain(EXECUTED);
     assert!(Cli::try_parse_from(relay.clone()).is_err());
-    let Command::Mpc {
-        command: MpcNs::Relay(relay),
+    let Command::Dao {
+        command: DaoNs::Mpc(MpcNs::Relay(relay)),
     } = Cli::try_parse_from(relay.chain(CREDS))
         .expect("relay parses with a relayer")
         .command
@@ -120,10 +140,10 @@ fn relay_needs_a_relayer_and_broadcast_needs_none() {
     assert_eq!(relay.executed.review.proposal_id, 7);
     assert_eq!(relay.executed.tx_signer.as_str(), "voter.testnet");
 
-    let Command::Mpc {
-        command: MpcNs::Broadcast(broadcast),
+    let Command::Dao {
+        command: DaoNs::Mpc(MpcNs::Broadcast(broadcast)),
     } = Cli::try_parse_from(
-        ["tmplrmgr", "mpc", "broadcast"]
+        ["tmplrmgr", "dao", "mpc", "broadcast"]
             .into_iter()
             .chain(EXECUTED)
             .chain(["--print"]),
@@ -188,10 +208,11 @@ fn add_key_defaults_to_full_access_and_restricts_with_receiver_id() {
 /// `--account-id` only names the default path, so an explicit `--path` lifts it.
 #[test]
 fn derive_key_needs_an_account_only_for_the_default_path() {
-    let Command::Mpc {
-        command: MpcNs::DeriveKey(derive),
+    let Command::Dao {
+        command: DaoNs::Mpc(MpcNs::DeriveKey(derive)),
     } = Cli::try_parse_from([
         "tmplrmgr",
+        "dao",
         "mpc",
         "derive-key",
         "--dao",
@@ -206,19 +227,33 @@ fn derive_key_needs_an_account_only_for_the_default_path() {
     };
     assert_eq!(derive.path(), "custom");
 
-    let error = Cli::try_parse_from(["tmplrmgr", "mpc", "derive-key", "--dao", "dao.testnet"])
-        .expect_err("neither path nor account");
+    let error = Cli::try_parse_from([
+        "tmplrmgr",
+        "dao",
+        "mpc",
+        "derive-key",
+        "--dao",
+        "dao.testnet",
+    ])
+    .expect_err("neither path nor account");
     assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
 }
 
 #[test]
 fn install_key_derives_at_the_conventional_path_by_default() {
-    let Command::Mpc {
-        command: MpcNs::InstallKey(install_key),
+    let Command::Dao {
+        command: DaoNs::Mpc(MpcNs::InstallKey(install_key)),
     } = Cli::try_parse_from(
-        ["tmplrmgr", "mpc", "install-key", "--dao", "dao.testnet"]
-            .into_iter()
-            .chain(CREDS),
+        [
+            "tmplrmgr",
+            "dao",
+            "mpc",
+            "install-key",
+            "--dao",
+            "dao.testnet",
+        ]
+        .into_iter()
+        .chain(CREDS),
     )
     .expect("parses")
     .command
@@ -233,7 +268,7 @@ fn install_key_derives_at_the_conventional_path_by_default() {
     );
 
     let error = Cli::try_parse_from(
-        ["tmplrmgr", "mpc", "install-key", "--path", "custom"]
+        ["tmplrmgr", "dao", "mpc", "install-key", "--path", "custom"]
             .into_iter()
             .chain(CREDS),
     )
@@ -259,7 +294,7 @@ fn delete_key_parses() {
 }
 
 /// A controlled account, a proposer, a mock MPC signer, and a mock DAO —
-/// everything the `mpc` commands touch.
+/// everything the `dao mpc` commands touch.
 struct MpcFixture {
     harness: templar_gateway_testing::SandboxHarness,
     rpc_url: String,
@@ -342,6 +377,7 @@ impl MpcFixture {
         self.run(
             Some(&self.controlled),
             &[
+                "dao",
                 "mpc",
                 "install-key",
                 "--dao",
@@ -374,14 +410,16 @@ impl MpcFixture {
         Ok(path)
     }
 
-    async fn proposal(&self, id: u64) -> anyhow::Result<crate::mpc::dao::ProposalView> {
-        self.harness
-            .view_json(
-                &self.dao,
-                "get_proposal",
-                crate::mpc::dao::GetProposalArgs { id },
-            )
-            .await
+    async fn proposal(&self, id: u64) -> anyhow::Result<sputnikdao2::ProposalOutput> {
+        Ok(self
+            .harness
+            .client()?
+            .read(templar_gateway_methods_spec::dao::GetProposal {
+                dao_id: self.dao.clone(),
+                id,
+            })
+            .await?
+            .0)
     }
 
     /// Approve and execute proposal `id`; returns the vote's transaction hash.
@@ -397,15 +435,7 @@ impl MpcFixture {
         &self,
         id: u64,
     ) -> anyhow::Result<templar_gateway_types::common::WriteOperationResult> {
-        let kind = self
-            .harness
-            .view_json::<serde_json::Value>(
-                &self.dao,
-                "get_proposal",
-                crate::mpc::dao::GetProposalArgs { id },
-            )
-            .await?["kind"]
-            .clone();
+        let kind = self.proposal(id).await?.proposal.kind;
         self.harness
             .try_call_function(
                 &self.proposer,
@@ -421,9 +451,10 @@ impl MpcFixture {
             .await
     }
 
-    /// `mpc propose` of `plan` as the proposer, against the mock signer.
+    /// `dao mpc propose` of `plan` as the proposer, against the mock signer.
     async fn propose(&self, plan: &std::path::Path, extra: &[&str]) -> anyhow::Result<()> {
         let base: &[&str] = &[
+            "dao",
             "mpc",
             "propose",
             "--plan",
@@ -437,13 +468,16 @@ impl MpcFixture {
             .await
     }
 
-    /// `mpc relay` of proposal 0 as executed by the proposer's vote `tx_hash`.
+    /// `dao mpc relay` of proposal 0 as executed by the proposer's vote `tx_hash`.
     async fn relay(&self, tx_hash: &str) -> anyhow::Result<()> {
         self.run(
             Some(&self.proposer),
             &[
+                "dao",
                 "mpc",
                 "relay",
+                "--plan",
+                self.dir.join("plan.json").to_str().expect("utf-8 path"),
                 "--dao",
                 self.dao.as_str(),
                 "--proposal-id",
@@ -596,15 +630,23 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     .await?;
 
     let proposal = f.proposal(0).await?;
-    let in_description = Envelope::from_description(&proposal.description)?;
-    assert_eq!(in_description.is_some(), !blind, "{}", proposal.description);
+    let in_description = Envelope::from_description(&proposal.proposal.description)?;
+    assert_eq!(
+        in_description.is_some(),
+        !blind,
+        "{}",
+        proposal.proposal.description
+    );
     let envelope = Envelope::read_file(&payload_path)?;
     if let Some(published) = in_description {
         assert_eq!(published, envelope);
     }
     let hash = envelope.payload.hash()?;
     assert_eq!(
-        proposal.proposed_signature()?.request.payload.hash()?,
+        crate::mpc::dao::proposed_signature(&proposal)?
+            .request
+            .payload
+            .hash()?,
         hash,
         "the proposal asks for the hash of the payload it carries"
     );
@@ -617,10 +659,10 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     } else {
         &[]
     };
-    let show = [&["mpc", "show"][..], target, mpc, payload_arg].concat();
+    let show = [&["dao", "mpc", "show"][..], target, mpc, payload_arg].concat();
     if blind {
         let error = f
-            .run(None, &[&["mpc", "show"][..], target, mpc].concat())
+            .run(None, &[&["dao", "mpc", "show"][..], target, mpc].concat())
             .await
             .expect_err("a blind proposal cannot be reviewed without the payload file");
         assert!(error.to_string().contains("--payload-file"), "{error}");
@@ -630,7 +672,10 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
 
     // Without `--mpc-contract` the review is pinned to the network's signer.
     let error = f
-        .run(None, &[&["mpc", "show"][..], target, payload_arg].concat())
+        .run(
+            None,
+            &[&["dao", "mpc", "show"][..], target, payload_arg].concat(),
+        )
         .await
         .expect_err("the mock signer is not the network's MPC contract");
     assert!(error.to_string().contains("look-alike"), "{error}");
@@ -661,7 +706,10 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     .write_file(&decoy_path)?;
     let decoy: &[&str] = &["--payload-file", decoy_path.to_str().expect("utf-8 path")];
     let error = f
-        .run(None, &[&["mpc", "show"][..], target, mpc, decoy].concat())
+        .run(
+            None,
+            &[&["dao", "mpc", "show"][..], target, mpc, decoy].concat(),
+        )
         .await
         .expect_err("a decoy payload is refused");
     assert!(error.to_string().contains("hashes to"), "{error}");
@@ -674,6 +722,7 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         target,
         mpc,
         &["--tx-hash", &approve_tx, "--tx-signer", f.proposer.as_str()],
+        &["--plan", plan.to_str().expect("utf-8 path")],
     ]
     .concat();
     // `relay` needs a fee payer; `broadcast` takes no credentials.
@@ -685,19 +734,50 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
     let error = f
         .run(
             wrong_sender,
-            &[&["mpc", wrong][..], &executed, payload_arg].concat(),
+            &[&["dao", "mpc", wrong][..], &executed, payload_arg].concat(),
         )
         .await
         .expect_err("the other send command refuses this payload kind");
-    assert!(error.to_string().contains("use `mpc "), "{error}");
+    assert!(error.to_string().contains("use `dao mpc "), "{error}");
 
     let error = f
-        .run(sender, &[&["mpc", send][..], &executed, decoy].concat())
+        .run(
+            sender,
+            &[&["dao", "mpc", send][..], &executed, decoy].concat(),
+        )
         .await
         .expect_err("a decoy payload never reaches the signature");
     assert!(error.to_string().contains("hashes to"), "{error}");
 
-    let send_args = [&["mpc", send][..], &executed, payload_arg].concat();
+    // A correct signature is not permission to substitute another source plan.
+    // Rejection must leave both the beneficiary and the approved nonce untouched.
+    let original_plan = std::fs::read(&plan)?;
+    let approved: templar_gateway_core::PlannedTransaction =
+        serde_json::from_slice(&original_plan)?;
+    let mut changed_receiver = approved.clone();
+    changed_receiver.receiver_id = f.proposer.0.clone();
+    let mut changed_amount = approved.clone();
+    changed_amount.actions = vec![near_api::types::transaction::actions::Action::Transfer(
+        near_api::types::transaction::actions::TransferAction {
+            deposit: NearToken::from_near(30),
+        },
+    )];
+    let mut changed_action_count = approved.clone();
+    changed_action_count
+        .actions
+        .push(approved.actions[0].clone());
+    for wrong_plan in [changed_receiver, changed_amount, changed_action_count] {
+        std::fs::write(&plan, serde_json::to_vec(&wrong_plan)?)?;
+        f.run(
+            sender,
+            &[&["dao", "mpc", send][..], &executed, payload_arg].concat(),
+        )
+        .await
+        .expect_err("a different source plan cannot authorize the approved signature");
+        assert_eq!(f.balance(&beneficiary.0).await?, before);
+    }
+    std::fs::write(&plan, original_plan)?;
+    let send_args = [&["dao", "mpc", send][..], &executed, payload_arg].concat();
     f.run(sender, &send_args).await?;
 
     // The nonce is spent now: a replay is refused before anything is broadcast.
@@ -768,7 +848,7 @@ async fn requires_sandbox_mpc_refusal_leaves_the_proposal_failed() -> anyhow::Re
             .any(|receipt| receipt.contract_id == f.signer_id),
         "the signer's receipt is the one that failed"
     );
-    assert_eq!(f.proposal(0).await?.status, ProposalStatus::Failed);
+    assert_eq!(f.proposal(0).await?.proposal.status, ProposalStatus::Failed);
 
     let error = f
         .relay(&tx_hash(&vote))
@@ -798,6 +878,6 @@ fn tx_hash(result: &templar_gateway_types::common::WriteOperationResult) -> Stri
 struct ActProposal {
     id: u64,
     action: &'static str,
-    proposal: serde_json::Value,
+    proposal: sputnikdao2::ProposalKind,
     memo: Option<String>,
 }

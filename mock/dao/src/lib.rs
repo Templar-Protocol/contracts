@@ -1,10 +1,10 @@
 //! Stand-in for a Sputnik DAO v2, reduced to what an MPC signing proposal
 //! touches: `add_proposal` with an exact bond, `get_proposal`/`get_policy`
 //! reads, and `act_proposal` approving and executing a FunctionCall kind.
-//! JSON shapes match Sputnik's so the CLI reads it unchanged. Known
-//! divergences: every caller is council at threshold one; `vote_counts`,
-//! `votes` and `Finalize` are absent; and the status flips to `Approved` only
-//! in the execution callback, where Sputnik sets it before executing.
+//! JSON views match Sputnik's so the CLI reads it unchanged. Known
+//! divergences: every caller is council at threshold one; votes, vote counts,
+//! action logs and `Finalize` are not implemented; and status flips to `Approved`
+//! only in the execution callback, where Sputnik sets it before executing.
 
 // `#[near]` method parameters are taken by value; the generated wrappers own them.
 #![allow(clippy::needless_pass_by_value)]
@@ -59,18 +59,7 @@ pub struct Proposal {
     pub description: String,
     pub kind: ProposalKind,
     pub status: ProposalStatus,
-}
-
-#[near(serializers = [json])]
-pub struct ProposalOutput {
-    pub id: u64,
-    #[serde(flatten)]
-    pub proposal: Proposal,
-}
-
-#[near(serializers = [json])]
-pub struct Policy {
-    pub proposal_bond: NearToken,
+    pub submission_time: near_sdk::json_types::U64,
 }
 
 #[derive(PanicOnDefault)]
@@ -99,21 +88,40 @@ impl Contract {
             description: proposal.description,
             kind: proposal.kind,
             status: ProposalStatus::InProgress,
+            submission_time: env::block_timestamp().into(),
         });
         u64::from(id)
     }
 
-    pub fn get_proposal(&self, id: u64) -> ProposalOutput {
-        ProposalOutput {
-            id,
-            proposal: self.proposal(id).clone(),
-        }
+    pub fn get_proposal(&self, id: u64) -> near_sdk::serde_json::Value {
+        let proposal = self.proposal(id);
+        near_sdk::serde_json::json!({
+            "id": id,
+            "proposer": proposal.proposer,
+            "description": proposal.description,
+            "kind": proposal.kind,
+            "status": proposal.status,
+            "submission_time": proposal.submission_time,
+            "vote_counts": {},
+            "votes": {},
+            "last_actions_log": []
+        })
     }
 
-    pub fn get_policy(&self) -> Policy {
-        Policy {
-            proposal_bond: self.proposal_bond,
-        }
+    pub fn get_policy(&self) -> near_sdk::serde_json::Value {
+        near_sdk::serde_json::json!({
+            "roles": [{
+                "name": "everyone", "kind": "Everyone",
+                "permissions": ["*:*"], "vote_policy": {}
+            }],
+            "default_vote_policy": {
+                "weight_kind": "RoleWeight", "quorum": "0", "threshold": "1"
+            },
+            "proposal_bond": self.proposal_bond,
+            "proposal_period": "604800000000000",
+            "bounty_bond": "0",
+            "bounty_forgiveness_period": "0"
+        })
     }
 
     /// Sputnik's signature: the kind is echoed back and must match.

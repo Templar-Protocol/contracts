@@ -330,6 +330,71 @@ This is a privileged authorization checklist:
 - Verify the apply-time stamp binding and resolved-state re-derivation checks.
 - Authorize only after the complete arbitrary-storage write is understood.
 
+## DAO approvals and MPC execution
+
+Ordinary Sputnik proposals execute FunctionCall-only plans whose signer is the
+DAO. Generate one transaction with an existing command's `--print json`, then
+submit it using a proposer account:
+
+```sh
+tmplrmgr dao propose --dao "$DAO" --plan action.plan.json \
+  --description "Reviewed action" --signer-id "$PROPOSER" --sign-with keychain
+tmplrmgr dao get-proposal --dao "$DAO" --proposal-id "$PROPOSAL_ID"
+```
+
+Submission reads the live policy/bond, returns the actual proposal ID and
+canonical body, and reads that ID back. It does not mean voters approved the
+proposal or that its downstream action succeeded. Non-FunctionCall actions,
+empty plans, a different signer, and `continue_on_failure` are rejected.
+
+The MPC namespace is now `dao mpc`; the old top-level `mpc` has no alias.
+`propose`, `relay`, and `broadcast` each require the same `--plan PATH`: one
+ordinary `PlannedTransaction`, or one guarded schema-3 `PatchPlan` stamped by
+`patch dry-run`. Deployment multi-step plans and unknown/ambiguous fields are
+not accepted. A patch plan must name the installed DAO-derived full-access key.
+
+For a patch, choose the transport before proposing and retain the envelope
+separately; its deployed code bytes generally exceed the public-description
+budget:
+
+```sh
+tmplrmgr dao mpc propose --dao "$DAO" --mpc-contract "$MPC" \
+  --plan patch-plan.json --kind delegate-action --blind --out payload.json \
+  --signer-id "$PROPOSER" --sign-with keychain
+# External voters approve; retain the exact vote transaction hash and sender.
+tmplrmgr dao mpc relay --dao "$DAO" --mpc-contract "$MPC" \
+  --proposal-id "$PROPOSAL_ID" --payload-file payload.json \
+  --tx-hash "$VOTE_TX_HASH" --tx-signer "$VOTER" --plan patch-plan.json \
+  --signer-id "$RELAYER" --sign-with keychain
+```
+
+For `--kind transaction`, execute with `dao mpc broadcast` and the same review,
+payload, vote-reference, and plan arguments, without a relayer signer. Never
+switch transports or revise approved actions, nonce, or expiry after approval.
+Both transports check live signed size and recursively summed FunctionCall
+prepaid gas; delegate wrapper bytes count toward the size limit. The unchanged
+300-Tgas deploy→patch→restore batch is exercised through both on local neard.
+
+MPC execution checks the approved signer, receiver, and every ordered action
+byte, gas value, and deposit against the supplied plan, independently of
+provenance metadata. A patch also runs the same complete live re-derivation and
+stamp checks as `patch apply`, before proposal and immediately before sending.
+There is no MPC unguarded, skip-state, or dry-run bypass. State/code/blob/restore
+drift requires a newly reviewed plan and approval, not regeneration of the
+approved transaction. Retire or prove unusable any overlapping old signature.
+
+Proposal output includes `source_plan_kind` and `source_plan_digest`. Patch
+provenance uses `PatchPlan::unstamped_digest()`. Ordinary provenance is SHA-256
+over `tmplrmgr:source-plan:planned-transaction:v1\0` followed by Borsh encoding
+of `(signer AccountId, receiver AccountId, ordered Vec<Action>, failure bool)`,
+including complete deploy/global/call bytes. MPC Envelope v1 and historical
+journal digests are unchanged.
+
+Relay/broadcast print transaction hash, sender, status, source-plan provenance,
+and available receipt evidence even when submission returns an error or an
+unknown outcome. Reconcile that exact identity through `tx.get`; an unknown
+outcome is not permission to resubmit. Failed child receipts prevent success.
+
 ## Registering a contract release
 
 Prefer a canonical published release when adding a registry version:

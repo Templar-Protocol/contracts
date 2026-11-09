@@ -1,52 +1,16 @@
-//! The Sputnik DAO side of an MPC signing proposal: the `add_proposal` call
-//! that requests the signature and the read model of the stored proposal.
+//! Hardened inspection of Sputnik's single MPC signature-request action.
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
-use serde::{Deserialize, Serialize};
-use sputnikdao2::{ProposalInput, ProposalStatus};
+use serde::Deserialize;
 use templar_gateway_types::{Base64Bytes, NearGas, NearToken};
 
 use super::signer_contract::{SignArgs, SignRequest};
 
-pub const ADD_PROPOSAL_METHOD: &str = "add_proposal";
-pub const GET_PROPOSAL_METHOD: &str = "get_proposal";
-pub const GET_POLICY_METHOD: &str = "get_policy";
 pub const SIGN_METHOD: &str = "sign";
 /// `sign` needs a non-zero deposit and refunds the excess; nothing tmplrmgr
 /// proposes attaches more, so more is a proposal it did not make.
 pub const SIGN_DEPOSIT: NearToken = NearToken::from_yoctonear(1);
-pub const ADD_PROPOSAL_GAS: NearGas = NearGas::from_tgas(30);
-
-#[derive(Serialize)]
-pub struct AddProposalArgs {
-    pub proposal: ProposalInput,
-}
-
-#[derive(Serialize)]
-pub struct GetProposalArgs {
-    pub id: u64,
-}
-
-#[derive(Serialize)]
-pub struct GetPolicyArgs {}
-
-/// The one policy field `add_proposal` enforces (the deposit must equal it).
-#[derive(Debug, Clone, Deserialize)]
-pub struct PolicyBond {
-    pub proposal_bond: NearToken,
-}
-
-/// Read-side mirror of Sputnik's `ProposalOutput`. `sputnikdao2::ActionCall`
-/// keeps its fields private, so the kind is re-declared here to reach `args`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ProposalView {
-    pub id: u64,
-    pub proposer: AccountId,
-    pub description: String,
-    pub status: ProposalStatus,
-    kind: serde_json::Value,
-}
 
 #[derive(Debug, Clone, Deserialize)]
 struct FunctionCallKind {
@@ -73,43 +37,45 @@ pub struct ProposedSignature {
     pub gas: NearGas,
 }
 
-impl ProposalView {
-    pub fn proposed_signature(&self) -> anyhow::Result<ProposedSignature> {
-        let kind = self
-            .kind
-            .get("FunctionCall")
-            .with_context(|| format!("proposal {} is not a FunctionCall proposal", self.id))?;
-        let kind = FunctionCallKind::deserialize(kind).context("decode the FunctionCall kind")?;
-        let [action] = kind.actions.as_slice() else {
-            anyhow::bail!(
+pub fn proposed_signature(
+    proposal: &sputnikdao2::ProposalOutput,
+) -> anyhow::Result<ProposedSignature> {
+    // ActionCall fields are private in the pinned Sputnik dependency.
+    // Cross that serde boundary once; all DAO reads remain typed.
+    let value = serde_json::to_value(&proposal.proposal.kind)?;
+    let kind = value
+        .get("FunctionCall")
+        .with_context(|| format!("proposal {} is not a FunctionCall proposal", proposal.id))?;
+    let kind = FunctionCallKind::deserialize(kind).context("decode the FunctionCall kind")?;
+    let [action] = kind.actions.as_slice() else {
+        anyhow::bail!(
                 "proposal {} carries {} actions; an MPC signing proposal carries exactly one `{SIGN_METHOD}` call",
-                self.id,
+                proposal.id,
                 kind.actions.len()
             );
-        };
-        anyhow::ensure!(
-            action.method_name == SIGN_METHOD,
-            "proposal {} calls `{}`, not `{SIGN_METHOD}`",
-            self.id,
-            action.method_name
-        );
-        anyhow::ensure!(
-            action.deposit == SIGN_DEPOSIT,
-            "proposal {} attaches {} yoctoNEAR to `{SIGN_METHOD}`; tmplrmgr attaches {}, so this \
+    };
+    anyhow::ensure!(
+        action.method_name == SIGN_METHOD,
+        "proposal {} calls `{}`, not `{SIGN_METHOD}`",
+        proposal.id,
+        action.method_name
+    );
+    anyhow::ensure!(
+        action.deposit == SIGN_DEPOSIT,
+        "proposal {} attaches {} yoctoNEAR to `{SIGN_METHOD}`; tmplrmgr attaches {}, so this \
              proposal was not made by it — review it by hand",
-            self.id,
-            action.deposit.as_yoctonear(),
-            SIGN_DEPOSIT.as_yoctonear()
-        );
-        let args: SignArgs =
-            serde_json::from_slice(&action.args.0).context("decode the `sign` arguments")?;
-        Ok(ProposedSignature {
-            mpc_contract_id: kind.receiver_id,
-            request: args.request,
-            deposit: action.deposit,
-            gas: action.gas,
-        })
-    }
+        proposal.id,
+        action.deposit.as_yoctonear(),
+        SIGN_DEPOSIT.as_yoctonear()
+    );
+    let args: SignArgs =
+        serde_json::from_slice(&action.args.0).context("decode the `sign` arguments")?;
+    Ok(ProposedSignature {
+        mpc_contract_id: kind.receiver_id,
+        request: args.request,
+        deposit: action.deposit,
+        gas: action.gas,
+    })
 }
 
 #[cfg(test)]
@@ -117,7 +83,7 @@ mod tests {
     use super::*;
     use crate::mpc::signer_contract::Payload;
 
-    fn proposal(kind: &serde_json::Value) -> ProposalView {
+    fn proposal(kind: &serde_json::Value) -> sputnikdao2::ProposalOutput {
         serde_json::from_value(serde_json::json!({
             "id": 1,
             "proposer": "peer.near",
@@ -127,6 +93,7 @@ mod tests {
             "vote_counts": {},
             "votes": {},
             "submission_time": "0",
+            "last_actions_log": [],
         }))
         .expect("parses")
     }
@@ -153,13 +120,16 @@ mod tests {
             }
         }));
 
-        let proposed = proposal.proposed_signature().expect("a sign proposal");
+        let proposed = proposed_signature(&proposal).expect("a sign proposal");
         assert_eq!(proposed.mpc_contract_id.as_str(), "v1.signer");
         assert_eq!(proposed.request.domain_id, 1);
         assert!(matches!(proposed.request.payload, Payload::Eddsa(_)));
         assert_eq!(proposed.deposit, SIGN_DEPOSIT);
         assert_eq!(proposed.gas, NearGas::from_tgas(15));
-        assert_eq!(proposal.status, ProposalStatus::Approved);
+        assert_eq!(
+            proposal.proposal.status,
+            sputnikdao2::ProposalStatus::Approved
+        );
     }
 
     /// A `sign` call with a larger deposit spends DAO funds the voter would
@@ -177,7 +147,7 @@ mod tests {
                 }],
             }
         }));
-        let error = proposal.proposed_signature().expect_err("5 NEAR attached");
+        let error = proposed_signature(&proposal).expect_err("5 NEAR attached");
         assert!(
             error
                 .to_string()
@@ -191,7 +161,7 @@ mod tests {
         let proposal = proposal(&serde_json::json!({
             "Transfer": { "token_id": "", "receiver_id": "x.near", "amount": "1" }
         }));
-        assert!(proposal.proposed_signature().is_err());
+        assert!(proposed_signature(&proposal).is_err());
     }
 
     #[test]
@@ -202,7 +172,25 @@ mod tests {
                 "actions": [{ "method_name": "borrow", "args": "e30=", "deposit": "0", "gas": "1" }],
             }
         }));
-        let error = proposal.proposed_signature().expect_err("not a sign call");
+        let error = proposed_signature(&proposal).expect_err("not a sign call");
         assert!(error.to_string().contains("`borrow`"), "{error}");
+    }
+
+    #[test]
+    fn more_than_one_sign_action_is_refused() {
+        let action = serde_json::json!({
+            "method_name": "sign",
+            "args": "e30=",
+            "deposit": "1",
+            "gas": "15000000000000"
+        });
+        let proposal = proposal(&serde_json::json!({
+            "FunctionCall": {
+                "receiver_id": "v1.signer",
+                "actions": [action.clone(), action]
+            }
+        }));
+        let error = proposed_signature(&proposal).expect_err("two signatures in one proposal");
+        assert!(error.to_string().contains("exactly one"), "{error}");
     }
 }

@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opaque-state preservation, typed validation, and review artifacts.
 - Optional `expect_json` view postconditions preserve exact nullable JSON values
   through TOML specs and stamped patch plans without changing existing encodings.
+- `dao propose` and `dao get-proposal` share typed Sputnik policy, submission,
+  exact returned-ID readback, and structured proposal provenance.
+- MPC proposal/execution binds every approved action to one strict source plan;
+  stamped patch plans reuse the complete live `patch apply` guard.
+- MPC relay/broadcast retain structured transaction identity and receipt evidence
+  on failed or unknown submission outcomes.
+
+### Changed
+
+- **Breaking:** move every top-level `mpc` command to `dao mpc`, without aliases.
+- **Breaking:** `dao mpc propose`, `relay`, and `broadcast` require one `--plan`
+  containing the exact ordinary transaction or guarded, stamped schema-3 patch.
 
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 

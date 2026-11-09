@@ -1,4 +1,4 @@
-//! `tmplrmgr mpc`: request an MPC signature through a Sputnik DAO proposal,
+//! `tmplrmgr dao mpc`: request an MPC signature through a Sputnik DAO proposal,
 //! review what a proposal signs, and relay the signed result.
 
 use std::path::PathBuf;
@@ -103,8 +103,8 @@ pub struct Propose {
     pub mpc: MpcContractArgs,
     #[command(flatten)]
     pub derivation: DerivationArgs,
-    /// A write's `--print json` output; `-` reads stdin. Its signer is the
-    /// controlled account.
+    /// A planned transaction or guarded, sandbox-stamped schema-3 PatchPlan;
+    /// `-` reads stdin. Its signer is the controlled account.
     #[arg(long, value_name = "PATH")]
     pub plan: PathBuf,
     #[arg(long, value_enum, default_value_t = PayloadKind::DelegateAction, value_name = "KIND")]
@@ -174,6 +174,9 @@ pub struct ExecutedProposalArgs {
 pub struct Relay {
     #[command(flatten)]
     pub executed: ExecutedProposalArgs,
+    /// The exact source transaction or stamped PatchPlan approved by the DAO.
+    #[arg(long, value_name = "PATH")]
+    pub plan: PathBuf,
     /// The account that wraps the delegate action in a transaction and pays its gas.
     #[command(flatten)]
     pub signer: SignerArgs,
@@ -183,6 +186,9 @@ pub struct Relay {
 pub struct Broadcast {
     #[command(flatten)]
     pub executed: ExecutedProposalArgs,
+    /// The exact source transaction or stamped PatchPlan approved by the DAO.
+    #[arg(long, value_name = "PATH")]
+    pub plan: PathBuf,
     /// Print the signed transaction as base64 borsh (what `near transaction
     /// send-signed-transaction` accepts) instead of sending it.
     #[arg(long)]
