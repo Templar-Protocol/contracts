@@ -24,6 +24,8 @@ existing version/deployment history, callback ABIs, and pending-upload Borsh pay
 role membership is explicit while Owner authority is separate (`common/src/registry.rs:6-21`,
 `contract/registry/src/lib.rs:186-232`). Migration must move collection handles without iterating
 historical entries or changing owner slots (`contract/registry/src/state/migration.rs:13-34`).
+Unless otherwise stated, source line references in this ADR refer to the
+[implementation revision `b73acb7a`](https://github.com/Templar-Protocol/contracts/tree/b73acb7a519a49d4920ade35f22a58a043dcfb6a).
 
 ## Decision
 
@@ -40,9 +42,11 @@ Adopt one registry capability and storage model with these boundaries:
    `is_granted` (`common/src/registry.rs:390-394`). A Deployer may attach explicitly supplied
    full-access keys to children it creates, so that role is a trusted deployment capability, not a
    guarantee of keyless children (`contract/registry/src/lib.rs:624-633,720-726`).
-2. **Pre-fund code storage through NEP-145.** `upload_code` accepts Borsh bytes with zero attached
-   deposit and charges actual map, key, metadata, and blob growth to the predecessor's available
-   balance (`contract/registry/src/lib.rs:234-254`). Reject only duplicate pending uploads; approved
+2. **Pre-fund code storage through NEP-145.** Through the contract API, only Uploader or Owner may
+   call `upload_code`; Deployer has no upload authority without a separate Uploader grant or Owner
+   authority. It accepts Borsh bytes with zero attached deposit and charges actual map, key,
+   metadata, and blob growth to the predecessor's available balance
+   (`contract/registry/src/lib.rs:234-254`). Reject only duplicate pending uploads; approved
    aliases may reuse a hash without scanning or indexing historical versions. Approval moves the
    bytes to a version and transfers the retained charge to the original payer, including any net
    version-entry growth (`contract/registry/src/lib.rs:434-499`). Removing pending code or retained
@@ -130,7 +134,23 @@ The following checks are required before rollout:
 | Protocol writes try to consume user credit | `Insufficient registry balance to cover storage liabilities`; reduced available balance | Reserve physical storage, Owner growth, and in-flight final records; compare liabilities before and after writes | Top up protocol-owned NEAR, then retry the rejected write; the failed receipt must not change credit or metadata |
 | A failed deployment/probe would strand its key under an existing shortfall | Reserved deployment or provisional `GlobalHash` remains after callback failure | Cleanup releases storage and reservations without a new solvency assertion; query the entry and pending reserve | With the cleanup rule in place, the entry and reserve are released even though the intentional failure receipt still reports failure |
 | An upgrade targets the wrong migration or lacks backing for local code | `needs_migration`, changed history/owner, failed post-upgrade check, or unexpected code hash | Validate the migration chain, drain legacy callbacks, and run deploy/migrate/check atomically; verify V2 data and exact code identity | The failed atomic receipt restores prior code/state. Correct the target or protocol funding, then retry after rechecking finalized state |
-| A compromised Deployer attaches an unintended child key | Unexpected child full-access key, code change, storage patch, or additional unauthorized keys | Treat Deployer as trusted deployment authority; review `full_access_keys` and enumerate actual child keys after deployment | Revoke the compromised Deployer role through `set_role` before any child-key removal. Re-enumerate child keys, including children created after the compromise, and remove every unauthorized key using a trusted full-access key on that child, if one remains; rotate Deployer and verify the final key list. Deployer rotation alone does not revoke child keys. Before resuming use, establish trusted child code and state. If integrity cannot be established or safely restored, disclose the compromise and migrate users to a newly reviewed market where feasible, even if a trusted child key remains. If no trusted child key or authorized removal method exists, stop using that Deployer and apply the same disclosure/migration fallback. A keyless market cannot be patched; recovery then requires a new market and user migration |
+| A compromised Deployer attaches an unintended child key | Unexpected child full-access key, code change, storage patch, or additional unauthorized keys | Treat Deployer as trusted deployment authority; review `full_access_keys` and enumerate actual child keys after deployment | Follow the compromised-Deployer recovery procedure below |
+
+### Compromised-Deployer recovery
+
+1. Revoke the compromised Deployer through `set_role` before any child-key removal.
+2. Wait for deployment receipts and callbacks authorized before revocation to settle, so no
+   in-flight deployment can create another child after the role is revoked.
+3. Re-enumerate child keys, including children created after the compromise. Remove every
+   unauthorized key using a trusted full-access key on that child, if one remains.
+4. Once the key list is clean, grant a reviewed replacement Deployer role if continued deployment
+   is required. Rotating to a replacement does not revoke any child keys.
+5. Verify the final key list and establish trusted child code and state before resuming use.
+6. If integrity cannot be established or safely restored, disclose the compromise and migrate users
+   to a newly reviewed market where feasible, even if a trusted child key remains. If no trusted
+   child key or authorized removal method exists, stop using that Deployer and apply the same
+   disclosure/migration fallback. A keyless market cannot be patched; recovery then requires a new
+   market and user migration.
 
 Human acceptance of this ADR is a design decision only. Production execution remains separately
 reviewed and authorized.
