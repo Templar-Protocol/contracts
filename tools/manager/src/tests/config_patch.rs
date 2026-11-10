@@ -29,7 +29,7 @@ use crate::{
     },
 };
 
-use super::market_fixture::{SeededMarket, RELEASE, WASM_LENGTH, WASM_SHA256};
+use super::market_fixture::{finalize, SeededMarket, RELEASE, WASM_LENGTH, WASM_SHA256};
 
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/market-layouts/market-1.6.1.json")
@@ -39,8 +39,13 @@ fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+#[track_caller]
 fn assert_account_unchanged(before: &StateSnapshot, after: &StateSnapshot) {
-    assert_eq!(before.amount, after.amount, "native balance changed");
+    assert_eq!(
+        before.amount, after.amount,
+        "native balance changed between blocks {} and {}",
+        before.block_hash, after.block_hash
+    );
     assert_eq!(before.locked, after.locked, "locked balance changed");
     assert_eq!(
         before.storage_usage, after.storage_usage,
@@ -654,7 +659,7 @@ async fn requires_sandbox_config_patch_invalid_documents_publish_nothing() -> Re
     );
     let after = snapshot(&seeded.harness, &seeded.market.market_id).await?;
     assert_account_unchanged(&before, &after);
-    seeded
+    let redeploy = seeded
         .harness
         .execute(
             &ManagedAccountId(seeded.market.market_id.clone()),
@@ -664,7 +669,7 @@ async fn requires_sandbox_config_patch_invalid_documents_publish_nothing() -> Re
             },
         )
         .await?;
-    seeded.harness.fast_forward(10).await?;
+    finalize(&seeded.harness, &seeded.market.market_id, redeploy).await?;
     let unsupported = snapshot(&seeded.harness, &seeded.market.market_id).await?;
     let output = dir.0.join("unsupported.toml");
     assert!(generate(
