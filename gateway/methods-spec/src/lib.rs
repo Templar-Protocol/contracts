@@ -49,6 +49,7 @@ macro_rules! for_each_read_method {
         $callback!($crate::chain::GetBlock);
         $callback!($crate::chain::GetIdentity);
         $callback!($crate::chain::GetProtocolLimits);
+        $callback!($crate::chain::GetTransactionValidityPeriod);
         $callback!($crate::contract::ViewFunction);
         $callback!($crate::contract::GetKind);
         $callback!($crate::contract::GetVersion);
