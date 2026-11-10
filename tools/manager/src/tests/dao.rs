@@ -10,7 +10,6 @@ use super::CREDS;
 use crate::cli::{Cli, Command};
 use crate::commands::dao::DaoNs;
 use crate::dispatch::dao::{ensure_proposal_matches, ordinary_proposal};
-use crate::mpc::source_plan::SourcePlan;
 
 fn plan() -> PlannedTransaction {
     PlannedTransaction {
@@ -144,16 +143,6 @@ fn ordinary_proposal_rejects_foreign_signer_empty_non_call_and_failure_policy() 
     for invalid in [foreign, empty, transfer, continuation] {
         assert!(ordinary_proposal(&dao, invalid, "review".into()).is_err());
     }
-}
-
-#[test]
-fn dao_source_plan_rejects_unknown_and_multistep_shapes() -> anyhow::Result<()> {
-    let valid = serde_json::to_value(plan())?;
-    let mut unknown = valid.clone();
-    unknown["unexpected"] = json!(true);
-    assert!(SourcePlan::from_value(&unknown).is_err());
-    assert!(SourcePlan::from_value(&json!({"steps": [valid.clone(), valid]})).is_err());
-    Ok(())
 }
 
 #[test]

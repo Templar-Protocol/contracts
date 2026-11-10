@@ -183,12 +183,12 @@ pub(crate) fn load_ordinary(path: &Path) -> Result<SourcePlan> {
 pub(crate) fn transaction_digest(plan: &PlannedTransaction) -> Result<WireSha256Digest> {
     let mut hash = Sha256::new();
     hash.update(TRANSACTION_DIGEST_DOMAIN);
-    hash.update(borsh::to_vec(&(
+    borsh::to_writer(&mut hash, &(
         &plan.signer_account_id.0,
         &plan.receiver_id,
         &plan.actions,
         plan.continue_on_failure,
-    ))?);
+    ))?;
     Ok(WireSha256Digest(hash.finalize().into()))
 }
 
@@ -303,6 +303,20 @@ mod tests {
     fn ordinary_digest_and_decoded_binding_cover_full_ordered_actions_identities_gas_and_deposit() {
         let original = transaction();
         let digest = transaction_digest(&original).unwrap();
+        // These wire digests are persisted in reviewed source-plan provenance.
+        assert_eq!(
+            serde_json::to_value(&digest).unwrap(),
+            serde_json::json!("sha256-wire:f49e86f2cceed33af103c7499354caf687e968bbaa4e8b157555feb4a3a89597")
+        );
+        let mut large = transaction();
+        let Action::DeployContract(deploy) = &mut large.actions[0] else {
+            panic!("deployment fixture");
+        };
+        deploy.code = vec![0xa5; 16 * 1024];
+        assert_eq!(
+            serde_json::to_value(transaction_digest(&large).unwrap()).unwrap(),
+            serde_json::json!("sha256-wire:b426832c5ae8396b71e83ba1f9c7a6a2c88d3113c4d9debbe880a6d16a75f486")
+        );
         let decoded = Decoded {
             kind: crate::mpc::payload::PayloadKind::DelegateAction,
             signer_id: original.signer_account_id.0.clone(),
