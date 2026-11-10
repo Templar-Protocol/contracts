@@ -320,7 +320,7 @@ async fn get_price_onchain<C: HasNearClient>(
     }
 }
 
-/// Resolve every configured source against one chain clock before aggregation.
+/// Resolve every configured source, then check freshness against one chain clock.
 pub(crate) async fn get_fresh_proxy_source_price<C: HasNearClient>(
     ctx: &C,
     oracle_id: AccountId,
@@ -330,15 +330,14 @@ pub(crate) async fn get_fresh_proxy_source_price<C: HasNearClient>(
     let Some(proxy) = get_proxy(ctx, oracle_id, price_id).await? else {
         return Ok(None);
     };
-    let now = Nanoseconds::from_ns(ctx.near_client().chain().block(None).await?.timestamp_ns);
     let requested_filter = templar_proxy_oracle_kernel::proxy::FreshnessFilter::new(
         Some(max_age),
         Some(Nanoseconds::from_ns(0)),
     );
     let mut prices = Vec::new();
     for source in proxy.sources() {
-        // Disable the legacy resolver's wall-clock age restriction. This read
-        // applies both age limits below using only the captured chain clock.
+        // Disable the legacy resolver's wall-clock age restriction. Apply both
+        // age limits after every source view has completed.
         let Some(price) =
             resolve_proxy_entry_price_onchain(ctx, source, Nanoseconds::from_ns(u64::MAX))
                 .await?
@@ -347,13 +346,16 @@ pub(crate) async fn get_fresh_proxy_source_price<C: HasNearClient>(
         else {
             return Ok(None);
         };
-        if price.price <= 0
-            || !proxy.freshness_filter.accepts(&price, now)
-            || !requested_filter.accepts(&price, now)
-        {
+        if price.price <= 0 {
             return Ok(None);
         }
         prices.push(Some(price));
+    }
+    let now = Nanoseconds::from_ns(ctx.near_client().chain().block(None).await?.timestamp_ns);
+    if prices.iter().flatten().any(|price| {
+        !proxy.freshness_filter.accepts(price, now) || !requested_filter.accepts(price, now)
+    }) {
+        return Ok(None);
     }
     Ok(proxy
         .aggregator
