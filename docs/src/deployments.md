@@ -361,6 +361,9 @@ budget:
 tmplrmgr dao mpc propose --dao "$DAO" --mpc-contract "$MPC" \
   --plan patch-plan.json --kind delegate-action --blind --out payload.json \
   --signer-id "$PROPOSER" --sign-with keychain
+tmplrmgr dao mpc show --dao "$DAO" --mpc-contract "$MPC" \
+  --proposal-id "$PROPOSAL_ID" --payload-file payload.json --plan patch-plan.json \
+  --expected-description "MPC signature request"
 # External voters approve; retain the exact vote transaction hash and sender.
 tmplrmgr dao mpc relay --dao "$DAO" --mpc-contract "$MPC" \
   --proposal-id "$PROPOSAL_ID" --payload-file payload.json \
@@ -374,6 +377,18 @@ switch transports or revise approved actions, nonce, or expiry after approval.
 Both transports check live signed size and recursively summed FunctionCall
 prepaid gas; delegate wrapper bytes count toward the size limit. The unchanged
 300-Tgas deploy→patch→restore batch is exercised through both on local neard.
+
+Raw transactions use the actual RPC chain's `transaction_validity_period`,
+read through `chain.getTransactionValidityPeriod`, not a mainnet/testnet default.
+Their last accepted inclusion height is the pinned block height plus that period
+minus one; `--valid-for-blocks` cannot extend it and is rejected for this transport.
+Delegate actions retain their explicit, inclusive maximum height and configurable
+`--valid-for-blocks`. Expensive patch validation completes before pinning the raw
+recent-block hash. Review reports the live bound, and execution checks it again
+after live source validation immediately before submission, rejecting when the
+next inclusion would be too late. Blocks can still advance after that check.
+An expired payload requires a separately reviewed new attempt, never refreshing
+its approved bytes or automatically repeating a financial operation.
 
 MPC execution checks the approved signer, receiver, and every ordered action
 byte, gas value, and deposit against the supplied plan, independently of
@@ -389,6 +404,19 @@ over `tmplrmgr:source-plan:planned-transaction:v1\0` followed by Borsh encoding
 of `(signer AccountId, receiver AccountId, ordered Vec<Action>, failure bool)`,
 including complete deploy/global/call bytes. MPC Envelope v1 and historical
 journal digests are unchanged.
+
+`dao mpc show` optionally accepts `--plan` and reports its `source_plan_kind`
+and `source_plan_digest` after the same exact signer, receiver, key, shape, and
+ordered-action binding used by execution. Without `--plan`, review behavior is
+unchanged and those provenance fields are absent. Review does not revalidate a
+patch's live pre-execution state or require an unused nonce, so the original
+stamped plan can also review a terminal executed payload. Optional
+`--expected-description TEXT` requires an exact description match, using the
+same public-envelope composition as `propose`, or exact text for blind
+requests. Recovery should pass both options with its frozen source plan and
+request text; it must not infer an attempt from approval or action equality.
+The `description` output remains the exact on-chain proposal description,
+including the envelope line for public proposals.
 
 Relay/broadcast print transaction hash, sender, status, source-plan provenance,
 and available receipt evidence even when submission returns an error or an

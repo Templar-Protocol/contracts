@@ -6,8 +6,10 @@ use std::{
 use anyhow::{ensure, Context as _, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use near_account_id::AccountId;
+use near_api::types::transaction::actions::{Action, TransferAction};
 use serde_json::{json, Value};
-use templar_gateway_methods_spec::{account, dao, market};
+use templar_gateway_core::PlannedTransaction;
+use templar_gateway_methods_spec::{account, chain, dao, market};
 use templar_gateway_testing::{failed_receipts, SandboxHarness};
 use templar_gateway_types::{ManagedAccountId, NearToken};
 
@@ -16,6 +18,7 @@ mod market_fixture;
 use market_fixture::SeededMarket;
 
 const BIN: &str = env!("CARGO_BIN_EXE_tmplrmgr");
+const REQUEST_DESCRIPTION: &str = "asset-migration:test:patch:attempt-1";
 
 struct RunDir(PathBuf);
 impl RunDir {
@@ -139,9 +142,10 @@ fn text(path: &Path) -> Result<&str> {
 }
 
 #[rstest::rstest]
-#[case::delegate("delegate-action", false, false)]
-#[case::transaction("transaction", true, false)]
-#[case::live_state_drift("delegate-action", false, true)]
+#[case::delegate("delegate-action", false, false, false)]
+#[case::transaction("transaction", true, false, false)]
+#[case::live_state_drift("delegate-action", false, true, false)]
+#[case::expired_transaction("transaction", true, false, true)]
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,
@@ -151,6 +155,7 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
     #[case] transport: &str,
     #[case] raw: bool,
     #[case] drift: bool,
+    #[case] expire: bool,
 ) -> Result<()> {
     let seeded = SeededMarket::new().await?;
     let harness = &seeded.harness;
@@ -278,6 +283,8 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
             text(&plan)?,
             "--kind",
             transport,
+            "--description",
+            REQUEST_DESCRIPTION,
             "--blind",
             "--out",
             text(&payload)?,
@@ -337,6 +344,30 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
         .to_string();
     assert_eq!(proposal(harness, &dao_id, id).await?["status"], "Approved");
     let id_text = id.to_string();
+    let review_args = [
+        "dao",
+        "mpc",
+        "show",
+        "--dao",
+        dao_id.as_str(),
+        "--proposal-id",
+        id_text.as_str(),
+        "--mpc-contract",
+        signer_id.as_str(),
+        "--payload-file",
+        text(&payload)?,
+        "--plan",
+        text(&plan)?,
+    ];
+    let mut described_review_args = review_args.to_vec();
+    described_review_args.extend(["--expected-description", REQUEST_DESCRIPTION]);
+    let bound_review = cli(harness, &described_review_args, None).await?;
+    assert_eq!(bound_review["source_plan_kind"], "patch_plan");
+    assert_eq!(
+        bound_review["source_plan_digest"],
+        submitted["source_plan_digest"]
+    );
+    assert_eq!(bound_review["description"], REQUEST_DESCRIPTION);
     let mut execution = vec![
         "dao",
         "mpc",
@@ -406,6 +437,40 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
         assert_eq!(harness.client()?.read(access_key).await?.nonce, nonce);
         return Ok(());
     }
+    if expire {
+        let client = harness.client()?;
+        let period = client.read(chain::GetTransactionValidityPeriod).await?;
+        let access_key = account::GetAccessKey {
+            account_id: controlled.0.clone(),
+            public_key: public_key.clone(),
+        };
+        let nonce = client.read(access_key.clone()).await?.nonce;
+        // Explicitly cross the real chain's bound, independent of block cadence.
+        harness.fast_forward(period.saturating_add(1)).await?;
+        let expired_review = cli(harness, &described_review_args, None).await?;
+        assert_eq!(expired_review["expired"], true);
+        assert_eq!(
+            expired_review["source_plan_digest"],
+            submitted["source_plan_digest"]
+        );
+        let rejected = invoke(harness, &execution, None).await?;
+        assert!(!rejected.status.success());
+        assert!(
+            rejected.stdout.is_empty(),
+            "no submission identity should be emitted"
+        );
+        assert_eq!(client.read(access_key).await?.nonce, nonce);
+        assert_eq!(raw_storage(harness, &controlled.0).await?, before);
+        assert_eq!(
+            harness
+                .gateway_client()
+                .contract(controlled.0.clone())
+                .code()
+                .await?,
+            original_code
+        );
+        return Ok(());
+    }
     let result = cli(harness, &execution, if raw { None } else { Some(&relayer) }).await?;
     ensure!(
         result.is_object(),
@@ -439,6 +504,17 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
         })
         .await?
         .nonce;
+    // Review remains possible after the patch changed live storage and consumed
+    // the signed nonce. It validates the frozen source, not pre-execution state.
+    let terminal_review = cli(harness, &described_review_args, None).await?;
+    assert_eq!(terminal_review["status"], "Approved");
+    assert_eq!(terminal_review["nonce_spent"], true);
+    assert_eq!(terminal_review["source_plan_kind"], "patch_plan");
+    assert_eq!(
+        terminal_review["source_plan_digest"],
+        submitted["source_plan_digest"]
+    );
+    assert_eq!(terminal_review["description"], REQUEST_DESCRIPTION);
     let replay = invoke(harness, &execution, if raw { None } else { Some(&relayer) }).await?;
     assert!(!replay.status.success());
     assert_eq!(
@@ -453,5 +529,113 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
         nonce
     );
     assert_eq!(raw_storage(harness, &controlled.0).await?, expected);
+    if !drift {
+        // Independent review rejection cases run only after execution, so they
+        // cannot consume the original raw transaction's fixed validity window.
+        // An unsealed local envelope can be replaced with another genuinely
+        // approved request at the same key/path. Approval alone is not binding
+        // to the frozen migration plan.
+        let mut wrong_description = review_args.to_vec();
+        wrong_description.extend([
+            "--expected-description",
+            "asset-migration:test:patch:attempt",
+        ]);
+        let rejected = invoke(harness, &wrong_description, None).await?;
+        assert!(!rejected.status.success());
+        let other_plan = run.0.join("other-plan.json");
+        let other_payload = run.0.join("other-payload.json");
+        std::fs::write(
+            &other_plan,
+            serde_json::to_vec(&PlannedTransaction::single_action(
+                controlled.clone(),
+                outsider.0.clone(),
+                Action::Transfer(TransferAction {
+                    deposit: NearToken::from_yoctonear(1),
+                }),
+            ))?,
+        )?;
+        let other = cli(
+            harness,
+            &[
+                "dao",
+                "mpc",
+                "propose",
+                "--dao",
+                dao_id.as_str(),
+                "--mpc-contract",
+                signer_id.as_str(),
+                "--plan",
+                text(&other_plan)?,
+                "--kind",
+                transport,
+                "--description",
+                "different request",
+                "--out",
+                text(&other_payload)?,
+            ],
+            Some(&proposer),
+        )
+        .await?;
+        assert_eq!(other["path"], submitted["path"]);
+        assert_eq!(other["derived_public_key"], submitted["derived_public_key"]);
+        assert_eq!(other["nonce"].as_u64(), Some(nonce + 1));
+        assert_ne!(other["payload_hash"], submitted["payload_hash"]);
+        let other_id = other["proposal_id"].as_u64().context("other proposal ID")?;
+        let other_stored = proposal(harness, &dao_id, other_id).await?;
+        approve(harness, &council_a, &dao_id, &other_stored).await?;
+        let other_vote = approve(harness, &council_b, &dao_id, &other_stored).await?;
+        assert!(failed_receipts(&other_vote).next().is_none());
+        assert_eq!(
+            proposal(harness, &dao_id, other_id).await?["status"],
+            "Approved"
+        );
+        let other_id_text = other_id.to_string();
+        let mut recovery_review = vec![
+            "dao",
+            "mpc",
+            "show",
+            "--dao",
+            dao_id.as_str(),
+            "--proposal-id",
+            other_id_text.as_str(),
+            "--mpc-contract",
+            signer_id.as_str(),
+            "--payload-file",
+            text(&other_payload)?,
+        ];
+        let planless = cli(harness, &recovery_review, None).await?;
+        assert_eq!(planless["status"], "Approved");
+        assert_eq!(planless["description"], other_stored["description"]);
+        assert!(planless.get("source_plan_digest").is_none());
+        recovery_review.extend(["--plan", text(&plan)?]);
+        let rejected = invoke(harness, &recovery_review, None).await?;
+        assert!(!rejected.status.success());
+        *recovery_review
+            .last_mut()
+            .context("recovery plan argument")? = text(&other_plan)?;
+        let other_review = cli(harness, &recovery_review, None).await?;
+        assert_eq!(
+            other_review["source_plan_digest"],
+            other["source_plan_digest"]
+        );
+        assert_eq!(other_review["description"], other_stored["description"]);
+        recovery_review.extend(["--expected-description", REQUEST_DESCRIPTION]);
+        let rejected = invoke(harness, &recovery_review, None).await?;
+        assert!(!rejected.status.success());
+        *recovery_review
+            .last_mut()
+            .context("expected description argument")? = "different request";
+        let described_other = cli(harness, &recovery_review, None).await?;
+        assert_eq!(described_other["description"], other_stored["description"]);
+        assert_eq!(
+            described_other["source_plan_digest"],
+            other["source_plan_digest"]
+        );
+        let mut wrong_source = review_args;
+        *wrong_source.last_mut().context("review plan argument")? = text(&other_plan)?;
+        let rejected = invoke(harness, &wrong_source, None).await?;
+        assert!(!rejected.status.success());
+        assert_eq!(raw_storage(harness, &controlled.0).await?, expected);
+    }
     Ok(())
 }

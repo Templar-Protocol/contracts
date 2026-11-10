@@ -24,7 +24,7 @@ pub enum MpcNs {
     /// Propose that the DAO have the MPC sign a planned transaction.
     Propose(Propose),
     /// Decode and verify what an MPC signing proposal would sign.
-    Show(ReviewArgs),
+    Show(Show),
     /// Relay an executed proposal's signed delegate action, paying its gas.
     Relay(Relay),
     /// Broadcast an executed proposal's signed transaction.
@@ -114,8 +114,9 @@ pub struct Propose {
     #[arg(long)]
     pub nonce: Option<u64>,
     /// How many blocks past the current head a delegate action stays relayable.
-    /// Defaults to ≈7 days of mainnet blocks, our DAOs' `proposal_period`. A
-    /// transaction's validity is fixed by the protocol, so this is refused for it.
+    /// Defaults to ≈7 days of mainnet blocks, our DAOs' `proposal_period`. Refused
+    /// for raw transactions: their lifetime comes from the actual RPC chain's
+    /// protocol configuration and cannot be extended by this flag.
     #[arg(long, value_name = "BLOCKS")]
     pub valid_for_blocks: Option<u64>,
     /// Proposal description shown to voters.
@@ -132,6 +133,20 @@ pub struct Propose {
     pub sign_tgas: u64,
     #[command(flatten)]
     pub signer: SignerArgs,
+}
+
+#[derive(Args, Debug)]
+pub struct Show {
+    #[command(flatten)]
+    pub review: ReviewArgs,
+    /// Bind the review to this exact source transaction or stamped PatchPlan,
+    /// without requiring its pre-execution live state or an unused nonce.
+    #[arg(long, value_name = "PATH")]
+    pub plan: Option<PathBuf>,
+    /// Require the exact requested proposal text, composing its public envelope
+    /// marker in the same way as `propose` (or exact text for a blind request).
+    #[arg(long, value_name = "TEXT")]
+    pub expected_description: Option<String>,
 }
 
 /// A proposal to review, and the MPC contract it must call.
