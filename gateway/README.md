@@ -119,10 +119,11 @@ configuration cache and uses the exact snapshot block rather than a newer finali
   clearing a manual trip still requires a successful refresh.
 - `proxyOracle.getFreshSourcePrice { oracle_id, id, age }` requires every effective
   stored source to be present, transformable, positive, convertible, nonfuture,
-  and fresh under both the deployed filter and requested age, using the chain's
-  block timestamp. This is a conservative readiness read, not an atomic guarantee
-  about a later transaction. It does not change `oracle.getPrice` or the supplied
-  `oracle.resolvePriceAllSources` resolver's existing semantics.
+  and fresh under both the deployed filter and requested age, using a chain block
+  timestamp read after all source views. These reads are not one block-pinned
+  snapshot or an atomic guarantee about a later transaction. The method does not
+  change `oracle.getPrice` or the supplied `oracle.resolvePriceAllSources`
+  resolver's existing semantics.
 - `tx.get` includes optional original transaction inspection: reported hash,
   signer, receiver, total action count, indexed top-level function calls, and
   indexed canonical NEP-461 delegate payload hashes. Inner delegated calls are

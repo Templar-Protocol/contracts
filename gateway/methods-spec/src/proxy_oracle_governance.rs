@@ -139,7 +139,7 @@ mod tests {
     use templar_common::Nanoseconds;
     use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation, Role};
 
-    use super::{CreateProposal, ProposalEncoding};
+    use super::{CreateProposal, ExecuteProposal, ProposalEncoding};
 
     fn body(encoding: ProposalEncoding) -> CreateProposal {
         CreateProposal {
@@ -154,6 +154,28 @@ mod tests {
             encoding,
             gas: None,
         }
+    }
+
+    #[test]
+    fn omitted_gas_preserves_legacy_idempotency_params() {
+        let create = serde_json::to_value(body(ProposalEncoding::Json)).unwrap();
+        assert!(create.get("gas").is_none(), "{create}");
+        let legacy_create = serde_json::json!({
+            "governance_id": "gov.near", "id": 7,
+            "operation": {"Reflexive": {"SetRole": {
+                "account_id": "op.near", "role": "Admin", "set": true
+            }}},
+            "requested_ttl": "0"
+        });
+        let decoded: CreateProposal = serde_json::from_value(legacy_create.clone()).unwrap();
+        assert_eq!(decoded.gas, None);
+        assert_eq!(create, legacy_create);
+        assert_eq!(serde_json::to_value(decoded).unwrap(), legacy_create);
+
+        let legacy_execute = serde_json::json!({"governance_id": "gov.near", "id": 7});
+        let decoded: ExecuteProposal = serde_json::from_value(legacy_execute.clone()).unwrap();
+        assert_eq!(decoded.gas, None);
+        assert_eq!(serde_json::to_value(decoded).unwrap(), legacy_execute);
     }
 
     /// The persisted idempotency fingerprint hashes these params, so a default request must
