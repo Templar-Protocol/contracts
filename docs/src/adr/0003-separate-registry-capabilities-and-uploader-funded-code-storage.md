@@ -50,9 +50,11 @@ Adopt one registry capability and storage model with these boundaries:
    derived MPC/DAO-controlled key, and has the DAO delete the deployer key to prove the new key
    works. Installing the MPC key directly would remove that confirmation step and still require
    full-access-key support, so restricting this capability to Owner would not eliminate it.
-   `RegistryEvent::Deployed` version 1.1.0 adds `deployer` and `full_access_keys` to the successful
-   finalization event for provenance; the `Deployment` view is unchanged. Implementation #708 must
-   thread that metadata through finalization and test the exact event payload before merging.
+   `RegistryEvent::Deployed` version 1.1.0 adds nullable `deployer` and `full_access_keys` to the
+   successful finalization event for provenance; the `Deployment` view is unchanged. New finalizer
+   calls carry optional, serde-defaulted metadata and emit `Some` values; legacy in-flight calls
+   default to `None` and emit `null`, preserving callback compatibility. Implementation #708 must
+   thread that metadata through finalization and test exact new and legacy payloads before merging.
 2. **Pre-fund code storage through NEP-145.** Through the contract API, only Uploader or Owner may
    call `upload_code`; Deployer has no upload authority without a separate Uploader grant or Owner
    authority. It accepts Borsh bytes with zero attached deposit and charges actual map, key,
