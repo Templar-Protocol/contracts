@@ -428,11 +428,105 @@ enum RestoreFixture {
     GlobalAccount,
 }
 
+enum PatchScenario {
+    Assets,
+    Generic,
+    GuardMismatch,
+}
+
+async fn assert_receipt_rollback(
+    seeded: &SeededMarket,
+    before: &StateSnapshot,
+    mut batch: tx::Batch,
+) -> Result<()> {
+    let ActionInput::FunctionCall {
+        args: templar_gateway_types::common::ContractArgs::Raw(args),
+        ..
+    } = &mut batch.actions[1]
+    else {
+        anyhow::bail!("generated batch must contain the raw PatchState call");
+    };
+    let mut patch = templar_patch_state_types::Patch::from_borsh_slice(&args.0)
+        .map_err(|error| anyhow::anyhow!("decode generated PatchState arguments: {error:?}"))?;
+    // The generated expectation passes and its Set changes STATE first. This
+    // final expectation then fails inside the same receipt, after a real write.
+    patch.ops.push(templar_patch_state_types::Op::Expect {
+        key: b"STATE".to_vec(),
+        value: Some(state(before)?.to_vec()),
+    });
+    args.0 = borsh::to_vec(&patch)?;
+
+    // Submit through the native gateway planner, deliberately not patch apply:
+    // its live preflight must continue rejecting tampered plans. The unmodified
+    // deploy/restore actions still surround the deliberately failing patch.
+    let result = seeded
+        .harness
+        .try_execute(&ManagedAccountId(seeded.market.market_id.clone()), batch)
+        .await?;
+    let outcome = result
+        .operation
+        .steps
+        .first()
+        .and_then(|step| step.status.outcome())
+        .context("expected an executed on-chain batch, not preflight rejection")?;
+    assert!(
+        outcome
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("storage expectation failed")),
+        "expected the PatchState guard failure, got {:?}",
+        outcome.failure
+    );
+    let failed = templar_gateway_testing::failed_receipts(&result).collect::<Vec<_>>();
+    assert_eq!(failed.len(), 1, "expected exactly the atomic batch to fail");
+    assert_eq!(failed[0].contract_id, seeded.market.market_id);
+    let finality = seeded
+        .harness
+        .client()?
+        .read(tx::Get {
+            tx_hash: result
+                .operation
+                .latest_tx_hash()
+                .context("failed batch transaction hash")?,
+            sender_account_id: seeded.market.market_id.clone(),
+            wait_until: Some(TxExecutionStatus::Final),
+            encoding: tx::ValueEncoding::Json,
+        })
+        .await?;
+    assert_eq!(finality.status, tx::Status::Failed);
+    assert_eq!(
+        finality.failed_receipts,
+        vec![seeded.market.market_id.clone()]
+    );
+    seeded.harness.fast_forward(10).await?;
+    let after = snapshot(&seeded.harness, &seeded.market.market_id).await?;
+    assert_eq!(entries(&after), entries(before), "partial storage mutation");
+    assert_eq!(after.storage_usage, before.storage_usage);
+    assert_eq!(
+        after.contract, before.contract,
+        "failed batch must preserve the exact local/global linkage"
+    );
+    assert_eq!(
+        after.code, before.code,
+        "failed batch must not strand the account on PatchState"
+    );
+    assert_eq!(
+        seeded
+            .harness
+            .get_configuration(&seeded.market.market_id)
+            .await?,
+        seeded.market.configuration
+    );
+    // Native gas balance and signer nonce intentionally change on a failed tx;
+    // raw storage, code/linkage and the live configuration must not.
+    Ok(())
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one release lifecycle compares raw checkpoints, sandbox replay and exact code restoration"
 )]
-async fn exercise_patch(restore: RestoreFixture, assets: bool) -> Result<()> {
+async fn exercise_patch(restore: RestoreFixture, scenario: PatchScenario) -> Result<()> {
     captured_fixture()?;
     let seeded = SeededMarket::new().await?;
     let harness = &seeded.harness;
@@ -496,7 +590,10 @@ async fn exercise_patch(restore: RestoreFixture, assets: bool) -> Result<()> {
     let before = snapshot(harness, &seeded.market.market_id).await?;
     let dir = OutputDir::new()?;
     let spec = dir.0.join("patch.toml");
-    let changes = if assets {
+    let changes = if matches!(
+        scenario,
+        PatchScenario::Assets | PatchScenario::GuardMismatch
+    ) {
         json!([
             {"op":"test","path":"/borrow_asset","value":seeded.market.configuration.borrow_asset},
             {"op":"replace","path":"/borrow_asset","value":{"Nep141":"new-borrow.test.near"}},
@@ -562,6 +659,11 @@ async fn exercise_patch(restore: RestoreFixture, assets: bool) -> Result<()> {
         ],
     )
     .await?;
+    if matches!(scenario, PatchScenario::GuardMismatch) {
+        let planned: crate::spec::patch_plan::PatchPlan =
+            serde_json::from_slice(&std::fs::read(&plan)?)?;
+        return assert_receipt_rollback(&seeded, &before, planned.batch).await;
+    }
     dispatch(
         harness,
         &[
@@ -630,17 +732,29 @@ async fn exercise_patch(restore: RestoreFixture, assets: bool) -> Result<()> {
 
 #[tokio::test]
 async fn requires_sandbox_config_patch_assets_local_restore() -> Result<()> {
-    exercise_patch(RestoreFixture::Local, true).await
+    exercise_patch(RestoreFixture::Local, PatchScenario::Assets).await
 }
 
 #[tokio::test]
 async fn requires_sandbox_config_patch_generic_global_restore() -> Result<()> {
-    exercise_patch(RestoreFixture::GlobalHash, false).await
+    exercise_patch(RestoreFixture::GlobalHash, PatchScenario::Generic).await
 }
 
 #[tokio::test]
 async fn requires_sandbox_config_patch_assets_global_account_restore() -> Result<()> {
-    exercise_patch(RestoreFixture::GlobalAccount, true).await
+    exercise_patch(RestoreFixture::GlobalAccount, PatchScenario::Assets).await
+}
+
+#[tokio::test]
+async fn requires_sandbox_config_patch_receipt_guard_rolls_back_storage_and_code() -> Result<()> {
+    for restore in [
+        RestoreFixture::Local,
+        RestoreFixture::GlobalHash,
+        RestoreFixture::GlobalAccount,
+    ] {
+        exercise_patch(restore, PatchScenario::GuardMismatch).await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]
