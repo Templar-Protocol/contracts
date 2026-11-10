@@ -41,6 +41,7 @@ pub mod vault;
 macro_rules! for_each_read_method {
     ($callback:ident) => {
         $callback!($crate::account::Get);
+        $callback!($crate::account::GetSpendableBalance);
         $callback!($crate::account::GetCode);
         $callback!($crate::account::ViewState);
         $callback!($crate::account::GetAccessKey);

@@ -79,6 +79,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
                 ),
                 requested_ttl: Nanoseconds::zero(),
                 encoding: ProposalEncoding::Json,
+                gas: None,
             },
         })
         .await?;
@@ -112,6 +113,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             body: proxy_oracle_governance::ExecuteProposal {
                 governance_id: governance_id.clone(),
                 id: 1,
+                gas: None,
             },
         })
         .await?;
@@ -152,6 +154,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
                 }),
                 requested_ttl: Nanoseconds::zero(),
                 encoding: ProposalEncoding::Json,
+                gas: None,
             },
         })
         .await?;
@@ -396,6 +399,7 @@ async fn borsh_encoding_carries_a_proposal_json_cannot() -> Result<()> {
             operation: oversized.clone(),
             requested_ttl: Nanoseconds::zero(),
             encoding,
+            gas: None,
         },
     };
 
