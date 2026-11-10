@@ -42,7 +42,7 @@ pub(crate) fn apply_changes(
 ) -> Result<MarketConfiguration> {
     let mut document = serde_json::to_value(before)?;
     apply_document(&mut document, changes)?;
-    let after: MarketConfiguration = serde_json::from_value(document.clone())
+    let after: MarketConfiguration = MarketConfiguration::deserialize(&document)
         .context("deserialize patched market configuration")?;
     ensure!(
         serde_json::to_value(&after)? == document,
