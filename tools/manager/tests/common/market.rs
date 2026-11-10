@@ -6,7 +6,10 @@ use sha2::{Digest as _, Sha256};
 use templar_common::market::MarketConfiguration;
 use templar_gateway_methods_spec::tx;
 use templar_gateway_testing::{DeployedMarket, SandboxHarness};
-use templar_gateway_types::{common::TxExecutionStatus, ManagedAccountId};
+use templar_gateway_types::{
+    common::{TxExecutionStatus, WriteOperationResult},
+    ManagedAccountId,
+};
 
 pub const RELEASE: &str = "1.6.1";
 pub const WASM_SHA256: &str = "d75c2419527d816a8f5fcab6a585032799a38cf90e09a5a98992d5c84774562a";
@@ -15,6 +18,35 @@ pub const WASM_LENGTH: usize = 520_372;
 fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
+
+// Sandbox fast-forward waits for an optimistic height, not receipt finality.
+// Finalize fixture writes before comparing final snapshots, including native
+// refunds and the market's contract execution rewards.
+pub async fn finalize(
+    harness: &SandboxHarness,
+    sender: &near_account_id::AccountId,
+    result: WriteOperationResult,
+) -> Result<()> {
+    let tx_hash = result
+        .operation
+        .latest_tx_hash()
+        .context("fixture transaction hash")?;
+    let finalized = harness
+        .client()?
+        .read(tx::Get {
+            tx_hash,
+            sender_account_id: sender.clone(),
+            wait_until: Some(TxExecutionStatus::Final),
+            encoding: tx::ValueEncoding::Json,
+        })
+        .await?;
+    ensure!(
+        finalized.status == tx::Status::Succeeded && finalized.failed_receipts.is_empty(),
+        "fixture transaction {tx_hash} from {sender} must finalize all receipts: {finalized:?}"
+    );
+    Ok(())
+}
+
 pub struct SeededMarket {
     pub harness: SandboxHarness,
     pub market: DeployedMarket,
@@ -96,33 +128,33 @@ impl SeededMarket {
             let registration = harness
                 .storage_deposit(&account, token, NearToken::from_millinear(10))
                 .await?;
-            let finalized = harness
-                .client()?
-                .read(tx::Get {
-                    tx_hash: registration
-                        .operation
-                        .latest_tx_hash()
-                        .context("market registration transaction hash")?,
-                    sender_account_id: account.0.clone(),
-                    wait_until: Some(TxExecutionStatus::Final),
-                    encoding: tx::ValueEncoding::Json,
-                })
-                .await?;
-            ensure!(
-                finalized.status == tx::Status::Succeeded && finalized.failed_receipts.is_empty(),
-                "market registration must finalize including native refunds before checkpoints"
-            );
+            finalize(&harness, &account.0, registration).await?;
         }
         for user in [&supplier, &borrower, &protocol] {
             harness.fund_user(user, &market).await?;
-            harness.storage_deposit_min(user, &market.market_id).await?;
+            finalize(
+                &harness,
+                &user.0,
+                harness.storage_deposit_min(user, &market.market_id).await?,
+            )
+            .await?;
         }
         harness.set_asset_prices(&market, 1.0, 1.0).await?;
-        harness.supply(&supplier, &market, 100_000).await?;
+        finalize(
+            &harness,
+            &supplier.0,
+            harness.supply(&supplier, &market, 100_000).await?,
+        )
+        .await?;
         // Time passage is explicit: activation and yield must not depend on
         // incidental transaction/block cadence on the parent runner.
         harness.fast_forward(20).await?;
-        harness.harvest_yield(&supplier, &market, None).await?;
+        finalize(
+            &harness,
+            &supplier.0,
+            harness.harvest_yield(&supplier, &market, None).await?,
+        )
+        .await?;
         let initial_position = harness
             .get_supply_position(&market, &supplier.0)
             .await?
@@ -131,17 +163,42 @@ impl SeededMarket {
             initial_position.get_deposit().incoming.is_empty(),
             "supply failed to activate"
         );
-        harness.collateralize(&borrower, &market, 100_000).await?;
-        harness.borrow(&borrower, &market, 10_000).await?;
+        finalize(
+            &harness,
+            &borrower.0,
+            harness.collateralize(&borrower, &market, 100_000).await?,
+        )
+        .await?;
+        finalize(
+            &harness,
+            &borrower.0,
+            harness.borrow(&borrower, &market, 10_000).await?,
+        )
+        .await?;
         harness.fast_forward(20).await?;
-        harness.repay(&borrower, &market, 2_000, None).await?;
+        finalize(
+            &harness,
+            &borrower.0,
+            harness.repay(&borrower, &market, 2_000, None).await?,
+        )
+        .await?;
         harness.fast_forward(20).await?;
-        harness
-            .accumulate_static_yield(&protocol, &market, None, None)
-            .await?;
-        harness
-            .create_supply_withdrawal_request(&supplier, &market, 1_000)
-            .await?;
+        finalize(
+            &harness,
+            &protocol.0,
+            harness
+                .accumulate_static_yield(&protocol, &market, None, None)
+                .await?,
+        )
+        .await?;
+        finalize(
+            &harness,
+            &supplier.0,
+            harness
+                .create_supply_withdrawal_request(&supplier, &market, 1_000)
+                .await?,
+        )
+        .await?;
         let supply = harness
             .get_supply_position(&market, &supplier.0)
             .await?
@@ -182,7 +239,6 @@ impl SeededMarket {
             "queue":{"status":queue,"request":withdrawal},
             "static_yield":{"account_id":protocol.0,"amount":static_yield.to_string()}
         });
-        harness.fast_forward(10).await?;
         Ok(Self {
             harness,
             market,
