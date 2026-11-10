@@ -19,6 +19,10 @@ storage safety. It does not change market contracts, gateway registration caller
 `add_version`/`PublishGlobal` interfaces. It does not authorize a production upgrade, ownership
 transfer, role grant, or key deletion.
 
+Process exception: implementation PR #708 predates this ADR and remains unmerged. This standalone
+ADR is the acceptance gate before that implementation merges; it is not retroactive approval or a
+claim that development followed the ADR-first process.
+
 The design must preserve the standard Owner API and storage slots, conventional RBAC membership,
 existing version/deployment history, callback ABIs, and pending-upload Borsh payloads. In particular,
 role membership is explicit while Owner authority is separate (`common/src/registry.rs:6-21`,
@@ -71,8 +75,9 @@ Adopt one registry capability and storage model with these boundaries:
    (`contract/registry/src/lib.rs:577-593,747-789`). Upgrade deploy, migration, and the post-upgrade
    solvency check share one atomic receipt. A direct call may attach 300 Tgas. After DAO handoff,
    the upgrade action must use `GlobalHash` with already-published code and empty migration
-   arguments: the tested DAO action has 280 Tgas beneath a 300-Tgas outer `act_proposal`, so it
-   cannot carry WASM (`contract/registry/src/lib.rs:311-335`; `contract/registry/tests/roles.rs`).
+   arguments: the tested DAO action has 280 Tgas beneath a 300-Tgas outer `act_proposal`, and the
+   rollout must not put WASM in proposal input (`contract/registry/src/lib.rs:311-335`;
+   `contract/registry/tests/roles.rs`).
 6. **Roll out only through verified DAO operation.** Use the documented canary-first procedure:
    drain legacy in-flight callbacks, verify the V1 migration and historical data, grant explicit
    roles, and transfer ownership through real DAO acceptance. Before deleting keys, prove DAO
