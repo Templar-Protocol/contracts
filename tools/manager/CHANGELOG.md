@@ -25,8 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Finalize released-market deployment and market-signed storage registrations,
-  including native refunds, before capturing configuration-patch no-mutation checkpoints.
+- Finalize every market-affecting configuration-patch fixture transaction and
+  unsupported-code redeployment, including native refunds, before capturing
+  exact no-mutation checkpoints; optimistic height advancement is not finality.
 
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 
