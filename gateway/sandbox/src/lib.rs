@@ -78,8 +78,8 @@ pub async fn patch_data(
     patch_records(network, records).await
 }
 
-/// State patches are optimistic; call [`wait_until_final`] before signing with a
-/// patched key, because near-api reads signer keys at `Final`.
+/// State patches commit before the RPC returns on the pinned sandbox release, but still need to
+/// reach `Final` before signing with a patched key, because near-api reads signer keys at `Final`.
 ///
 /// Large patches go over several requests, applied in order but not atomically: a failure leaves
 /// earlier batches applied, and only a record in the last batch reaching `Final` implies the rest
@@ -169,9 +169,9 @@ pub async fn wait_until_final(
 
 /// Wait for an account metadata patch to be visible in finalized state.
 ///
-/// `sandbox_patch_state` acknowledges its pending records being consumed for block processing,
-/// not the resulting state being committed or finalized. An already-present access key cannot
-/// fence a later metadata patch, so compare the exact balance, storage usage and code linkage.
+/// `sandbox_patch_state` waits for committed state on the pinned sandbox release, not finalized
+/// visibility. An already-present access key cannot fence a later metadata patch, so compare the
+/// exact balance, storage usage and code linkage.
 pub async fn wait_for_account_final(
     network: &NetworkConfig,
     account_id: &AccountId,
