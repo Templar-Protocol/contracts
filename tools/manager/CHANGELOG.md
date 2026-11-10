@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stamped patch plans reuse the complete live `patch apply` guard.
 - MPC relay/broadcast retain structured transaction identity and receipt evidence
   on failed or unknown submission outcomes.
+- Optional `dao mpc show --plan` and `--expected-description` bind a review to
+  its exact source and requested text without requiring unspent live state.
+- Raw MPC lifetime follows the chain's live transaction-validity period; source
+  checks precede block pinning and execution rechecks the inclusion bound without
+  changing approved bytes.
 
 ### Changed
 

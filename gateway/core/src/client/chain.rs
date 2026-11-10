@@ -67,6 +67,12 @@ impl ChainClient<'_> {
         self.rpc(&protocol_config_request()).await
     }
 
+    /// Transaction validity window in blocks from the endpoint's live protocol configuration.
+    pub async fn transaction_validity_period(&self) -> GatewayResult<u64> {
+        self.rpc(&TransactionValidityPeriodRequest(protocol_config_request()))
+            .await
+    }
+
     pub(crate) async fn storage_byte_cost(&self) -> GatewayResult<NearToken> {
         self.rpc(&StorageByteCostRequest(protocol_config_request()))
             .await
@@ -162,6 +168,25 @@ fn protocol_config_request() -> JsonRpcRequestForExperimentalProtocolConfig {
 
 struct StorageByteCostRequest(JsonRpcRequestForExperimentalProtocolConfig);
 
+struct TransactionValidityPeriodRequest(JsonRpcRequestForExperimentalProtocolConfig);
+
+impl ChainRpcRequest for TransactionValidityPeriodRequest {
+    type Output = u64;
+
+    async fn query(
+        &self,
+        client: &near_openapi_client::Client,
+    ) -> Result<Result<Self::Output, String>, near_openapi_client::Error<()>> {
+        Ok(match client.experimental_protocol_config(&self.0).await?.into_inner() {
+            JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant0 { result, .. } => {
+                result.transaction_validity_period
+                    .ok_or_else(|| "protocol config does not include transaction validity period".to_owned())
+            }
+            JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant1 { error, .. } => Err(error.to_string()),
+        })
+    }
+}
+
 impl ChainRpcRequest for StorageByteCostRequest {
     type Output = NearToken;
 
@@ -252,6 +277,26 @@ mod tests {
     use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
     const LIMITS_RESPONSE: &str = r#"{"jsonrpc":"2.0","id":"0","result":{"runtime_config":{"transaction_costs":{"storage_usage_config":{"num_bytes_account":100,"num_extra_bytes_record":40}},"wasm_config":{"limit_config":{"max_transaction_size":123,"max_total_prepaid_gas":"456","max_length_storage_key":789,"max_length_storage_value":1011}}}}}"#;
+
+    #[tokio::test]
+    async fn rejects_missing_transaction_validity_period() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"jsonrpc":"2.0","id":"0","result":{}}"#),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let network = NetworkConfig::from_rpc_url("test", server.uri().parse().unwrap());
+        let client = crate::NearClient::new(network);
+
+        assert!(matches!(
+            client.chain().transaction_validity_period().await,
+            Err(crate::GatewayError::NearQuery(_))
+        ));
+    }
 
     #[test]
     fn extracts_protocol_transaction_limits() {

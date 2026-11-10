@@ -24,7 +24,7 @@ use templar_gateway_types::{
 };
 
 use crate::commands::dao::mpc::{
-    Broadcast, DeriveKey, ExecutedProposalArgs, InstallKey, Propose, Relay, ReviewArgs,
+    Broadcast, DeriveKey, ExecutedProposalArgs, InstallKey, Propose, Relay, ReviewArgs, Show,
 };
 use crate::commands::signer::Authorization;
 use crate::context::{print_json, sputnik_function_call, CliContext};
@@ -33,7 +33,7 @@ use crate::mpc::{
     envelope::Envelope,
     payload::{
         transaction_last_valid_block, BuildInputs, Decoded, PayloadKind, SignablePayload, Signed,
-        Validity, TRANSACTION_VALIDITY_PERIOD_BLOCKS,
+        Validity,
     },
     signer_contract::{
         DerivedPublicKeyArgs, KeyType, Payload, SignArgs, SignRequest, SignatureResponse,
@@ -128,10 +128,15 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
     let key_type = args.mpc.key_type;
     let path = args.derivation.path_for(&controlled);
 
-    let ((public_key, next_nonce), block) = tokio::try_join!(
+    let ((public_key, next_nonce), limits, valid_for_blocks) = tokio::try_join!(
         installed_derived_key(&ctx, &mpc_contract_id, key_type, &dao, &path, &controlled),
-        async { Ok(ctx.client.read(chain::GetBlock::default()).await?) },
+        async { Ok(ctx.client.read(chain::GetProtocolLimits).await?) },
+        valid_for_blocks(&ctx, args.kind, args.valid_for_blocks),
     )?;
+    // Complete expensive state/code/stamp validation before starting a raw
+    // transaction's protocol-fixed window. Never refresh an approved payload.
+    validate_source_live(&ctx, &source, public_key).await?;
+    let block = ctx.client.read(chain::GetBlock::default()).await?;
     let nonce = args.nonce.unwrap_or(next_nonce);
     anyhow::ensure!(
         nonce >= next_nonce,
@@ -145,8 +150,10 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
          chain would reject the signed result as NonceTooLarge",
         block.height
     );
-    let valid_for_blocks = valid_for_blocks(args.kind, args.valid_for_blocks)?;
-    let last_valid_block = block.height.saturating_add(valid_for_blocks);
+    let last_valid_block = match args.kind {
+        PayloadKind::DelegateAction => block.height.saturating_add(valid_for_blocks),
+        PayloadKind::Transaction => transaction_last_valid_block(block.height, valid_for_blocks),
+    };
 
     let payload = SignablePayload::build(BuildInputs {
         kind: args.kind,
@@ -157,11 +164,11 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
         valid_for_blocks,
     })?;
     source.ensure_matches(&payload.decode()?)?;
-    validate_transport(&ctx, &payload).await?;
+    ensure_transport_limits(&transport_for_bounds(&payload)?, &limits)?;
     let hash = payload.hash()?;
     let payload_hash = hex::encode(hash);
     let envelope = Envelope::new(payload);
-    let description = proposal_description(&envelope, args.description, args.blind)?;
+    let description = proposal_description(&envelope, &args.description, args.blind)?;
     if let Some(out) = &args.out {
         envelope.write_file(out)?;
     }
@@ -186,7 +193,6 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
         last_valid_block,
         "built the payload the DAO will have signed"
     );
-    validate_source_live(&ctx, &source, public_key).await?;
     let Some(submitted) =
         super::dao::submit_proposal(&ctx, authorization, dao.clone(), proposal).await?
     else {
@@ -213,12 +219,12 @@ pub(super) async fn propose(ctx: CliContext, args: Propose) -> anyhow::Result<()
 }
 
 /// The operator's text, carrying the envelope unless the proposal is blind.
-fn proposal_description(envelope: &Envelope, text: String, blind: bool) -> anyhow::Result<String> {
+fn proposal_description(envelope: &Envelope, text: &str, blind: bool) -> anyhow::Result<String> {
     if blind {
-        Envelope::check_description(&text)?;
-        return Ok(text);
+        Envelope::check_description(text)?;
+        return Ok(text.to_owned());
     }
-    let rendered = envelope.render_description(&text)?;
+    let rendered = envelope.render_description(text)?;
     anyhow::ensure!(
         rendered.len() <= MAX_PUBLIC_DESCRIPTION_BYTES,
         "the payload is {} bytes; the DAO would pay for that storage forever and a large one does \
@@ -229,17 +235,21 @@ fn proposal_description(envelope: &Envelope, text: String, blind: bool) -> anyho
 }
 
 /// A delegate action's window is the operator's; a transaction's is the protocol's.
-fn valid_for_blocks(kind: PayloadKind, requested: Option<u64>) -> anyhow::Result<u64> {
-    match (kind, requested) {
-        (PayloadKind::DelegateAction, requested) => {
-            Ok(requested.unwrap_or(DEFAULT_VALID_FOR_BLOCKS))
-        }
-        (PayloadKind::Transaction, None) => Ok(TRANSACTION_VALIDITY_PERIOD_BLOCKS),
-        (PayloadKind::Transaction, Some(_)) => anyhow::bail!(
-            "--valid-for-blocks applies to a delegate action; a transaction is accepted for \
-             {TRANSACTION_VALIDITY_PERIOD_BLOCKS} blocks after the block it is pinned to"
-        ),
+async fn valid_for_blocks(
+    ctx: &CliContext,
+    kind: PayloadKind,
+    requested: Option<u64>,
+) -> anyhow::Result<u64> {
+    if kind == PayloadKind::DelegateAction {
+        return Ok(requested.unwrap_or(DEFAULT_VALID_FOR_BLOCKS));
     }
+    let period = ctx.client.read(chain::GetTransactionValidityPeriod).await?;
+    anyhow::ensure!(
+        requested.is_none(),
+        "--valid-for-blocks applies to a delegate action; this chain fixes a transaction's \
+         validity period at {period} blocks after the block it is pinned to"
+    );
+    Ok(period)
 }
 
 /// The derived key, which must already be a full-access key on `controlled`,
@@ -320,8 +330,18 @@ fn sign_proposal_kind(
     ))
 }
 
-pub(super) async fn show(ctx: CliContext, args: ReviewArgs) -> anyhow::Result<()> {
-    print_json(&review(&ctx, &args).await?.output)
+pub(super) async fn show(ctx: CliContext, args: Show) -> anyhow::Result<()> {
+    let source = args.plan.as_deref().map(SourcePlan::load).transpose()?;
+    print_json(
+        &review(
+            &ctx,
+            &args.review,
+            source.as_ref(),
+            args.expected_description.as_deref(),
+        )
+        .await?
+        .output,
+    )
 }
 
 async fn validate_source_live(
@@ -479,6 +499,11 @@ pub(super) async fn relay(ctx: CliContext, args: Relay) -> anyhow::Result<()> {
     let authorization = Authorization::try_from(&args.signer)?;
     if matches!(authorization.mode(), crate::commands::signer::Mode::Plan(_)) {
         validate_source_live(&ctx, &source, public_key).await?;
+        ensure_validity_live(
+            &ctx,
+            Validity::MaxBlockHeight(delegate.delegate_action.max_block_height),
+        )
+        .await?;
         return ctx
             .write_authorized(
                 authorization,
@@ -489,6 +514,7 @@ pub(super) async fn relay(ctx: CliContext, args: Relay) -> anyhow::Result<()> {
             .await;
     }
     let (signer, _) = authorization.resolve(ctx.network_config()).await?;
+    validate_source_live(&ctx, &source, public_key).await?;
     let lease = signer.lease_next().await;
     let transaction = lease
         .presign(
@@ -498,7 +524,6 @@ pub(super) async fn relay(ctx: CliContext, args: Relay) -> anyhow::Result<()> {
         )
         .await?;
     validate_signed_transport(&ctx, &transaction).await?;
-    validate_source_live(&ctx, &source, public_key).await?;
     submit_signed_transport(&ctx, transaction, &source).await
 }
 
@@ -514,6 +539,7 @@ pub(super) async fn broadcast(ctx: CliContext, args: Broadcast) -> anyhow::Resul
     validate_signed_transport(&ctx, &signed_transaction).await?;
     validate_source_live(&ctx, &source, signed_transaction.transaction.public_key()).await?;
     if args.print {
+        ensure_validity_live(&ctx, transaction_validity(&signed_transaction.transaction)).await?;
         return print_json(&SignedTransactionOutput {
             signed_transaction: Base64Bytes(borsh::to_vec(&signed_transaction)?),
         });
@@ -527,6 +553,16 @@ async fn submit_signed_transport(
     transaction: SignedTransaction,
     source: &SourcePlan,
 ) -> anyhow::Result<()> {
+    // The review preceded potentially expensive live source validation. Re-read
+    // the actual inclusion bounds immediately before sending unchanged bytes.
+    let mut last_valid_block =
+        last_valid_block(ctx, transaction_validity(&transaction.transaction)).await?;
+    for action in transaction.transaction.actions() {
+        if let Action::Delegate(delegate) = action {
+            last_valid_block = last_valid_block.min(delegate.delegate_action.max_block_height);
+        }
+    }
+    ensure_inclusion_live(ctx, last_valid_block).await?;
     let tx_hash = transaction.get_hash().into();
     let sender_account_id = transaction.transaction.signer_id().clone();
     let result = NearOperationExecutor::new(ctx.network_config().clone(), None)
@@ -580,9 +616,8 @@ async fn signed_payload(
     executed: &ExecutedProposalArgs,
     source: &SourcePlan,
 ) -> anyhow::Result<Signed> {
-    let review = review(ctx, &executed.review).await?;
+    let review = review(ctx, &executed.review, Some(source), None).await?;
     let output = &review.output;
-    source.ensure_matches(&output.payload)?;
     validate_transport(ctx, &review.payload).await?;
     let proposal_id = executed.review.proposal_id;
     anyhow::ensure!(
@@ -598,7 +633,7 @@ async fn signed_payload(
     );
     anyhow::ensure!(
         !output.expired,
-        "the payload expired at block {}; head is {}. Propose it again",
+        "the payload expired after its last valid inclusion block {}; head is {}",
         output.last_valid_block,
         output.head_height
     );
@@ -686,6 +721,10 @@ struct ReviewOutput {
     payload_hash: String,
     /// Where the payload was read from; `None` means the proposal description.
     payload_file: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_plan_kind: Option<SourcePlanKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_plan_digest: Option<crate::spec::plan::WireSha256Digest>,
     payload: Decoded,
     /// From the payload bytes: a delegate action's own bound, or the validity
     /// window after the on-chain height of the block a transaction is pinned to.
@@ -705,7 +744,12 @@ struct Review {
     payload: SignablePayload,
 }
 
-async fn review(ctx: &CliContext, args: &ReviewArgs) -> anyhow::Result<Review> {
+async fn review(
+    ctx: &CliContext,
+    args: &ReviewArgs,
+    source: Option<&SourcePlan>,
+    expected_description: Option<&str>,
+) -> anyhow::Result<Review> {
     let dao = &args.dao;
     let proposal_id = args.proposal_id;
     let proposal = ctx
@@ -731,9 +775,15 @@ async fn review(ctx: &CliContext, args: &ReviewArgs) -> anyhow::Result<Review> {
     let key_type = request.key_type()?;
     let expected_hash = request.payload.hash()?;
 
+    let described_envelope = if args.payload_file.is_none() || expected_description.is_some() {
+        Envelope::from_description(&proposal.proposal.description)?
+    } else {
+        None
+    };
+    let blind = described_envelope.is_none();
     let envelope = match &args.payload_file {
         Some(path) => Envelope::read_file(path)?,
-        None => Envelope::from_description(&proposal.proposal.description)?.with_context(|| {
+        None => described_envelope.with_context(|| {
             format!(
                 "proposal {proposal_id} carries no payload in its description (a blind \
                  proposal?); pass --payload-file"
@@ -748,6 +798,16 @@ async fn review(ctx: &CliContext, args: &ReviewArgs) -> anyhow::Result<Review> {
         hex::encode(expected_hash)
     );
     let payload = envelope.payload.decode()?;
+    if let Some(source) = source {
+        source.ensure_matches(&payload)?;
+    }
+    if let Some(expected_description) = expected_description {
+        anyhow::ensure!(
+            proposal.proposal.description
+                == proposal_description(&envelope, expected_description, blind)?,
+            "proposal {proposal_id} description differs from the expected request"
+        );
+    }
 
     let (derived_public_key, last_valid_block, head_height) = tokio::try_join!(
         derived_public_key(ctx, &mpc_contract_id, key_type, dao, &request.path),
@@ -778,6 +838,8 @@ async fn review(ctx: &CliContext, args: &ReviewArgs) -> anyhow::Result<Review> {
             sign_gas: gas,
             payload_hash: hex::encode(hash),
             payload_file: args.payload_file.clone(),
+            source_plan_kind: source.map(SourcePlan::kind),
+            source_plan_digest: source.map(SourcePlan::digest),
             key_installed: key_next_nonce.is_some(),
             nonce_spent: key_next_nonce.is_none_or(|next| payload.nonce < next),
             payload,
@@ -794,21 +856,48 @@ async fn last_valid_block(ctx: &CliContext, validity: Validity) -> anyhow::Resul
     match validity {
         Validity::MaxBlockHeight(height) => Ok(height),
         Validity::BlockHash(block_hash) => {
-            let block = ctx
-                .client
-                .read(chain::GetBlock {
-                    block_hash: Some(block_hash.into()),
-                })
-                .await
-                .with_context(|| {
-                    format!(
-                        "the transaction is pinned to block {block_hash}, which this RPC no \
-                         longer serves: it has most likely expired; an archival RPC can confirm"
-                    )
-                })?;
-            Ok(transaction_last_valid_block(block.height))
+            let (block, period) = tokio::try_join!(
+                async {
+                    ctx.client
+                        .read(chain::GetBlock {
+                            block_hash: Some(block_hash.into()),
+                        })
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "the transaction is pinned to block {block_hash}, which this RPC no \
+                                 longer serves: it has most likely expired; an archival RPC can confirm"
+                            )
+                        })
+                },
+                async { Ok(ctx.client.read(chain::GetTransactionValidityPeriod).await?) },
+            )?;
+            Ok(transaction_last_valid_block(block.height, period))
         }
     }
+}
+
+fn transaction_validity(transaction: &Transaction) -> Validity {
+    Validity::BlockHash(match transaction {
+        Transaction::V0(transaction) => transaction.block_hash,
+        Transaction::V1(transaction) => transaction.block_hash,
+    })
+}
+
+async fn ensure_validity_live(ctx: &CliContext, validity: Validity) -> anyhow::Result<()> {
+    let last_valid_block = last_valid_block(ctx, validity).await?;
+    ensure_inclusion_live(ctx, last_valid_block).await
+}
+
+async fn ensure_inclusion_live(ctx: &CliContext, last_valid_block: u64) -> anyhow::Result<()> {
+    let head = ctx.client.read(chain::GetBlock::default()).await?.height;
+    // Inclusion is after the observed head. The final accepted inclusion height
+    // itself is therefore already too late to submit.
+    anyhow::ensure!(
+        head < last_valid_block,
+        "the payload expired after its last valid inclusion block {last_valid_block}; head is {head}"
+    );
+    Ok(())
 }
 
 async fn derived_public_key(

@@ -111,7 +111,19 @@ checkpoints, wait for the relevant transaction with `tx.get` and
 `wait_until: "FINAL"`, and verify its downstream receipts. A fixed number of
 `fast_forward` blocks is a time advance, not that transaction's settlement proof.
 
+`sandbox_patch_state` acknowledges staging, not finalized visibility. After
+restoring replay account metadata, wait until a `FINAL` account view matches the
+exact amount, locked balance, storage usage, and local/global code linkage.
+Finalize staging transactions and their refunds before that metadata reset;
+an old access key reaching finality does not fence a later account patch.
+
 Keep native amount, locked balance, storage usage, code/global identity,
 effective code bytes, access keys/nonces, and raw storage comparisons separate
 so a failure identifies the changed component. Do not drop a component merely
 because asynchronous setup makes a composite digest differ.
+
+The configuration-patch sandbox gate also submits an intentionally failing
+deploy→patch→restore batch directly through the native gateway. Its guard fails
+after the generated `STATE` write: the failed receipt must leave original
+storage, configuration, effective code, and local/global linkage intact.
+Gas balance and signer nonce are not rollback invariants.
