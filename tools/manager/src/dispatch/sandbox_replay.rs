@@ -156,27 +156,31 @@ pub(super) async fn stage_local_code(
     Ok(())
 }
 
-/// Restore the snapshot's balance, code linkage and storage usage once its code is staged.
+/// Restore and finalize the snapshot's balance, code linkage and storage usage after staging code.
 pub(super) async fn reset_account_metadata(
     network: &NetworkConfig,
     account_id: &AccountId,
     state: &StateSnapshot,
 ) -> Result<()> {
+    let account = ChainAccount::new(
+        state.amount,
+        state.locked,
+        state.contract.clone(),
+        state.storage_usage,
+    );
+    let expected = (&account).into();
     templar_sandbox::patch_records(
         network,
         vec![StateRecord::Account {
             account_id: account_id.clone(),
-            account: ChainAccount::new(
-                state.amount,
-                state.locked,
-                state.contract.clone(),
-                state.storage_usage,
-            ),
+            account,
         }],
     )
-    .await
+    .await?;
+    templar_sandbox::wait_for_account_final(network, account_id, &expected).await
 }
 
+/// Finalize replay transactions, including refunds, before restoring snapshot metadata or reading it.
 pub(super) fn build_local_client(
     network: &NetworkConfig,
     signers: &[(&AccountId, &SecretKey)],
@@ -184,7 +188,8 @@ pub(super) fn build_local_client(
     signers
         .iter()
         .try_fold(
-            templar_gateway_client::Client::builder(network.clone()),
+            templar_gateway_client::Client::builder(network.clone())
+                .finality_policy(templar_gateway_core::FinalityPolicy::Final),
             |builder, (account_id, secret_key)| {
                 builder.secret_key((*account_id).clone(), (*secret_key).clone())
             },
