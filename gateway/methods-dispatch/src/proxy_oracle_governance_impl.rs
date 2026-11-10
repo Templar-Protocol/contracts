@@ -12,7 +12,7 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
-use templar_gateway_types::{ProposalEncoding, ProxyGovernance};
+use templar_gateway_types::{NearGas, ProposalEncoding, ProxyGovernance};
 use templar_proxy_oracle_near_governance_common::{
     GovernancePolicy, GovernancePolicyWire, Operation, Proposal, Role,
 };
@@ -193,7 +193,7 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
         let governance_id = body.governance_id;
         let options = ContractWriteOptions::new(request.signer_account_id)
             .one_yocto()
-            .tgas(300);
+            .gas(body.gas.unwrap_or_else(|| NearGas::from_tgas(300)));
         let args = GovCreateArgs {
             id: body.id,
             operation: body.operation,
@@ -257,7 +257,7 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::ExecuteProposal, C> fo
             .execute_proposal(
                 ContractWriteOptions::new(request.signer_account_id)
                     .one_yocto()
-                    .tgas(300),
+                    .gas(body.gas.unwrap_or_else(|| NearGas::from_tgas(300))),
                 GovActionArgs { id: body.id },
             )
             .map(OperationPlan::from)
@@ -295,6 +295,7 @@ mod tests {
                 operation: operation(),
                 requested_ttl: templar_common::Nanoseconds::zero(),
                 encoding,
+                gas: None,
             },
         }
     }

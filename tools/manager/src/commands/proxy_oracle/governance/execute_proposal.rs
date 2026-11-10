@@ -34,6 +34,7 @@ impl ExecuteProposalArgs {
         spec::ExecuteProposal {
             governance_id,
             id: self.id,
+            gas: None,
         }
     }
 }
