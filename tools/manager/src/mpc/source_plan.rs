@@ -308,7 +308,7 @@ mod tests {
         let digest = transaction_digest(&original).unwrap();
         // These wire digests are persisted in reviewed source-plan provenance.
         assert_eq!(
-            serde_json::to_value(&digest).unwrap(),
+            serde_json::to_value(digest).unwrap(),
             serde_json::json!(
                 "sha256-wire:f49e86f2cceed33af103c7499354caf687e968bbaa4e8b157555feb4a3a89597"
             )
