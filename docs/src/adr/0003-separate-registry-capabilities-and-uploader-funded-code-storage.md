@@ -19,12 +19,12 @@ storage safety. It does not change market contracts, gateway registration caller
 `add_version`/`PublishGlobal` interfaces. It does not authorize a production upgrade, ownership
 transfer, role grant, or key deletion.
 
-Process exception: implementation PR #708 predates this ADR and remains unmerged. This standalone
-ADR is the acceptance gate before that implementation merges; it is not retroactive approval or a
-claim that development followed the ADR-first process.
+Process exception: implementation PR #708 was already in progress before the ADR process was
+introduced and remains unmerged. This standalone ADR is the acceptance gate before that
+implementation merges; it is not retroactive approval or a claim of ADR-first development.
 
 The design must preserve the standard Owner API and storage slots, conventional RBAC membership,
-existing version/deployment history, callback ABIs, and pending-upload Borsh payloads. In particular,
+existing version/deployment history, and pending-upload Borsh payloads. In particular,
 role membership is explicit while Owner authority is separate (`common/src/registry.rs:6-21`,
 `contract/registry/src/lib.rs:186-232`). Migration must move collection handles without iterating
 historical entries or changing owner slots (`contract/registry/src/state/migration.rs:13-34`).
@@ -45,7 +45,14 @@ Adopt one registry capability and storage model with these boundaries:
    `set_role` emits the conventional `role_set` event with `account_id`, `role`, and
    `is_granted` (`common/src/registry.rs:390-394`). A Deployer may attach explicitly supplied
    full-access keys to children it creates, so that role is a trusted deployment capability, not a
-   guarantee of keyless children (`contract/registry/src/lib.rs:624-633,720-726`).
+   guarantee of keyless children (`contract/registry/src/lib.rs:624-633,720-726`). The current
+   deployment process installs a deployer key, confirms the child works, replaces it with a freshly
+   derived MPC/DAO-controlled key, and has the DAO delete the deployer key to prove the new key
+   works. Installing the MPC key directly would remove that confirmation step and still require
+   full-access-key support, so restricting this capability to Owner would not eliminate it.
+   `RegistryEvent::Deployed` version 1.1.0 adds `deployer` and `full_access_keys` to the successful
+   finalization event for provenance; the `Deployment` view is unchanged. Implementation #708 must
+   thread that metadata through finalization and test the exact event payload before merging.
 2. **Pre-fund code storage through NEP-145.** Through the contract API, only Uploader or Owner may
    call `upload_code`; Deployer has no upload authority without a separate Uploader grant or Owner
    authority. It accepts Borsh bytes with zero attached deposit and charges actual map, key,
@@ -78,6 +85,8 @@ Adopt one registry capability and storage model with these boundaries:
    arguments: the tested DAO action has 280 Tgas beneath a 300-Tgas outer `act_proposal`, and the
    rollout must not put WASM in proposal input (`contract/registry/src/lib.rs:311-335`;
    `contract/registry/tests/roles.rs`).
+   DAO proposal tooling must let operators override gas values, including a simple `--gas
+   "250 Tgas"`-style option, rather than relying on an unadjustable default.
 6. **Roll out only through verified DAO operation.** Use the documented canary-first procedure:
    drain legacy in-flight callbacks, verify the V1 migration and historical data, grant explicit
    roles, and transfer ownership through real DAO acceptance. Before deleting keys, prove DAO
@@ -92,10 +101,9 @@ Adopt one registry capability and storage model with these boundaries:
   but leaves hot keys with approval/deployment authority and does not establish who funds code
   retained after approval. It also retains deposit/refund handling instead of available-credit
   accounting.
-- **Require Owner for non-empty `full_access_keys`, or remove the parameter.** This would reduce
-  the Deployer's child-key trust boundary, but removes the explicitly accepted Deployer capability
-  to establish trusted recovery keys for new markets. The chosen policy retains that authority and
-  makes key review, role revocation, and compromised-child recovery mandatory.
+- **Require Owner for non-empty `full_access_keys`, or remove the parameter.** Rejected: this
+  would break the established deployer-key to MPC/DAO-key rotation and its confirmation step while
+  still leaving the deployment process dependent on full-access-key support.
 
 - **Replace Owner with an RBAC Admin role or remove ownership.** That would centralize the same
   authority under another name while requiring owner-slot, API, and DAO-handoff migration. It adds
@@ -119,20 +127,17 @@ funding and trust management: uploaders need enough available credit, approval c
 payer top-up, the registry needs protocol-owned backing, and every supplied child key and Deployer
 must be treated as security-sensitive.
 
-Deployment records contain the version, code hash, and block height, but not the Deployer or the
-attached key list. Recovery therefore requires receipt/indexer history plus RPC access-key
-enumeration. If operators require self-contained on-chain provenance, adding the Deployer and key
-list to `Deployed` is a separate public-event change, not a silent extension of this ADR.
-
-If protocol liabilities exceed the registry balance, user `storage_withdraw` calls fail rather
-than allowing earlier withdrawers to drain backing owed to later ones. Restoring withdrawals then
-requires a protocol-owned top-up; the failure is intentional solvency protection.
+`Deployed` now records the Deployer and supplied full-access keys for incident provenance; the
+`Deployment` view remains unchanged. Storage accounting involves trusted operator parties and
+small NEAR amounts. If a storage-credit shortfall needs reconciliation, a manual top-up or
+adjustment is acceptable; solvency checks may block storage withdrawals until it is resolved.
 
 The following checks are required before rollout:
 
-- **Unit/integration:** exact role/event and VersionSource wire formats, duplicate-pending versus
-  approved-alias behavior, payer charging/release, underpayment rollback, V1 history/Owner-slot
-  preservation, and failed cleanup during a shortfall.
+- **Unit/integration:** exact role/event and VersionSource wire formats, including `Deployed` 1.1.0
+  with Deployer/key provenance, duplicate-pending versus approved-alias behavior, payer
+  charging/release, underpayment rollback, V1 history/Owner-slot preservation, and failed cleanup
+  during a shortfall.
 - **Sandbox/end-to-end:** the real authorization matrix, DAO-as-predecessor approval and keyless
   upgrade, released-V1 migration, in-flight callback compatibility, non-tail blob cleanup, and
   actual withdrawal to the original payer. The implementation evidence is 466 native tests and 84
@@ -157,32 +162,9 @@ The following checks are required before rollout:
 | Protocol writes try to consume user credit | `Insufficient registry balance to cover storage liabilities`; reduced available balance | Reserve physical storage, Owner growth, and in-flight final records; compare liabilities before and after writes | Top up protocol-owned NEAR, then retry the rejected write; the failed receipt must not change credit or metadata |
 | A failed deployment/probe would strand its key under an existing shortfall | Reserved deployment or provisional `GlobalHash` remains after callback failure | Cleanup releases storage and reservations without a new solvency assertion; query the entry and pending reserve | With the cleanup rule in place, the entry and reserve are released even though the intentional failure receipt still reports failure |
 | An upgrade targets the wrong migration or lacks backing for local code | `needs_migration`, changed history/owner, failed post-upgrade check, or unexpected code hash | Validate the migration chain, drain legacy callbacks, and run deploy/migrate/check atomically; verify V2 data and exact code identity | The failed atomic receipt restores prior code/state. Correct the target or protocol funding, then retry after rechecking finalized state |
-| Registry backing is below protocol liabilities | User `storage_withdraw` fails despite available credit | Solvency is checked before each transfer, preventing a first-come-first-served drain of remaining backing | Top up protocol-owned NEAR; user withdrawals resume only after aggregate liabilities are covered |
-| A compromised Deployer attaches an unintended child key | Unexpected child full-access key, code change, storage patch, or additional unauthorized keys | Treat Deployer as trusted deployment authority; review `full_access_keys` and enumerate actual child keys after deployment | Follow the compromised-Deployer recovery procedure below |
 
-### Compromised-Deployer recovery
-
-1. Stop routing new deposits to affected children immediately to cap exposure while preserving
-   receipts, keys, code hashes, and state needed for investigation.
-2. Determine whether the compromised Deployer is also Owner. If so, secure or transfer Owner
-   authority before any child-key removal; revoking Deployer alone does not contain Owner's
-   bypass. If Owner cannot be secured or transferred, stop using affected children, disclose the
-   compromise, and migrate users where feasible instead of treating role revocation as containment.
-3. After containing any compromised Owner authority, enumerate explicit Deployer membership and
-   revoke every unauthorized grant through `set_role`, including the compromised account's, before
-   any child-key removal.
-4. Wait for deployment receipts and callbacks authorized before revocation to settle, so no
-   in-flight deployment can create another child after the role is revoked.
-5. Re-enumerate child keys, including children created after the compromise. Remove every
-   unauthorized key using a trusted full-access key on that child, if one remains.
-6. Once the key list is clean, grant a reviewed replacement Deployer role if continued deployment
-   is required. Rotating to a replacement does not revoke any child keys.
-7. Verify the final key list and establish trusted child code and state before resuming use.
-8. If integrity cannot be established or safely restored, disclose the compromise and migrate users
-   to a newly reviewed market where feasible, even if a trusted child key remains. If no trusted
-   child key or authorized removal method exists, stop using that Deployer and apply the same
-   disclosure/migration fallback. A keyless market cannot be patched; recovery then requires a new
-   market and user migration.
+Compromised accounts follow the existing incident-response SOP. Stop new deposits to affected
+children while that response proceeds; registry role revocation alone does not remove child keys.
 
 Human acceptance of this ADR is a design decision only. Production execution remains separately
 reviewed and authorized.
