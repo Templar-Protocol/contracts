@@ -8,13 +8,27 @@ production submissions remain disabled. No production deployment, conversion,
 release or PR merge was performed. Deterministic genuine Ed25519 signatures do
 not establish distributed-MPC availability.
 
-Controlled-local acceptance is complete on `feat/hot-omni-4-orchestration`.
+The controlled-local implementation is complete on `feat/hot-omni-4-orchestration`.
+Historical full-matrix evidence and current focused verification are distinguished
+below.
 [Published-head CI](https://github.com/Templar-Protocol/contracts/actions?query=branch%3Afeat%2Fhot-omni-4-orchestration)
 and human review are separate from this local evidence; no merge approval is claimed.
 
 The approved full-matrix environment is the repository's CI-standard
 `NEAR_SANDBOX_BLOCK_MS=120`, with serialized node cases. Actual chain validity and
 expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
+
+## Frozen full-stack scope
+
+The selected target is all four PRs, each against its immediate base: 121 distinct
+changed files across these frozen comparisons.
+
+| PR | Frozen base | Frozen head |
+|---|---|---|
+| #713 | `415a68f547b047df69f61cd8e128bbb1f60dbd64` | `eb1fbb57a380deddb842cc4752e6ea7496c1a8e8` |
+| #714 | `eb1fbb57a380deddb842cc4752e6ea7496c1a8e8` | `f1346cd71eb6910d316946e41be626508787e0a5` |
+| #715 | `f1346cd71eb6910d316946e41be626508787e0a5` | `fc049c59148aa38430c6d6da361f4354327d0648` |
+| #717 | `fc049c59148aa38430c6d6da361f4354327d0648` | `bbf0ae392f4c6f94e79d0fcab8ea5530bc6e4f75` |
 
 ## Exercised evidence
 
@@ -27,10 +41,10 @@ expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
 | Committed sandbox patches | Startup plus 16 single-submission account/code/raw-key create/reset cycles on nearcore 2.12.0 | Passed. Exact `near-sandbox = 0.3.11` selects the upstream committed-patch repair; finalized-state fences remain enabled. |
 | Configuration patch | `just test-sandbox --stale -p templar-manager requires_sandbox_config_patch --test-threads 1` in PR2 | Five tests passed. The receipt-time guard failure runs under local, global-hash and global-account restoration; raw state/configuration/effective code/linkage roll back. Native gas balance and nonce are not rollback invariants. |
 | Manager fast and parent node gate | `just test-fast -p templar-manager`; `just test-sandbox --stale -p templar-manager --test-threads 1` in PR3 `fc049c59` | 628 fast tests and all 19 parent sandbox cases passed after finalized-fixture propagation (496.571 s node gate). Both real-Sputnik stamped-patch transports, live drift, actual-period expiry and atomic rollback passed. This is not final current-root evidence. |
-| Current root manager fast gate | `just test-fast -p templar-manager` | All 639 passed with the pinned RPC correction and metadata/finality repairs. Full-node acceptance remains separate. |
-| Converter | `just test-sandbox --stale -p templar-manager --test asset_converter --test-threads 1` | All 11 passed: four FT/MT pairings, exact raw-unit settlement, failure refunds, real DepositBack credit/storage divergence, invalid routes and unauthorized/zero-input behavior. |
+| Current integrated fast gate | `just test-fast -p templar-manager -p templar-gateway-core -p templar-gateway-methods-spec -p templar-gateway-methods-dispatch -p templar-gateway-catalog -p templar-gateway-testing -p templar-sandbox` | All 803 passed after the full-stack simplifications; 20 node/ignored tests excluded. One duplicated source-plan boundary test was removed; the complete strict-boundary and digest/binding tests remain. |
+| Converter | `./script/prebuild-test-contracts.sh --artifact mock-asset-converter`, then `NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_converter --test-threads 1` | All 11 passed against the rebuilt WASM below: four FT/MT pairings, exact raw-unit settlement, failure refunds, real DepositBack credit/storage divergence, invalid routes and unauthorized/zero-input behavior. |
 | Complete script workflow | Full manager sandbox gate below, through actual compiled CLI, shell and Python | All five complete/restart variants passed: borrow FT, collateral MT, mixed inventories, shared-feed cohort and original pause, including Sputnik approvals/timelock, MPC, reconciliation and accepted-cache refresh. |
-| Current root compilation/lint | `cargo check --workspace`; manager/converter/artifact/testing/sandbox/core/spec/types all-target Clippy `-D warnings`; formatting | Passed, including the latest manager fixture corrections. Existing workspace unknown `clippy::ignore_without_reason` warnings remain; no change-specific Clippy finding remains. |
+| Current root compilation/lint | `cargo check --workspace`; `cargo clippy -p templar-manager -p templar-gateway-core -p mock-asset-converter --all-targets --features templar-manager/asset-migration-acceptance -- -D warnings`; `cargo fmt --all --check` | Passed. Existing workspace unknown `clippy::ignore_without_reason` warnings remain; no change-specific Clippy finding remains. |
 | Artifact catalog | `just test-fast -p templar-contract-artifacts --features fetch,workspace-loader,clap --run-ignored all`; `./script/check-artifact-drift.sh` | All 63 and the drift entrypoint passed. The entrypoint runs Rust checks and is not build-free. Immutable historical release files were not hand-edited. |
 | Executable entrypoints | All eight directly executable stage `--help` commands; actual runner and native read-batch/predict-manual-trip/MPC-show help; ten Python syntax parses and Bash syntax | Passed; not a substitute for chain-runtime acceptance. |
 | Offline ingress and journal boundaries | Current Python implementation: complete-intent publication/reopen; missing/unknown intent fields; domain key ending `:mpc` versus explicit financial scope; authored→normalized→frozen campaign parsing | Passed. Boolean schema, unknown campaign fields/transport, zero wait and raw explicit validity refused; frozen null validity retained. Empty artifact set: no chain, snapshot-resolution or campaign-acceptance claim. |
@@ -42,18 +56,35 @@ expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
 | Historical full manager sandbox matrix (`c481ccc5`, before opt-in gating) | `NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --test-threads 1` | **109/109 passed**, 25 slow, 643 fast/other cases excluded by the sandbox partition; 9511.335 s. Uninjected local gate, including 79 script, 11 converter and 19 original manager node cases. Use `--features asset-migration-acceptance` to include the one-off targets now. |
 | Current catalog and documentation | `just test-fast -p templar-gateway-catalog`; `just docs-check`; selected repository-relative Markdown targets | Four catalog tests, risk-document self-test and generated-document check passed; relative targets exist. External URLs, fragments and site-root routes were not link-checked. |
 | One-off acceptance opt-in | Cargo metadata; default script-name filter through `just test-sandbox`; retained MPC delegate smoke; `--features asset-migration-acceptance` with both one-off targets | Default script filter selected zero cases; retained MPC delegate passed. Both opt-in binaries compiled and the FT→FT converter settlement case passed, with the other 89 cases filtered out. Workflow parsing confirms the 45-minute job limit and removal of the script-only node trigger. |
+| Current retained node paths | `env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --test dao_mpc_patch --test-threads 1`; `env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager requires_sandbox_config_patch --test-threads 1`; `env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-gateway-core --test spendable_balance --test-threads 1` | All four real-Sputnik MPC cases, five configuration-patch cases and one live storage-backed spendable-balance case passed. Both transports, live drift, actual-period expiry and receipt-time atomic rollback remain enforced. |
+| Configuration and digest compatibility | Isolated parent `just test-fast -p templar-manager market_config_patch`, `source_plan` and `ordinary_proposal`; temporary owned/borrowed decoder equivalence and pre-streaming digest capture | Configuration boundaries passed; temporary checks compared canonical JSON, Borsh and exact errors, then were removed. Two existing source-plan tests and three ordinary-proposal tests passed; permanent digest vectors pin the original mixed-action and 16 KiB deployment encodings. |
+| Current focused scripts | Seven separate opt-in invocations below, through actual compiled CLI, shell, Python and neard | All 11 selected scenarios passed: both complete/restart transports, all four actual unpriced mutations, dependency metadata before swap/resume, both effective-code providers and a new manual incident after partial resume. This is focused current-tree evidence, not a rerun of all 79 script cases. |
 
 Current converter test-WASM SHA-256:
-`d96bb1c056009e19b476a1e2ad6317651a2ad4d6ea7fe396ad9ac7f55cad4b2e`.
+`816ca6854413c9e8cdaf1263b3a9c3cc8f4f1505ec7163fc7b8b5dcbd8cfa4dc`.
 
 Pinned real Sputnik revision:
 `5434a59dec23ee0c49df8c8c4350c208a7e75b0b`; WASM SHA-256:
 `389494bc38a43140edc2717f364c8bb8bcf05a9dcc5ace3dfdb956d574a6bbb3`.
 
+### Current focused script commands
+
+Each invocation passed; together they selected 11 distinct script cases.
+
+```sh
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration requires_sandbox_scripts_complete_and_restart_without_duplicate_financial_writes::case_1_borrow_ft --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration requires_sandbox_scripts_complete_and_restart_without_duplicate_financial_writes::case_2_collateral_mt --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration requires_sandbox_scripts_detect_actual_unpriced_mutations --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration requires_sandbox_scripts_frozen_full_token_metadata::case_2_dependency_name_before_swap --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration requires_sandbox_scripts_frozen_full_token_metadata::case_4_dependency_before_resume --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration requires_sandbox_scripts_effective_provider_code_after_patch --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration requires_sandbox_scripts_new_manual_pause_after_partial_resume_blocks_cohort --test-threads 1
+```
+
 ## Review and operational limits
 
-- Local acceptance is complete. CI and review must be assessed against the
-  exact published head; local proof is not merge approval.
+- Historical full-matrix and current focused acceptance are separate. CI and
+  human review must assess the exact published head; local proof is not approval.
 - Native read batching and concurrent independent native observations are
   implemented. No protocol-validity override, per-case timeout or
   financial/finality assertion was relaxed; cadence choice is explicit above.
@@ -65,11 +96,11 @@ Pinned real Sputnik revision:
 - The two stale fixtures now use 600-second freshness and 2,000 explicit blocks;
   both passed. Earlier 20,000-block advances failed at transport, not proven node
   crashes. Production freshness, protocol validity and per-case timeouts are unchanged.
-- Current-head PR2 CI at `f1346cd7` passed: 6,062 fast and 344 NEAR tests,
+- Earlier PR2 CI at `f1346cd7` passed: 6,062 fast and 344 NEAR tests,
   including the formerly failing configuration fixture and unchanged
   `many_users_same_snapshot`. One configuration case was marked LEAK but counted
   passed in the successful summary; this does not explain prior cancellations.
-- PR3 current-head CI attempt 2 at unchanged `fc049c59` passed: 6,076 fast and
+- Earlier PR3 CI attempt 2 at `fc049c59` passed: 6,076 fast and
   all 349 NEAR tests, with Full Required Gate successful. One configuration case
   was marked LEAK but counted passed; its cause remains unestablished. The first
   attempt's 45-minute cancellation remains an incomplete run, not a proven
@@ -82,9 +113,10 @@ Pinned real Sputnik revision:
   This is neither a completed reusable regression gate nor proof of a purely
   infrastructure failure. The one-off suites are local opt-in at the user's
   direction; this historical CI failure is not presented as green.
-- Observed CI for parent PRs #713–#715 is green. Required human/security
-  review remains separate; PR1's checklist is still open. PR observations are
-  bounded snapshots, not a permanent background service or merge readiness.
+- Frozen-parent CI snapshots were green; they do not validate the cleanup commits.
+  Required human/security review remains separate; PR1's checklist is still open.
+  PR observations are bounded snapshots, not a permanent background service or
+  merge readiness.
 - The NEAR CI job limit is restored to 45 minutes. One-off script/converter
   acceptance requires the explicit `asset-migration-acceptance` feature and is
   excluded from normal test targets; reusable CLI/gateway regressions remain.
@@ -94,6 +126,10 @@ Pinned real Sputnik revision:
   patch. Registry consumers do not inherit it automatically; external Rust
   applications need the same root patch until an upstream release includes it.
   No release or published-SDK compatibility claim is made.
+- Structured MT normalization still joins and re-splits field strings: a colon in
+  a structured `contract_id` can shift into `token_id`, and non-string fields are
+  coerced. STATE-001 was excluded because correcting acceptance/error behavior is
+  a separate correctness change, not a behavior-preserving simplification.
 
 Oracle pause is not maintenance mode. Observed raw-state/inventory checkpoints do
 not prevent a later user action or old callback from racing a submitted receipt.

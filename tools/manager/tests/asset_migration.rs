@@ -21,7 +21,6 @@ use templar_common::oracle::pyth::{Price, PriceIdentifier};
 use templar_gateway_methods_spec::{
     account, chain, market, owner, proxy_oracle_governance as gov, tx,
 };
-use templar_gateway_testing::SandboxHarness;
 use templar_gateway_types::{
     operation::ReceiptStatus, ManagedAccountId, NearToken, ProposalEncoding,
 };
@@ -33,6 +32,10 @@ use templar_gateway_types::{
 #[path = "common/migration.rs"]
 mod fixture;
 use fixture::{ChangedRoles, MigrationFixture, MigrationOptions, RestoreMode, TokenMode};
+
+#[path = "common/state.rs"]
+mod state_fixture;
+use state_fixture::raw_storage;
 
 const BIN: &str = env!("CARGO_BIN_EXE_tmplrmgr");
 const FEEDS: [PriceIdentifier; 2] = [PriceIdentifier([0xbb; 32]), PriceIdentifier([0xcc; 32])];
@@ -85,11 +88,7 @@ impl Driver {
         ));
         std::fs::create_dir(&root)?;
         let campaign = root.join("campaign.toml");
-        if transport == "delegate-action" {
-            fixture.write_campaign(&campaign)?;
-        } else {
-            fixture.write_campaign_with_transport(&campaign, transport)?;
-        }
+        fixture.write_campaign(&campaign, transport)?;
         Ok(Self {
             run: root.join("run"),
             state: root.join("state"),
@@ -286,23 +285,6 @@ impl Driver {
         );
         Ok(())
     }
-}
-
-async fn raw_storage(
-    harness: &SandboxHarness,
-    account: &near_account_id::AccountId,
-) -> Result<BTreeMap<Vec<u8>, Vec<u8>>> {
-    let client = templar_gateway_core::NearClient::with_finality_policy(
-        harness.network.clone(),
-        templar_gateway_core::FinalityPolicy::Final,
-    );
-    Ok(client
-        .contract(account.clone())
-        .state_with_prefix(Vec::new())
-        .await?
-        .into_iter()
-        .map(|(key, value)| (key.0, value.0))
-        .collect())
 }
 
 async fn cli(
@@ -1638,16 +1620,19 @@ async fn requires_sandbox_scripts_detect_actual_unpriced_mutations(
     )
     .await?;
     let harness = &fixture.seeded.harness;
-    let debt_free = harness.create_user("unpriced-debt-free").await?;
-    harness
-        .fund_user(&debt_free, &fixture.seeded.market)
-        .await?;
-    harness
-        .storage_deposit_min(&debt_free, &fixture.seeded.market.market_id)
-        .await?;
-    harness
-        .collateralize(&debt_free, &fixture.seeded.market, 1_000)
-        .await?;
+    let debt_free = if mutation == "collateral" {
+        let account = harness.create_user("unpriced-debt-free").await?;
+        harness.fund_user(&account, &fixture.seeded.market).await?;
+        harness
+            .storage_deposit_min(&account, &fixture.seeded.market.market_id)
+            .await?;
+        harness
+            .collateralize(&account, &fixture.seeded.market, 1_000)
+            .await?;
+        Some(account)
+    } else {
+        None
+    };
     let mut driver = Driver::new(&fixture, "transaction")?;
     driver.through(&mut fixture, "02-pause").await?;
     let before = raw_storage(&fixture.seeded.harness, &fixture.seeded.market.market_id).await?;
@@ -1715,7 +1700,13 @@ async fn requires_sandbox_scripts_detect_actual_unpriced_mutations(
         }
         "collateral" => {
             harness
-                .withdraw_collateral(&debt_free, &fixture.seeded.market, 100)
+                .withdraw_collateral(
+                    debt_free
+                        .as_ref()
+                        .context("missing debt-free collateral fixture")?,
+                    &fixture.seeded.market,
+                    100,
+                )
                 .await?;
         }
         _ => unreachable!(),

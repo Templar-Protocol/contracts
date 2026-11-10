@@ -358,11 +358,7 @@ impl MigrationFixture {
         })
     }
 
-    pub fn write_campaign(&self, path: &Path) -> Result<()> {
-        self.write_campaign_with_transport(path, "delegate-action")
-    }
-
-    pub fn write_campaign_with_transport(&self, path: &Path, transport: &str) -> Result<()> {
+    pub fn write_campaign(&self, path: &Path, transport: &str) -> Result<()> {
         ensure!(
             matches!(transport, "delegate-action" | "transaction"),
             "unknown MPC transport"

@@ -113,8 +113,8 @@ def same_incident(actual, expected):
     require(actual == expected, "pause/incident context changed; operator inspection required")
 
 
-def frozen_definition(run, feed, live=None):
-    live = context(run, feed) if live is None else live
+def frozen_definition(run, feed):
+    live = context(run, feed)
     require(live["proxy"] == feed["initial_proxy"]
             and live["policy"] == feed["governance_policy"]
             and live["roles"] == feed["governance_roles"],

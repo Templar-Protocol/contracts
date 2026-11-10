@@ -293,7 +293,7 @@ impl Contract {
             sender,
             recipient: recipient.clone(),
             old_asset,
-            new_asset: output_asset.clone(),
+            new_asset: output_asset,
             mode: self.failure_mode.clone(),
             input: amount,
             consumed: U128(0),
@@ -315,9 +315,9 @@ impl Contract {
         let promise = if deposit_back {
             let msg = serde_json::to_string(&DepositMsg::Supply)
                 .unwrap_or_else(|_| env::panic_str("Supply serialization failed"));
-            let token = ext_deposit_back::ext(output_asset.contract_id().to_owned())
+            let token = ext_deposit_back::ext(settlement.new_asset.contract_id().to_owned())
                 .with_attached_deposit(NearToken::from_yoctonear(1));
-            if let Some(token_id) = output_asset.nep245_token_id() {
+            if let Some(token_id) = settlement.new_asset.nep245_token_id() {
                 token.with_static_gas(DEPOSIT_BACK_MT_GAS).mt_transfer_call(
                     recipient,
                     token_id.to_owned(),
@@ -333,7 +333,7 @@ impl Contract {
                 )
             }
         } else {
-            output_asset.transfer(recipient, output.into())
+            settlement.new_asset.transfer(recipient, output.into())
         };
         let context = OutputContext {
             settlement,

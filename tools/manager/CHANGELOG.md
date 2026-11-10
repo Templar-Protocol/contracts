@@ -55,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   containing the exact ordinary transaction or guarded, stamped schema-3 patch.
 - Keep one-off script/converter acceptance behind the opt-in
   `asset-migration-acceptance` feature rather than extending the normal CI gate.
+- Avoid temporary JSON and Borsh buffers during configuration decoding and
+  source-plan hashing without changing patch or approved-digest encodings.
 
 ### Fixed
 

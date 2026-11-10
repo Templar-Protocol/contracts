@@ -1,8 +1,6 @@
 //! Real token resolvers, receipt graphs and balances are settlement evidence;
 //! the converter's requested-refund event is deliberately not sufficient.
 
-use std::collections::BTreeMap;
-
 use anyhow::{ensure, Context as _, Result};
 use near_account_id::AccountId;
 use near_api::Contract;
@@ -15,6 +13,10 @@ use templar_gateway_types::{
     operation::ReceiptStatus,
     ContractMethodName, ManagedAccountId, NearGas, NearToken, OperationStatus,
 };
+
+#[path = "common/state.rs"]
+mod state_fixture;
+use state_fixture::raw_storage;
 
 type Asset = FungibleAsset<BorrowAsset>;
 const INVENTORY: u128 = 100_000;
@@ -42,15 +44,21 @@ impl Converter {
             Some((account, asset)) => (account, Some(asset)),
             None => (harness.create_user("converter-sender").await?, None),
         };
-        let old = deploy_assets(harness, "converter-old", input_mt).await?;
-        let new = deploy_assets(harness, "converter-new", output_mt).await?;
-        let assets = vec![
-            old[0].clone(),
-            primary_output.unwrap_or_else(|| new[0].clone()),
-            old[1].clone(),
-            new[1].clone(),
-            new[2].clone(),
-        ];
+        let old = deploy_assets(harness, "converter-old", input_mt, 0..2).await?;
+        let new = deploy_assets(
+            harness,
+            "converter-new",
+            output_mt,
+            usize::from(primary_output.is_some())..3,
+        )
+        .await?;
+        let mut outputs = primary_output.into_iter().chain(new);
+        let mut assets = Vec::with_capacity(5);
+        for input in old {
+            assets.push(input);
+            assets.push(outputs.next().context("missing converter output fixture")?);
+        }
+        assets.extend(outputs);
         let routes = json!([
             {"id":0,"old_asset":assets[0],"new_asset":assets[1]},
             {"id":1,"old_asset":assets[2],"new_asset":assets[3]}
@@ -150,13 +158,19 @@ impl Converter {
     }
 }
 
-async fn deploy_assets(harness: &SandboxHarness, label: &str, mt: bool) -> Result<Vec<Asset>> {
+async fn deploy_assets(
+    harness: &SandboxHarness,
+    label: &str,
+    mt: bool,
+    indices: std::ops::Range<usize>,
+) -> Result<Vec<Asset>> {
     if mt {
         let token_ids = [
             "nep141:remote.chain:opaque:0xAbCd",
             "nep245:remote.chain:nested:second:asset",
             "wrong:output:token:on:same:contract",
         ];
+        let token_ids = &token_ids[indices];
         let (id, signer) = harness
             .create_account_via_tx(label, NearToken::from_near(100))
             .await?;
@@ -169,12 +183,12 @@ async fn deploy_assets(harness: &SandboxHarness, label: &str, mt: bool) -> Resul
             .await?
             .assert_success();
         Ok(token_ids
-            .into_iter()
-            .map(|token_id| Asset::nep245(id.clone(), token_id.to_owned()))
+            .iter()
+            .map(|&token_id| Asset::nep245(id.clone(), token_id.to_owned()))
             .collect())
     } else {
-        let mut assets = Vec::new();
-        for index in 0..3 {
+        let mut assets = Vec::with_capacity(indices.len());
+        for index in indices {
             let id = harness
                 .deploy_ft(&format!("{label}-{index}"), "Converter fixture", "FIX")
                 .await?;
@@ -649,23 +663,6 @@ fn assert_receiver_rejected(result: &WriteOperationResult, converter: &AccountId
     Ok(())
 }
 
-async fn storage(
-    harness: &SandboxHarness,
-    account: &AccountId,
-) -> Result<BTreeMap<Vec<u8>, Vec<u8>>> {
-    let client = templar_gateway_core::NearClient::with_finality_policy(
-        harness.network.clone(),
-        templar_gateway_core::FinalityPolicy::Final,
-    );
-    Ok(client
-        .contract(account.clone())
-        .state_with_prefix(Vec::new())
-        .await?
-        .into_iter()
-        .map(|(key, value)| (key.0, value.0))
-        .collect())
-}
-
 #[rstest::rstest]
 #[case::ft_output(false)]
 #[case::mt_output(true)]
@@ -692,7 +689,7 @@ async fn requires_sandbox_converter_deposit_back_credits_real_market_supply_and_
     let registration = harness
         .storage_deposit_min(&converter, &market.market_id)
         .await?;
-    // Harness writes finish optimistically, but storage() reads finalized state.
+    // Harness writes finish optimistically, but raw_storage() reads finalized state.
     // Finalize this last market setup write before freezing the raw baseline;
     // resolution() also finalizes each conversion before its checkpoint.
     let registration = finalized_transaction(&harness, &fixture.id, &registration).await?;
@@ -707,7 +704,7 @@ async fn requires_sandbox_converter_deposit_back_credits_real_market_supply_and_
             .is_none(),
         "converter already had market credit"
     );
-    let before_storage = storage(&harness, &market.market_id).await?;
+    let before_storage = raw_storage(&harness, &market.market_id).await?;
     let before_balances = fixture.balances(&harness).await?;
     // Plain transfer cannot create a deposit even though the market receives
     // exactly the same asset and raw amount as the adverse transfer_call.
@@ -715,7 +712,7 @@ async fn requires_sandbox_converter_deposit_back_credits_real_market_supply_and_
     let result = fixture.convert(&harness, 0).await?;
     resolution(&harness, &fixture, 0, &result, INPUT, false).await?;
     ensure!(
-        storage(&harness, &market.market_id).await? == before_storage,
+        raw_storage(&harness, &market.market_id).await? == before_storage,
         "plain conversion mutated market storage"
     );
     ensure!(
@@ -761,7 +758,7 @@ async fn requires_sandbox_converter_deposit_back_credits_real_market_supply_and_
         "DepositBack credited market rather than actual output sender"
     );
     ensure!(
-        storage(&harness, &market.market_id).await? != before_storage,
+        raw_storage(&harness, &market.market_id).await? != before_storage,
         "DepositBack failed to expose raw storage divergence"
     );
     normal[0][0] -= INPUT;

@@ -386,6 +386,10 @@ def frozen_market_metadata(market):
         yield asset["reference"], asset["metadata"]
 
 
+def account_identity(result):
+    return {name: result.get(name) for name in ("code_hash", "global_contract_hash", "global_contract_account_id")}
+
+
 class Run:
     def __init__(self, args, stage=None):
         self.args = args
@@ -784,8 +788,7 @@ class Run:
         return self.plan_cmd(["write", method, "--json", canonical(params).decode()], signer, path)
 
     def identity(self, account):
-        result = self.read("account.get", {"account_id": account})
-        return {name: result.get(name) for name in ("code_hash", "global_contract_hash", "global_contract_account_id")}
+        return account_identity(self.read("account.get", {"account_id": account}))
 
     def balance(self, reference, account):
         value = self.read("token.getBalanceOf", {"token": asset_reference(reference), "account_id": account})
@@ -912,7 +915,6 @@ class Run:
                 "unrecognized local converter semantics")
         require(profile == self.intent["converter_profile"], "frozen converter profile changed")
         self._registration_observations(required=self.stage not in ("00-prepare", "01-register"))
-        metadata_checks = []
         for market in self.intent["markets"]:
             self._installed_key(market)
             active = self._lease(market, {}, inspect=True)
@@ -923,14 +925,7 @@ class Run:
                 matches = [route for route in profile["routes"] if route["id"] == role["route_id"]]
                 require(len(matches) == 1 and matches[0]["old_asset"] == role["old_asset"]
                         and matches[0]["new_asset"] == role["new_asset"], "converter route changed")
-            metadata_checks.extend(frozen_market_metadata(market))
-        for consumer in self.intent.get("dependency_consumers", []):
-            metadata_checks.extend((asset["reference"], asset["metadata"]) for asset in consumer["assets"])
-        live_metadata = self.read_many([
-            ("token.getMetadata", {"token": reference}) for reference, _expected in metadata_checks
-        ])
-        require(all(actual == expected for actual, (_reference, expected) in zip(live_metadata, metadata_checks)),
-                "changed or unchanged asset metadata drift")
+        self.recheck_metadata("changed or unchanged asset metadata drift")
         policy = canonical_dao_policy(native_policy)
         require(policy == canonical_dao_policy(self.intent["dao_policy"]),
                 "DAO policy changed since preparation")
@@ -1475,8 +1470,7 @@ class Run:
                 requests.append(cached_price_request(self, feed))
             storage, _snapshot, values = self.snapshot_with_reads(
                 oracle, f"observations/{uuid.uuid4().hex}/oracle", requests)
-            actual = {"identity": {name: values[0].get(name) for name in
-                                  ("code_hash", "global_contract_hash", "global_contract_account_id")},
+            actual = {"identity": account_identity(values[0]),
                       "storage_digest": self.storage_digest(storage), "storage_entries": len(storage)}
             actual["effective_code_sha256"] = self.snapshot_code_hash(_snapshot)
             require(actual == expected, "paused oracle identity/raw-storage context changed")
@@ -1501,7 +1495,7 @@ class Run:
             require(self._lease(market, {}, inspect=True) is None,
                     "derived key still has a durable outstanding payload lease")
 
-    def recheck_metadata(self):
+    def recheck_metadata(self, error_message="frozen campaign or dependency asset metadata drift"):
         expected = [
             pair for market in self.intent["markets"]
             for pair in frozen_market_metadata(market)
@@ -1513,8 +1507,7 @@ class Run:
         actual = self.read_many([
             ("token.getMetadata", {"token": reference}) for reference, _metadata in expected
         ])
-        require(all(value == metadata for value, (_reference, metadata) in zip(actual, expected)),
-                "frozen campaign or dependency asset metadata drift")
+        require(all(value == metadata for value, (_reference, metadata) in zip(actual, expected)), error_message)
 
     def recheck_progress(self, complete=False):
         """Revalidate scoped state and inventories, applying only confirmed swap deltas."""
@@ -1588,7 +1581,7 @@ class Run:
             configuration, native = values[:2]
             balance_values = values[2:]
             require(configuration == expected_configuration, f"market configuration drift: {account}")
-            identity = {name: native.get(name) for name in ("code_hash", "global_contract_hash", "global_contract_account_id")}
+            identity = account_identity(native)
             require(identity == market["account_identity"], f"market code/global linkage drift: {account}")
             require(storage == expected_storage, f"raw market storage drift/new deposit credit: {account}")
             balances = []

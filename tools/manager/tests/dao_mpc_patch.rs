@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context as _, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -16,6 +13,10 @@ use templar_gateway_types::{common::TxExecutionStatus, ManagedAccountId, NearTok
 #[path = "common/market.rs"]
 mod market_fixture;
 use market_fixture::{finalize, SeededMarket};
+
+#[path = "common/state.rs"]
+mod state_fixture;
+use state_fixture::raw_storage;
 
 const BIN: &str = env!("CARGO_BIN_EXE_tmplrmgr");
 const REQUEST_DESCRIPTION: &str = "asset-migration:test:patch:attempt-1";
@@ -100,23 +101,6 @@ async fn proposal(harness: &SandboxHarness, dao_id: &AccountId, id: u64) -> Resu
             })
             .await?,
     )?)
-}
-
-async fn raw_storage(
-    harness: &SandboxHarness,
-    market: &AccountId,
-) -> Result<BTreeMap<Vec<u8>, Vec<u8>>> {
-    let client = templar_gateway_core::NearClient::with_finality_policy(
-        harness.network.clone(),
-        templar_gateway_core::FinalityPolicy::Final,
-    );
-    Ok(client
-        .contract(market.clone())
-        .state_with_prefix(Vec::new())
-        .await?
-        .into_iter()
-        .map(|(key, value)| (key.0, value.0))
-        .collect())
 }
 
 async fn approve(
