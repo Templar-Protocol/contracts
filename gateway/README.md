@@ -110,6 +110,10 @@ configuration cache and uses the exact snapshot block rather than a newer finali
   deposits must still fit within the returned amount.
 - `chain.getIdentity` takes JSON `null` and returns the node's chain ID and actual
   genesis block hash from `status`; it does not require archival block access.
+- `chain.getTransactionValidityPeriod` takes JSON `null` and returns a bare integer
+  validity window in blocks from the live `EXPERIMENTAL_protocol_config` response.
+  Query the selected endpoint rather than assuming mainnet/testnet defaults,
+  especially when using an RPC override.
 - `token.getMetadata { token }` uses the existing typed FT/MT token reference and
   returns decimals plus optional name/symbol. MT identity is the complete opaque
   token ID: missing IDs, ambiguous metadata, and absent/out-of-range decimals
