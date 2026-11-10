@@ -145,3 +145,9 @@ Keep native amount, locked balance, storage usage, code/global identity,
 effective code bytes, access keys/nonces, and raw storage comparisons separate
 so a failure identifies the changed component. Do not drop a component merely
 because asynchronous setup makes a composite digest differ.
+
+The configuration-patch sandbox gate also submits an intentionally failing
+deploy→patch→restore batch directly through the native gateway. Its guard fails
+after the generated `STATE` write: the failed receipt must leave original
+storage, configuration, effective code, and local/global linkage intact.
+Gas balance and signer nonce are not rollback invariants.
