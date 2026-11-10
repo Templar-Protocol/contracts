@@ -69,8 +69,10 @@ Adopt one registry capability and storage model with these boundaries:
    record through callback completion. Failed deployment and failed global cleanup release their
    reservations even when the registry is already underfunded
    (`contract/registry/src/lib.rs:577-593,747-789`). Upgrade deploy, migration, and the post-upgrade
-   solvency check share one atomic receipt; attach 300 Tgas so code decoding and deployment retain
-   enough gas (`contract/registry/src/lib.rs:311-335`).
+   solvency check share one atomic receipt. A direct call may attach 300 Tgas. After DAO handoff,
+   the upgrade action must use `GlobalHash` with already-published code and empty migration
+   arguments: the tested DAO action has 280 Tgas beneath a 300-Tgas outer `act_proposal`, so it
+   cannot carry WASM (`contract/registry/src/lib.rs:311-335`; `contract/registry/tests/roles.rs`).
 6. **Roll out only through verified DAO operation.** Use the documented canary-first procedure:
    drain legacy in-flight callbacks, verify the V1 migration and historical data, grant explicit
    roles, and transfer ownership through real DAO acceptance. Before deleting keys, prove DAO
@@ -85,6 +87,11 @@ Adopt one registry capability and storage model with these boundaries:
   but leaves hot keys with approval/deployment authority and does not establish who funds code
   retained after approval. It also retains deposit/refund handling instead of available-credit
   accounting.
+- **Require Owner for non-empty `full_access_keys`, or remove the parameter.** This would reduce
+  the Deployer's child-key trust boundary, but removes the explicitly accepted Deployer capability
+  to establish trusted recovery keys for new markets. The chosen policy retains that authority and
+  makes key review, role revocation, and compromised-child recovery mandatory.
+
 - **Replace Owner with an RBAC Admin role or remove ownership.** That would centralize the same
   authority under another name while requiring owner-slot, API, and DAO-handoff migration. It adds
   risk without improving the required Uploader/Deployer separation.
@@ -107,6 +114,15 @@ funding and trust management: uploaders need enough available credit, approval c
 payer top-up, the registry needs protocol-owned backing, and every supplied child key and Deployer
 must be treated as security-sensitive.
 
+Deployment records contain the version, code hash, and block height, but not the Deployer or the
+attached key list. Recovery therefore requires receipt/indexer history plus RPC access-key
+enumeration. If operators require self-contained on-chain provenance, adding the Deployer and key
+list to `Deployed` is a separate public-event change, not a silent extension of this ADR.
+
+If protocol liabilities exceed the registry balance, user `storage_withdraw` calls fail rather
+than allowing earlier withdrawers to drain backing owed to later ones. Restoring withdrawals then
+requires a protocol-owned top-up; the failure is intentional solvency protection.
+
 The following checks are required before rollout:
 
 - **Unit/integration:** exact role/event and VersionSource wire formats, duplicate-pending versus
@@ -124,8 +140,10 @@ The following checks are required before rollout:
 - **Static checks:** affected all-target Clippy, registry Wasm compilation, formatting, generated
   documentation, and mdBook link checks.
 - **Operational verification:** compare finalized code hashes, owner/roles, state versions, access
-  keys, deployment records, and protocol/user balances at every rollout gate. No testnet or mainnet
-  execution is claimed by this record.
+  keys, deployment records, and protocol/user balances at every rollout gate. The existing mock DAO
+  proves DAO-as-predecessor behavior, not production council policy or Sputnik callback budgeting.
+  Reproduce the 280-Tgas action beneath the outer `act_proposal` against actual Sputnik DAO v2
+  before rollout. No testnet or mainnet execution is claimed by this record.
 
 ### Failure scenarios
 
@@ -134,25 +152,28 @@ The following checks are required before rollout:
 | Protocol writes try to consume user credit | `Insufficient registry balance to cover storage liabilities`; reduced available balance | Reserve physical storage, Owner growth, and in-flight final records; compare liabilities before and after writes | Top up protocol-owned NEAR, then retry the rejected write; the failed receipt must not change credit or metadata |
 | A failed deployment/probe would strand its key under an existing shortfall | Reserved deployment or provisional `GlobalHash` remains after callback failure | Cleanup releases storage and reservations without a new solvency assertion; query the entry and pending reserve | With the cleanup rule in place, the entry and reserve are released even though the intentional failure receipt still reports failure |
 | An upgrade targets the wrong migration or lacks backing for local code | `needs_migration`, changed history/owner, failed post-upgrade check, or unexpected code hash | Validate the migration chain, drain legacy callbacks, and run deploy/migrate/check atomically; verify V2 data and exact code identity | The failed atomic receipt restores prior code/state. Correct the target or protocol funding, then retry after rechecking finalized state |
+| Registry backing is below protocol liabilities | User `storage_withdraw` fails despite available credit | Solvency is checked before each transfer, preventing a first-come-first-served drain of remaining backing | Top up protocol-owned NEAR; user withdrawals resume only after aggregate liabilities are covered |
 | A compromised Deployer attaches an unintended child key | Unexpected child full-access key, code change, storage patch, or additional unauthorized keys | Treat Deployer as trusted deployment authority; review `full_access_keys` and enumerate actual child keys after deployment | Follow the compromised-Deployer recovery procedure below |
 
 ### Compromised-Deployer recovery
 
-1. Determine whether the compromised Deployer is also Owner. If so, secure or transfer Owner
+1. Stop routing new deposits to affected children immediately to cap exposure while preserving
+   receipts, keys, code hashes, and state needed for investigation.
+2. Determine whether the compromised Deployer is also Owner. If so, secure or transfer Owner
    authority before any child-key removal; revoking Deployer alone does not contain Owner's
    bypass. If Owner cannot be secured or transferred, stop using affected children, disclose the
    compromise, and migrate users where feasible instead of treating role revocation as containment.
-2. After containing any compromised Owner authority, enumerate explicit Deployer membership and
+3. After containing any compromised Owner authority, enumerate explicit Deployer membership and
    revoke every unauthorized grant through `set_role`, including the compromised account's, before
    any child-key removal.
-3. Wait for deployment receipts and callbacks authorized before revocation to settle, so no
+4. Wait for deployment receipts and callbacks authorized before revocation to settle, so no
    in-flight deployment can create another child after the role is revoked.
-4. Re-enumerate child keys, including children created after the compromise. Remove every
+5. Re-enumerate child keys, including children created after the compromise. Remove every
    unauthorized key using a trusted full-access key on that child, if one remains.
-5. Once the key list is clean, grant a reviewed replacement Deployer role if continued deployment
+6. Once the key list is clean, grant a reviewed replacement Deployer role if continued deployment
    is required. Rotating to a replacement does not revoke any child keys.
-6. Verify the final key list and establish trusted child code and state before resuming use.
-7. If integrity cannot be established or safely restored, disclose the compromise and migrate users
+7. Verify the final key list and establish trusted child code and state before resuming use.
+8. If integrity cannot be established or safely restored, disclose the compromise and migrate users
    to a newly reviewed market where feasible, even if a trusted child key remains. If no trusted
    child key or authorized removal method exists, stop using that Deployer and apply the same
    disclosure/migration fallback. A keyless market cannot be patched; recovery then requires a new
