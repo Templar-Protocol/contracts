@@ -127,6 +127,7 @@ async fn execute_now(
             gov::ExecuteProposal {
                 governance_id: governance_id.clone(),
                 id,
+                gas: None,
             },
         )
         .await?;

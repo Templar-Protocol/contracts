@@ -786,6 +786,7 @@ async fn set_proxy(
             ),
             requested_ttl: ttl_default,
             encoding: ProposalEncoding::Json,
+            gas: None,
         },
     )
     .await?;
@@ -797,6 +798,7 @@ async fn set_proxy(
             gov::ExecuteProposal {
                 governance_id,
                 id: proposal_id,
+                gas: None,
             },
         )
         .await?,

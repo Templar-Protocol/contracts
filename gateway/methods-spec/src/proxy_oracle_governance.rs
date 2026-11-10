@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::Nanoseconds;
 use templar_gateway_macros::MethodSpec;
-use templar_gateway_types::ProposalEncoding;
+use templar_gateway_types::{NearGas, ProposalEncoding};
 use templar_proxy_oracle_near_governance_common::{
     GovernancePolicy, GovernancePolicyWire, Operation, Proposal, Role,
 };
@@ -110,6 +110,9 @@ pub struct CreateProposal {
     pub requested_ttl: Nanoseconds,
     #[serde(default, skip_serializing_if = "ProposalEncoding::is_json")]
     pub encoding: ProposalEncoding,
+    /// Attached call gas; defaults to 300 Tgas when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gas: Option<NearGas>,
 }
 
 /// Cancel a governance proposal.
@@ -126,6 +129,9 @@ pub struct CancelProposal {
 pub struct ExecuteProposal {
     pub governance_id: near_account_id::AccountId,
     pub id: u32,
+    /// Attached call gas; defaults to 300 Tgas when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gas: Option<NearGas>,
 }
 
 #[cfg(test)]
@@ -146,6 +152,7 @@ mod tests {
             }),
             requested_ttl: Nanoseconds::zero(),
             encoding,
+            gas: None,
         }
     }
 
