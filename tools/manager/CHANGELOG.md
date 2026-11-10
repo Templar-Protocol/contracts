@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `dao mpc propose`, `relay`, and `broadcast` require one `--plan`
   containing the exact ordinary transaction or guarded, stamped schema-3 patch.
 
+### Fixed
+
+- Finalize released-market deployment and market-signed storage registrations,
+  including native refunds, before capturing configuration-patch no-mutation checkpoints.
+- Measure exact signed transport length without allocating a second wire buffer;
+  raw broadcast validates the actual signed transport without rebuilding a duplicate estimate.
+
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 
 ### Added

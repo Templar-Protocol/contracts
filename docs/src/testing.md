@@ -103,7 +103,24 @@ block cadence to cross a time boundary will pass in one place and fail in the
 other. Advance chain time explicitly with `fast_forward` rather than relying on
 how long some operations happen to take.
 
+### Sandbox State Patches
+
+The workspace pins `near-sandbox = "=0.3.11"` so pooled nodes, owned harnesses,
+and native replay all launch nearcore **2.12.0**. This is the first stable release
+containing [the commit-aware patch tracker](https://github.com/near/nearcore/pull/15534).
+Nearcore 2.11.0 and 2.11.1 can permanently discard a patch during block
+preprocessing or an old-chunk transition while acknowledging its consumption.
+Polling longer cannot recover a discarded patch; do not compensate by resending
+records or relaxing finalized-state checks.
+
+The pinned RPC waits for committed state, not finalized visibility. Continue
+waiting for the patched key or exact metadata to reach `Final` before signing
+or capturing a replay checkpoint.
+
 ### Settled Account Checkpoints
+
+The single-submission startup, metadata-reset, raw-value and code-preservation
+regression is `just test-sandbox -p templar-gateway-testing --test sandbox_patch`.
 
 `SandboxHarness` uses `ExecutedOptimistic` for ordinary setup transactions; that
 status does not include every gas refund. Before comparing complete account
@@ -111,7 +128,7 @@ checkpoints, wait for the relevant transaction with `tx.get` and
 `wait_until: "FINAL"`, and verify its downstream receipts. A fixed number of
 `fast_forward` blocks is a time advance, not that transaction's settlement proof.
 
-`sandbox_patch_state` acknowledges staging, not finalized visibility. After
+`sandbox_patch_state` now acknowledges committed state, not finalized visibility. After
 restoring replay account metadata, wait until a `FINAL` account view matches the
 exact amount, locked balance, storage usage, and local/global code linkage.
 Finalize staging transactions and their refunds before that metadata reset;

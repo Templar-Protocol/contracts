@@ -454,7 +454,7 @@ fn ensure_transport_limits(
     transaction: &SignedTransaction,
     limits: &templar_gateway_types::ProtocolLimits,
 ) -> anyhow::Result<()> {
-    let size = borsh::to_vec(transaction)?.len();
+    let size = borsh::object_length(transaction)?;
     anyhow::ensure!(
         size as u64 <= limits.max_transaction_size,
         "chosen MPC transport requires {size} signed bytes; live limit is {}",
@@ -618,7 +618,11 @@ async fn signed_payload(
 ) -> anyhow::Result<Signed> {
     let review = review(ctx, &executed.review, Some(source), None).await?;
     let output = &review.output;
-    validate_transport(ctx, &review.payload).await?;
+    // Raw broadcast checks the actual signed transaction once. A delegate also
+    // needs its conservative outer bound for relay's signer-free print mode.
+    if output.payload.kind == PayloadKind::DelegateAction {
+        validate_transport(ctx, &review.payload).await?;
+    }
     let proposal_id = executed.review.proposal_id;
     anyhow::ensure!(
         output.status == ProposalStatus::Approved,

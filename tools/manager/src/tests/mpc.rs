@@ -660,6 +660,65 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         &[]
     };
     let show = [&["dao", "mpc", "show"][..], target, mpc, payload_arg].concat();
+    // A voter reviews before voting: the proposal is still in progress.
+    f.run(None, &show).await?;
+
+    let approve_tx = f.approve(0).await?;
+
+    let before = f.balance(&beneficiary.0).await?;
+    let executed = [
+        target,
+        mpc,
+        &["--tx-hash", &approve_tx, "--tx-signer", f.proposer.as_str()],
+        &["--plan", plan.to_str().expect("utf-8 path")],
+    ]
+    .concat();
+    // `relay` needs a fee payer; `broadcast` takes no credentials.
+    let (send, sender, wrong, wrong_sender) = match kind {
+        PayloadKind::DelegateAction => ("relay", Some(&relayer), "broadcast", None),
+        PayloadKind::Transaction => ("broadcast", None, "relay", Some(&relayer)),
+    };
+
+    let error = f
+        .run(
+            wrong_sender,
+            &[&["dao", "mpc", wrong][..], &executed, payload_arg].concat(),
+        )
+        .await
+        .expect_err("the other send command refuses this payload kind");
+    assert!(error.to_string().contains("use `dao mpc "), "{error}");
+
+    // A correct signature is not permission to substitute another source plan.
+    // Rejection must leave both the beneficiary and the approved nonce untouched.
+    let original_plan = std::fs::read(&plan)?;
+    let approved: templar_gateway_core::PlannedTransaction =
+        serde_json::from_slice(&original_plan)?;
+    let mut changed_receiver = approved.clone();
+    changed_receiver.receiver_id = f.proposer.0.clone();
+    let mut changed_amount = approved.clone();
+    changed_amount.actions = vec![near_api::types::transaction::actions::Action::Transfer(
+        near_api::types::transaction::actions::TransferAction {
+            deposit: NearToken::from_near(30),
+        },
+    )];
+    let mut changed_action_count = approved.clone();
+    changed_action_count
+        .actions
+        .push(approved.actions[0].clone());
+    for wrong_plan in [changed_receiver, changed_amount, changed_action_count] {
+        std::fs::write(&plan, serde_json::to_vec(&wrong_plan)?)?;
+        f.run(
+            sender,
+            &[&["dao", "mpc", send][..], &executed, payload_arg].concat(),
+        )
+        .await
+        .expect_err("a different source plan cannot authorize the approved signature");
+        assert_eq!(f.balance(&beneficiary.0).await?, before);
+    }
+    std::fs::write(&plan, original_plan)?;
+    let send_args = [&["dao", "mpc", send][..], &executed, payload_arg].concat();
+    f.run(sender, &send_args).await?;
+    f.run(None, &show).await?;
     if blind {
         let error = f
             .run(None, &[&["dao", "mpc", "show"][..], target, mpc].concat())
@@ -667,9 +726,8 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
             .expect_err("a blind proposal cannot be reviewed without the payload file");
         assert!(error.to_string().contains("--payload-file"), "{error}");
     }
-    // A voter reviews before voting: the proposal is still in progress.
-    f.run(None, &show).await?;
 
+    // These independent checks remain valid after the original transfer consumes its nonce.
     // Without `--mpc-contract` the review is pinned to the network's signer.
     let error = f
         .run(
@@ -713,33 +771,6 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         .await
         .expect_err("a decoy payload is refused");
     assert!(error.to_string().contains("hashes to"), "{error}");
-
-    let approve_tx = f.approve(0).await?;
-    f.run(None, &show).await?;
-
-    let before = f.balance(&beneficiary.0).await?;
-    let executed = [
-        target,
-        mpc,
-        &["--tx-hash", &approve_tx, "--tx-signer", f.proposer.as_str()],
-        &["--plan", plan.to_str().expect("utf-8 path")],
-    ]
-    .concat();
-    // `relay` needs a fee payer; `broadcast` takes no credentials.
-    let (send, sender, wrong, wrong_sender) = match kind {
-        PayloadKind::DelegateAction => ("relay", Some(&relayer), "broadcast", None),
-        PayloadKind::Transaction => ("broadcast", None, "relay", Some(&relayer)),
-    };
-
-    let error = f
-        .run(
-            wrong_sender,
-            &[&["dao", "mpc", wrong][..], &executed, payload_arg].concat(),
-        )
-        .await
-        .expect_err("the other send command refuses this payload kind");
-    assert!(error.to_string().contains("use `dao mpc "), "{error}");
-
     let error = f
         .run(
             sender,
@@ -748,38 +779,6 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         .await
         .expect_err("a decoy payload never reaches the signature");
     assert!(error.to_string().contains("hashes to"), "{error}");
-
-    // A correct signature is not permission to substitute another source plan.
-    // Rejection must leave both the beneficiary and the approved nonce untouched.
-    let original_plan = std::fs::read(&plan)?;
-    let approved: templar_gateway_core::PlannedTransaction =
-        serde_json::from_slice(&original_plan)?;
-    let mut changed_receiver = approved.clone();
-    changed_receiver.receiver_id = f.proposer.0.clone();
-    let mut changed_amount = approved.clone();
-    changed_amount.actions = vec![near_api::types::transaction::actions::Action::Transfer(
-        near_api::types::transaction::actions::TransferAction {
-            deposit: NearToken::from_near(30),
-        },
-    )];
-    let mut changed_action_count = approved.clone();
-    changed_action_count
-        .actions
-        .push(approved.actions[0].clone());
-    for wrong_plan in [changed_receiver, changed_amount, changed_action_count] {
-        std::fs::write(&plan, serde_json::to_vec(&wrong_plan)?)?;
-        f.run(
-            sender,
-            &[&["dao", "mpc", send][..], &executed, payload_arg].concat(),
-        )
-        .await
-        .expect_err("a different source plan cannot authorize the approved signature");
-        assert_eq!(f.balance(&beneficiary.0).await?, before);
-    }
-    std::fs::write(&plan, original_plan)?;
-    let send_args = [&["dao", "mpc", send][..], &executed, payload_arg].concat();
-    f.run(sender, &send_args).await?;
-
     // The nonce is spent now: a replay is refused before anything is broadcast.
     let error = f
         .run(sender, &send_args)

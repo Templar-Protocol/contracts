@@ -4,8 +4,9 @@ use near_token::NearToken;
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use templar_common::market::MarketConfiguration;
+use templar_gateway_methods_spec::tx;
 use templar_gateway_testing::{DeployedMarket, SandboxHarness};
-use templar_gateway_types::ManagedAccountId;
+use templar_gateway_types::{common::TxExecutionStatus, ManagedAccountId};
 
 pub const RELEASE: &str = "1.6.1";
 pub const WASM_SHA256: &str = "d75c2419527d816a8f5fcab6a585032799a38cf90e09a5a98992d5c84774562a";
@@ -80,6 +81,7 @@ impl SeededMarket {
             .use_code(released)
             .with_init_call("new", json!({"configuration":configuration}))?
             .with_signer(signer)
+            .wait_until(templar_gateway_core::FinalityPolicy::Final.transaction_status())
             .send_to(&harness.network)
             .await?
             .assert_success();
@@ -91,9 +93,25 @@ impl SeededMarket {
         };
         let account = ManagedAccountId(market.market_id.clone());
         for token in [&market.borrow_ft_id, &market.collateral_ft_id] {
-            harness
+            let registration = harness
                 .storage_deposit(&account, token, NearToken::from_millinear(10))
                 .await?;
+            let finalized = harness
+                .client()?
+                .read(tx::Get {
+                    tx_hash: registration
+                        .operation
+                        .latest_tx_hash()
+                        .context("market registration transaction hash")?,
+                    sender_account_id: account.0.clone(),
+                    wait_until: Some(TxExecutionStatus::Final),
+                    encoding: tx::ValueEncoding::Json,
+                })
+                .await?;
+            ensure!(
+                finalized.status == tx::Status::Succeeded && finalized.failed_receipts.is_empty(),
+                "market registration must finalize including native refunds before checkpoints"
+            );
         }
         for user in [&supplier, &borrower, &protocol] {
             harness.fund_user(user, &market).await?;

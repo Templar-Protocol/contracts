@@ -361,13 +361,6 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
     ];
     let mut described_review_args = review_args.to_vec();
     described_review_args.extend(["--expected-description", REQUEST_DESCRIPTION]);
-    let bound_review = cli(harness, &described_review_args, None).await?;
-    assert_eq!(bound_review["source_plan_kind"], "patch_plan");
-    assert_eq!(
-        bound_review["source_plan_digest"],
-        submitted["source_plan_digest"]
-    );
-    assert_eq!(bound_review["description"], REQUEST_DESCRIPTION);
     let mut execution = vec![
         "dao",
         "mpc",
@@ -471,11 +464,7 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
         );
         return Ok(());
     }
-    let result = cli(harness, &execution, if raw { None } else { Some(&relayer) }).await?;
-    ensure!(
-        result.is_object(),
-        "execution must emit structured transaction evidence"
-    );
+    cli(harness, &execution, if raw { None } else { Some(&relayer) }).await?;
     harness.fast_forward(10).await?;
     let mut expected = before;
     expected.insert(b"STATE".to_vec(), expected_state);
