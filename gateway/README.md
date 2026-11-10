@@ -89,6 +89,13 @@ Submission success means a proposal was created, not approved or executed. Read 
 the submission, then fetch that exact proposal. Do not derive it from a later proposal counter.
 Execution and downstream receipt success must be verified separately.
 
+`proxyOracleGovernance.createProposal` and `executeProposal` accept optional exact
+`gas` overrides while preserving their direct-call defaults. A proposal forwarded
+through Sputnik must leave gas for the DAO and its callback; forwarding the full
+prepaid maximum cannot execute. Budget the governance wrapper and its inner target
+separately. The local migration fixture exercises both threshold-approved calls,
+the effective governance timelock, and the actual target receipt.
+
 ## Snapshot-Bound Market Reads
 
 Rust callers comparing a market's raw storage snapshot with its configuration can use

@@ -1023,6 +1023,7 @@ impl SandboxHarness {
                 operation,
                 requested_ttl: Nanoseconds::zero(),
                 encoding: ProposalEncoding::Json,
+                gas: None,
             },
         )
         .await?;
@@ -1031,6 +1032,7 @@ impl SandboxHarness {
             gov::ExecuteProposal {
                 governance_id: governance_id.clone(),
                 id: proposal_id,
+                gas: None,
             },
         )
         .await?;

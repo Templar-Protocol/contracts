@@ -111,6 +111,7 @@ impl CreateProposal {
             operation: self.operation.into_operation()?,
             requested_ttl: self.requested_ttl,
             encoding: self.encoding,
+            gas: None,
         })
     }
 }
