@@ -71,10 +71,12 @@ tests concurrently, so those intervals overlap: the totals measure work done,
 not gate wall clock. Its per-test breakdown is the point — a change that halves
 the suite can still make one test much worse.
 
-The NEAR CI job has a 120-minute ceiling to include cold builds and the long
-real-script migration acceptance matrix. This is a job budget, not a relaxed
-protocol-validity or finality check. The sandbox profile still terminates an
-individual test after five 120-second slow periods.
+The NEAR CI job retains its 45-minute ceiling. The one-off asset-migration
+script/converter acceptance targets are excluded from normal test builds and
+runs; enable the manager's `asset-migration-acceptance` feature to run them
+locally (see [the acceptance command](../../script/asset-migration/README.md#local-acceptance)).
+Reusable manager and gateway regressions remain in CI. The sandbox profile still
+terminates an individual test after five 120-second slow periods.
 
 What the measurements established, so it need not be re-derived:
 

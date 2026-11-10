@@ -53,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** move every top-level `mpc` command to `dao mpc`, without aliases.
 - **Breaking:** `dao mpc propose`, `relay`, and `broadcast` require one `--plan`
   containing the exact ordinary transaction or guarded, stamped schema-3 patch.
+- Keep one-off script/converter acceptance behind the opt-in
+  `asset-migration-acceptance` feature rather than extending the normal CI gate.
 
 ### Fixed
 

@@ -171,8 +171,13 @@ and RPC aliases.
 
 ## Local acceptance
 
+This one-off script/converter suite is local opt-in, not part of default CI.
+Its test targets require `asset-migration-acceptance`; normal manager tests
+continue to cover the reusable CLI behavior.
+
 ```bash
 NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox -p templar-manager \
+  --features asset-migration-acceptance \
   --test asset_converter --test asset_migration --test-threads 1
 ```
 

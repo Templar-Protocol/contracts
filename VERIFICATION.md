@@ -39,8 +39,9 @@ expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
 | Canonical delegated-global RPC decoder | Fork `f96c0441`: two consumer regressions, generator equivalence, captured successful response and actual originally-paused workflow | Before: both current RPC identifier spellings failed. After: both passed with canonical action JSON unchanged; the full real response decoded and the delegated-global workflow passed in 95.443 s. Upstream HEAD and patch share the same 148 generated-code Clippy findings and unchanged formatting failures. |
 | Historical receipt retention | Transparent read-only lookup trace, then the same compiled cohort workflow with sufficient node history | Before: the original successful `03-patch` relay became `UnknownTransaction`, and an earlier block became `UnknownBlock` while the current head remained readable. After the dedicated fixture's flat `gc_num_epochs_to_keep=1000` setting: complete/restart cohort passed in 330.164 s. Normal node defaults and code-30 refusal are unchanged; diagnostic hook removed. |
 | Real new manual incident | `requires_sandbox_scripts_new_manual_pause_after_partial_resume_blocks_cohort` | Passed in 176.006 s. An authorized owner changes the first resumed feed from false to true without consuming the pending campaign governance ID; restart rejects without new proposals/writes or altering the incident. |
-| Full manager sandbox matrix | `NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --test-threads 1` | **109/109 passed**, 25 slow, 643 fast/other cases excluded by the sandbox partition; 9511.335 s. Complete current uninjected gate, including 79 script, 11 converter and 19 original manager node cases. |
+| Historical full manager sandbox matrix (`c481ccc5`, before opt-in gating) | `NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --test-threads 1` | **109/109 passed**, 25 slow, 643 fast/other cases excluded by the sandbox partition; 9511.335 s. Uninjected local gate, including 79 script, 11 converter and 19 original manager node cases. Use `--features asset-migration-acceptance` to include the one-off targets now. |
 | Current catalog and documentation | `just test-fast -p templar-gateway-catalog`; `just docs-check`; selected repository-relative Markdown targets | Four catalog tests, risk-document self-test and generated-document check passed; relative targets exist. External URLs, fragments and site-root routes were not link-checked. |
+| One-off acceptance opt-in | Cargo metadata; default script-name filter through `just test-sandbox`; retained MPC delegate smoke; `--features asset-migration-acceptance` with both one-off targets | Default script filter selected zero cases; retained MPC delegate passed. Both opt-in binaries compiled and the FT→FT converter settlement case passed, with the other 89 cases filtered out. Workflow parsing confirms the 45-minute job limit and removal of the script-only node trigger. |
 
 Current converter test-WASM SHA-256:
 `d96bb1c056009e19b476a1e2ad6317651a2ad4d6ea7fe396ad9ac7f55cad4b2e`.
@@ -73,12 +74,22 @@ Pinned real Sputnik revision:
   was marked LEAK but counted passed; its cause remains unestablished. The first
   attempt's 45-minute cancellation remains an incomplete run, not a proven
   product defect or infrastructure attribution.
+- The separate [manual Test run at `c481ccc5`](https://github.com/Templar-Protocol/contracts/actions/runs/42858146508)
+  failed: 101 of 439 NEAR cases passed, eight `asset_migration` cases failed, and
+  330 were not run after fail-fast. Those eight stopped in `03-patch` on payload
+  expiry or unknown transaction reconciliation (including HTTP 408), before
+  their intended conversion/replay assertions. All 11 converter cases passed.
+  This is neither a completed reusable regression gate nor proof of a purely
+  infrastructure failure. The one-off suites are local opt-in at the user's
+  direction; this historical CI failure is not presented as green.
 - Observed CI for parent PRs #713–#715 is green. Required human/security
   review remains separate; PR1's checklist is still open. PR observations are
   bounded snapshots, not a permanent background service or merge readiness.
-- PR4's expanded CI job ceiling is 120 minutes for cold builds plus 79 script
-  and 11 converter cases. Stock cadence and Nextest's per-case termination are
-  unchanged. Workflow YAML/configuration parsing passed; actionlint is unavailable.
+- The NEAR CI job limit is restored to 45 minutes. One-off script/converter
+  acceptance requires the explicit `asset-migration-acceptance` feature and is
+  excluded from normal test targets; reusable CLI/gateway regressions remain.
+  Stock cadence and Nextest's per-case termination are unchanged. Workflow
+  YAML/configuration parsing passed; actionlint is unavailable.
 - The RPC compatibility correction is pinned through the workspace-root Cargo
   patch. Registry consumers do not inherit it automatically; external Rust
   applications need the same root patch until an upstream release includes it.
