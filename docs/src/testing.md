@@ -119,13 +119,16 @@ or capturing a replay checkpoint.
 
 ### Settled Account Checkpoints
 
+The single-submission startup, metadata-reset, raw-value and code-preservation
+regression is `just test-sandbox -p templar-gateway-testing --test sandbox_patch`.
+
 `SandboxHarness` uses `ExecutedOptimistic` for ordinary setup transactions; that
 status does not include every gas refund. Before comparing complete account
 checkpoints, wait for the relevant transaction with `tx.get` and
 `wait_until: "FINAL"`, and verify its downstream receipts. A fixed number of
 `fast_forward` blocks is a time advance, not that transaction's settlement proof.
 
-`sandbox_patch_state` acknowledges staging, not finalized visibility. After
+`sandbox_patch_state` now acknowledges committed state, not finalized visibility. After
 restoring replay account metadata, wait until a `FINAL` account view matches the
 exact amount, locked balance, storage usage, and local/global code linkage.
 Finalize staging transactions and their refunds before that metadata reset;

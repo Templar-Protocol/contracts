@@ -195,6 +195,7 @@ impl SeededMarket {
             .use_code(released)
             .with_init_call("new", json!({"configuration":configuration}))?
             .with_signer(signer)
+            .wait_until(templar_gateway_core::FinalityPolicy::Final.transaction_status())
             .send_to(&harness.network)
             .await?
             .assert_success();
@@ -206,9 +207,25 @@ impl SeededMarket {
         };
         let account = ManagedAccountId(market.market_id.clone());
         for token in [&market.borrow_ft_id, &market.collateral_ft_id] {
-            harness
+            let registration = harness
                 .storage_deposit(&account, token, NearToken::from_millinear(10))
                 .await?;
+            let finalized = harness
+                .client()?
+                .read(tx::Get {
+                    tx_hash: registration
+                        .operation
+                        .latest_tx_hash()
+                        .context("market registration transaction hash")?,
+                    sender_account_id: account.0.clone(),
+                    wait_until: Some(TxExecutionStatus::Final),
+                    encoding: tx::ValueEncoding::Json,
+                })
+                .await?;
+            ensure!(
+                finalized.status == tx::Status::Succeeded && finalized.failed_receipts.is_empty(),
+                "market registration must finalize including native refunds before checkpoints"
+            );
         }
         for user in [&supplier, &borrower, &protocol] {
             harness.fund_user(user, &market).await?;
