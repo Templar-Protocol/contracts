@@ -1,0 +1,30 @@
+[package]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+name = "mock-asset-converter"
+publish = false
+repository.workspace = true
+version = "0.0.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.near.reproducible_build]
+image = "sourcescan/cargo-near:0.17.0-rust-1.86.0"
+image_digest = "sha256:1784ca6310f3496f0048356ce420921c8f5fdf71ee8124d43a2e1ceb1f70db8a"
+container_build_command = [
+    "cargo",
+    "near",
+    "build",
+    "non-reproducible-wasm",
+    "--locked",
+]
+
+[dependencies]
+getrandom.workspace = true
+near-sdk.workspace = true
+templar-common.workspace = true
+
+[lints]
+workspace = true

@@ -499,3 +499,14 @@ sign and prints the planned transaction instead of signing it; the checks hold o
 they read, so sign it straight away or re-run. Like `patch export`, the snapshot needs an RPC that
 pages `view_state` past the stock 50 kB limit, such as FastNEAR's
 (`--rpc-url https://rpc.mainnet.fastnear.com`).
+
+## Controlled local asset migration
+
+The fixed eight-stage procedure and campaign format are documented in
+[`script/asset-migration/README.md`](../../script/asset-migration/README.md).
+It uses ordinary Sputnik approvals, proxy governance, guarded native patch
+plans and plan-bound MPC execution; it does not implement a production bridge.
+Production submissions remain disabled until converter semantics and safe
+intermediate-state admission are available. Oracle pause alone is not market
+isolation. Exercised evidence and claim scope are maintained in
+[`VERIFICATION.md`](../../VERIFICATION.md).

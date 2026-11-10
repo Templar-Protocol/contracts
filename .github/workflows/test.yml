@@ -116,6 +116,7 @@ jobs:
               - 'script/postgres-up.sh'
               - 'script/prebuild-test-contracts.sh'
               - 'script/build-sputnik-fixture.py'
+              - 'script/asset-migration/**'
               - 'script/sandbox-down.sh'
               - 'script/sandbox-up.sh'
               - 'service/funding-bridge/src/**'
@@ -503,10 +504,11 @@ jobs:
 
   near-integration-tests:
     name: NEAR Integration Tests
-    # Ceiling only (billing is actual runtime): ~35 min cold, less once the
-    # prebuild's ABI pass is skipped and rust-cache is dev-seeded. The headroom
-    # over 40 avoids a cold-run variance kill wasting a whole run.
-    timeout-minutes: 45
+    # Parent gate measured 42m09s (21m15s setup/build, 349 node cases).
+    # Migration adds 79 actual script cases and 11 converter cases. Budget their
+    # execution as well as cold builds; billing remains actual runtime.
+    # Per-case sandbox timeout stays bounded independently in nextest.toml.
+    timeout-minutes: 120
     runs-on: ubuntu-latest
     services:
       # The relayer's node-backed `#[sqlx::test]` fixtures need Postgres.

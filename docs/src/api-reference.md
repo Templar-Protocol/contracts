@@ -46,6 +46,31 @@ The `/doc/` links resolve on the published site ([docs.templarfi.org](https://do
 
 Integrators who need transaction-level control without signing NEAR transactions directly can use the gateway service, a JSON-RPC API in front of the contracts. Its method catalog, generated from the service's own method registry, is at [`gateway/METHODS.md`](https://github.com/Templar-Protocol/contracts/blob/dev/gateway/METHODS.md).
 
+### Native CLI reads
+
+`tmplrmgr read METHOD --json PARAMS` invokes a canonical gateway read through
+the native client. To avoid starting a process for each independent read, use:
+
+```sh
+tmplrmgr read-batch --json '[
+  {"method":"account.get","params":{"account_id":"market.near"}},
+  {"method":"contract.getVersion","params":{"contract_id":"market.near"}}
+]'
+```
+
+Alternatively, pass `--json-file calls.json`, or `--json-file -` for stdin.
+Every item requires exactly `method` and `params`; only methods supported by
+the single-read command are accepted. Write methods and signer options are
+not accepted. Up to four reads execute concurrently through the same gateway
+client. Successful stdout is a bare JSON array of the individual read values,
+in input order, including repeated calls; an empty input returns `[]`.
+Any invalid item or failed read fails the command without a partial result
+array or synthetic `null` values.
+
+**This is not an atomic or block-pinned snapshot.** Calls can observe different
+blocks, just like separate `read` invocations; batching does not establish a
+stable-state or financial admission guarantee.
+
 ## Calling Contracts Directly
 
 Examples throughout this guide use [`near-cli-rs`](./notes.md#contract-interaction-syntax) view calls. The pages that catalogue them:

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `read-batch --json` / `--json-file` executes canonical gateway reads with at
+  most four calls in flight and returns a bare array in input order. Batch
+  items reject unknown fields and write methods; any error fails the command
+  without publishing a partial result. Reads are not an atomic or block-pinned
+  snapshot.
 - Read-only `market generate-patch config` authors guarded schema-3 configuration
   patches from a complete finalized snapshot, with exact released-layout admission,
   opaque-state preservation, typed validation, and review artifacts.
@@ -22,9 +27,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on failed or unknown submission outcomes.
 - Optional `dao mpc show --plan` and `--expected-description` bind a review to
   its exact source and requested text without requiring unspent live state.
+- Paired `dao mpc show --tx-hash` / `--tx-signer` verifies the original
+  signature-bearing vote against the frozen payload, including historical
+  recovery after nonce consumption or expiry.
+- Read-only `proxy-oracle predict-manual-trip` replays exact finalized WASM and
+  complete storage in an isolated sandbox to certify the expected raw-state
+  transition before a manual-trip approval.
+- Snapshot exports include the resolved effective code SHA-256, including
+  globally linked code, without changing the schema-3 patch plan.
 - Raw MPC lifetime follows the chain's live transaction-validity period; source
   checks precede block pinning and execution rechecks the inclusion bound without
   changing approved bytes.
+- Fixed-stage controlled local asset migration scripts freeze immutable campaign
+  intent, use DAO/governance and source-bound MPC approvals, and reconcile actual
+  resolver receipts, inventories, accounting and cached prices across restarts.
+  Production submissions remain disabled pending real converter semantics and
+  intermediate-state safety admission.
+- Governance `create-proposal` and `execute-proposal` accept optional `--call-gas`
+  for the outer governance call, retaining 300 Tgas when omitted. On creation,
+  put it before `oracle`/`self`; the operation's separate `--gas` still controls
+  the target call frozen in the proposal.
 
 ### Changed
 
@@ -34,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Decode successful delegated global-contract restore responses through the
+  pinned canonical RPC schema fix; retain original signed bytes, canonical JSON
+  output and unknown-outcome reconciliation safeguards.
+- Retain original transaction outcomes in long local campaign fixtures without
+  changing normal harness defaults or unknown-outcome refusal.
+- Recheck full frozen cohort metadata at read-only swap/resume boundaries and
+  during reconciliation, including unchanged dependencies and completed runs.
 - Finalize every market-affecting configuration-patch fixture transaction and
   unsupported-code redeployment, including native refunds, before capturing
   exact no-mutation checkpoints; optimistic height advancement is not finality.

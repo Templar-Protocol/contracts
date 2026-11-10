@@ -217,6 +217,9 @@ stellar-tokens = { version = "0.7.1", default-features = false }
 # Drop this once the change is upstreamed and released.
 [patch.crates-io]
 stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts", rev = "f9d7cee755ee09cd43f6978eecf7ea8156e32a86" }
+# Decode nearcore RPC view tags in delegated global actions without changing
+# canonical action JSON; remove once this generator fix is released upstream.
+near-openapi-types = { git = "https://github.com/Templar-Protocol/near-openapi-client-rs", rev = "f96c0441dbc6c491085821a1c743fb97b58dc745" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

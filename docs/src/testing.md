@@ -12,8 +12,8 @@ Use `just test-fast` for the complete non-node gate, including non-node
 integration targets, or `just test-sandbox` for the node-backed gate. The sandbox recipe prebuilds NEAR contracts before
 starting its pooled `neard` instances; pass `--stale` to reuse the contracts already built into `target/near`.
 
-Run the artifact drift check separately when validating the release catalog —
-pure in-memory invariant checks, no builds:
+Run the artifact drift check separately when validating the release catalog.
+It may compile the Rust test crate, but does not build contract WASM:
 
 ```bash
 ./script/check-artifact-drift.sh
@@ -71,6 +71,11 @@ tests concurrently, so those intervals overlap: the totals measure work done,
 not gate wall clock. Its per-test breakdown is the point — a change that halves
 the suite can still make one test much worse.
 
+The NEAR CI job has a 120-minute ceiling to include cold builds and the long
+real-script migration acceptance matrix. This is a job budget, not a relaxed
+protocol-validity or finality check. The sandbox profile still terminates an
+individual test after five 120-second slow periods.
+
 What the measurements established, so it need not be re-derived:
 
 - **Node round-trips dominate; WASM payload is ~free.** 570KB of extra contract
@@ -116,6 +121,26 @@ records or relaxing finalized-state checks.
 The pinned RPC waits for committed state, not finalized visibility. Continue
 waiting for the patched key or exact metadata to reach `Final` before signing
 or capturing a replay checkpoint.
+
+### Historical Transaction Outcomes
+
+A long campaign re-reads its original finalized transaction outcomes on restart.
+Default fast-init sandbox history can be pruned before that workflow finishes:
+the same hash then becomes `UnknownTransaction`, and waiting for `FINAL` may time
+out. Neither response authorizes a replacement transaction.
+
+The dedicated released-market fixtures start through
+`SandboxHarness::start_owned_with_config`, preserving `sandbox_config()` and
+setting the **flat** `additional_config["gc_num_epochs_to_keep"]` to 1,000.
+Fast-init epochs are 60 blocks, so this retains 60,000 blocks for bounded fixture
+replay without changing consensus timing, expiry or receipt checks. Normal
+harness and pooled-node defaults remain unchanged. Nearcore's GC fields are
+[serde-flattened](https://github.com/near/nearcore/blob/2.12.0/nearcore/src/config.rs#L318-L320);
+a nested `gc` object does not configure this retention.
+
+Configure sufficient history before execution. Increasing retention later cannot
+restore records already pruned.
+
 
 ### Settled Account Checkpoints
 

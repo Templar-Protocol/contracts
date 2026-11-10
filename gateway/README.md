@@ -96,6 +96,19 @@ prepaid maximum cannot execute. Budget the governance wrapper and its inner targ
 separately. The local migration fixture exercises both threshold-approved calls,
 the effective governance timelock, and the actual target receipt.
 
+### Delegated global-contract RPC compatibility
+
+The workspace pins a generator-level `near-openapi-types` correction in
+[the root Cargo manifest](../Cargo.toml). Nearcore transaction views spell nested
+global identifiers `hash` / `account_id`; the unpatched 0.8.0 model rejects those
+successful responses. The correction accepts these view spellings without
+changing canonical action JSON or signed bytes.
+
+Cargo does not propagate a dependency's `[patch]` section to downstream
+applications. Rust consumers outside this workspace need the same application-root
+patch when decoding delegated global-contract actions until an upstream release
+contains the correction. Installing a registry package alone does not inherit it.
+
 ## Snapshot-Bound Market Reads
 
 Rust callers comparing a market's raw storage snapshot with its configuration can use

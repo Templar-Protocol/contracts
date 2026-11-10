@@ -240,13 +240,13 @@ impl SandboxHarness {
     pub async fn storage_deposit(
         &self,
         user: &ManagedAccountId,
-        contract_id: &AccountId,
+        contract_id: impl Into<AccountId>,
         deposit: NearToken,
     ) -> Result<WriteOperationResult> {
         self.execute(
             user,
             storage::Deposit {
-                contract_id: contract_id.clone(),
+                contract_id: contract_id.into(),
                 beneficiary_id: None,
                 registration_only: false,
                 deposit,
@@ -260,13 +260,13 @@ impl SandboxHarness {
     pub async fn mint(
         &self,
         user: &ManagedAccountId,
-        token_id: &AccountId,
+        token_id: impl Into<AccountId>,
         amount: u128,
     ) -> Result<WriteOperationResult> {
         self.execute(
             user,
             tx::FunctionCall {
-                receiver_id: token_id.clone(),
+                receiver_id: token_id.into(),
                 method_name: ContractMethodName("mint".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({ "amount": SU128::from(amount) })),
                 gas: NearGas::from_tgas(20),
@@ -282,14 +282,14 @@ impl SandboxHarness {
     pub async fn mint_mt(
         &self,
         user: &ManagedAccountId,
-        contract_id: &AccountId,
+        contract_id: impl Into<AccountId>,
         token_id: &str,
         amount: u128,
     ) -> Result<WriteOperationResult> {
         self.execute(
             user,
             tx::FunctionCall {
-                receiver_id: contract_id.clone(),
+                receiver_id: contract_id.into(),
                 method_name: ContractMethodName("mint".to_owned()),
                 args: ContractArgs::Json(
                     serde_json::json!({ "token_id": token_id, "amount": SU128::from(amount) }),

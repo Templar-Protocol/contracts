@@ -46,6 +46,10 @@ pub struct CreateProposal {
     /// leaves an operation explorers and indexers cannot read — use it for wasm upgrades.
     #[arg(long, value_enum, default_value = "json")]
     encoding: ProposalEncoding,
+    /// Gas attached to the outer governance create call (default: 300 Tgas).
+    /// Set the target oracle operation's gas separately with its own `--gas`.
+    #[arg(long, value_name = "GAS")]
+    call_gas: Option<Gas>,
     #[command(flatten)]
     pub(crate) preflight: PreflightArgs,
     #[command(flatten)]
@@ -111,7 +115,7 @@ impl CreateProposal {
             operation: self.operation.into_operation()?,
             requested_ttl: self.requested_ttl,
             encoding: self.encoding,
-            gas: None,
+            gas: self.call_gas,
         })
     }
 }

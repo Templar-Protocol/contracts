@@ -9,13 +9,13 @@ use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, TransferAction};
 use serde_json::{json, Value};
 use templar_gateway_core::PlannedTransaction;
-use templar_gateway_methods_spec::{account, chain, dao, market};
+use templar_gateway_methods_spec::{account, chain, dao, market, tx};
 use templar_gateway_testing::{failed_receipts, SandboxHarness};
-use templar_gateway_types::{ManagedAccountId, NearToken};
+use templar_gateway_types::{common::TxExecutionStatus, ManagedAccountId, NearToken};
 
 #[path = "common/market.rs"]
 mod market_fixture;
-use market_fixture::SeededMarket;
+use market_fixture::{finalize, SeededMarket};
 
 const BIN: &str = env!("CARGO_BIN_EXE_tmplrmgr");
 const REQUEST_DESCRIPTION: &str = "asset-migration:test:patch:attempt-1";
@@ -398,7 +398,7 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
         };
         let nonce = harness.client()?.read(access_key.clone()).await?.nonce;
         let protocol = ManagedAccountId(seeded.market.configuration.protocol_account_id.clone());
-        harness
+        let withdrawal = harness
             .execute(
                 &protocol,
                 market::WithdrawStaticYield {
@@ -407,6 +407,7 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
                 },
             )
             .await?;
+        finalize(harness, &protocol.0, &withdrawal).await?;
         let drifted = raw_storage(harness, &controlled.0).await?;
         assert_ne!(drifted, before);
         let rejected = invoke(harness, &execution, if raw { None } else { Some(&relayer) }).await?;
@@ -464,8 +465,22 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
         );
         return Ok(());
     }
-    cli(harness, &execution, if raw { None } else { Some(&relayer) }).await?;
-    harness.fast_forward(10).await?;
+    let executed = cli(harness, &execution, if raw { None } else { Some(&relayer) }).await?;
+    // Submission waits for Executed, but raw_storage reads Final. An optimistic
+    // height jump does not finalize the delegated patch's receipt block.
+    let finalized = harness
+        .client()?
+        .read(tx::Get {
+            tx_hash: serde_json::from_value(executed["tx_hash"].clone())?,
+            sender_account_id: serde_json::from_value(executed["sender_account_id"].clone())?,
+            wait_until: Some(TxExecutionStatus::Final),
+            encoding: tx::ValueEncoding::Json,
+        })
+        .await?;
+    ensure!(
+        finalized.status == tx::Status::Succeeded && finalized.failed_receipts.is_empty(),
+        "approved patch must finalize successfully with no failed child receipts: {finalized:?}"
+    );
     let mut expected = before;
     expected.insert(b"STATE".to_vec(), expected_state);
     assert_eq!(raw_storage(harness, &controlled.0).await?, expected);
