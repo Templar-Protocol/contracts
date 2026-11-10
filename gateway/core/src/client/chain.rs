@@ -170,16 +170,22 @@ async fn query_protocol_config(
     client: &near_openapi_client::Client,
     request: &JsonRpcRequestForExperimentalProtocolConfig,
 ) -> Result<Result<RpcProtocolConfigResponse, String>, near_openapi_client::Error<()>> {
-    Ok(match client.experimental_protocol_config(request).await?.into_inner() {
-        JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant0 {
-            result,
-            ..
-        } => Ok(result),
-        JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant1 {
-            error,
-            ..
-        } => Err(error.to_string()),
-    })
+    Ok(
+        match client
+            .experimental_protocol_config(request)
+            .await?
+            .into_inner()
+        {
+            JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant0 {
+                result,
+                ..
+            } => Ok(result),
+            JsonRpcResponseForRpcProtocolConfigResponseAndRpcProtocolConfigError::Variant1 {
+                error,
+                ..
+            } => Err(error.to_string()),
+        },
+    )
 }
 
 struct StorageByteCostRequest(JsonRpcRequestForExperimentalProtocolConfig);
@@ -193,10 +199,13 @@ impl ChainRpcRequest for TransactionValidityPeriodRequest {
         &self,
         client: &near_openapi_client::Client,
     ) -> Result<Result<Self::Output, String>, near_openapi_client::Error<()>> {
-        Ok(query_protocol_config(client, &self.0).await?.and_then(|result| {
-            result.transaction_validity_period
-                .ok_or_else(|| "protocol config does not include transaction validity period".to_owned())
-        }))
+        Ok(query_protocol_config(client, &self.0)
+            .await?
+            .and_then(|result| {
+                result.transaction_validity_period.ok_or_else(|| {
+                    "protocol config does not include transaction validity period".to_owned()
+                })
+            }))
     }
 }
 
@@ -207,10 +216,14 @@ impl ChainRpcRequest for StorageByteCostRequest {
         &self,
         client: &near_openapi_client::Client,
     ) -> Result<Result<Self::Output, String>, near_openapi_client::Error<()>> {
-        Ok(query_protocol_config(client, &self.0).await?.and_then(|result| {
-            result.runtime_config.and_then(|runtime| runtime.storage_amount_per_byte)
-                .ok_or_else(|| "protocol config does not include storage byte cost".to_owned())
-        }))
+        Ok(query_protocol_config(client, &self.0)
+            .await?
+            .and_then(|result| {
+                result
+                    .runtime_config
+                    .and_then(|runtime| runtime.storage_amount_per_byte)
+                    .ok_or_else(|| "protocol config does not include storage byte cost".to_owned())
+            }))
     }
 }
 
@@ -242,8 +255,11 @@ impl ChainRpcRequest for JsonRpcRequestForExperimentalProtocolConfig {
         &self,
         client: &near_openapi_client::Client,
     ) -> Result<Result<Self::Output, String>, near_openapi_client::Error<()>> {
-        Ok(query_protocol_config(client, self).await?
-            .and_then(|result| protocol_limits_from_response(result).map_err(|error| error.to_string())))
+        Ok(query_protocol_config(client, self)
+            .await?
+            .and_then(|result| {
+                protocol_limits_from_response(result).map_err(|error| error.to_string())
+            }))
     }
 }
 
