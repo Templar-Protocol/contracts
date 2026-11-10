@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional `expect_json` view postconditions preserve exact nullable JSON values
   through TOML specs and stamped patch plans without changing existing encodings.
 
+### Fixed
+
+- Finalize released-market deployment and market-signed storage registrations,
+  including native refunds, before capturing configuration-patch no-mutation checkpoints.
+
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 
 ### Added

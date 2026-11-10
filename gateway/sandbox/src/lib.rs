@@ -169,9 +169,9 @@ pub async fn wait_until_final(
 
 /// Wait for an account metadata patch to be visible in finalized state.
 ///
-/// `sandbox_patch_state` acknowledges its pending records being consumed for block processing,
-/// not the resulting state being committed or finalized. An already-present access key cannot
-/// fence a later metadata patch, so compare the exact balance, storage usage and code linkage.
+/// `sandbox_patch_state` waits for committed state on the pinned sandbox release, not finalized
+/// visibility. An already-present access key cannot fence a later metadata patch, so compare the
+/// exact balance, storage usage and code linkage.
 pub async fn wait_for_account_final(
     network: &NetworkConfig,
     account_id: &AccountId,
