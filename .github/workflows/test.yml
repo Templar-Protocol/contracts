@@ -132,6 +132,7 @@ jobs:
               - 'tools/manager/Cargo.toml'
               - 'tools/manager/fixtures/**'
               - 'tools/manager/src/**'
+              - 'tools/manager/tests/**'
               - 'tools/tools-common/Cargo.toml'
               - 'tools/tools-common/**'
             soroban:
