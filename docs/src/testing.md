@@ -126,3 +126,31 @@ records or relaxing finalized-state checks.
 The pinned RPC waits for committed state, not finalized visibility. Continue
 waiting for the patched key or exact metadata to reach `Final` before signing
 or capturing a replay checkpoint.
+
+### Settled Account Checkpoints
+
+The single-submission startup, metadata-reset, raw-value and code-preservation
+regression is `just test-sandbox -p templar-gateway-testing --test sandbox_patch`.
+
+`SandboxHarness` uses `ExecutedOptimistic` for ordinary setup transactions; that
+status does not include every gas refund. Before comparing complete account
+checkpoints, wait for the relevant transaction with `tx.get` and
+`wait_until: "FINAL"`, and verify its downstream receipts. A fixed number of
+`fast_forward` blocks is a time advance, not that transaction's settlement proof.
+
+`sandbox_patch_state` now acknowledges committed state, not finalized visibility. After
+restoring replay account metadata, wait until a `FINAL` account view matches the
+exact amount, locked balance, storage usage, and local/global code linkage.
+Finalize staging transactions and their refunds before that metadata reset;
+an old access key reaching finality does not fence a later account patch.
+
+Keep native amount, locked balance, storage usage, code/global identity,
+effective code bytes, access keys/nonces, and raw storage comparisons separate
+so a failure identifies the changed component. Do not drop a component merely
+because asynchronous setup makes a composite digest differ.
+
+The configuration-patch sandbox gate also submits an intentionally failing
+deploy→patch→restore batch directly through the native gateway. Its guard fails
+after the generated `STATE` write: the failed receipt must leave original
+storage, configuration, effective code, and local/global linkage intact.
+Gas balance and signer nonce are not rollback invariants.

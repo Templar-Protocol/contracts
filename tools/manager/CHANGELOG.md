@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Read-only `market generate-patch config` authors guarded schema-3 configuration
+  patches from a complete finalized snapshot, with exact released-layout admission,
+  opaque-state preservation, typed validation, and review artifacts.
+- Optional `expect_json` view postconditions preserve exact nullable JSON values
+  through TOML specs and stamped patch plans without changing existing encodings.
+
 ### Fixed
 
 - Plan fresh market proxy-governance execution from the exact operation being
   created, with live gas limits, before governance accounts or proposals exist.
+- Finalize every market-affecting configuration-patch fixture transaction and
+  unsupported-code redeployment, including native refunds, before capturing
+  exact no-mutation checkpoints; optimistic height advancement is not finality.
 - Allow exact outer execution gas via `execute-proposal --call-gas` and
   `create-proposal --execute-when-ready --execute-call-gas`, without changing
   the stored operation's child gas or argument bytes.

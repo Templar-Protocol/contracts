@@ -618,6 +618,37 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         &[]
     };
     let show = [&["mpc", "show"][..], target, mpc, payload_arg].concat();
+    // A voter reviews before voting: the proposal is still in progress.
+    f.run(None, &show).await?;
+
+    let approve_tx = f.approve(0).await?;
+    f.run(None, &show).await?;
+
+    let before = f.balance(&beneficiary.0).await?;
+    let executed = [
+        target,
+        mpc,
+        &["--tx-hash", &approve_tx, "--tx-signer", f.proposer.as_str()],
+    ]
+    .concat();
+    // `relay` needs a fee payer; `broadcast` takes no credentials.
+    let (send, sender, wrong, wrong_sender) = match kind {
+        PayloadKind::DelegateAction => ("relay", Some(&relayer), "broadcast", None),
+        PayloadKind::Transaction => ("broadcast", None, "relay", Some(&relayer)),
+    };
+
+    let error = f
+        .run(
+            wrong_sender,
+            &[&["mpc", wrong][..], &executed, payload_arg].concat(),
+        )
+        .await
+        .expect_err("the other send command refuses this payload kind");
+    assert!(error.to_string().contains("use `mpc "), "{error}");
+    let send_args = [&["mpc", send][..], &executed, payload_arg].concat();
+    f.run(sender, &send_args).await?;
+
+    // These independent checks remain valid after the original transfer consumes its nonce.
     if blind {
         let error = f
             .run(None, &[&["mpc", "show"][..], target, mpc].concat())
@@ -625,8 +656,6 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
             .expect_err("a blind proposal cannot be reviewed without the payload file");
         assert!(error.to_string().contains("--payload-file"), "{error}");
     }
-    // A voter reviews before voting: the proposal is still in progress.
-    f.run(None, &show).await?;
 
     // Without `--mpc-contract` the review is pinned to the network's signer.
     let error = f
@@ -666,39 +695,11 @@ async fn requires_sandbox_mpc_proposal_is_relayed_end_to_end(
         .expect_err("a decoy payload is refused");
     assert!(error.to_string().contains("hashes to"), "{error}");
 
-    let approve_tx = f.approve(0).await?;
-    f.run(None, &show).await?;
-
-    let before = f.balance(&beneficiary.0).await?;
-    let executed = [
-        target,
-        mpc,
-        &["--tx-hash", &approve_tx, "--tx-signer", f.proposer.as_str()],
-    ]
-    .concat();
-    // `relay` needs a fee payer; `broadcast` takes no credentials.
-    let (send, sender, wrong, wrong_sender) = match kind {
-        PayloadKind::DelegateAction => ("relay", Some(&relayer), "broadcast", None),
-        PayloadKind::Transaction => ("broadcast", None, "relay", Some(&relayer)),
-    };
-
-    let error = f
-        .run(
-            wrong_sender,
-            &[&["mpc", wrong][..], &executed, payload_arg].concat(),
-        )
-        .await
-        .expect_err("the other send command refuses this payload kind");
-    assert!(error.to_string().contains("use `mpc "), "{error}");
-
     let error = f
         .run(sender, &[&["mpc", send][..], &executed, decoy].concat())
         .await
         .expect_err("a decoy payload never reaches the signature");
     assert!(error.to_string().contains("hashes to"), "{error}");
-
-    let send_args = [&["mpc", send][..], &executed, payload_arg].concat();
-    f.run(sender, &send_args).await?;
 
     // The nonce is spent now: a replay is refused before anything is broadcast.
     let error = f

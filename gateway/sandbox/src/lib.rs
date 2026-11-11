@@ -14,7 +14,7 @@ use near_jsonrpc_client::{
 use near_primitives::{
     state_record::StateRecord,
     types::{BlockReference, Finality, StoreKey, StoreValue},
-    views::QueryRequest,
+    views::{AccountView, QueryRequest},
 };
 use near_sandbox::{
     config::{DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY, DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY},
@@ -165,6 +165,53 @@ pub async fn wait_until_final(
              {FINALITY_TIMEOUT:?} — the sandbox node is likely overloaded or down"
         )
     })
+}
+
+/// Wait for an account metadata patch to be visible in finalized state.
+///
+/// `sandbox_patch_state` waits for committed state on the pinned sandbox release, not finalized
+/// visibility. An already-present access key cannot fence a later metadata patch, so compare the
+/// exact balance, storage usage and code linkage.
+pub async fn wait_for_account_final(
+    network: &NetworkConfig,
+    account_id: &AccountId,
+    expected: &AccountView,
+) -> Result<()> {
+    let client = client(network);
+    let request = RpcQueryRequest {
+        block_reference: BlockReference::Finality(Finality::Final),
+        request: QueryRequest::ViewAccount {
+            account_id: account_id.clone(),
+        },
+    };
+    let mut last_seen = None;
+    tokio::time::timeout(FINALITY_TIMEOUT, async {
+        let mut backoff = FINALITY_POLL_MIN;
+        loop {
+            let response = client
+                .call(&request)
+                .await
+                .with_context(|| format!("read finalized sandbox account {account_id}"))?;
+            let near_jsonrpc_primitives::types::query::QueryResponseKind::ViewAccount(actual) =
+                response.kind
+            else {
+                anyhow::bail!("unexpected finalized account response for {account_id}");
+            };
+            if &actual == expected {
+                return Ok(());
+            }
+            last_seen = Some((response.block_hash, actual));
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(FINALITY_POLL_MAX);
+        }
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "sandbox account {account_id} metadata did not reach finality within \
+             {FINALITY_TIMEOUT:?}; expected {expected:?}; last finalized observation {last_seen:?}"
+        )
+    })?
 }
 
 /// Sandbox launch configuration shared by owned and out-of-band nodes.
