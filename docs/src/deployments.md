@@ -554,9 +554,14 @@ lint, and DAO/keyless runtime checks to have passed for that release.
 
    Have the separate Deployer deploy the approved artifact; verify child code
    identity, initialization, deployment record and the explicitly reviewed
-   `full_access_keys`. Deployer can install its own keys and thereby control the
-   child, including replacing code: this trust boundary is not limited to the
-   approved version.
+   `full_access_keys`. Require the `Deployed` 1.1.0 event's `deployer` and
+   `full_access_keys` to match that call; provenance is null only for legacy
+   in-flight finalizers. Deployer can install its own keys and thereby control
+   the child, including replacing code: this trust boundary is not limited to
+   the approved version. During normal rotation, confirm the child works,
+   install the freshly derived MPC/DAO-controlled key, have the DAO delete the
+   deployer key with the new key, then list the child's keys and require only
+   the MPC/DAO-controlled key to remain.
 
    Then submit a DAO `upgrade` action whose decoded UTF-8 JSON is
    `{"code":{"GlobalHash":"<REGISTRY_GLOBAL_HASH>"},"migrate_args":""}`, deposit
@@ -587,5 +592,6 @@ If any proposal fails or its outcome is unknown, inspect finalized DAO and
 registry state before retrying; never remove keys with incomplete evidence.
 The manager upgrade command requires an owner full-access signer and cannot
 impersonate a DAO after handoff: subsequent upgrades are direct DAO proposals.
-Gateway/tmplrmgr upload/approval UX and removal of legacy `PublishGlobal` are
-separate follow-ups; this rollout does not depend on them.
+Registry-DAO proposal tooling must expose an explicit action-gas override before
+live rollout. Gateway/tmplrmgr upload/approval UX and removal of legacy
+`PublishGlobal` are separate follow-ups; this rollout does not depend on them.

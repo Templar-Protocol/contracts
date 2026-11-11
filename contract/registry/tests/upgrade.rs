@@ -317,7 +317,7 @@ async fn a_deploy_in_flight_across_the_upgrade_still_finalizes(
     let in_flight: AccountId = format!("in-flight.{registry_id}").parse()?;
 
     // One receipt: the deploy enqueues its callback, then the code under it is replaced.
-    harness
+    let result = harness
         .execute(
             &harness.registry_signer_account_id.clone(),
             tx::Batch {
@@ -368,6 +368,31 @@ async fn a_deploy_in_flight_across_the_upgrade_still_finalizes(
         ),
         "the callback 2.0.0 enqueued must finalize on the new code",
     );
+
+    let events = result
+        .operation
+        .final_outcome()
+        .context("the deployment and upgrade have an outcome")?
+        .receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.contract_id == registry_id
+                && receipt.status == templar_gateway_types::operation::ReceiptStatus::Succeeded
+        })
+        .flat_map(|receipt| &receipt.logs)
+        .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let deployed = events
+        .into_iter()
+        .filter(|event| event["standard"] == "templar-registry" && event["event"] == "deployed")
+        .collect::<Vec<_>>();
+    let [event] = deployed.as_slice() else {
+        panic!("expected one legacy deployed event, got {}", deployed.len());
+    };
+    assert_eq!(event["version"], "1.1.0");
+    assert_eq!(event["data"]["deployer"], serde_json::Value::Null);
+    assert_eq!(event["data"]["full_access_keys"], serde_json::Value::Null);
 
     Ok(())
 }

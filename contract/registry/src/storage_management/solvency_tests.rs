@@ -376,6 +376,8 @@ fn finalization_releases_its_budget_after_an_intervening_protocol_write(
         Some(fixture.child.clone()),
         None,
         fixture.deployment.clone(),
+        None,
+        None,
     );
     let free = if successful {
         assert!(matches!(&finalized, PromiseOrValue::Value(child) if child == &fixture.child));
@@ -447,10 +449,13 @@ fn failed_finalization_cleans_up_even_when_protocol_backing_is_short() {
         vec![PromiseResult::Failed],
     );
 
-    let _ =
-        fixture
-            .contract
-            .deploy_01_finalize(Some(fixture.child.clone()), None, fixture.deployment);
+    let _ = fixture.contract.deploy_01_finalize(
+        Some(fixture.child.clone()),
+        None,
+        fixture.deployment,
+        None,
+        None,
+    );
     assert_eq!(fixture.contract.get_registry_entry(fixture.child), None);
     assert_eq!(fixture.contract.pending_deployment_storage, NearToken::ZERO);
     assert_eq!(

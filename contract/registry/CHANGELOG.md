@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- *(registry)* thread deployment provenance through backward-compatible finalization
+
 ## [3.1.0](https://github.com/Templar-Protocol/contracts/compare/templar-registry-contract-v3.0.1...templar-registry-contract-v3.1.0) - 2026-10-14
 
 ### Added

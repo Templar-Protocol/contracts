@@ -631,6 +631,7 @@ impl Contract {
     ) -> Promise {
         require!(!name.is_empty(), "Name must not be empty");
         self.assert_role(Role::Deployer);
+        let full_access_keys = Some(full_access_keys.unwrap_or_default());
         require!(
             !matches!(
                 name.as_str(),
@@ -717,13 +718,7 @@ impl Contract {
             VersionEntry::GlobalHash(hash) => promise = promise.use_global_contract(*hash),
         }
 
-        for key in full_access_keys.unwrap_or_default() {
-            near_sdk::log!(
-                "WARNING: Deploying with full-access key {}",
-                String::from(&key),
-            );
-            promise = promise.add_full_access_key(key);
-        }
+        promise = add_full_access_keys(promise, full_access_keys.as_deref().unwrap_or_default());
 
         let promise = promise
             .function_call_weight(
@@ -737,7 +732,13 @@ impl Contract {
                 Self::ext(env::current_account_id())
                     .with_unused_gas_weight(1)
                     .with_static_gas(Gas::from_tgas(2))
-                    .deploy_01_finalize(Some(account_id), None, deployment),
+                    .deploy_01_finalize(
+                        Some(account_id),
+                        None,
+                        deployment,
+                        Some(env::predecessor_account_id()),
+                        full_access_keys,
+                    ),
             );
         self.registry.flush();
         self.assert_storage_solvency(attached_deposit);
@@ -751,6 +752,9 @@ impl Contract {
         // 2.0.0's name for `account_id`, so its callbacks still in flight across the upgrade land.
         market_id: Option<AccountId>,
         deployment: Deployment,
+        // Option fields deserialize missing 2.0.0 provenance as None and emit null.
+        deployer: Option<AccountId>,
+        full_access_keys: Option<Vec<near_sdk::PublicKey>>,
     ) -> PromiseOrValue<AccountId> {
         let Some(account_id) = account_id.or(market_id) else {
             templar_common::panic_with_message("Missing deployment account ID");
@@ -773,6 +777,8 @@ impl Contract {
             RegistryEvent::Deployed {
                 account_id: account_id.clone(),
                 deployment,
+                deployer,
+                full_access_keys,
             }
             .emit();
             PromiseOrValue::Value(account_id)
@@ -792,6 +798,17 @@ impl Contract {
     pub fn fail(&self, message: String) {
         templar_common::panic_with_message(&message);
     }
+}
+
+fn add_full_access_keys(mut promise: Promise, full_access_keys: &[near_sdk::PublicKey]) -> Promise {
+    for key in full_access_keys {
+        near_sdk::log!(
+            "WARNING: Deploying with full-access key {}",
+            String::from(key),
+        );
+        promise = promise.add_full_access_key(key.clone());
+    }
+    promise
 }
 
 #[cfg(test)]
@@ -1791,11 +1808,14 @@ mod tests {
             .insert(account_id.clone(), RegistryEntry::Reserved);
         next_receipt(vec![result]);
 
-        let _ = contract.deploy_01_finalize(Some(account_id.clone()), None, deployment());
+        let _ =
+            contract.deploy_01_finalize(Some(account_id.clone()), None, deployment(), None, None);
 
         let expected = RegistryEvent::Deployed {
             account_id: account_id.clone(),
             deployment: deployment(),
+            deployer: None,
+            full_access_keys: None,
         };
         assert_eq!(
             emitted_events(),
@@ -1822,6 +1842,8 @@ mod tests {
                 code_hash: [1u8; 32].into(),
                 block_height: 1.into(),
             },
+            None,
+            None,
         );
     }
 

@@ -94,7 +94,7 @@ async fn deploy_from_registry(#[future(awt)] harness: SandboxHarness) -> Result<
     let deploy = |name: &'static str| {
         let args = args.clone();
         async move {
-            harness
+            let result = harness
                 .registry_deploy_without_abi_check(
                     &registry.deployer,
                     &registry.id,
@@ -113,10 +113,21 @@ async fn deploy_from_registry(#[future(awt)] harness: SandboxHarness) -> Result<
             );
             // Deploying without keys leaves the market with no full-access keys.
             assert!(harness.view_access_keys(&market_id).await?.is_empty());
-            Ok::<(), anyhow::Error>(())
+            Ok::<WriteOperationResult, anyhow::Error>(result)
         }
     };
-    tokio::try_join!(deploy("one"), deploy("two"), deploy("three"))?;
+    let (one, two, three) = tokio::try_join!(deploy("one"), deploy("two"), deploy("three"))?;
+    for result in [one, two, three] {
+        let deployed: Vec<Deployed> = registry_events(&result, &registry.id, "deployed")?;
+        let [event] = deployed.as_slice() else {
+            panic!("expected one deployed event, got {}", deployed.len());
+        };
+        assert_eq!(event.deployer.as_ref(), Some(&registry.deployer.0));
+        assert!(
+            matches!(&event.full_access_keys, Some(keys) if keys.is_empty()),
+            "new no-key deployments must emit an empty key list, not legacy null provenance",
+        );
+    }
 
     Ok(())
 }
@@ -156,7 +167,13 @@ async fn deploy_with_access_key(#[future(awt)] harness: SandboxHarness) -> Resul
         Some(deployed.deployment.code_hash),
         version_code_hash(&harness, &registry.id, MARKET_VERSION).await?,
     );
-
+    assert_eq!(deployed.deployer.as_ref(), Some(&registry.deployer.0));
+    let event_keys = deployed
+        .full_access_keys
+        .as_ref()
+        .expect("new finalizers must carry supplied key provenance");
+    assert_eq!(event_keys.len(), 1);
+    assert_eq!(String::from(&event_keys[0]), TEST_PUBLIC_KEY);
     // The deployed market must carry exactly the requested full-access key.
     let keys = harness.view_access_keys(&market_id).await?;
     assert_eq!(keys.len(), 1, "expected exactly the one requested key");
@@ -349,6 +366,8 @@ struct Deployed {
     account_id: AccountId,
     #[serde(flatten)]
     deployment: Deployment,
+    deployer: Option<AccountId>,
+    full_access_keys: Option<Vec<near_sdk::PublicKey>>,
 }
 
 #[rstest]

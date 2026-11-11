@@ -181,16 +181,18 @@ Illustrative output:
 
 ## Events
 
-The registry logs [NEP-297](https://github.com/near/NEPs/blob/master/neps/nep-0297.md) events under the `templar-registry` standard, version `1.0.0`. Each is logged by the receipt that makes its change, so an asynchronous step that later fails (a global contract that turns out not to exist, a deployment whose account creation fails) logs nothing. As with any NEAR event, count one only if its receipt succeeded: a receipt can still fail after logging, for example when the registry cannot stake the storage a new version needs, and NEAR keeps a failed receipt's logs.
+The registry logs [NEP-297](https://github.com/near/NEPs/blob/master/neps/nep-0297.md) events under the `templar-registry` standard. Events are version `1.0.0` except `deployed`, which is version `1.1.0`. Each is logged by the receipt that makes its change, so an asynchronous step that later fails (a global contract that turns out not to exist, a deployment whose account creation fails) logs nothing. As with any NEAR event, count one only if its receipt succeeded: a receipt can still fail after logging, for example when the registry cannot stake the storage a new version needs, and NEAR keeps a failed receipt's logs.
 
 | Event | Fields | Logged when |
 | --- | --- | --- |
 | `version_added` | `version_key`, `code_hash`, `availability` (`{"Stored":{"code_len":…}}` or `"Global"`) | Uploaded approval or legacy Stored registration stores code, or a callback confirms a global contract exists |
 | `version_removed` | `version_key`, `code_hash` | `remove_version` clears a version's stored code |
-| `deployed` | `account_id`, `version_key`, `code_hash`, `block_height` | the deployed account is created and initialized and the name resolves to it |
+| `deployed` | `account_id`, `version_key`, `code_hash`, `block_height`, `deployer`, `full_access_keys` | the deployed account is created and initialized and the name resolves to it |
 | `code_uploaded` | `code_hash`, `uploader`, `code_len` | code and metadata are persisted and charged to the uploader's available storage balance |
 | `upload_removed` | `code_hash`, `uploader` | a pending upload is explicitly removed; approval/conversion emits no such event |
 | `role_set` | `account_id`, `role` (`"Uploader"` or `"Deployer"`), `is_granted` (boolean) | every successful `set_role`, including idempotent calls |
+
+For `deployed` 1.1.0, new finalizers record the deploying predecessor and its supplied key list, including `[]` when no keys were supplied. Legacy in-flight finalizers did not carry that metadata, so both fields are `null` for them.
 
 Owner changes are logged by `near-sdk-contract-tools` under its own standard.
 

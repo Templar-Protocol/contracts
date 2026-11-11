@@ -293,8 +293,28 @@ mod tests {
         RegistryEvent::Deployed {
             account_id: "one.registry.near".parse().unwrap(),
             deployment: deployment(),
+            deployer: Some("deployer.near".parse().unwrap()),
+            full_access_keys: Some(vec!["ed25519:5BGSaf6YjVm7565VzWQHNxoyEjwr3jUpRJSGjREvU9dB".parse().unwrap()]),
         },
-        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"deployed","data":{"account_id":"one.registry.near","version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","block_height":"42"}}"#
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.1.0","event":"deployed","data":{"account_id":"one.registry.near","version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","block_height":"42","deployer":"deployer.near","full_access_keys":["ed25519:5BGSaf6YjVm7565VzWQHNxoyEjwr3jUpRJSGjREvU9dB"]}}"#
+    )]
+    #[case::deployed_without_keys(
+        RegistryEvent::Deployed {
+            account_id: "one.registry.near".parse().unwrap(),
+            deployment: deployment(),
+            deployer: Some("deployer.near".parse().unwrap()),
+            full_access_keys: Some(Vec::new()),
+        },
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.1.0","event":"deployed","data":{"account_id":"one.registry.near","version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","block_height":"42","deployer":"deployer.near","full_access_keys":[]}}"#
+    )]
+    #[case::deployed_legacy_callback(
+        RegistryEvent::Deployed {
+            account_id: "one.registry.near".parse().unwrap(),
+            deployment: deployment(),
+            deployer: None,
+            full_access_keys: None,
+        },
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.1.0","event":"deployed","data":{"account_id":"one.registry.near","version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","block_height":"42","deployer":null,"full_access_keys":null}}"#
     )]
     #[case::code_uploaded(
         RegistryEvent::CodeUploaded {
@@ -367,11 +387,14 @@ pub enum RegistryEvent {
         code_hash: Base58CryptoHash,
     },
     /// A deployment's account was created and initialized, and the name now resolves to it.
-    #[event_version("1.0.0")]
+    /// Legacy in-flight finalizers emit null provenance because they did not carry it.
+    #[event_version("1.1.0")]
     Deployed {
         account_id: AccountId,
         #[serde(flatten)]
         deployment: Deployment,
+        deployer: Option<AccountId>,
+        full_access_keys: Option<Vec<near_sdk::PublicKey>>,
     },
     /// Code was stored pending Owner approval.
     #[event_version("1.0.0")]
