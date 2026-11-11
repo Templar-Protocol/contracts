@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use near_account_id::AccountId;
+use near_api::types::transaction::actions::Action;
 use serde::Serialize;
 use templar_gateway_core::{
     client::{
@@ -9,15 +10,173 @@ use templar_gateway_core::{
         },
         ContractWriteOptions,
     },
-    DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
+    DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
-use templar_gateway_types::{NearGas, ProposalEncoding, ProxyGovernance};
+use templar_gateway_types::{NearGas, ProposalEncoding, ProtocolLimits, ProxyGovernance};
 use templar_proxy_oracle_near_governance_common::{
-    GovernancePolicy, GovernancePolicyWire, Operation, Proposal, Role,
+    GovernancePolicy, GovernancePolicyWire, Operation, Proposal, ReflexiveOperation, Role,
+    GAS_FOR_SELF_UPGRADE_MIGRATE,
 };
 
 use crate::{registry_impl::plan_create_from_registry, Dispatch};
+
+// Conservative planning allowances, not protocol fees or mathematical execution minima.
+// The payload coefficients cover storage read/remove/serialization and promise data copying.
+// Recalibrate with receipt measurements when governance code or runtime costs change.
+// Receipt calibration on the canonical DAO: ordinary governance wrappers burnt <2.3 Tgas;
+// a 32 KiB policy create burnt <7 Tgas and execution <3.2 Tgas. The base/buffer allowances
+// exceed these samples; they are not a measured population-level 99% success guarantee.
+const CREATE_BASE_GAS: u64 = 15_000_000_000_000;
+const EXECUTE_BASE_GAS: u64 = 10_000_000_000_000;
+const WRAPPER_BUFFER_GAS: u64 = 10_000_000_000_000;
+const PAYLOAD_GAS_PER_BYTE: u64 = 100_000_000;
+const UPGRADE_DEPLOY_GAS: u64 = 5_000_000_000_000;
+const DEPLOY_GAS_PER_BYTE: u64 = 20_000_000;
+// Sputnik's FunctionCall execution reserves a 10 Tgas callback. Leave another 10 Tgas
+// plus payload-dependent headroom for voting/dispatch. This is a single-call allowance,
+// not a guarantee for arbitrary DAO versions, policies, or multi-action proposals.
+const DAO_FORWARDING_GAS: u64 = 20_000_000_000_000;
+const DAO_FORWARDING_GAS_PER_BYTE: u64 = 50_000_000;
+
+fn gas_error(message: &str) -> GatewayError {
+    GatewayError::RequestPreconditionFailed(message.to_owned())
+}
+
+fn checked_gas_sum(base: u64, bytes: u64, per_byte: u64) -> GatewayResult<u64> {
+    bytes
+        .checked_mul(per_byte)
+        .and_then(|payload| base.checked_add(payload))
+        .ok_or_else(|| gas_error("governance gas budget arithmetic overflow"))
+}
+
+fn operation_size(operation: &Operation, limits: &ProtocolLimits) -> GatewayResult<u64> {
+    let bytes = u64::try_from(borsh::object_length(operation)?)
+        .map_err(|_| gas_error("governance operation size overflow"))?;
+    if bytes > limits.max_length_storage_value {
+        return Err(gas_error(
+            "governance operation exceeds the live storage-value size limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn child_reservation(operation: &Operation) -> GatewayResult<u64> {
+    match operation {
+        Operation::TargetFunctionCall(call) => {
+            let gas = call.gas.as_gas();
+            if gas == 0 {
+                return Err(gas_error("governance target call gas must be nonzero"));
+            }
+            Ok(gas)
+        }
+        Operation::Reflexive(ReflexiveOperation::SelfUpgrade { .. }) => {
+            Ok(GAS_FOR_SELF_UPGRADE_MIGRATE.as_gas())
+        }
+        Operation::Reflexive(
+            ReflexiveOperation::SetReflexiveTtl { .. }
+            | ReflexiveOperation::SetTargetDefault { .. }
+            | ReflexiveOperation::SetMethodPolicy { .. }
+            | ReflexiveOperation::SetRole { .. },
+        ) => Ok(0),
+    }
+}
+
+fn bounded_gas(
+    estimate: u64,
+    child_gas: u64,
+    payload_bytes: u64,
+    override_gas: Option<NearGas>,
+    limits: &ProtocolLimits,
+) -> GatewayResult<NearGas> {
+    let gas = override_gas.map_or(estimate, NearGas::as_gas);
+    if gas == 0 || gas <= child_gas {
+        return Err(gas_error(
+            "governance call gas must be nonzero and exceed its child reservation",
+        ));
+    }
+    if gas > limits.max_total_prepaid_gas.as_gas() {
+        return Err(gas_error(
+            "governance call gas exceeds the live protocol limit",
+        ));
+    }
+    if override_gas.is_none() {
+        let forwarded = checked_gas_sum(
+            DAO_FORWARDING_GAS,
+            payload_bytes,
+            DAO_FORWARDING_GAS_PER_BYTE,
+        )?
+        .checked_add(gas)
+        .ok_or_else(|| gas_error("governance forwarding budget arithmetic overflow"))?;
+        if forwarded > limits.max_total_prepaid_gas.as_gas() {
+            return Err(gas_error(
+                "governance default gas plus DAO forwarding allowance exceeds the live protocol limit; reduce the payload or child gas, or explicitly budget a direct call",
+            ));
+        }
+    }
+    Ok(NearGas::from_gas(gas))
+}
+
+fn execution_budget(
+    operation: &Operation,
+    limits: &ProtocolLimits,
+) -> GatewayResult<(u64, u64, u64)> {
+    let bytes = operation_size(operation, limits)?;
+    let child_gas = child_reservation(operation)?;
+    let mut estimate = checked_gas_sum(
+        EXECUTE_BASE_GAS + WRAPPER_BUFFER_GAS,
+        bytes,
+        PAYLOAD_GAS_PER_BYTE,
+    )?;
+    if let Operation::Reflexive(ReflexiveOperation::SelfUpgrade { code, .. }) = operation {
+        let code_bytes = match code {
+            templar_common::upgrade::UpgradeSource::Code(code) => {
+                u64::try_from(code.0.len()).map_err(|_| gas_error("upgrade code size overflow"))?
+            }
+            templar_common::upgrade::UpgradeSource::GlobalHash(_) => 0,
+        };
+        estimate = estimate
+            .checked_add(checked_gas_sum(
+                UPGRADE_DEPLOY_GAS,
+                code_bytes,
+                DEPLOY_GAS_PER_BYTE,
+            )?)
+            .ok_or_else(|| gas_error("governance upgrade budget arithmetic overflow"))?;
+    }
+    estimate = estimate
+        .checked_add(child_gas)
+        .ok_or_else(|| gas_error("governance child reservation arithmetic overflow"))?;
+    Ok((estimate, child_gas, bytes))
+}
+
+fn execute_gas(
+    operation: &Operation,
+    override_gas: Option<NearGas>,
+    limits: &ProtocolLimits,
+) -> GatewayResult<NearGas> {
+    let (estimate, child_gas, bytes) = execution_budget(operation, limits)?;
+    bounded_gas(estimate, child_gas, bytes, override_gas, limits)
+}
+
+fn create_gas(
+    encoded_bytes: usize,
+    override_gas: Option<NearGas>,
+    limits: &ProtocolLimits,
+) -> GatewayResult<NearGas> {
+    let bytes =
+        u64::try_from(encoded_bytes).map_err(|_| gas_error("governance proposal size overflow"))?;
+    if bytes > limits.max_transaction_size {
+        return Err(gas_error(
+            "encoded governance proposal exceeds the live transaction size limit",
+        ));
+    }
+    let estimate = checked_gas_sum(
+        CREATE_BASE_GAS + WRAPPER_BUFFER_GAS,
+        bytes,
+        PAYLOAD_GAS_PER_BYTE,
+    )?;
+    bounded_gas(estimate, 0, bytes, override_gas, limits)
+}
 
 /// The governance contract's `new(proxy_oracle_id, admin_id, policy)`.
 #[derive(Serialize)]
@@ -191,16 +350,23 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
         let governance_id = body.governance_id;
-        let options = ContractWriteOptions::new(request.signer_account_id)
-            .one_yocto()
-            .gas(body.gas.unwrap_or_else(|| NearGas::from_tgas(300)));
+        let limits = ctx.near_client().chain().protocol_limits().await?;
+        // A conservative execution estimate is not a minimum: a later explicit
+        // direct-call budget may fit. Reject only a child reservation that leaves
+        // no protocol-permitted gas for governance itself.
+        if child_reservation(&body.operation)? >= limits.max_total_prepaid_gas.as_gas() {
+            return Err(gas_error(
+                "governance child reservation leaves no execution gas within the live protocol limit",
+            ));
+        }
+        let options = ContractWriteOptions::new(request.signer_account_id).one_yocto();
         let args = GovCreateArgs {
             id: body.id,
             operation: body.operation,
             requested_ttl: body.requested_ttl,
         };
 
-        match body.encoding {
+        let mut transaction = match body.encoding {
             ProposalEncoding::Json => ctx
                 .near_client()
                 .proxy_governance(governance_id)
@@ -217,8 +383,12 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
                     .proxy_governance(governance_id)
                     .create_proposal_borsh(options, version, args)
             }
-        }
-        .map(OperationPlan::from)
+        }?;
+        let [Action::FunctionCall(action)] = &mut transaction.actions[..] else {
+            unreachable!("governance create codec produces one FunctionCall");
+        };
+        action.gas = create_gas(action.args.len(), body.gas, &limits)?;
+        Ok(OperationPlan::from(transaction))
     }
 }
 
@@ -252,12 +422,18 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::ExecuteProposal, C> fo
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
-        ctx.near_client()
-            .proxy_governance(body.governance_id)
+        let client = ctx.near_client().proxy_governance(body.governance_id);
+        let proposal = client
+            .get_proposal(GovGetArgs { id: body.id })
+            .await?
+            .ok_or_else(|| gas_error("governance proposal does not exist"))?;
+        let limits = ctx.near_client().chain().protocol_limits().await?;
+        let gas = execute_gas(&proposal.operation, body.gas, &limits)?;
+        client
             .execute_proposal(
                 ContractWriteOptions::new(request.signer_account_id)
                     .one_yocto()
-                    .gas(body.gas.unwrap_or_else(|| NearGas::from_tgas(300))),
+                    .gas(gas),
                 GovActionArgs { id: body.id },
             )
             .map(OperationPlan::from)
@@ -266,14 +442,13 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::ExecuteProposal, C> fo
 
 #[cfg(test)]
 mod tests {
-    use near_api::types::transaction::actions::Action;
-    use templar_gateway_core::{GatewayError, PlanWrite};
-    use templar_gateway_methods_spec::proxy_oracle_governance;
-    use templar_gateway_types::{common::WriteRequest, ManagedAccountId, ProposalEncoding};
-    use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation, Role};
+    use templar_common::upgrade::UpgradeSource;
+    use templar_gateway_types::{NearGas, ProtocolLimits};
+    use templar_proxy_oracle_near_governance_common::{
+        Operation, ReflexiveOperation, Role, GAS_FOR_SELF_UPGRADE_MIGRATE,
+    };
 
-    use super::Dispatch;
-    use crate::test_ctx::{offline_ctx, TestCtx};
+    use super::{checked_gas_sum, create_gas, execute_gas};
 
     fn operation() -> Operation {
         Operation::Reflexive(ReflexiveOperation::SetRole {
@@ -283,55 +458,126 @@ mod tests {
         })
     }
 
-    fn request(
-        encoding: ProposalEncoding,
-    ) -> WriteRequest<proxy_oracle_governance::CreateProposal> {
-        WriteRequest {
-            signer_account_id: ManagedAccountId("admin.near".parse().unwrap()),
-            idempotency_key: None,
-            body: proxy_oracle_governance::CreateProposal {
-                governance_id: "gov.near".parse().unwrap(),
-                id: 7,
-                operation: operation(),
-                requested_ttl: templar_common::Nanoseconds::zero(),
-                encoding,
-                gas: None,
-            },
+    fn limits() -> ProtocolLimits {
+        ProtocolLimits {
+            max_total_prepaid_gas: NearGas::from_tgas(300),
+            max_transaction_size: 1_572_864,
+            max_length_storage_value: 4_194_304,
+            max_length_storage_key: 2_048,
+            num_bytes_account: 100,
+            num_extra_bytes_record: 40,
         }
     }
 
-    async fn plan(
-        encoding: ProposalEncoding,
-    ) -> templar_gateway_core::GatewayResult<templar_gateway_core::OperationPlan> {
-        <Dispatch as PlanWrite<proxy_oracle_governance::CreateProposal, TestCtx>>::plan(
-            request(encoding),
-            offline_ctx(),
+    fn target(gas: NearGas, bytes: usize) -> Operation {
+        Operation::TargetFunctionCall(
+            serde_json::from_value(serde_json::json!({
+                "method_name": "admin_set_proxy",
+                "args": near_sdk::json_types::Base64VecU8(vec![0; bytes]),
+                "attached_deposit": "0",
+                "gas": gas,
+            }))
+            .unwrap(),
         )
-        .await
     }
 
-    /// Planning offline *is* the assertion: it can only succeed if no version was read.
-    #[tokio::test]
-    async fn json_encoding_plans_without_reading_a_version() {
-        let plan = plan(ProposalEncoding::Json)
-            .await
-            .expect("json planning must not touch the network");
-
-        let [Action::FunctionCall(action)] = &plan.steps[0].actions[..] else {
-            panic!("expected one function call");
-        };
-        assert_eq!(action.method_name, "create_proposal");
-        assert!(action.args.starts_with(b"{"), "expected json arguments");
+    fn upgrade(code: UpgradeSource) -> Operation {
+        Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
+            code,
+            migrate_args: near_sdk::json_types::Base64VecU8(Vec::new()),
+        })
     }
 
-    #[tokio::test]
-    async fn borsh_encoding_reads_the_version_first() {
-        let error = plan(ProposalEncoding::Borsh)
-            .await
-            .expect_err("borsh planning must consult the governance version");
+    #[test]
+    fn target_reservation_is_preserved_and_payload_cost_is_monotonic() {
+        let small = target(NearGas::from_tgas(100), 0);
+        let large = target(NearGas::from_tgas(100), 65_536);
+        let small_gas = execute_gas(&small, None, &limits()).unwrap();
+        assert!(small_gas > NearGas::from_tgas(100));
+        assert!(execute_gas(&large, None, &limits()).unwrap() > small_gas);
+        let more_child = target(NearGas::from_tgas(101), 0);
+        assert_eq!(
+            execute_gas(&more_child, None, &limits()).unwrap().as_gas() - small_gas.as_gas(),
+            NearGas::from_tgas(1).as_gas()
+        );
+    }
+
+    #[test]
+    fn self_upgrade_reserves_migration_and_inline_deployment_headroom() {
+        let global = upgrade(UpgradeSource::GlobalHash([7; 32].into()));
+        let inline = upgrade(UpgradeSource::Code(near_sdk::json_types::Base64VecU8(
+            vec![0; 1_024],
+        )));
+        let global_gas = execute_gas(&global, None, &limits()).unwrap();
+        assert!(global_gas > GAS_FOR_SELF_UPGRADE_MIGRATE);
+        assert!(execute_gas(&inline, None, &limits()).unwrap() > global_gas);
+        assert!(execute_gas(&operation(), None, &limits()).unwrap() < global_gas);
+        let oversized = upgrade(UpgradeSource::Code(near_sdk::json_types::Base64VecU8(
+            vec![0; 1_000_000],
+        )));
+        assert!(execute_gas(&oversized, None, &limits()).is_err());
+        assert!(execute_gas(&global, Some(GAS_FOR_SELF_UPGRADE_MIGRATE), &limits()).is_err());
+    }
+
+    #[test]
+    fn explicit_budget_is_not_mistaken_for_an_estimated_minimum() {
+        let operation = target(NearGas::from_tgas(100), 65_536);
+        let explicit = NearGas::from_tgas(101);
+        assert_eq!(
+            execute_gas(&operation, Some(explicit), &limits()).unwrap(),
+            explicit
+        );
+        assert_eq!(
+            create_gas(65_536, Some(explicit), &limits()).unwrap(),
+            explicit
+        );
+        for invalid in [
+            NearGas::from_gas(0),
+            NearGas::from_tgas(100),
+            NearGas::from_tgas(301),
+        ] {
+            assert!(execute_gas(&operation, Some(invalid), &limits()).is_err());
+        }
+        assert!(create_gas(0, Some(NearGas::from_gas(0)), &limits()).is_err());
+        assert!(create_gas(0, Some(NearGas::from_tgas(301)), &limits()).is_err());
+        assert!(execute_gas(&target(NearGas::from_gas(0), 0), None, &limits()).is_err());
+    }
+
+    #[test]
+    fn live_caps_and_forwarding_allowance_are_never_clamped() {
+        let operation = target(NearGas::from_tgas(100), 1_024);
+        let default = execute_gas(&operation, None, &limits()).unwrap();
+        let mut restricted = limits();
+        restricted.max_total_prepaid_gas = default;
+        assert!(execute_gas(&operation, None, &restricted).is_err());
+        // A direct caller may explicitly budget within the cap without DAO forwarding.
+        assert_eq!(
+            execute_gas(&operation, Some(default), &restricted).unwrap(),
+            default
+        );
+        restricted.max_total_prepaid_gas = NearGas::from_tgas(90);
+        assert!(execute_gas(&operation, None, &restricted).is_err());
+        assert!(execute_gas(&target(NearGas::from_tgas(300), 0), None, &limits()).is_err());
+        assert!(create_gas(1_500_000, None, &restricted).is_err());
+        assert!(checked_gas_sum(u64::MAX, 1, 1).is_err());
+        assert!(checked_gas_sum(0, u64::MAX, 2).is_err());
+    }
+
+    #[test]
+    fn payload_bounds_fail_even_with_explicit_gas() {
+        let mut restricted = limits();
+        restricted.max_transaction_size = 1_024;
+        assert!(create_gas(1_024, Some(NearGas::from_tgas(100)), &restricted).is_ok());
+        assert!(create_gas(1_025, Some(NearGas::from_tgas(100)), &restricted).is_err());
+        let operation = target(NearGas::from_tgas(100), 1_024);
+        let size = u64::try_from(borsh::object_length(&operation).unwrap()).unwrap();
+        restricted.max_length_storage_value = size;
+        assert!(execute_gas(&operation, None, &restricted).is_ok());
+        restricted.max_length_storage_value = size - 1;
+        assert!(execute_gas(&operation, Some(NearGas::from_tgas(200)), &restricted).is_err());
         assert!(
-            matches!(error, GatewayError::NearQuery(_)),
-            "the failure must come from the version query, not from planning: {error:?}"
+            create_gas(65_536, None, &limits()).unwrap()
+                > create_gas(1_024, None, &limits()).unwrap()
         );
     }
 }
