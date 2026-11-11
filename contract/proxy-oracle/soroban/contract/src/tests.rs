@@ -10,7 +10,6 @@ use alloc::vec::Vec as StdVec;
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger, LedgerInfo};
 use soroban_sdk::{contract, contractimpl, Bytes, Env, Event, Symbol};
 use templar_primitives::Decimal;
-use templar_proxy_oracle_kernel::proxy::circuit_breaker::VersionedCircuitBreakerSet;
 use templar_proxy_oracle_soroban_common::{
     normalized_to_sep40, MAX_CLOCK_DRIFT_SECS, MAX_SOURCE_AGE_SECS,
 };
@@ -271,9 +270,7 @@ fn stored_breakers(env: &Env, contract_id: &Address, asset: &Asset) -> CircuitBr
             .persistent()
             .get::<_, Bytes>(&DataKey::Breakers(asset.clone()))
             .unwrap();
-        VersionedCircuitBreakerSet::from_postcard_bytes(&bytes.to_alloc_vec())
-            .unwrap()
-            .into_inner()
+        postcard::from_bytes(&bytes.to_alloc_vec()).unwrap()
     })
 }
 

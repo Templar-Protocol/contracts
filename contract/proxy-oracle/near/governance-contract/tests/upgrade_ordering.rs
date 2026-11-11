@@ -2,7 +2,7 @@
 //! fixtures to this branch's Wasm leaves both contracts functional in either order.
 //!
 //! The deployed contracts predate the standardized upgrade path, so the upgrades are key-driven: a
-//! bare `DeployContract` for the v1 oracle (stored values remain read-compatible, no migrate) and
+//! bare `DeployContract` for the v1 oracle (state layout unchanged, no migrate) and
 //! `DeployContract + migrate` for the gov (v0 → v1). Because each account upgrades independently
 //! through its own key, neither order strands the other — the ordering coupling only bites once the
 //! governance-driven cross-contract path is in use, which requires both sides already upgraded.

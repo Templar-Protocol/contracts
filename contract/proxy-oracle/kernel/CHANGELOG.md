@@ -11,7 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Validate aggregator source shape, median quorum, and positive weights at admission.
 - Select deterministic timestamp/exponent metadata for numerically tied median endpoints without changing numeric price equality or serialized configuration.
-- Version stored breaker sets with legacy Borsh/postcard decoding and fail-closed rejection of unknown or malformed envelopes.
 
 ## [0.1.3](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-kernel-v0.1.2...templar-proxy-oracle-kernel-v0.1.3) - 2026-10-01
 

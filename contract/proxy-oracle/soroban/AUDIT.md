@@ -114,11 +114,6 @@ granted Admins must authorize activation; governance-self Admin is rejected.
 **Storage and resources.** `extend_ttl(asset)` first requires a registered
 proxy, then guards every potentially-absent asset key before extending it and
 emits `TtlExtended`; arbitrary assets cannot create maintenance-event noise.
-Breaker payloads use a `CBREAKER` version-1 envelope whose discriminator is
-invalid as a legacy ring-buffer prefix. The runtime accepts legacy
-unwrapped postcard for compatibility, writes only the versioned form, and
-rejects unknown versions or malformed envelopes instead of applying positional
-bytes under a different schema.
 Optimized WASM budgets are runtime/governance ≤ 128 KiB and adapter/Lazer
 source/batcher ≤ 32 KiB. The release gate enforces all five budgets and their
 reviewed ABI policies. Each refresh handles one asset; breaker evaluation is
