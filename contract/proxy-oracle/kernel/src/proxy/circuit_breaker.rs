@@ -5,6 +5,7 @@ mod ring_buffer;
 mod rule;
 mod set;
 
+mod versioned;
 #[cfg(kani)]
 pub(crate) use set::ProposedPriceAcceptance;
 mod status;
@@ -22,6 +23,7 @@ pub use set::{
     UncheckedCircuitBreakerSet,
 };
 pub use status::CircuitBreakerStatus;
+pub use versioned::VersionedCircuitBreakerSet;
 
 #[cfg(test)]
 mod tests;

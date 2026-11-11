@@ -9,7 +9,9 @@
 //! base.
 
 use soroban_sdk::{contracttype, Bytes, Env, Vec};
-use templar_proxy_oracle_kernel::proxy::circuit_breaker::CircuitBreakerSet;
+use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
+    CircuitBreakerSet, VersionedCircuitBreakerSet,
+};
 use templar_proxy_oracle_soroban_common::{
     Asset, ContractError, NormalizedPrice, DEFAULT_TTL_EXTEND_TO, DEFAULT_TTL_THRESHOLD,
 };
@@ -113,8 +115,9 @@ pub fn load_breakers(env: &Env, asset: &Asset) -> Result<CircuitBreakerSet, Cont
     else {
         return Err(ContractError::StorageError);
     };
-    let breakers: CircuitBreakerSet =
-        postcard::from_bytes(&bytes.to_alloc_vec()).map_err(|_| ContractError::StorageError)?;
+    let breakers = VersionedCircuitBreakerSet::from_postcard_bytes(&bytes.to_alloc_vec())
+        .map_err(|_| ContractError::StorageError)?
+        .into_inner();
     breakers
         .validate()
         .map_err(|_| ContractError::StorageError)?;
@@ -137,9 +140,11 @@ fn write_breakers(
     asset: &Asset,
     breakers: &CircuitBreakerSet,
 ) -> Result<(), ContractError> {
-    let bytes = postcard::to_allocvec(breakers).map_err(|_| ContractError::StorageError)?;
-    let decoded: CircuitBreakerSet =
-        postcard::from_bytes(&bytes).map_err(|_| ContractError::StorageError)?;
+    let bytes = VersionedCircuitBreakerSet::new(breakers.clone())
+        .to_postcard_bytes()
+        .map_err(|_| ContractError::StorageError)?;
+    let decoded = VersionedCircuitBreakerSet::from_postcard_bytes(&bytes)
+        .map_err(|_| ContractError::StorageError)?;
     decoded
         .validate()
         .map_err(|_| ContractError::StorageError)?;

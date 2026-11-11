@@ -13,7 +13,7 @@ use templar_proxy_oracle_kernel::{
     proxy::{
         circuit_breaker::{
             CircuitBreaker, CircuitBreakerError, CircuitBreakerOutcome, CircuitBreakerSet,
-            CircuitBreakerSetConfig, CircuitBreakerSetParseError,
+            CircuitBreakerSetConfig, CircuitBreakerSetParseError, VersionedCircuitBreakerSet,
         },
         Proxy,
     },
@@ -72,7 +72,7 @@ impl ProxyEntryMut<'_> {
         let value = f(&mut set);
         if set != original {
             self.state.invalidate_price_cache(self.id);
-            self.state.circuit_breakers.insert(&self.id, &set);
+            self.state.circuit_breakers.insert(&self.id, &set.into());
         }
         value
     }
@@ -136,7 +136,7 @@ impl ProxyEntryMut<'_> {
 #[near(serializers = [borsh])]
 pub struct State {
     pub(crate) proxies: UnorderedMap<PriceIdentifier, Proxy<Source>>,
-    pub(crate) circuit_breakers: UnorderedMap<PriceIdentifier, CircuitBreakerSet>,
+    pub(crate) circuit_breakers: UnorderedMap<PriceIdentifier, VersionedCircuitBreakerSet>,
     pub(crate) cached_prices: UnorderedMap<PriceIdentifier, CachedProxyPrice>,
     pub(crate) cache_epochs: UnorderedMap<PriceIdentifier, u64>,
 }
@@ -146,6 +146,7 @@ impl State {
         self.circuit_breakers
             .get(&id)
             .filter(|set| set.validate().is_ok())
+            .map(VersionedCircuitBreakerSet::into_inner)
     }
     pub fn list_proxies(&self, offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier> {
         list(self.proxies.keys(), offset, count)
@@ -259,7 +260,7 @@ impl State {
             self.proxies.insert(&id, &proxy);
             if missing_breaker_set {
                 self.circuit_breakers
-                    .insert(&id, &CircuitBreakerSet::empty());
+                    .insert(&id, &VersionedCircuitBreakerSet::empty());
             }
             if proxy_changed || missing_breaker_set {
                 self.invalidate_price_cache(id);
@@ -303,7 +304,7 @@ impl State {
             ));
         };
         let status = f(&proxy, &mut set);
-        self.circuit_breakers.insert(&price_id, &set);
+        self.circuit_breakers.insert(&price_id, &set.into());
         self.cached_prices.insert(
             &price_id,
             &CachedProxyPrice {
@@ -416,6 +417,20 @@ mod tests {
             0_u64.to_le_bytes().to_vec(),
         ]
         .concat();
+        let initial = env::storage_read(&value_key).unwrap();
+        assert!(initial.starts_with(&VersionedCircuitBreakerSet::MAGIC));
+        assert_eq!(
+            initial[VersionedCircuitBreakerSet::MAGIC.len()],
+            VersionedCircuitBreakerSet::VERSION
+        );
+        assert_eq!(
+            <VersionedCircuitBreakerSet as near_sdk::borsh::BorshDeserialize>::try_from_slice(
+                &initial,
+            )
+            .unwrap()
+            .into_inner(),
+            CircuitBreakerSet::empty()
+        );
         for (set_bytes, status_bytes, set_postcard, status_postcard) in [
             (ARMED_SET, ARMED, ARMED_SET_POSTCARD, ARMED_POSTCARD),
             (TRIPPED_SET, TRIPPED, TRIPPED_SET_POSTCARD, TRIPPED_POSTCARD),
@@ -471,10 +486,9 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_allocator_rejects_removal_before_mutation() {
-        use templar_proxy_oracle_kernel::proxy::circuit_breaker::UncheckedCircuitBreakerSet;
-
+    fn invalid_breaker_storage_rejects_removal_before_mutation() {
         testing_env!(VMContextBuilder::new().build());
+
         let price_id = PriceIdentifier([0x15; 32]);
         let mut state = state();
         state.set_proxy(price_id, Some(proxy(price_id)));
@@ -486,14 +500,17 @@ mod tests {
             })
             .unwrap();
         entry.add_circuit_breaker(0, breaker()).unwrap();
-        let mut corrupt = UncheckedCircuitBreakerSet::from(
-            state.get_proxy_circuit_breaker_set(price_id).unwrap(),
-        );
-        corrupt.next_id = 0;
-        let mut raw_map: UnorderedMap<PriceIdentifier, UncheckedCircuitBreakerSet> =
-            near_sdk::borsh::from_slice(&near_sdk::borsh::to_vec(&state.circuit_breakers).unwrap())
-                .unwrap();
-        raw_map.insert(&price_id, &corrupt);
+        let valid_set = state.get_proxy_circuit_breaker_set(price_id).unwrap();
+        let mut corrupt_bytes = VersionedCircuitBreakerSet::MAGIC.to_vec();
+        corrupt_bytes.push(VersionedCircuitBreakerSet::VERSION + 1);
+        corrupt_bytes.extend(near_sdk::borsh::to_vec(&valid_set).unwrap());
+        let value_key = [
+            near_sdk::borsh::to_vec(&StorageKey::CircuitBreakers).unwrap(),
+            vec![b'v'],
+            0_u64.to_le_bytes().to_vec(),
+        ]
+        .concat();
+        env::storage_write(&value_key, &corrupt_bytes);
         let before_epoch = state.cache_epoch(price_id);
 
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -501,8 +518,12 @@ mod tests {
         }))
         .is_err());
         assert_eq!(state.get_proxy(price_id), Some(proxy(price_id)));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.get_proxy_circuit_breaker_set(price_id)
+        }))
+        .is_err());
         assert_eq!(state.cache_epoch(price_id), before_epoch);
-        assert_eq!(raw_map.get(&price_id), Some(corrupt));
+        assert_eq!(env::storage_read(&value_key), Some(corrupt_bytes));
     }
 
     #[test]
@@ -529,7 +550,7 @@ mod tests {
         let expected = CircuitBreakerSet::try_from(raw).unwrap();
         assert_eq!(
             state.circuit_breakers.get(&price_id),
-            Some(expected.clone())
+            Some(expected.clone().into())
         );
         assert!(state.get_proxy_circuit_breaker_set(price_id).is_none());
         assert!(state.proxy_entry(price_id).is_none());
@@ -557,7 +578,7 @@ mod tests {
         raw.next_id = u32::MAX;
         state
             .circuit_breakers
-            .insert(&price_id, &CircuitBreakerSet::try_from(raw).unwrap());
+            .insert(&price_id, &CircuitBreakerSet::try_from(raw).unwrap().into());
         state.set_proxy(price_id, None);
         state.set_proxy(price_id, Some(proxy(price_id)));
         let mut entry = state.proxy_entry_mut(price_id).unwrap();

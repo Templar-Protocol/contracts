@@ -20,7 +20,7 @@ soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 stellar-access = "0.7.1"
 stellar-macros = "0.7.1"
 templar-primitives = { path = "../../../../primitives", version = "0.1.3", default-features = false, features = ["serde"] }
-templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde", "postcard"] }
 templar-proxy-oracle-soroban-common.workspace = true
 
 [dev-dependencies]

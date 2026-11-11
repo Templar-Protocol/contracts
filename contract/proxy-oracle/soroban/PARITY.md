@@ -23,7 +23,7 @@ supplies its own storage, RBAC, and events.
 | Quorum failure | median `min_sources` check | `MedianConfig.min_sources` only | Priority has no quorum; all-invalid fails closed |
 | Source base / scale | source-descriptor-specific IO | `source_base` + explicit `expected_decimals` pins | Admission checks live scale; refresh discards drift; identity is not provider independence |
 | Manual trip | `set_circuit_breaker_manual_trip`, `ManualTripper` role, 1024-byte event metadata | `SetManualTrip(asset, tripped, metadata)`, `ManualTripper` role, 1024-byte event metadata | Neither action carries an operator id; NEAR records the predecessor (governance account) in-kernel, Soroban's event has none — correlate via the governance proposal |
-| Breaker trip | kernel-driven | kernel-driven | Identical kernel; Soroban stores compact postcard state |
+| Breaker trip | kernel-driven | kernel-driven | Identical kernel; both chains store legacy-readable `CBREAKER` version-1 breaker payloads, compact postcard on Soroban |
 | Breaker config / rearm / enforce | `create_proposal` + `execute_proposal` | governed `AddBreaker` / `Rearm` / `SetEnforced` | `Rearm` and `SetEnforced` carry independent per-op TTLs |
 | Cache invalidation | epoch bump | explicit cache removal on config change | Stale updates cannot write to a new config |
 | TTL extension | N/A (permanent storage) | `extend_ttl` | Soroban-specific eviction guard |

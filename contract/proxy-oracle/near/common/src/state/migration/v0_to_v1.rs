@@ -1,6 +1,6 @@
 use near_sdk::near;
 use templar_common::{oracle::pyth::PriceIdentifier, versioned_state::StateTransformer};
-use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
+use templar_proxy_oracle_kernel::proxy::{circuit_breaker::VersionedCircuitBreakerSet, Proxy};
 
 use crate::{
     input::Source,
@@ -121,7 +121,7 @@ impl StateTransformer for V0ToV1 {
         let cache_epochs = near_sdk::collections::UnorderedMap::new(v1::StorageKey::CacheEpochs);
         for (price_id, proxy) in proxies_snapshot {
             proxies.insert(&price_id, &proxy);
-            circuit_breakers.insert(&price_id, &CircuitBreakerSet::empty());
+            circuit_breakers.insert(&price_id, &VersionedCircuitBreakerSet::empty());
         }
 
         Ok(state::v1::State {
@@ -262,11 +262,11 @@ mod tests {
 
         assert_eq!(
             new.circuit_breakers.get(&btc),
-            Some(CircuitBreakerSet::empty())
+            Some(VersionedCircuitBreakerSet::empty())
         );
         assert_eq!(
             new.circuit_breakers.get(&eth),
-            Some(CircuitBreakerSet::empty())
+            Some(VersionedCircuitBreakerSet::empty())
         );
         assert!(new.cached_prices.is_empty());
     }
