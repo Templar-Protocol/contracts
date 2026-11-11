@@ -24,5 +24,6 @@
 - [Architecture Decisions](./adr/index.md)
   - [1. Record architecture decisions as ADRs](./adr/0001-record-architecture-decisions-as-adrs.md)
   - [2. Expose RBAC-controlled RedStone adapter administration](./adr/0002-expose-rbac-controlled-redstone-adapter-administration.md)
+  - [3. Separate registry capabilities and uploader-funded code storage](./adr/0003-separate-registry-capabilities-and-uploader-funded-code-storage.md)
 - [Glossary](./glossary.md)
 - [Notes](./notes.md)

@@ -769,40 +769,50 @@ async fn set_proxy(
         proxy,
     } = feed;
 
+    let operation = Operation::TargetFunctionCall(
+        templar_proxy_oracle_near_governance_common::target::admin_set_proxy(
+            price_id,
+            Some(proxy),
+            None,
+        )
+        .context("encode the `admin_set_proxy` call")?,
+    );
+    // Governance and its proposal do not exist yet. Bind execution gas to the
+    // exact immutable operation moved into the preceding create step.
+    let execution = client
+        .plan_governance_execution(
+            WriteRequest {
+                signer_account_id: signer_id.clone().into(),
+                idempotency_key: None,
+                body: gov::ExecuteProposal {
+                    governance_id: governance_id.clone(),
+                    id: proposal_id,
+                    gas: None,
+                },
+            },
+            &operation,
+        )
+        .await
+        .with_context(|| format!("planning `{}`", gov::ExecuteProposal::RPC_METHOD))?;
+
     let mut steps = step(
         client,
         signer_id,
         &format!("propose {side} proxy (proposal {proposal_id})"),
         gov::CreateProposal {
-            governance_id: governance_id.clone(),
+            governance_id,
             id: proposal_id,
-            operation: Operation::TargetFunctionCall(
-                templar_proxy_oracle_near_governance_common::target::admin_set_proxy(
-                    price_id,
-                    Some(proxy),
-                    None,
-                )
-                .context("encode the `admin_set_proxy` call")?,
-            ),
+            operation,
             requested_ttl: ttl_default,
             encoding: ProposalEncoding::Json,
             gas: None,
         },
     )
     .await?;
-    steps.extend(
-        step(
-            client,
-            signer_id,
-            &format!("execute {side} proxy proposal {proposal_id}"),
-            gov::ExecuteProposal {
-                governance_id,
-                id: proposal_id,
-                gas: None,
-            },
-        )
-        .await?,
-    );
+    steps.push((
+        format!("execute {side} proxy proposal {proposal_id}"),
+        execution,
+    ));
     Ok(steps)
 }
 
