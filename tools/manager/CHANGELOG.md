@@ -71,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changing normal harness defaults or unknown-outcome refusal.
 - Recheck full frozen cohort metadata at read-only swap/resume boundaries and
   during reconciliation, including unchanged dependencies and completed runs.
+- Plan fresh market proxy-governance execution from the exact operation being
+  created, with live gas limits, before governance accounts or proposals exist.
 - Finalize every market-affecting configuration-patch fixture transaction and
   unsupported-code redeployment, including native refunds, before capturing
   exact no-mutation checkpoints; optimistic height advancement is not finality.

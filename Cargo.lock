@@ -13195,8 +13195,10 @@ dependencies = [
  "templar-gateway-artifacts-spec",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
+ "templar-gateway-methods-spec",
  "templar-gateway-store",
  "templar-gateway-types",
+ "templar-proxy-oracle-near-governance-common",
  "tokio",
  "url",
 ]
