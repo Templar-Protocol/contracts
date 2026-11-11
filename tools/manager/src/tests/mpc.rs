@@ -5,7 +5,7 @@ use crate::cli::{Cli, Command};
 use crate::commands::account::AccountNs;
 use crate::commands::dao::{mpc::MpcNs, DaoNs};
 use crate::mpc::payload::PayloadKind;
-use templar_gateway_methods_spec::account as spec;
+use templar_gateway_methods_spec::{account as spec, dao::ProposalRecord};
 
 const PROPOSE: [&str; 9] = [
     "tmplrmgr",
@@ -410,7 +410,7 @@ impl MpcFixture {
         Ok(path)
     }
 
-    async fn proposal(&self, id: u64) -> anyhow::Result<sputnikdao2::ProposalOutput> {
+    async fn proposal(&self, id: u64) -> anyhow::Result<ProposalRecord> {
         Ok(self
             .harness
             .client()?

@@ -8,7 +8,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, TransferAction};
 use serde_json::{json, Value};
-use templar_gateway_core::PlannedTransaction;
+use templar_gateway_core::{FinalityPolicy, PlannedTransaction};
 use templar_gateway_methods_spec::{account, chain, dao, market};
 use templar_gateway_testing::{failed_receipts, SandboxHarness};
 use templar_gateway_types::{ManagedAccountId, NearToken};
@@ -464,11 +464,26 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
         );
         return Ok(());
     }
-    cli(harness, &execution, if raw { None } else { Some(&relayer) }).await?;
-    harness.fast_forward(10).await?;
+    let executed = cli(harness, &execution, if raw { None } else { Some(&relayer) }).await?;
+    // CLI execution uses Executed; finalized storage assertions need receipt finality,
+    // not an arbitrary number of fast-forwarded block heights.
+    harness
+        .gateway_client()
+        .chain()
+        .get_transaction(
+            serde_json::from_value(executed["tx_hash"].clone())?,
+            serde_json::from_value(executed["sender_account_id"].clone())?,
+            FinalityPolicy::Final.transaction_status(),
+        )
+        .await?
+        .assert_success();
     let mut expected = before;
     expected.insert(b"STATE".to_vec(), expected_state);
-    assert_eq!(raw_storage(harness, &controlled.0).await?, expected);
+    assert_eq!(
+        raw_storage(harness, &controlled.0).await?,
+        expected,
+        "patch execution result: {executed}"
+    );
     assert_eq!(
         harness
             .gateway_client()

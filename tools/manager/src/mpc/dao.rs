@@ -3,6 +3,7 @@
 use anyhow::Context as _;
 use near_account_id::AccountId;
 use serde::Deserialize;
+use templar_gateway_methods_spec::dao::ProposalRecord;
 use templar_gateway_types::{Base64Bytes, NearGas, NearToken};
 
 use super::signer_contract::{SignArgs, SignRequest};
@@ -37,9 +38,7 @@ pub struct ProposedSignature {
     pub gas: NearGas,
 }
 
-pub fn proposed_signature(
-    proposal: &sputnikdao2::ProposalOutput,
-) -> anyhow::Result<ProposedSignature> {
+pub fn proposed_signature(proposal: &ProposalRecord) -> anyhow::Result<ProposedSignature> {
     // ActionCall fields are private in the pinned Sputnik dependency.
     // Cross that serde boundary once; all DAO reads remain typed.
     let value = serde_json::to_value(&proposal.proposal.kind)?;
@@ -83,7 +82,7 @@ mod tests {
     use super::*;
     use crate::mpc::signer_contract::Payload;
 
-    fn proposal(kind: &serde_json::Value) -> sputnikdao2::ProposalOutput {
+    fn proposal(kind: &serde_json::Value) -> ProposalRecord {
         serde_json::from_value(serde_json::json!({
             "id": 1,
             "proposer": "peer.near",
