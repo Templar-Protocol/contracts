@@ -18,6 +18,41 @@ The approved full-matrix environment is the repository's CI-standard
 `NEAR_SANDBOX_BLOCK_MS=120`, with serialized node cases. Actual chain validity and
 expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
 
+## PR713 standalone deployment-planning repair
+
+The integrated checkpoint below did not establish standalone PR713 readiness.
+At `4158e70c`, its [NEAR CI job](https://github.com/Templar-Protocol/contracts/actions/runs/42980577325/job/130389847460)
+finished with 338 passed and one failed: the provider scenario tried to read a
+governance account before deployment. The SDK helper was in PR713, but its
+existing manager consumer fix `bd317f3a` was only in PR714.
+
+Repair `671fcbe1346dd0426143c3e9ce7576cbe9f6a3dc` puts that same consumer change
+and its release note in PR713. No gateway gas policy, fixture, contract, CI
+timeout or one-off acceptance setting changed.
+
+Checks ran in `/tmp/hot-omni-fullstack-pr713`, with PR713 alone:
+
+- `env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager requires_sandbox_manager_provider_preflight_redstone_only --test-threads 1`
+  — passed (25.311 s), retaining the assertions that planning creates neither
+  target accounts nor adapter prices, followed by actual plan application.
+- `just test-fast -p templar-manager` — all 602 passed; 12 node/ignored cases excluded.
+- `cargo check --workspace`; `cargo clippy -p templar-manager --all-targets -- -D warnings`;
+  `cargo fmt --all --check`; staged and unstaged whitespace checks — passed.
+  The existing unknown `clippy::ignore_without_reason` warning remains.
+- Actual-binary smoke: `cargo build -p templar-manager --bin tmplrmgr`, then
+  `env HOT_OMNI_CLI_SMOKE=/tmp/hot-omni-fullstack-pr713/target/debug/tmplrmgr NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager requires_sandbox_manager_provider_preflight_redstone_only --nocapture`.
+  Temporary fixture instrumentation invoked the compiled CLI for `market plan`;
+  it exited 0 before targets existed, and the complete scenario passed (29.514 s).
+  Instrumentation was removed; fixture SHA-256 returned to
+  `3f6fd51c736eb60aa27e410a87ccae78536a8034becea380edb427de3aba1101`.
+
+Normal merges carried the parent repair through PR714, PR715 and PR717.
+Before this report update, each child had a byte-identical tracked tree to its
+previous published head; the consumer was already present there. PR714's diff
+against its updated parent no longer contains `tools/manager/src/dispatch/plan.rs`.
+This repairs the bottom-up merge boundary, not the other open review requests.
+New-head CI remains separate from this local evidence.
+
 ## Governance planning CI regressions
 
 The automatic-gas follow-up exposed two real regressions in the existing node
