@@ -41,6 +41,164 @@ The market calls `list_ema_prices_no_older_than` on that account, the same read 
 
 Because this configuration is immutable, an existing market cannot be repointed to a different oracle account by an administrator. Markets deployed before the proxy oracle existed were migrated to proxy oracles through a reviewed, dry-run-verified storage patch (see [Deploying a market](./deployments.md#patching-contract-storage)); new markets are deployed reading a proxy oracle from the start.
 
+## RedStone Adapter Administration
+
+The adapter uses one **Admin** RBAC capability for role management, configuration,
+and upgrades. `TrustedUpdater` remains an independent writer permission.
+`new(config, admin_id)` validates configuration and gives the explicit `admin_id`
+both roles; the deploying registry or predecessor does not receive authority
+implicitly. This interface does not select a controller implementation or
+authorize deployment or access-key removal.
+
+### Authority and Compatible Role Names
+
+| Method | JSON arguments | Authority / deposit |
+|---|---|---|
+| `admin_set_config` | `{"config":{...}}`; all five fields required (see below) | Admin / exactly 1 yoctoNEAR |
+| `admin_upgrade` | See upgrade encodings below | Admin / exactly 1 yoctoNEAR |
+| `set_role` | `{"account_id":"operator.near","role":"TrustedUpdater","set":true}` | Admin / exactly 1 yoctoNEAR |
+
+Admin is the same persisted role historically named `ModifyRoles`, not an
+additional role. The contract accepts both `"Admin"` and `"ModifyRoles"` and
+continues to serialize the canonical `"ModifyRoles"` spelling. Gateway JSON
+accepts `admin` and `modify_roles`, retaining canonical `modify_roles`; the manager
+accepts `--role admin` and the legacy `--role modify-roles`. Rust callers may use
+`Role::Admin` or `RoleValue::Admin` while legacy `ModifyRoles` variants and imports
+remain valid. Canonical schemas and Borsh role tags remain unchanged: Admin is
+tag 0 and `TrustedUpdater` is tag 1. Updated tooling can therefore address both
+legacy and upgraded deployments without version-dependent role dispatch.
+
+Every existing role administrator gains configuration and arbitrary-code upgrade
+authority. `TrustedUpdater` alone permits none of these administrative operations.
+There is no separate Owner component or ownership-transfer interface.
+
+`set_role` retains its default `set = true`, default
+`allow_removing_last_member = false`, and last-member guard. Explicitly overriding
+that guard to remove the last Admin can disable administration on a keyless
+account. `get_config`, `has_role`, and `list_role` retain their interfaces. Role
+changes do not remove account access keys. Authorization checks the actual
+predecessor, not the transaction signer when a contract makes the call.
+
+### Atomic Full Configuration
+
+`admin_set_config(config: Config)` replaces the entire configuration atomically.
+The required `config` object must supply all five fields with their existing JSON
+types. Missing fields, null configuration, null field values, and wrong field types
+fail deserialization. Supplying the same complete configuration succeeds.
+
+For example, this complete configuration uses one nonzero signer and quorum 1:
+
+```json
+{
+  "config": {
+    "signer_count_threshold": 1,
+    "signers": [[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]],
+    "max_timestamp_delay_ms": 120000,
+    "max_timestamp_ahead_ms": 60000,
+    "min_interval_between_updates_ms": 0
+  }
+}
+```
+
+The signer above is illustrative, not a recommended production signer.
+
+| Required config field | Domain and effect on subsequent payloads |
+|---|---|
+| `signer_count_threshold` | Positive `u8`, no greater than signer count |
+| `signers` | 1–255 distinct, nonzero 20-byte addresses; JSON arrays of byte integers in existing order |
+| `max_timestamp_delay_ms` | Payload lag bound; full `u64` range, including 0 and maximum |
+| `max_timestamp_ahead_ms` | Payload lead bound; full `u64` range, including 0 and maximum |
+| `min_interval_between_updates_ms` | Untrusted-write spacing; full `u64` range; trusted writes retain their existing verification path |
+
+The supplied signer set and quorum are validated together before replacing state.
+Invalid input leaves configuration, roles, and feeds unchanged.
+A later successful call overwrites every prior configuration field. Queued calls
+carry full snapshots: if snapshots A and B start from the same configuration,
+B changes the lead bound, and A changes only the lag bound relative to that
+starting snapshot, executing B then A restores the old lead bound from A.
+Admins must review the complete snapshot and execution order; there is no
+revision counter or compare-and-swap. `get_config` returns the applied configuration,
+and `unique_signer_threshold` reflects its quorum.
+
+Changes are prospective: removed signers no longer authenticate new payloads,
+but already stored prices and both replay timestamps remain intact. Stored prices
+remain readable until the fixed 30-hour write-time staleness limit; these timing
+fields do not configure that limit or invalidate downstream proxy caches.
+This is not an emergency cached-price revocation mechanism.
+
+### Configuration Events
+
+After a validated `admin_set_config` call replaces configuration, the adapter emits
+`config_updated`, version `1.0.0`, under the `redstone-adapter` standard.
+Its `data` object contains:
+
+- `updater`: the actual predecessor account, which may differ from the transaction
+  signer for a contract call.
+- `config`: the complete applied configuration, with all five
+  fields. Signers are ordered **40-character lowercase hex strings without `0x`**
+  in this event only; `get_config`, configuration inputs, and stored configuration retain
+  the existing arrays of byte integers.
+
+The compact signer encoding keeps the complete 255-signer policy within NEAR's
+16 KiB receipt-log budget. A same-config call emits an audit record;
+malformed, invalid, unauthorized, and wrong-deposit calls emit no configuration
+event. Treat an event as committed only if its emitting receipt succeeds: logs
+alone are not proof that a receipt's state changes committed.
+
+The existing `write_prices` version `1.0.0` payload is unchanged. Consumers should
+dispatch by standard, event name, and version, and tolerate unrelated event names.
+
+### Upgrades and Versioned Migration
+
+For an already-current state version, `admin_upgrade` accepts either immutable
+source encoding with empty migration bytes:
+
+```json
+{"code":"<base64 WASM>","migrate_args":""}
+```
+
+```json
+{"code":{"GlobalHash":"<base58 hash>"},"migrate_args":""}
+```
+
+Empty code is rejected with `admin_upgrade: empty code blob`. Deployment and
+migration are two actions in one self-receipt, with 250 Tgas reserved for migration.
+Failed migration reverts that receipt's code/state changes. Scheduling is not
+completion; inspect all receipt failures. Mutable global-by-account references
+and arbitrary deployment targets are unsupported.
+
+The adapter uses the shared `VersionedState<State>` and `impl_versioned_state!`
+framework. Its generated views are `get_stored_state_version`,
+`get_target_state_version`, and `needs_migration`. Fresh deployments record
+version 1. Legacy deployments with no `__v` metadata are version 0.
+
+The first legacy upgrade requires an atomic deploy and self-only `migrate` call
+by the existing deployment authority, supplying the standard typed migration:
+
+```json
+{"from_version":"v0"}
+```
+
+When supplied through `admin_upgrade`, serialize the migration JSON and base64
+encode those bytes as `migrate_args`. The V0-to-V1 transformer preserves the
+existing adapter, feed prefix `a`, RBAC prefix `~r`, cached prices, replay
+timestamps, and role memberships. Historical configuration is not revalidated;
+it remains readable and can be corrected by a valid full replacement. Existing
+`ModifyRoles` members become Admins without a new grant or owner selection.
+
+The framework validates the entire migration chain before applying it. When the
+stored version is already current, migration requires **empty raw input**, not
+the bytes of `{}` or a stale migration. There is no `owner_id` bootstrap argument.
+
+### Adapter Regression Coverage
+
+Released-WASM versioned migration and direct Admin-controlled administration are
+covered by the adapter sandbox target:
+
+```text
+just test-sandbox -p templar-gateway-testing --test redstone_admin
+```
+
 ## Proxy Oracle
 
 The proxy oracle is Templar's oracle aggregation and safety layer. Each market typically has its own proxy oracle and governance contract, deployed alongside the market through the registry.
