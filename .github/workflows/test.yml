@@ -531,6 +531,13 @@ jobs:
       - name: Install cargo-near
         uses: ./.github/actions/cargo-near
 
+      # Save separately before rust-cache prunes non-Cargo target directories.
+      - name: Cache hash-pinned Sputnik fixture
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: target/test-fixtures/sputnik-dao/sputnikdao2.wasm
+          key: sputnik-fixture-${{ hashFiles('gateway/testing/fixtures/sputnik-dao.json') }}
+
       # Migration and upgrade tests deploy real historical bytes. Not an
       # `actions/cache` entry: a couple of MB from GitHub's own CDN, and the
       # repo cache is already at the 10 GB eviction cap.
