@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Plan fresh market proxy-governance execution from the exact operation being
+  created, with live gas limits, before governance accounts or proposals exist.
 - Finalize every market-affecting configuration-patch fixture transaction and
   unsupported-code redeployment, including native refunds, before capturing
   exact no-mutation checkpoints; optimistic height advancement is not finality.
