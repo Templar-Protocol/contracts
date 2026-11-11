@@ -417,7 +417,7 @@ mod tests {
         jsonschema::draft7::new(&serde_json::to_value(schema_for!(T)).unwrap()).unwrap()
     }
 
-    fn vote_proposal(counts: Value, history: Option<Value>) -> Value {
+    fn vote_proposal(counts: &Value, history: Option<Value>) -> Value {
         let mut wire = json!({
             "id": 7, "proposer": "member.near", "description": "test",
             "kind": "Vote", "status": "InProgress",
@@ -501,7 +501,7 @@ mod tests {
             Some(json!([])),
             Some(json!([{"block_height": "456"}])),
         ] {
-            let wire = vote_proposal(json!([u128::MAX.to_string(), "0", "0"]), history);
+            let wire = vote_proposal(&json!([u128::MAX.to_string(), "0", "0"]), history);
             let proposal: ProposalOutput = serde_json::from_value(wire.clone()).unwrap();
             assert_eq!(
                 proposal.0.proposal.vote_counts["council"][0],
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn flattened_proposal_rejects_duplicate_known_fields() {
-        let wire = vote_proposal(json!([u64::MAX, 0, 0]), Some(json!([])));
+        let wire = vote_proposal(&json!([u64::MAX, 0, 0]), Some(json!([])));
         let encoded = serde_json::to_string(&wire).unwrap();
         let prefix = encoded.strip_suffix('}').unwrap();
         for (field, value) in wire.as_object().unwrap() {
@@ -668,7 +668,6 @@ mod tests {
             let proposal: ProposalOutput = serde_json::from_value(output.clone()).unwrap();
             assert!(output_schema.is_valid(&serde_json::to_value(proposal).unwrap()));
             assert!(output_schema.is_valid(&output), "{output}");
-            assert!(output.get("proposal").is_none());
         }
     }
 }

@@ -120,10 +120,11 @@ fn bounded_gas(
     Ok(NearGas::from_gas(gas))
 }
 
-fn execution_budget(
+fn execute_gas(
     operation: &Operation,
+    override_gas: Option<NearGas>,
     limits: &ProtocolLimits,
-) -> GatewayResult<(u64, u64, u64)> {
+) -> GatewayResult<NearGas> {
     let bytes = operation_size(operation, limits)?;
     let child_gas = child_reservation(operation)?;
     let mut estimate = checked_gas_sum(
@@ -149,15 +150,6 @@ fn execution_budget(
     estimate = estimate
         .checked_add(child_gas)
         .ok_or_else(|| gas_error("governance child reservation arithmetic overflow"))?;
-    Ok((estimate, child_gas, bytes))
-}
-
-fn execute_gas(
-    operation: &Operation,
-    override_gas: Option<NearGas>,
-    limits: &ProtocolLimits,
-) -> GatewayResult<NearGas> {
-    let (estimate, child_gas, bytes) = execution_budget(operation, limits)?;
     bounded_gas(estimate, child_gas, bytes, override_gas, limits)
 }
 

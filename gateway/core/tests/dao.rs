@@ -283,6 +283,10 @@ async fn dao_proposals_enforce_live_bond_policy_and_threshold() -> Result<()> {
 
 #[tokio::test]
 async fn canonical_token_weighted_votes_preserve_the_full_u128_count() -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct CanonicalCounts {
+        vote_counts: std::collections::HashMap<String, [u128; 3]>,
+    }
     let harness = SandboxHarness::start().await?;
     let member = harness.create_user("weighted-member").await?;
     let staking = harness.create_user("weighted-staking").await?;
@@ -363,10 +367,6 @@ async fn canonical_token_weighted_votes_preserve_the_full_u128_count() -> Result
     let stored = get_proposal(&harness, &dao_id, id).await?;
     let approved = vote(&harness, &member, &dao_id, &stored).await?;
     assert!(failed_receipts(&approved).next().is_none());
-    #[derive(serde::Deserialize)]
-    struct CanonicalCounts {
-        vote_counts: std::collections::HashMap<String, [u128; 3]>,
-    }
     let canonical: CanonicalCounts = harness
         .gateway_client()
         .contract(dao_id.clone())
@@ -494,12 +494,14 @@ async fn execute_governance_plan_through_dao(
     let mut steps = plan.steps.into_iter();
     let transaction = steps.next().context("governance call transaction")?;
     anyhow::ensure!(steps.next().is_none(), "one governance call required");
-    let transaction = serde_json::to_value(transaction)?;
+    let [Action::FunctionCall(call)] = transaction.actions.as_slice() else {
+        anyhow::bail!("one governance FunctionCall required");
+    };
     let request = serde_json::from_value::<dao::AddProposal>(json!({
         "dao_id": dao_id,
         "proposal": {"description":"Governance execution with DAO gas headroom",
-            "kind":{"FunctionCall":{"receiver_id":transaction["receiver_id"],
-                "actions":[transaction["actions"][0]["FunctionCall"]]}}}
+            "kind":{"FunctionCall":{"receiver_id":transaction.receiver_id,
+                "actions":[call]}}}
     }))?;
     let expected_kind = request.proposal.kind.clone();
     let submitted = harness.execute(proposer, request).await?;
