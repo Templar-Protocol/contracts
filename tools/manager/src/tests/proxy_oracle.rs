@@ -627,6 +627,59 @@ fn create_proposal_execute_when_ready_flag() {
 }
 
 #[test]
+fn create_proposal_execute_call_gas_requires_execution() {
+    let args = [
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--execute-call-gas",
+        "300 Tgas",
+    ];
+    let operation = ["self", "upgrade", "--code-file", "governance.wasm"];
+    let error = try_parse_governance(args.into_iter().chain(CREDS).chain(operation))
+        .expect_err("execution gas without execution must be rejected");
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+
+    try_parse_governance(
+        args.into_iter()
+            .chain(["--execute-when-ready"])
+            .chain(CREDS)
+            .chain(operation),
+    )
+    .expect("execution gas is valid with create-and-execute");
+}
+
+#[test]
+fn execute_proposal_call_gas_accepts_planning_and_rejects_invalid_units() {
+    for (gas, valid) in [("300 Tgas", true), ("not-gas", false)] {
+        let result = try_parse_governance([
+            "execute-proposal",
+            "--governance-id",
+            "gov.testnet",
+            "--id",
+            "2",
+            "--call-gas",
+            gas,
+            "--signer-id",
+            "dao.near",
+            "--print",
+            "json",
+        ]);
+        if valid {
+            result.expect("an execution gas override supports planning");
+        } else {
+            assert_eq!(
+                result.expect_err("invalid gas must be rejected").kind(),
+                clap::error::ErrorKind::ValueValidation
+            );
+        }
+    }
+}
+
+#[test]
 fn execute_proposal_when_ready_flag() {
     for (args, expected) in [
         (vec!["--governance-id", "gov.testnet", "--id", "2"], false),

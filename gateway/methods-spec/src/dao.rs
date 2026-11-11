@@ -20,12 +20,74 @@ pub struct Policy(#[schemars(with = "schema::Policy")] pub sputnikdao2::Policy);
 pub struct ProposalOutput(pub ProposalRecord);
 
 /// Flattened proposal identity and body, retaining the native caller field layout.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(rename = "SputnikProposalOutput")]
 pub struct ProposalRecord {
     pub id: u64,
     #[serde(flatten)]
     pub proposal: Proposal,
+}
+
+impl<'de> Deserialize<'de> for ProposalRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{DeserializeSeed, Error, IntoDeserializer, MapAccess, Visitor};
+
+        // Stream the flattened body: serde's flatten buffer cannot preserve
+        // RawValue counts for exact integer and signed-zero checks.
+        struct ProposalFields<M> {
+            map: M,
+            id: Option<u64>,
+        }
+
+        impl<'de, M: MapAccess<'de>> MapAccess<'de> for ProposalFields<M> {
+            type Error = M::Error;
+
+            fn next_key_seed<K: DeserializeSeed<'de>>(
+                &mut self,
+                seed: K,
+            ) -> Result<Option<K::Value>, Self::Error> {
+                while let Some(key) = self.map.next_key::<String>()? {
+                    if key == "id" {
+                        if self.id.is_some() {
+                            return Err(M::Error::duplicate_field("id"));
+                        }
+                        self.id = Some(self.map.next_value()?);
+                    } else {
+                        return seed.deserialize(key.into_deserializer()).map(Some);
+                    }
+                }
+                Ok(None)
+            }
+
+            fn next_value_seed<V: DeserializeSeed<'de>>(
+                &mut self,
+                seed: V,
+            ) -> Result<V::Value, Self::Error> {
+                self.map.next_value_seed(seed)
+            }
+        }
+
+        struct RecordVisitor;
+
+        impl<'de> Visitor<'de> for RecordVisitor {
+            type Value = ProposalRecord;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a flattened Sputnik proposal with its ID")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                let mut fields = ProposalFields { map, id: None };
+                let proposal = Proposal::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(&mut fields),
+                )?;
+                let id = fields.id.ok_or_else(|| M::Error::missing_field("id"))?;
+                Ok(ProposalRecord { id, proposal })
+            }
+        }
+
+        deserializer.deserialize_map(RecordVisitor)
+    }
 }
 
 /// Read-side body shared by the canonical 2.3.1 DAO and the modern wire form.
@@ -50,17 +112,33 @@ pub struct Proposal {
     pub last_actions_log: Option<Vec<sputnikdao2::action_log::ProposalLog>>,
 }
 
-/// Preserve canonical numeric counts and modern decimal-string counts exactly.
+/// Preserve canonical small numeric counts and modern decimal-string counts.
 ///
-/// Numeric counts are bounded by the JSON decoder's exact unsigned integer
-/// range; larger counts remain supported in the modern `u128` string form.
-/// Floats are rejected rather than rounded into an integer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Canonical counts above u64 are normalized to decimal strings, preserving their
+/// full u128 value without changing shared JSON-number decoding or rounding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(untagged)]
 #[schemars(rename = "SputnikVoteCount")]
 pub enum VoteCount {
     Number(u64),
     Decimal(SU128),
+}
+
+impl<'de> Deserialize<'de> for VoteCount {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        let raw = raw.get().trim_start();
+        if raw.starts_with('"') {
+            return serde_json::from_str::<SU128>(raw)
+                .map(Self::Decimal)
+                .map_err(serde::de::Error::custom);
+        }
+        let count = serde_json::from_str::<u128>(raw).map_err(serde::de::Error::custom)?;
+        Ok(match u64::try_from(count) {
+            Ok(count) => Self::Number(count),
+            Err(_) => Self::Decimal(count.into()),
+        })
+    }
 }
 
 /// Get a Sputnik DAO's current policy and proposal bond.
@@ -333,10 +411,32 @@ mod tests {
     use schemars::{schema_for, JsonSchema};
     use serde_json::{json, Value};
 
-    use super::{AddProposal, Policy, ProposalOutput};
+    use super::{AddProposal, Policy, ProposalOutput, VoteCount};
 
     fn validator<T: JsonSchema>() -> jsonschema::Validator {
         jsonschema::draft7::new(&serde_json::to_value(schema_for!(T)).unwrap()).unwrap()
+    }
+
+    fn vote_proposal(counts: &Value, history: Option<Value>) -> Value {
+        let mut wire = json!({
+            "id": 7, "proposer": "member.near", "description": "test",
+            "kind": "Vote", "status": "InProgress",
+            "vote_counts": {"council": counts},
+            "votes": {"member.near": "Approve"}, "submission_time": "123"
+        });
+        if let Some(history) = history {
+            wire["last_actions_log"] = history;
+        }
+        wire
+    }
+
+    fn raw_vote_proposal(count: &str) -> String {
+        format!(
+            r#"{{"id":7,"proposer":"member.near","description":"test",
+            "kind":"Vote","status":"InProgress",
+            "vote_counts":{{"council":[{count},0,0]}},
+            "votes":{{"member.near":"Approve"}},"submission_time":"123"}}"#
+        )
     }
 
     #[test]
@@ -365,31 +465,118 @@ mod tests {
     }
 
     #[test]
-    fn proposal_wire_preserves_available_history_and_exact_vote_counts() {
+    fn canonical_u128_counts_normalize_without_rounding() {
         let schema = validator::<ProposalOutput>();
-        for history in [json!([]), json!([{"block_height": "456"}])] {
-            for counts in [
-                json!([u64::MAX, 0, 0]),
-                json!([u128::MAX.to_string(), "0", "0"]),
-            ] {
-                let wire = json!({
-                    "id": 7, "proposer": "member.near", "description": "test",
-                    "kind": "Vote", "status": "InProgress",
-                    "vote_counts": {"council": counts},
-                    "votes": {"member.near": "Approve"}, "submission_time": "123",
-                    "last_actions_log": history
-                });
-                let encoded = serde_json::to_string(&wire).unwrap();
-                let proposal: ProposalOutput = serde_json::from_str(&encoded).unwrap();
-                assert!(proposal.0.proposal.last_actions_log.is_some());
-                assert_eq!(serde_json::to_value(&proposal).unwrap(), wire);
-                assert!(schema.is_valid(&wire), "{wire}");
+        for count in [
+            0_u128,
+            9_007_199_254_740_993,
+            u128::from(u64::MAX),
+            u128::from(u64::MAX) + 1,
+            u128::MAX,
+        ] {
+            let proposal: ProposalOutput =
+                serde_json::from_str(&raw_vote_proposal(&count.to_string())).unwrap();
+            let expected = match u64::try_from(count) {
+                Ok(count) => VoteCount::Number(count),
+                Err(_) => VoteCount::Decimal(count.into()),
+            };
+            assert_eq!(proposal.0.proposal.vote_counts["council"][0], expected);
+            let wire = serde_json::to_value(&proposal).unwrap();
+            let serialized_count = &wire["vote_counts"]["council"][0];
+            if let Ok(count) = u64::try_from(count) {
+                assert_eq!(serialized_count.as_u64(), Some(count));
+            } else {
+                assert_eq!(serialized_count.as_str(), Some(count.to_string().as_str()));
+            }
+            assert!(schema.is_valid(&wire));
+            let round_trip: ProposalOutput = serde_json::from_value(wire).unwrap();
+            assert_eq!(round_trip.0.proposal.vote_counts["council"][0], expected);
+        }
+    }
+
+    #[test]
+    fn decimal_counts_preserve_available_and_absent_history() {
+        for history in [
+            None,
+            Some(json!([])),
+            Some(json!([{"block_height": "456"}])),
+        ] {
+            let wire = vote_proposal(&json!([u128::MAX.to_string(), "0", "0"]), history);
+            let proposal: ProposalOutput = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(
+                proposal.0.proposal.vote_counts["council"][0],
+                VoteCount::Decimal(u128::MAX.into()),
+            );
+            assert_eq!(serde_json::to_value(proposal).unwrap(), wire);
+        }
+    }
+
+    #[test]
+    fn flattened_proposal_rejects_invalid_vote_counts() {
+        for token in [
+            "-1",
+            "-0",
+            "1.5",
+            "1.0",
+            "1e0",
+            "1e1000",
+            "340282366920938463463374607431768211456",
+            "\"340282366920938463463374607431768211456\"",
+            "\"-1\"",
+            "\"1.5\"",
+            "\"1e0\"",
+            "\"\"",
+            "true",
+            "null",
+            "[]",
+            "{}",
+        ] {
+            let encoded = raw_vote_proposal(token);
+            assert!(
+                serde_json::from_str::<ProposalOutput>(&encoded).is_err(),
+                "{token}",
+            );
+            if let Ok(wire) = serde_json::from_str::<Value>(&encoded) {
+                assert!(
+                    serde_json::from_value::<ProposalOutput>(wire).is_err(),
+                    "{token}",
+                );
             }
         }
-        // deserialize_any cannot represent larger JSON integers exactly.
-        for count in ["18446744073709551616", "1.5", "-1"] {
-            assert!(serde_json::from_str::<super::VoteCount>(count).is_err());
+        for token in ["-0", "01", "+1", "NaN", "1.", "1e"] {
+            assert!(serde_json::from_str::<VoteCount>(token).is_err(), "{token}");
         }
+    }
+
+    #[test]
+    fn flattened_proposal_rejects_duplicate_known_fields() {
+        let wire = vote_proposal(&json!([u64::MAX, 0, 0]), Some(json!([])));
+        let encoded = serde_json::to_string(&wire).unwrap();
+        let prefix = encoded.strip_suffix('}').unwrap();
+        for (field, value) in wire.as_object().unwrap() {
+            let duplicate = format!(
+                "{prefix},{}:{value}}}",
+                serde_json::to_string(field).unwrap(),
+            );
+            assert!(
+                serde_json::from_str::<ProposalOutput>(&duplicate).is_err(),
+                "{field}",
+            );
+        }
+    }
+
+    #[test]
+    fn flattened_proposal_retains_native_enum_duplicate_checks() {
+        let encoded = r#"{
+            "id": 7, "proposer": "member.near", "description": "test",
+            "kind": {"Transfer": {
+                "token_id": "", "receiver_id": "member.near",
+                "amount": "1", "amount": "2", "msg": null
+            }},
+            "status": "InProgress", "vote_counts": {"council": [0, 0, 0]},
+            "votes": {}, "submission_time": "123"
+        }"#;
+        assert!(serde_json::from_str::<ProposalOutput>(encoded).is_err());
     }
 
     #[test]
@@ -481,7 +668,6 @@ mod tests {
             let proposal: ProposalOutput = serde_json::from_value(output.clone()).unwrap();
             assert!(output_schema.is_valid(&serde_json::to_value(proposal).unwrap()));
             assert!(output_schema.is_valid(&output), "{output}");
-            assert!(output.get("proposal").is_none());
         }
     }
 }

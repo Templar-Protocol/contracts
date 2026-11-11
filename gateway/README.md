@@ -81,8 +81,14 @@ Methods in the same namespace should stay at roughly the same level of abstracti
 `dao.getPolicy { dao_id }` returns the native policy; `dao.getProposal { dao_id, id }`
 returns the flattened proposal, including its ID. Policy and proposal-input types reuse
 the pinned Sputnik serializers. The typed proposal read boundary also preserves the
-canonical deployed DAO's numeric vote counts and absent audit history, alongside
-modern decimal-string counts and available history. Missing history is not an empty log.
+canonical deployed DAO's absent audit history alongside available modern history.
+Missing history is not an empty log. Numeric vote counts through `u64::MAX` retain
+their number representation; larger canonical counts are parsed exactly as `u128`
+and returned in the established decimal-string form. Modern decimal-string counts
+remain strings. No count is rounded through floating point, and shared JSON-number
+decoding is unchanged. JSON consumers still need lossless decoding for numeric
+counts above JavaScript's safe-integer range.
+
 `dao.addProposal { dao_id, proposal }` plans `add_proposal` with the current exact proposal bond
 and 30 Tgas. Policy preflight rejects known-ineligible proposers, including proposal-kind-specific
 permissions; delegated-token membership is left to the contract. Authorization and the bond can
