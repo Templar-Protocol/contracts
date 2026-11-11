@@ -72,6 +72,7 @@ wasm_fns! {
     vault => Vault,
     mock_signer => MockSigner,
     mock_dao => MockDao,
+    mock_asset_converter => MockAssetConverter,
 }
 
 /// Exact, hash-pinned canonical Sputnik DAO fixture, not a Templar release or mock.

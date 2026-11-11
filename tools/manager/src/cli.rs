@@ -175,6 +175,11 @@ pub enum Command {
     },
     /// Invoke a gateway read method by its full RPC name with raw JSON params.
     Read(GenericMethodCall),
+    /// Read an ordered JSON array of gateway calls, with at most four in flight.
+    ///
+    /// Returns a bare array in input order. This is not an atomic or block-pinned
+    /// snapshot. Every item must contain only `method` and `params`.
+    ReadBatch(ReadBatchCall),
     /// Invoke a gateway write method by its full RPC name with raw JSON params.
     Write(WriteMethodCall),
 }
@@ -188,6 +193,17 @@ pub struct GenericMethodCall {
     #[arg(long, value_name = "JSON")]
     pub json: Option<String>,
     /// Method params read from a JSON file.
+    #[arg(long, value_name = "PATH")]
+    pub json_file: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
+#[command(group(clap::ArgGroup::new("params").args(["json", "json_file"]).required(true)))]
+pub struct ReadBatchCall {
+    /// Calls as an inline JSON array of {"method":"account.get","params":{...}}.
+    #[arg(long, value_name = "JSON")]
+    pub json: Option<String>,
+    /// Calls read from a JSON file; use `-` for stdin.
     #[arg(long, value_name = "PATH")]
     pub json_file: Option<PathBuf>,
 }

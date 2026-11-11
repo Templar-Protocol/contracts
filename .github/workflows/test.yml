@@ -503,9 +503,6 @@ jobs:
 
   near-integration-tests:
     name: NEAR Integration Tests
-    # Ceiling only (billing is actual runtime): ~35 min cold, less once the
-    # prebuild's ABI pass is skipped and rust-cache is dev-seeded. The headroom
-    # over 40 avoids a cold-run variance kill wasting a whole run.
     timeout-minutes: 45
     runs-on: ubuntu-latest
     services:

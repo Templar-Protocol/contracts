@@ -3,6 +3,7 @@ mod get_proxy;
 mod get_proxy_circuit_breaker_set;
 pub mod governance;
 mod list_proxies;
+mod predict_manual_trip;
 mod preflight;
 mod price_feed_exists;
 mod update_prices;
@@ -13,6 +14,7 @@ pub use get_proxy::GetProxy;
 pub use get_proxy_circuit_breaker_set::GetProxyCircuitBreakerSet;
 pub use governance::{CreateProposal, ExecuteProposalArgs, ProxyOracleGovernanceNs};
 pub use list_proxies::ListProxies;
+pub use predict_manual_trip::PredictManualTrip;
 pub use preflight::{Preflight, PreflightArgs};
 pub use price_feed_exists::PriceFeedExists;
 pub use update_prices::UpdatePrices;
@@ -41,6 +43,8 @@ pub enum ProxyOracleNs {
     GetProxyCircuitBreakerSet(GetProxyCircuitBreakerSet),
     /// Check a deployed oracle's stored state against what a new release will require of it.
     Preflight(Preflight),
+    /// Predict one manual-trip operation's exact raw-storage transition without submitting.
+    PredictManualTrip(PredictManualTrip),
     /// Refresh on-chain prices for one or more feeds.
     UpdatePrices(UpdatePrices),
     /// Upgrade with an explicit migration and audited local WASM.

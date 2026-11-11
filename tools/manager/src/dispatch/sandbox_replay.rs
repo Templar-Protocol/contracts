@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use borsh::BorshDeserialize as _;
-use near_api::{types::AccountId, NetworkConfig, SecretKey};
+use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
 use near_crypto::KeyType;
 use near_primitives::{
     account::{Account as ChainAccount, AccountContract},
@@ -153,6 +153,52 @@ pub(super) async fn stage_local_code(
         "staging the account's code in the sandbox failed: {:?}",
         staging.operation.status
     );
+    Ok(())
+}
+
+/// Stage exact effective code under the snapshot's original local/global identity.
+/// The caller restores account metadata after staging transactions finalize.
+pub(super) async fn stage_snapshot_code(
+    network: &NetworkConfig,
+    account_id: &AccountId,
+    state: &StateSnapshot,
+    target_secret_key: &SecretKey,
+) -> Result<()> {
+    match &state.contract {
+        AccountContract::Local(_) => {
+            let client = build_local_client(network, &[(account_id, target_secret_key)])?;
+            stage_local_code(&client, account_id, &state.code).await?;
+        }
+        AccountContract::Global(_) => {
+            Contract::deploy_global_contract_code(state.code.clone())
+                .as_hash()
+                .with_signer(
+                    account_id.clone(),
+                    Signer::from_secret_key(target_secret_key.clone())?,
+                )
+                .wait_until(templar_gateway_core::FinalityPolicy::Final.transaction_status())
+                .send_to(network)
+                .await
+                .context("publish hash global code")?
+                .assert_success();
+        }
+        AccountContract::GlobalByAccount(publisher_id) => {
+            let publisher_key = if publisher_id == account_id {
+                target_secret_key.clone()
+            } else {
+                setup_signer(network, publisher_id).await?
+            };
+            Contract::deploy_global_contract_code(state.code.clone())
+                .as_account_id(publisher_id.clone())
+                .with_signer(Signer::from_secret_key(publisher_key)?)
+                .wait_until(templar_gateway_core::FinalityPolicy::Final.transaction_status())
+                .send_to(network)
+                .await
+                .context("publish account global code")?
+                .assert_success();
+        }
+        AccountContract::None => anyhow::bail!("cannot stage a codeless replay account"),
+    }
     Ok(())
 }
 

@@ -669,7 +669,7 @@ async fn requires_sandbox_config_patch_invalid_documents_publish_nothing() -> Re
             },
         )
         .await?;
-    finalize(&seeded.harness, &seeded.market.market_id, redeploy).await?;
+    finalize(&seeded.harness, &seeded.market.market_id, &redeploy).await?;
     let unsupported = snapshot(&seeded.harness, &seeded.market.market_id).await?;
     let output = dir.0.join("unsupported.toml");
     assert!(generate(

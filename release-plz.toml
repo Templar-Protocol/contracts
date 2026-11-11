@@ -105,6 +105,10 @@ release = false
 name = "mock-dao"
 release = false
 
+[[package]]
+name = "mock-asset-converter"
+release = false
+
 # ---------------------------------------------------------------------------
 # Changelog rendering. Groups mirror the commit types the PR-title lint accepts
 # (.github/workflows/pr-title.yml) — keep the two in sync.

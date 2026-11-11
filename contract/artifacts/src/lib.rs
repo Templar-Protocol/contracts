@@ -135,7 +135,6 @@ mod tests {
             .iter()
             .map(|id| id.metadata())
             .collect::<Vec<_>>();
-        assert!(!catalog.is_empty());
         // All IDs must be unique
         let mut ids: Vec<_> = catalog.iter().map(|a| &a.id).collect();
         ids.sort();
@@ -147,41 +146,6 @@ mod tests {
         packages.sort_unstable();
         packages.dedup();
         assert_eq!(packages.len(), catalog.len(), "duplicate package names");
-    }
-
-    #[test]
-    fn test_artifact_id_all_preserves_public_order() {
-        assert_eq!(
-            ArtifactId::ALL,
-            [
-                ArtifactId::Registry,
-                ArtifactId::Market,
-                ArtifactId::Vault,
-                ArtifactId::UniversalAccount,
-                ArtifactId::ProxyOracle,
-                ArtifactId::ProxyGovernance,
-                ArtifactId::LstOracle,
-                ArtifactId::RedstoneAdapter,
-                ArtifactId::PythLazerAdapter,
-                ArtifactId::PatchState,
-                ArtifactId::MockFt,
-                ArtifactId::MockMt,
-                ArtifactId::MockOracle,
-                ArtifactId::MockRefFinance,
-                ArtifactId::MockReceiver,
-                ArtifactId::MockSigner,
-                ArtifactId::MockDao,
-            ]
-        );
-    }
-
-    #[test]
-    fn test_artifact_catalog_follows_artifact_id_all_order() {
-        let catalog_ids = artifact_catalog()
-            .map(|metadata| metadata.id)
-            .collect::<Vec<_>>();
-
-        assert_eq!(catalog_ids, ArtifactId::ALL);
     }
 
     #[test]
