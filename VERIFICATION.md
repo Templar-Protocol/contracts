@@ -8,9 +8,9 @@ production submissions remain disabled. No production deployment, conversion,
 release or PR merge was performed. Deterministic genuine Ed25519 signatures do
 not establish distributed-MPC availability.
 
-Controlled-local code is on `feat/hot-omni-4-orchestration`. Current follow-ups cover
-the canonical DAO fixture, automatic gas and structured MT identity preservation.
-Historical evidence is distinguished below; open review findings remain.
+Controlled-local code is on `feat/hot-omni-4-orchestration`. The current PR713
+review corrections and simplification are recorded first. Earlier checkpoints
+remain explicitly historical; other PR review findings remain outside this repair.
 [Published-head CI](https://github.com/Templar-Protocol/contracts/actions?query=branch%3Afeat%2Fhot-omni-4-orchestration)
 and human review are separate from this local evidence; no merge approval is claimed.
 
@@ -18,42 +18,225 @@ The approved full-matrix environment is the repository's CI-standard
 `NEAR_SANDBOX_BLOCK_MS=120`, with serialized node cases. Actual chain validity and
 expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
 
-## PR713 standalone deployment-planning repair
+## PR713 review remediation and simplification
 
-The integrated checkpoint below did not establish standalone PR713 readiness.
-At `4158e70c`, its [NEAR CI job](https://github.com/Templar-Protocol/contracts/actions/runs/42980577325/job/130389847460)
-finished with 338 passed and one failed: the provider scenario tried to read a
-governance account before deployment. The SDK helper was in PR713, but its
-existing manager consumer fix `bd317f3a` was only in PR714.
+Addressed [royalf00l's review](https://github.com/Templar-Protocol/contracts/pull/713#pullrequestreview-5861606420),
+which assessed `4158e70c`. The selected remote head was
+`671fcbe1346dd0426143c3e9ce7576cbe9f6a3dc`, already containing the standalone
+deployment-planning repair. Corrections were committed as `a97e3dac`; the six
+simplification reviewers then inspected the frozen 66-file comparison
+`40b5c157a5fcf4d87b8aa201636c7aef486372a0` →
+`a97e3dac2703df4b36c5da12ed1a50f87109ce24`.
+Completed simplifications and lint follow-ups are in
+`d7b00d8080fcc61fbf7446ca2cf98bdf29f56642`.
 
-Repair `671fcbe1346dd0426143c3e9ce7576cbe9f6a3dc` puts that same consumer change
-and its release note in PR713. No gateway gas policy, fixture, contract, CI
-timeout or one-off acceptance setting changed.
+This wave reviewed PR713, not the other three PRs. Normal merges propagate its
+repairs through the existing stack. The unrelated untracked
+`contract/proxy-oracle/soroban/halborn-re-review-request.md` is preserved; owned
+`target` cache symlinks are not source changes.
 
-Checks ran in `/tmp/hot-omni-fullstack-pr713`, with PR713 alone:
+### Review dispositions
 
-- `env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager requires_sandbox_manager_provider_preflight_redstone_only --test-threads 1`
-  — passed (25.311 s), retaining the assertions that planning creates neither
-  target accounts nor adapter prices, followed by actual plan application.
-- `just test-fast -p templar-manager` — all 602 passed; 12 node/ignored cases excluded.
-- `cargo check --workspace`; `cargo clippy -p templar-manager --all-targets -- -D warnings`;
-  `cargo fmt --all --check`; staged and unstaged whitespace checks — passed.
-  The existing unknown `clippy::ignore_without_reason` warning remains.
-- Actual-binary smoke: `cargo build -p templar-manager --bin tmplrmgr`, then
-  `env HOT_OMNI_CLI_SMOKE=/tmp/hot-omni-fullstack-pr713/target/debug/tmplrmgr NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager requires_sandbox_manager_provider_preflight_redstone_only --nocapture`.
-  Temporary fixture instrumentation invoked the compiled CLI for `market plan`;
-  it exited 0 before targets existed, and the complete scenario passed (29.514 s).
-  Instrumentation was removed; fixture SHA-256 returned to
-  `3f6fd51c736eb60aa27e410a87ccae78536a8034becea380edb427de3aba1101`.
+| Claim | Disposition |
+|---|---|
+| Fresh `market plan` reads undeployed governance | Already repaired in PR713 by `671fcbe1`, not deferred to PR714. `requires_sandbox_manager_provider_preflight_redstone_only` is gated and exercises planning before target accounts exist, then actual application. The claim that only an ungated test covers this is incorrect. |
+| Inline self-upgrade cannot override conservative execution gas | Added `execute-proposal --call-gas` and `create-proposal --execute-when-ready --execute-call-gas`. The latter requires `--execute-when-ready`. Omission still uses the gateway model; exact overrides retain live-limit/child-reservation checks and do not change approved bytes. Both actual CLI paths succeeded with the 355,727-byte governance WASM and 300 Tgas. |
+| CI repeatedly depends on mutable current RPC code | Confirmed that the [pinned Rust-cache cleanup](https://github.com/Swatinem/rust-cache/blob/e18b497796c12c097a38f9edb9d0641fb99eee32/src/cleanup.ts) prunes this non-Cargo fixture directory. Added a separate immutable-manifest-keyed `actions/cache` entry, saved before Rust-cache cleanup, and documented the remaining cold/evicted-cache risk. The user-selected canonical current-final RPC source, both hashes and refusal to repin automatically remain; no release asset or historical-block dependency was introduced. An actual GitHub cache hit has not yet been observed. |
+| Canonical token weights above `u64` fail | Raw JSON counts now parse exactly through the full `u128` range. Previously supported numeric counts remain numeric; newly supported counts above `u64::MAX` normalize to the existing decimal-string form. Modern strings remain strings. Signed zero, fractions and overflow still reject. A real canonical DAO delegated `u128::MAX` and returned an exact native numeric count; the typed gateway returned its exact decimal string. |
+| Full-size test accepts any error; version coverage lost | The JSON refusal now asserts typed `RequestPreconditionFailed`, while retaining the unchanged full-size operation, same proposal ID, successful Borsh submission and complete readback equality. The existing core negative-version guard asserts `UnsupportedFeature`; codec/version coverage remains. The deleted offline-query wiring test and incidental HTTP-413 wording were not restored. |
+| Production planner uses `unreachable!` | Replaced the trusted-codec shape panic with `GatewayError::Internal`. No artificial mock-only branch test was added. |
+| Exact proposal bond is untested | Inspect finalized original signed transactions and assert `deposit == bond`, both for the initial 100 milliNEAR bond and after a live policy update to 200 milliNEAR. Contract overpayment acceptance cannot satisfy these assertions. |
+| PR scope/publishable sandbox pin are understated | Keep the approved four-PR stack and use the retitle/description option to enumerate all nine new methods, extended `tx.get`, and snapshot-bound market reads. `get_configuration_at` has a concrete PR714 consumer. The exact sandbox dependency deliberately reaches publishable `templar-sandbox`, retaining the upstream committed-patch repair and finalized-state fences. |
 
-Normal merges carried the parent repair through PR714, PR715 and PR717.
-Before this report update, each child had a byte-identical tracked tree to its
-previous published head; the consumer was already present there. PR714's diff
-against its updated parent no longer contains `tools/manager/src/dispatch/plan.rs`.
-This repairs the bottom-up merge boundary, not the other open review requests.
-New-head CI remains separate from this local evidence.
+Global `serde_json/arbitrary_precision` was evaluated and rejected, not shipped.
+Against the same captured live-neard protocol response, an isolated executable
+decoded the SDK envelope successfully without that feature and failed with it;
+direct result decoding succeeded. The raw DAO boundary avoids changing shared
+SDK number decoding, including the prior fail-closed signed-zero boundary.
 
-## Governance planning CI regressions
+### Simplification result
+
+All six reports passed the supplied strict JSON Schema. The Task transport has
+no native `outputSchema` parameter; validation was enforced by the main agent.
+
+| DRY | YAGNI | State | Flow | Signal | Tests |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | 2 | 0 | 1 |
+
+- `SIM-001 ← FLOW-002`: inline the single-use `execution_budget` calculation
+  into `execute_gas`, retaining checked-arithmetic order and shared `bounded_gas`.
+- `SIM-002 ← FLOW-001`: keep the governance test's receiver and `FunctionCall`
+  typed until Sputnik's private-field JSON boundary; remove whole-transaction
+  JSON serialization/indexing. Stored-kind equality, both threshold votes,
+  explicit-gas assertions and detached-child-failure coverage remain.
+- `SIM-003 ← TEST-001`: remove only the assertion about the locally built
+  fixture's missing `proposal` key. Complete serialized-value comparisons still
+  enforce flattened output and history semantics.
+
+All three accepted items are complete. Deduplicated: 0; rejected: 0; subsumed: 0.
+Final Clippy exposed two test-only follow-ups, also completed: `SIM-004` borrows
+fixture counts instead of taking unused ownership; `SIM-005` declares the local
+canonical-count DTO before executable statements. No test or lint was suppressed.
+No second reviewer wave was run.
+
+### Standalone PR713 verification
+
+Commands ran in `/tmp/hot-omni-fullstack-pr713`. The broad fast gate passed
+1,194 tests, with 69 node/ignored cases excluded. After the test-only lint
+follow-ups, all eight DAO spec tests and the real canonical full-range case
+were rechecked successfully.
+
+```bash
+just test-fast -p templar-gateway-methods-spec -p templar-gateway-types \
+  -p templar-gateway-client -p templar-gateway-core -p templar-gateway-catalog \
+  -p templar-manager -p templar-common -p templar-sandbox \
+  -p templar-gateway-methods-dispatch -p templar-gateway-testing \
+  -p templar-gateway-service -p templar-proxy-oracle-near-governance-common \
+  --no-fail-fast
+just test-fast -p templar-gateway-methods-dispatch --lib proxy_oracle_governance_impl::tests
+just test-fast -p templar-gateway-methods-spec --lib dao::tests
+```
+
+The focused gas gate passed all five cases; the DAO spec gate passed all eight.
+Ten real-node cases passed across the following six targets, covering native
+full-range token weight, exact live bonds, policy/threshold behavior, default
+and overridden gas, frozen calls, failed child receipts, cache/freshness,
+spendable storage backing, opaque MT identity and original/delegate inspection:
+
+```bash
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale \
+  -p templar-gateway-core --test dao --test proxy_cached_price \
+  --test proxy_source_readiness --test spendable_balance \
+  --test token_metadata --test transaction_inspection --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale \
+  -p templar-gateway-core --test dao \
+  canonical_token_weighted_votes_preserve_the_full_u128_count --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale \
+  -p templar-gateway-service borsh_encoding_carries_a_proposal_json_cannot \
+  --test-threads 1
+```
+
+The last two commands each passed their one selected case. The Borsh case
+retains the 1.25 MB operation and typed JSON rejection.
+
+Actual CLI smoke: built with `cargo build -p templar-manager --bin tmplrmgr`,
+then ran the following one-time instrumented provider scenario. It invoked the
+compiled binary for both large inline self-upgrade routes, finalized creation
+before final-state reads, inspected the original 300 Tgas execution transaction,
+and observed successful final receipts, consumed proposals and unchanged code,
+policy and oracle identity. The complete provider scenario passed (31.314 s).
+
+```bash
+env HOT_OMNI_ROYAL_CLI=/tmp/hot-omni-fullstack-pr713/target/debug/tmplrmgr \
+  NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager \
+  requires_sandbox_manager_provider_preflight_redstone_only \
+  --test-threads 1 --nocapture
+```
+
+The instrumentation and disposable decoder probes were removed. That environment
+variable is not a retained test interface. Provider-fixture SHA-256 returned to
+`3f6fd51c736eb60aa27e410a87ccae78536a8034becea380edb427de3aba1101`.
+
+Workspace compilation, all-target Clippy for all thirteen affected packages,
+formatting and whitespace checks passed:
+
+```bash
+cargo check --workspace
+cargo clippy -p templar-gateway-methods-spec -p templar-gateway-types \
+  -p templar-gateway-client -p templar-gateway-core -p templar-gateway-catalog \
+  -p templar-manager -p templar-sandbox -p templar-gateway-methods-dispatch \
+  -p templar-gateway-testing -p templar-gateway-service \
+  -p templar-proxy-oracle-near-governance-common \
+  -p templar-proxy-oracle-near-governance-contract -p mock-mt \
+  --all-targets -- -D warnings
+cargo fmt --all --check
+git diff --check
+```
+
+Clippy exited successfully with only the known unknown
+`clippy::ignore_without_reason` warning; its workspace setting is unchanged
+between the frozen base and head. No exercised local gate remains failing.
+Warm fixture checks verified SHA-256
+`3b4a563dcbfb10f004bd1f912a35df0c83a6eaade8cd8f70bc626d9ab92f19b9`.
+YAML parsing verified the separate cache's immutable action pin, exact file/key,
+step registration order and unchanged 45-minute timeout. Cold or evicted caches still
+need working current RPC access and the canonical account to retain the pinned
+code; this cache is not a durable historical release archive.
+
+Published-head CI, human/security approval, the full one-off campaign matrix and
+production migration readiness are not established by these local checks.
+
+### Merged-stack verification
+
+Normal merges carried the verified parent through the existing chain, without
+rebasing or force-pushing. The following are code checkpoints; a later report-only
+commit records this evidence.
+
+| PR | Verified code checkpoint |
+|---|---|
+| #713 | `d7b00d8080fcc61fbf7446ca2cf98bdf29f56642` |
+| #714 | `d6d6c52f038d412883bbd40476ab3d66c79b3385` |
+| #715 | `74bb10c65cacdebd4aaf07a8141bb611e11bf26c` |
+| #717 | `a278842f7006ff4b6301418bec7232c28f4eefaa` |
+
+The middle layers were also checked independently in their own worktrees,
+without PR717's delegated-global RPC patch. Both workspace checks and formatter
+checks passed.
+
+| Worktree | Manager library gate |
+|---|---|
+| `/tmp/hot-omni-fullstack-pr714` | 619 passed; 18 node/ignored cases excluded |
+| `/tmp/hot-omni-fullstack-pr715` | 632 passed; 19 node/ignored cases excluded |
+
+```bash
+just test-fast -p templar-manager --lib
+cargo check --workspace
+cargo fmt --all --check
+```
+
+In the root PR717 worktree, all 857 selected fast tests passed, with 20
+node/ignored cases excluded. Workspace compilation and the affected all-target
+Clippy gate, including compilation of local opt-in acceptance targets, passed;
+only the same known unknown-lint warning remains. Formatting and whitespace
+checks passed.
+
+```bash
+just test-fast -p templar-manager -p templar-gateway-methods-spec \
+  -p templar-gateway-methods-dispatch -p templar-gateway-core \
+  -p templar-gateway-catalog -p templar-gateway-client \
+  -p templar-gateway-types -p templar-sandbox --no-fail-fast
+cargo check --workspace
+cargo clippy -p templar-manager -p templar-gateway-core \
+  -p templar-gateway-methods-spec -p templar-gateway-methods-dispatch \
+  -p templar-gateway-service --all-targets \
+  --features templar-manager/asset-migration-acceptance -- -D warnings
+cargo fmt --all --check
+git diff --check
+```
+
+All four real-Sputnik stamped-patch cases passed (164.217 s): delegate and raw
+transaction transport, live-state drift refusal and actual-period expiry.
+The unmodified provider scenario passed (24.317 s), after disposable CLI
+instrumentation was removed. These are focused regressions, not a rerun of the
+full one-off campaign matrix.
+
+```bash
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale \
+  -p templar-manager --test dao_mpc_patch --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale \
+  -p templar-manager requires_sandbox_manager_provider_preflight_redstone_only \
+  --test-threads 1
+cargo build -p templar-manager --bin tmplrmgr
+target/debug/tmplrmgr proxy-oracle governance create-proposal --help
+target/debug/tmplrmgr proxy-oracle governance execute-proposal --help
+```
+
+The rebuilt CLI exposes the new auto-execution gas override alongside the
+existing creation override, and retains one direct-execution override.
+The delegated-global RPC type fix remains pinned at `f96c0441`; no one-off test
+target was added to CI, and the NEAR job timeout remains 45 minutes.
+
+## Earlier governance-planning CI regressions
 
 The automatic-gas follow-up exposed two real regressions in the existing node
 gate: an incidental HTTP-413 assertion, and fresh market planning trying to read
@@ -138,7 +321,7 @@ env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --fea
 env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration complete_and_restart_without_duplicate_financial_writes::case_2_collateral_mt --test-threads 1
 ```
 
-## Canonical DAO fixture and governance gas follow-up
+## Earlier canonical DAO fixture and governance gas checkpoint
 
 PR #713 implementation: `e4795353df81ddb7108cf0da597f9b27e777bfb6`.
 The fixture is now current finalized `view_code` from mainnet
