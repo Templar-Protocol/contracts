@@ -97,9 +97,10 @@ Execution and downstream receipt success must be verified separately.
 a safety buffer; execution additionally reserves the stored target call's declared
 gas, or the authoritative self-upgrade migration gas and deployment overhead.
 Defaults leave a conservative single-call Sputnik forwarding/callback allowance
-within the live protocol cap. Impossible budgets are rejected, never clamped.
-An explicit override remains available for direct or separately budgeted callers,
-but must exceed the child reservation and satisfy the protocol cap.
+within the live protocol cap. Defaults that do not fit are rejected, never clamped.
+Exact overrides remain available for direct or separately budgeted callers and must
+be positive and within the protocol cap. Execution overrides must also exceed the
+child reservation; creation reserves only its own work, not the future child call.
 
 These are conservative, receipt-calibrated planning allowances, not a statistical
 99% guarantee for arbitrary DAO versions, policies, payloads or multi-action proposals.
