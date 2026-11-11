@@ -107,6 +107,18 @@ These are conservative, receipt-calibrated planning allowances, not a statistica
 Already-approved child gas and transaction bytes are never rewritten. A successful
 governance receipt also does not prove detached target success; inspect child receipts.
 
+Rust SDK callers planning a create/execute sequence before governance deployment can use
+`Client<MethodsDispatch, Ctx>::plan_governance_execution(&self, request, &operation).await`.
+It accepts `WriteRequest<proxy_oracle_governance::ExecuteProposal>` and the governance-common
+`Operation`, and returns a `PlannedTransaction`. The lower-level
+`Dispatch::plan_governance_execution(request, &operation, ctx).await` is also available.
+Both use the same authoritative execution gas calculation and live protocol limits as ordinary
+execution planning, with the same exact override checks and one-yocto deposit, but do not read
+the governance account or stored proposal. Callers must bind the known immutable operation and
+proposal ID to the earlier create step; the resulting plan does not prove creation, authorization,
+or execution eligibility. Ordinary `plan_request` execution remains bound to the stored proposal
+and rejects a missing proposal.
+
 ## Snapshot-Bound Market Reads
 
 Rust callers comparing a market's raw storage snapshot with its configuration can use

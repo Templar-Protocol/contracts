@@ -11,9 +11,12 @@ use templar_gateway_core::{
         ContractWriteOptions,
     },
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
+    PlannedTransaction,
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
-use templar_gateway_types::{NearGas, ProposalEncoding, ProtocolLimits, ProxyGovernance};
+use templar_gateway_types::{
+    common::WriteRequest, NearGas, ProposalEncoding, ProtocolLimits, ProxyGovernance,
+};
 use templar_proxy_oracle_near_governance_common::{
     GovernancePolicy, GovernancePolicyWire, Operation, Proposal, ReflexiveOperation, Role,
     GAS_FOR_SELF_UPGRADE_MIGRATE,
@@ -421,22 +424,42 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::ExecuteProposal, C> fo
         >,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
-        let body = request.body;
-        let client = ctx.near_client().proxy_governance(body.governance_id);
-        let proposal = client
-            .get_proposal(GovGetArgs { id: body.id })
+        let proposal = ctx
+            .near_client()
+            .proxy_governance(request.body.governance_id.clone())
+            .get_proposal(GovGetArgs {
+                id: request.body.id,
+            })
             .await?
             .ok_or_else(|| gas_error("governance proposal does not exist"))?;
+        Self::plan_governance_execution(request, &proposal.operation, ctx)
+            .await
+            .map(OperationPlan::from)
+    }
+}
+
+impl Dispatch {
+    /// Plan execution of a known immutable operation without reading a stored proposal.
+    ///
+    /// The caller must bind this operation and proposal ID to the earlier create step.
+    /// This supports planning before the governance account or proposal exists; it does
+    /// not establish that the proposal has been created or is eligible for execution.
+    pub async fn plan_governance_execution<C: HasNearClient>(
+        request: WriteRequest<proxy_oracle_governance::ExecuteProposal>,
+        operation: &Operation,
+        ctx: C,
+    ) -> GatewayResult<PlannedTransaction> {
+        let body = request.body;
         let limits = ctx.near_client().chain().protocol_limits().await?;
-        let gas = execute_gas(&proposal.operation, body.gas, &limits)?;
-        client
+        let gas = execute_gas(operation, body.gas, &limits)?;
+        ctx.near_client()
+            .proxy_governance(body.governance_id)
             .execute_proposal(
                 ContractWriteOptions::new(request.signer_account_id)
                     .one_yocto()
                     .gas(gas),
                 GovActionArgs { id: body.id },
             )
-            .map(OperationPlan::from)
     }
 }
 
