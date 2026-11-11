@@ -18,6 +18,63 @@ The approved full-matrix environment is the repository's CI-standard
 `NEAR_SANDBOX_BLOCK_MS=120`, with serialized node cases. Actual chain validity and
 expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
 
+## Governance planning CI regressions
+
+The automatic-gas follow-up exposed two real regressions in the existing node
+gate: an incidental HTTP-413 assertion, and fresh market planning trying to read
+a governance account that the plan had not deployed yet. PR713's
+[Test run 42967818815](https://github.com/Templar-Protocol/contracts/actions/runs/42967818815)
+finished with 336 passed and those two failures before its later 45-minute
+cleanup timeout. PR714 and PR715 independently reported the same failures.
+These are not classified as transient infrastructure failures.
+
+SDK repair: `4ac3611bf192223b00cb2426600a146d7ca46ca6`.
+Manager repair: `bd317f3a8a3ffde7bd7c3ebdfcadb867174149a3`.
+`Client::plan_governance_execution(request, &operation)` plans a known immutable
+operation before deployment, using the same authoritative gas calculation,
+live caps, override checks and one-yocto deposit as ordinary execution.
+Ordinary `executeProposal` still reads the stored operation. The deployment
+planner borrows the exact operation for execution sizing, then moves it into
+the preceding create step; no fixed-gas fallback or fictitious account is used.
+
+| Surface | Exact command / scenario | Observed result |
+|---|---|---|
+| Full-size codec boundary | `env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-gateway-service borsh_encoding_carries_a_proposal_json_cannot --test-threads 1` in PR713 | Passed (6.108 s). The unchanged 1.25 MB operation is rejected as JSON, stored through Borsh with automatic gas, and read back equal. Removed only the incidental HTTP-status assertion. |
+| Stored-operation execution | `env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-gateway-core --test dao governance_budgets_execute_target_through_real_dao_threshold --test-threads 1` in PR713 | Passed (17.346 s), through canonical Sputnik and real NEAR receipts. |
+| SDK fast/compile/lint | `just test-fast -p templar-gateway-client -p templar-gateway-methods-dispatch -p templar-gateway-core -p templar-gateway-catalog --lib`; `cargo check --workspace`; `cargo clippy -p templar-gateway-client -p templar-gateway-methods-dispatch -p templar-gateway-service --all-targets -- -D warnings`; formatting and whitespace checks | All 141 fast tests passed; one ignored generator excluded. Compilation and Clippy passed with the known unknown `clippy::ignore_without_reason` warning only. |
+| Actual deployment-planning CLI | `cargo build -p templar-manager --bin tmplrmgr`, then the provider scenario with temporary fixture instrumentation invoking the compiled `tmplrmgr market plan` subprocess against real neard | CLI exited 0 and wrote the nine-step plan before target accounts existed. The scenario then applied that plan and passed its provider/feed assertions (25.993 s). Instrumentation was removed; provider-fixture bytes returned to their original SHA-256. |
+| Unmodified provider regression | `env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager requires_sandbox_manager_provider_preflight_redstone_only --test-threads 1` in PR714, after removing instrumentation | Passed (24.026 s). Original fixture SHA-256 `3f6fd51c736eb60aa27e410a87ccae78536a8034becea380edb427de3aba1101` preserved; no account was predeployed to mask the failure. |
+| PR714 manager gates | `just test-fast -p templar-manager`; `cargo clippy -p templar-manager --all-targets -- -D warnings`; `cargo fmt --all --check`; `git diff --check` | All 614 fast tests passed; 18 node/ignored cases excluded. Clippy and formatting/whitespace passed with the known unknown lint warning only. |
+
+All four branches then incorporated current `dev`
+`40b5c157a5fcf4d87b8aa201636c7aef486372a0` through normal merges. Documentation
+conflicts preserved both the delegated-RPC/MT notes and the new planning notes.
+The upstream RedStone contract was rebuilt with
+`./script/prebuild-test-contracts.sh --artifact redstone-adapter`; test-WASM
+SHA-256: `de2322fae574db4dc307e0f85e33076913edbe8b9162398f069e99f2c9a2d774`.
+
+Post-merge checks:
+
+- `just test-fast -p templar-common -p templar-manager -p templar-gateway-client -p templar-gateway-core -p templar-gateway-methods-dispatch -p templar-gateway-catalog --lib`
+  — all 1,089 passed; 20 node/ignored cases excluded.
+- `cargo check --workspace` and
+  `cargo clippy -p templar-manager -p templar-gateway-client -p templar-gateway-methods-dispatch -p templar-gateway-service --all-targets --features templar-manager/asset-migration-acceptance -- -D warnings`
+  — passed with the existing unknown `clippy::ignore_without_reason` warning.
+  Formatting and whitespace checks passed.
+- The following gate selected **89** normal node cases because its additional
+  filter expression is additive with the recipe's sandbox filter; all passed
+  (799.176 s). This includes both formerly failing cases, stored-proposal gas,
+  RedStone administration/keyless upgrades, configuration rollback and all four
+  retained MPC patch scenarios. No one-off acceptance feature was enabled.
+
+```bash
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager -p templar-gateway-core -p templar-gateway-service -p templar-gateway-testing -E 'test(borsh_encoding_carries_a_proposal_json_cannot) | test(requires_sandbox_manager_provider_preflight_redstone_only) | test(governance_budgets_execute_target_through_real_dao_threshold) | binary(redstone_admin)' --test-threads 1
+```
+
+No one-off acceptance target was added to CI, no CI rerun was dispatched, and the
+NEAR timeout remains 45 minutes. New-head CI and outstanding review are separate
+from these local observations.
+
 ## Structured MT identity review follow-up
 
 The edited PR717 review summary identified a real ingress defect: structured MT
