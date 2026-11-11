@@ -54,6 +54,51 @@ fn scripts() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../script/asset-migration")
 }
 
+#[test]
+fn structured_mt_components_are_not_reinterpreted_or_coerced() -> Result<()> {
+    let output = std::process::Command::new("python3")
+        .args([
+            "-c",
+            r#"
+import sys
+sys.path.insert(0, sys.argv[1])
+from common import Stop, config_asset
+
+expected = {"Nep245": {"contract_id": "tokens.near", "token_id": "prefix:suffix"}}
+for asset in [
+    "nep245:tokens.near:prefix:suffix",
+    expected,
+    {"standard": "mt", **expected["Nep245"]},
+]:
+    assert config_asset(asset) == expected, asset
+
+for fields in [
+    {"contract_id": "tokens.near:prefix", "token_id": "suffix"},
+    {"contract_id": 123, "token_id": "suffix"},
+    {"contract_id": "tokens.near", "token_id": 456},
+    {"contract_id": "", "token_id": "suffix"},
+    {"contract_id": "tokens.near", "token_id": ""},
+]:
+    for asset in [{"Nep245": fields}, {"standard": "mt", **fields}]:
+        try:
+            config_asset(asset)
+        except Stop as error:
+            assert error.code == 20, error
+        else:
+            raise AssertionError(f"accepted malformed structured MT asset: {asset!r}")
+"#,
+        ])
+        .arg(scripts())
+        .output()?;
+    ensure!(
+        output.status.success(),
+        "asset normalization regression: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(bytes)?;

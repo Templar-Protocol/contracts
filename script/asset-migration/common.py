@@ -230,13 +230,17 @@ def asset_reference(asset):
         if set(asset) == {"Nep245"}:
             value = asset["Nep245"]
             _keys(value, ("contract_id", "token_id"), label="NEP-245 asset")
-            return asset_reference(f"nep245:{value['contract_id']}:{value['token_id']}")
+            return asset_reference({"standard": "mt", **value})
         if asset.get("standard") == "ft":
             _keys(asset, ("standard", "contract_id"), label="FT reference")
             return asset_reference("nep141:" + asset["contract_id"])
         if asset.get("standard") == "mt":
             _keys(asset, ("standard", "contract_id", "token_id"), label="MT reference")
-            return asset_reference(f"nep245:{asset['contract_id']}:{asset['token_id']}")
+            contract_id, token_id = asset["contract_id"], asset["token_id"]
+            require(isinstance(contract_id, str) and contract_id and ":" not in contract_id,
+                    "invalid MT contract ID")
+            require(isinstance(token_id, str) and token_id, "invalid MT token ID")
+            return {"standard": "mt", "contract_id": contract_id, "token_id": token_id}
     raise Stop(20, "unsupported canonical asset identity")
 
 

@@ -62,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve structured MT asset components without string coercion or reinterpreting
+  an invalid account suffix as part of the token ID. Opaque token IDs retain colons.
 - Decode successful delegated global-contract restore responses through the
   pinned canonical RPC schema fix; retain original signed bytes, canonical JSON
   output and unknown-outcome reconciliation safeguards.

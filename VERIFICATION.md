@@ -8,15 +8,43 @@ production submissions remain disabled. No production deployment, conversion,
 release or PR merge was performed. Deterministic genuine Ed25519 signatures do
 not establish distributed-MPC availability.
 
-Controlled-local code is on `feat/hot-omni-4-orchestration`. This follow-up verifies
-the canonical DAO fixture and automatic gas; historical full-matrix evidence and
-earlier focused verification are distinguished below. Open review findings remain.
+Controlled-local code is on `feat/hot-omni-4-orchestration`. Current follow-ups cover
+the canonical DAO fixture, automatic gas and structured MT identity preservation.
+Historical evidence is distinguished below; open review findings remain.
 [Published-head CI](https://github.com/Templar-Protocol/contracts/actions?query=branch%3Afeat%2Fhot-omni-4-orchestration)
 and human review are separate from this local evidence; no merge approval is claimed.
 
 The approved full-matrix environment is the repository's CI-standard
 `NEAR_SANDBOX_BLOCK_MS=120`, with serialized node cases. Actual chain validity and
 expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
+
+## Structured MT identity review follow-up
+
+The edited PR717 review summary identified a real ingress defect: structured MT
+components were concatenated into delimiter-separated text and parsed again.
+Before repair, `contract_id = "tokens.near:prefix"` with `token_id = "suffix"`
+silently became account `tokens.near` and token `prefix:suffix`; numeric components
+were coerced into strings. Structured components now remain separate, reject
+non-string/empty fields and account separators, and preserve opaque token IDs.
+Full account validation remains in the native gateway.
+
+- Regression below failed before the fix and passed after it. It covers native
+  and reference MT objects, malformed components and valid colon-bearing IDs.
+- Actual `00-prepare.py` refused four malformed authored campaigns with code 20
+  before RPC, frozen intent or journal publication.
+- Preserved pre-fix versus post-fix comparison found identical canonical bytes for
+  12 valid FT/MT forms, including nested colons and opaque token whitespace.
+- The complete/restart collateral-MT raw-transaction workflow passed (195.032 s).
+  This is one existing scenario plus the ingress regression, not the full matrix.
+- `cargo fmt --all`, Python syntax, whitespace and
+  `cargo clippy -p templar-manager --test asset_migration --features asset-migration-acceptance -- -D warnings`
+  passed. Only the known workspace unknown-lint warning remains. CI selection and
+  its 45-minute limit are unchanged; this test target remains local opt-in.
+
+```bash
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration structured_mt_components_are_not_reinterpreted_or_coerced --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration complete_and_restart_without_duplicate_financial_writes::case_2_collateral_mt --test-threads 1
+```
 
 ## Canonical DAO fixture and governance gas follow-up
 

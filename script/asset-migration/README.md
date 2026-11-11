@@ -44,6 +44,10 @@ derivation path. Asset text is `nep141:CONTRACT` or
 ID. `[[conversions]]` maps exact `old_asset` to `new_asset` identities. Both roles
 can change in one guarded configuration patch.
 
+Structured MT assets require string `contract_id` and `token_id` components.
+An account component cannot contain `:`; an opaque token ID can, and is preserved
+verbatim. Full account validation remains in the native gateway.
+
 `dependency_scope_accounts` is the explicit inspected consumer scope. Optional
 `registry_accounts` add registry discovery; `external_consumers` name additional
 consumers requiring inspection. A scoped registry scan is not proof that every
