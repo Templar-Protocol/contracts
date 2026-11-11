@@ -39,10 +39,11 @@ use std::{
 
 use near_api::{NetworkConfig, SecretKey};
 use templar_gateway_core::{
-    DispatchRead, FinalityPolicy, GatewayContext, GatewayError, GatewayResult, NearClient,
-    NearOperationExecutor, NearTransactionSigner, OperationDriver, OperationPlan, PlanWrite,
-    PooledSigner, SharedOperationStore,
+    DispatchRead, FinalityPolicy, GatewayContext, GatewayError, GatewayResult, HasNearClient,
+    NearClient, NearOperationExecutor, NearTransactionSigner, OperationDriver, OperationPlan,
+    PlanWrite, PlannedTransaction, PooledSigner, SharedOperationStore,
 };
+use templar_gateway_methods_spec::proxy_oracle_governance;
 use templar_gateway_store::MemoryStore;
 
 /// The default dispatcher, covering the full in-process method surface. Rebind
@@ -352,6 +353,21 @@ impl<D, Ctx: Clone> Client<D, Ctx> {
         D: PlanWrite<S, Ctx>,
     {
         <D as PlanWrite<S, Ctx>>::plan(request, self.context.clone()).await
+    }
+}
+
+impl<Ctx: Clone + HasNearClient> Client<MethodsDispatch, Ctx> {
+    /// Plan execution of a known immutable governance operation without a proposal read.
+    ///
+    /// The caller must bind the operation and proposal ID to the earlier create step.
+    /// This may be used before governance deployment; it does not verify proposal
+    /// existence or execution eligibility.
+    pub async fn plan_governance_execution(
+        &self,
+        request: WriteRequest<proxy_oracle_governance::ExecuteProposal>,
+        operation: &templar_proxy_oracle_near_governance_common::Operation,
+    ) -> GatewayResult<PlannedTransaction> {
+        MethodsDispatch::plan_governance_execution(request, operation, self.context.clone()).await
     }
 }
 
