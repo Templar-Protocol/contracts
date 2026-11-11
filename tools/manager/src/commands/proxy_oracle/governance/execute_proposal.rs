@@ -1,5 +1,6 @@
 use clap::Args;
 use near_account_id::AccountId;
+use near_sdk::Gas;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 
 use crate::commands::proxy_oracle::PreflightArgs;
@@ -17,6 +18,9 @@ pub struct ExecuteProposalArgs {
     /// failing if it has not yet matured.
     #[arg(long, conflicts_with = "print")]
     when_ready: bool,
+    /// Gas attached to the outer governance execution call; does not change the proposal.
+    #[arg(long, value_name = "GAS")]
+    call_gas: Option<Gas>,
     #[command(flatten)]
     pub(crate) preflight: PreflightArgs,
     #[command(flatten)]
@@ -34,7 +38,7 @@ impl ExecuteProposalArgs {
         spec::ExecuteProposal {
             governance_id,
             id: self.id,
-            gas: None,
+            gas: self.call_gas,
         }
     }
 }

@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact no-mutation checkpoints; optimistic height advancement is not finality.
 - Measure exact signed transport length without allocating a second wire buffer;
   raw broadcast validates the actual signed transport without rebuilding a duplicate estimate.
+- Allow exact outer execution gas via `execute-proposal --call-gas` and
+  `create-proposal --execute-when-ready --execute-call-gas`, without changing
+  the stored operation's child gas or argument bytes.
 
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 
