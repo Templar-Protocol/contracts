@@ -1,14 +1,10 @@
-use near_sdk::{
-    near,
-    store::{IterableMap, LookupMap},
-    NearToken,
-};
+use near_sdk::near;
 use templar_common::{
     panic_with_message,
     versioned_state::{Migrator, StateTransformer},
 };
 
-use super::{StorageKey, V1, V2};
+use super::{V1, V2};
 
 /// Move the existing collection handles without rewriting historical entries or owner slots.
 #[derive(Clone, Debug)]
@@ -21,16 +17,7 @@ impl StateTransformer for V1ToV2 {
     type Error = ();
 
     fn transform(&self, input: Self::Input) -> Result<Self::Output, Self::Error> {
-        let storage_entry_overhead = crate::Contract::initialize_storage_management();
-        Ok(V2 {
-            versions: input.versions,
-            registry: input.registry,
-            uploads: IterableMap::new(StorageKey::Uploads),
-            version_storage: LookupMap::new(StorageKey::VersionStorage),
-            available_storage_balance: NearToken::from_yoctonear(0),
-            pending_deployment_storage: NearToken::ZERO,
-            storage_entry_overhead,
-        })
+        Ok(V2::with_collections(input.versions, input.registry))
     }
 }
 

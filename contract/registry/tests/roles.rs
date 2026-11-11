@@ -95,13 +95,11 @@ async fn proposal(
             }),
         )
         .await?;
-    let stored = view(h, dao, "get_proposal", json!({"id": id})).await?;
-    assert_eq!(stored["kind"], kind);
     let op = operation(
         dao,
         "act_proposal",
         json!({
-            "id": id, "action": "VoteApprove", "proposal": stored["kind"], "memo": null,
+            "id": id, "action": "VoteApprove", "proposal": kind, "memo": null,
         }),
         NearToken::ZERO,
     );
@@ -543,6 +541,8 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
     .await?;
     let identities = [&owner, &uploader, &deployer, &both, &unrelated];
     for (index, actor) in identities.into_iter().enumerate() {
+        let can_upload = matches!(index, 0 | 1 | 3);
+        let can_deploy = matches!(index, 0 | 2 | 3);
         let result = h
             .try_call_function(actor, &registry, "new", json!({}))
             .await?;
@@ -564,7 +564,7 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
             let result = h.try_call_function(actor, &registry, method, args).await?;
             assert_rejected(&result, "private");
         }
-        if matches!(index, 0 | 1 | 3) {
+        if can_upload {
             h.call_function_payable(
                 actor,
                 &registry,
@@ -580,7 +580,7 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
             args: ContractArgs::Raw(Base64Bytes(near_sdk::borsh::to_vec(&bytes)?)),
             ..operation(&registry, "upload_code", Value::Null, NearToken::ZERO)
         };
-        if matches!(index, 0 | 1 | 3) {
+        if can_upload {
             h.execute(actor, upload_op).await?;
             h.call_function_payable(
                 actor,
@@ -621,7 +621,7 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
                 .await?;
             assert_rejected(
                 &result,
-                if matches!(index, 0 | 2 | 3) {
+                if can_deploy {
                     "Deployment name is reserved"
                 } else {
                     "Unauthorized role"
@@ -648,7 +648,7 @@ async fn actual_wasm_authorization_wrappers(#[future(awt)] harness: SandboxHarne
             }),
             NearToken::from_near(5),
         );
-        if matches!(index, 0 | 2 | 3) {
+        if can_deploy {
             h.execute(actor, deploy).await?;
             let child: AccountId = format!("wrapper-{index}.{registry}").parse()?;
             assert_eq!(h.code_hash(&child).await?, code_hash);
@@ -867,17 +867,14 @@ async fn storage_payer_survives_approval_revocation_and_owner_transfer(
         .await?,
         false
     );
-    let bounds = view(h, &registry, "storage_balance_bounds", json!({})).await?;
-    let minimum: u128 = bounds["min"]
-        .as_str()
-        .context("registration minimum")?
-        .parse()?;
+    let bounds = h.storage_balance_bounds(&registry).await?;
+    let minimum = bounds.min.as_yoctonear();
     assert!(minimum > 0);
     let registration_only = StorageBalance {
         total: NearToken::from_yoctonear(minimum),
         available: NearToken::ZERO,
     };
-    assert!(bounds["max"].is_null());
+    assert!(bounds.max.is_none());
     h.call_function_payable(
         &payer,
         &registry,
@@ -1078,7 +1075,7 @@ async fn storage_payer_survives_approval_revocation_and_owner_transfer(
     )
     .await?
     .is_null());
-    // Renounce is restored by the standard Owner wrapper; use the now-independent fixture owner.
+    // Renunciation remains available after ownership transfer.
     h.call_function_payable(&successor, &registry, "own_renounce_owner", json!({}), ONE)
         .await?;
     assert!(view(h, &registry, "own_get_owner", json!({}))

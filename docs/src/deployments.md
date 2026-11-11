@@ -451,11 +451,10 @@ lint, and DAO/keyless runtime checks to have passed for that release.
    `REGISTRY_GLOBAL_HASH`. An already-finalized matching Global registration
    may be reused; do not overwrite a key or treat a pending probe as approval.
 
-4. **Transfer ownership through the DAO itself.** The issue names `tmplr.near`
-   as transferring owner; use it only if the live owner view agrees. If alpha
-   is self-owned, its verified current owner signs instead. Call
-   `own_propose_owner` with `{"account_id":"templar.sputnik-dao.near"}`, one
-   yocto. Submit a real DAO FunctionCall proposal containing this action:
+4. **Transfer ownership through the DAO itself.** The verified `CURRENT_OWNER`
+   from step 1 calls `own_propose_owner` with
+   `{"account_id":"templar.sputnik-dao.near"}`, one yocto. Submit a real DAO
+   FunctionCall proposal containing this action:
 
    ```json
    {

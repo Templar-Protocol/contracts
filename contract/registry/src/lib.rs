@@ -189,9 +189,10 @@ impl Contract {
     }
 
     fn assert_role(&self, role: Role) {
+        let predecessor = env::predecessor_account_id();
         require!(
-            self.own_get_owner().as_ref() == Some(&env::predecessor_account_id())
-                || <Self as Rbac>::has_role(&env::predecessor_account_id(), &role),
+            self.own_get_owner().as_ref() == Some(&predecessor)
+                || <Self as Rbac>::has_role(&predecessor, &role),
             "Unauthorized role"
         );
     }
@@ -279,9 +280,9 @@ impl Contract {
             .uploads
             .get(&hash)
             .unwrap_or_else(|| templar_common::panic_with_message("Upload does not exist"));
+        let predecessor = env::predecessor_account_id();
         require!(
-            self.own_get_owner().as_ref() == Some(&env::predecessor_account_id())
-                || upload.uploader == env::predecessor_account_id(),
+            self.own_get_owner().as_ref() == Some(&predecessor) || upload.uploader == predecessor,
             "Upload belongs to another account",
         );
         let uploader = self
@@ -631,7 +632,7 @@ impl Contract {
     ) -> Promise {
         require!(!name.is_empty(), "Name must not be empty");
         self.assert_role(Role::Deployer);
-        let full_access_keys = Some(full_access_keys.unwrap_or_default());
+        let full_access_keys = full_access_keys.unwrap_or_default();
         require!(
             !matches!(
                 name.as_str(),
@@ -718,7 +719,7 @@ impl Contract {
             VersionEntry::GlobalHash(hash) => promise = promise.use_global_contract(*hash),
         }
 
-        promise = add_full_access_keys(promise, full_access_keys.as_deref().unwrap_or_default());
+        promise = add_full_access_keys(promise, &full_access_keys);
 
         let promise = promise
             .function_call_weight(
@@ -737,7 +738,7 @@ impl Contract {
                         None,
                         deployment,
                         Some(env::predecessor_account_id()),
-                        full_access_keys,
+                        Some(full_access_keys),
                     ),
             );
         self.registry.flush();
@@ -887,7 +888,7 @@ mod tests {
         contract.storage_deposit(None, None);
     }
 
-    fn stage_upload(contract: &mut Contract, payer: AccountId, code: Vec<u8>) -> Base58CryptoHash {
+    fn stage_upload(contract: &mut Contract, payer: AccountId, code: Vec<u8>) {
         let predecessor = env::predecessor_account_id();
         let signer = env::signer_account_id();
         let attached = env::attached_deposit();
@@ -900,7 +901,7 @@ mod tests {
             .storage_usage(env::storage_usage())
             .predecessor_account_id(payer.clone())
             .build());
-        let hash = contract.upload_code(code);
+        contract.upload_code(code);
         if !explicit_role {
             <Contract as Rbac>::remove_role(contract, &payer, &Role::Uploader);
         }
@@ -910,7 +911,6 @@ mod tests {
             .signer_account_id(signer)
             .attached_deposit(attached)
             .build());
-        hash
     }
 
     fn assert_panics(message: &str, action: impl FnOnce()) {

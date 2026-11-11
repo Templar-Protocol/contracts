@@ -1,11 +1,16 @@
 //! Deploy markets from a registry version and verify the deployed configuration
 //! and access keys.
 
+mod support;
+
 use anyhow::{Context, Result};
+
 use near_api::types::AccountId;
+
 use near_sdk::json_types::Base58CryptoHash;
 use near_token::NearToken;
 use rstest::rstest;
+use support::registry_event_logs;
 use templar_common::{
     market::MarketConfiguration,
     market::YieldWeights,
@@ -15,7 +20,6 @@ use templar_gateway_methods_spec::{registry, tx};
 use templar_gateway_testing::{harness, publish_deposit_for, SandboxHarness};
 use templar_gateway_types::{
     common::{ContractArgs, StorageBalance, WriteOperationResult},
-    operation::ReceiptStatus,
     primitive::PublicKey,
     Base64Bytes, ContractMethodName, ManagedAccountId,
 };
@@ -318,40 +322,15 @@ async fn an_unknown_code_hash_rolls_back_and_frees_the_key(
     Ok(())
 }
 
-#[derive(serde::Deserialize)]
-struct EventLog {
-    standard: String,
-    event: String,
-    /// Decoded only once the standard and event say what it holds.
-    data: serde_json::Value,
-}
-
-/// The `templar-registry` events named `event` that the registry's successful receipts logged
-/// during the operation's final transaction.
 fn registry_events<T: serde::de::DeserializeOwned>(
     result: &WriteOperationResult,
     registry_id: &AccountId,
     event: &str,
 ) -> Result<Vec<T>> {
-    let logs = result
-        .operation
-        .final_outcome()
-        .context("the operation has an outcome")?
-        .receipts
-        .iter()
-        .filter(|receipt| {
-            &receipt.contract_id == registry_id && receipt.status == ReceiptStatus::Succeeded
-        })
-        .flat_map(|receipt| &receipt.logs)
-        .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
-        .map(serde_json::from_str::<EventLog>)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(logs
+    Ok(registry_event_logs(result, registry_id, event)?
         .into_iter()
-        .filter(|log| log.standard == "templar-registry" && log.event == event)
-        .map(|log| serde_json::from_value(log.data))
-        .collect::<Result<_, _>>()?)
+        .map(|log| serde_json::from_value(log["data"].clone()))
+        .collect::<Result<Vec<T>, serde_json::Error>>()?)
 }
 
 #[derive(serde::Deserialize)]
@@ -499,20 +478,14 @@ async fn separate_registry(harness: &SandboxHarness) -> Result<AccountId> {
 async fn underfunded_upload_rolls_back(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let id = harness.deploy_registry().await?;
     let signer = &harness.registry_signer_account_id;
-    let bounds: serde_json::Value = harness
-        .view_json(&id, "storage_balance_bounds", serde_json::json!({}))
-        .await?;
-    let minimum: u128 = bounds["min"]
-        .as_str()
-        .context("registration minimum")?
-        .parse()?;
+    let minimum = harness.storage_balance_bounds(&id).await?.min;
     harness
         .call_function_payable(
             signer,
             &id,
             "storage_deposit",
             serde_json::json!({"registration_only": true}),
-            NearToken::from_yoctonear(minimum),
+            minimum,
         )
         .await?;
     let registered = storage_balance(&harness, &id, signer).await?;
@@ -548,19 +521,30 @@ async fn underfunded_upload_rolls_back(#[future(awt)] harness: SandboxHarness) -
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RegistrationPath {
+    Stored,
+    PublishGlobal,
+    ExistingGlobal,
+    Global,
+}
+
 #[rstest]
-#[case("Stored")]
-#[case("PublishGlobal")]
-#[case("ExistingGlobal")]
-#[case("Global")]
+#[case(RegistrationPath::Stored)]
+#[case(RegistrationPath::PublishGlobal)]
+#[case(RegistrationPath::ExistingGlobal)]
+#[case(RegistrationPath::Global)]
 #[tokio::test]
 async fn successful_registration_consumes_matching_market_upload(
     #[future(awt)] harness: SandboxHarness,
-    #[case] path: &str,
+    #[case] path: RegistrationPath,
 ) -> Result<()> {
     // Hash-only paths require publication elsewhere; publishing twice would exhaust the
     // fixture owner's balance before reaching the callback under test.
-    if matches!(path, "ExistingGlobal" | "Global") {
+    if matches!(
+        path,
+        RegistrationPath::ExistingGlobal | RegistrationPath::Global
+    ) {
         publish_market(&harness).await?;
     }
     let id = separate_registry(&harness).await?;
@@ -578,29 +562,43 @@ async fn successful_registration_consumes_matching_market_upload(
         hash,
         Base58CryptoHash::from(near_api::types::CryptoHash::hash(code).0)
     );
-    let result = if path == "Global" {
-        approve(&harness, &id, "approved", ApprovedCode::Global(hash)).await?
-    } else {
-        let source = match path {
-            "Stored" => VersionSource::Stored(code.to_vec().into()),
-            "PublishGlobal" => VersionSource::PublishGlobal(code.to_vec().into()),
-            "ExistingGlobal" => VersionSource::ExistingGlobal(hash),
-            _ => unreachable!(),
-        };
-        let deposit = if path == "PublishGlobal" {
-            publish_deposit_for(templar_gateway_testing::wasm::market().await.len())
-        } else {
-            PROBE_DEPOSIT
-        };
-        harness
-            .registry_add_version(
-                &harness.registry_signer_account_id,
-                &id,
-                "approved",
-                source,
-                deposit,
-            )
-            .await?
+    let result = match path {
+        RegistrationPath::Global => {
+            approve(&harness, &id, "approved", ApprovedCode::Global(hash)).await?
+        }
+        RegistrationPath::Stored => {
+            harness
+                .registry_add_version(
+                    &harness.registry_signer_account_id,
+                    &id,
+                    "approved",
+                    VersionSource::Stored(code.to_vec().into()),
+                    PROBE_DEPOSIT,
+                )
+                .await?
+        }
+        RegistrationPath::PublishGlobal => {
+            harness
+                .registry_add_version(
+                    &harness.registry_signer_account_id,
+                    &id,
+                    "approved",
+                    VersionSource::PublishGlobal(code.to_vec().into()),
+                    publish_deposit_for(code.len()),
+                )
+                .await?
+        }
+        RegistrationPath::ExistingGlobal => {
+            harness
+                .registry_add_version(
+                    &harness.registry_signer_account_id,
+                    &id,
+                    "approved",
+                    VersionSource::ExistingGlobal(hash),
+                    PROBE_DEPOSIT,
+                )
+                .await?
+        }
     };
     assert!(upload_info(&harness, &id, hash).await?.is_none());
     assert_eq!(
@@ -662,18 +660,25 @@ async fn assert_version_bytes(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CleanupPath {
+    Global,
+    Uploaded,
+    Remove,
+}
+
 #[rstest]
-#[case("Global")]
-#[case("Uploaded")]
-#[case("Remove")]
+#[case(CleanupPath::Global)]
+#[case(CleanupPath::Uploaded)]
+#[case(CleanupPath::Remove)]
 #[tokio::test]
 async fn non_tail_upload_cleanup_preserves_unrelated_blob(
     #[future(awt)] harness: SandboxHarness,
-    #[case] path: &str,
+    #[case] path: CleanupPath,
 ) -> Result<()> {
     let signer = &harness.registry_signer_account_id;
     let head = templar_gateway_testing::wasm::mock_dao().await;
-    if path == "Global" {
+    if path == CleanupPath::Global {
         let source = harness.deploy_registry().await?;
         harness
             .registry_add_version(
@@ -692,43 +697,43 @@ async fn non_tail_upload_cleanup_preserves_unrelated_blob(
     let tail_hash = upload(&harness, signer, &id, &tail, NearToken::from_near(15)).await?;
     let tail_before = upload_info(&harness, &id, tail_hash).await?.unwrap();
 
-    let result = if path == "Remove" {
-        harness
-            .call_function_payable(
-                signer,
-                &id,
-                "remove_upload",
-                serde_json::json!({"code_hash": head_hash}),
-                PROBE_DEPOSIT,
-            )
-            .await?
-    } else {
-        let code = if path == "Global" {
-            ApprovedCode::Global(head_hash)
-        } else {
-            ApprovedCode::Uploaded(head_hash)
-        };
-        // Match the DAO action's budget, not the harness's default 300 Tgas.
-        harness
-            .try_execute(
-                signer,
-                tx::FunctionCall {
-                    receiver_id: id.clone(),
-                    method_name: ContractMethodName("approve_version".to_owned()),
-                    args: ContractArgs::Json(serde_json::json!({
-                        "version_key": "head", "code": code,
-                    })),
-                    gas: near_api::types::NearGas::from_tgas(80),
-                    deposit: PROBE_DEPOSIT,
-                },
-            )
-            .await?
+    let approve_action = |code| tx::FunctionCall {
+        receiver_id: id.clone(),
+        method_name: ContractMethodName("approve_version".to_owned()),
+        args: ContractArgs::Json(serde_json::json!({
+            "version_key": "head", "code": code,
+        })),
+        gas: near_api::types::NearGas::from_tgas(80),
+        deposit: PROBE_DEPOSIT,
+    };
+    let result = match path {
+        CleanupPath::Remove => {
+            harness
+                .call_function_payable(
+                    signer,
+                    &id,
+                    "remove_upload",
+                    serde_json::json!({"code_hash": head_hash}),
+                    PROBE_DEPOSIT,
+                )
+                .await?
+        }
+        CleanupPath::Global => {
+            harness
+                .try_execute(signer, approve_action(ApprovedCode::Global(head_hash)))
+                .await?
+        }
+        CleanupPath::Uploaded => {
+            harness
+                .try_execute(signer, approve_action(ApprovedCode::Uploaded(head_hash)))
+                .await?
+        }
     };
     assert!(templar_gateway_testing::failed_receipts(&result)
         .next()
         .is_none());
     let added = registry_events::<VersionAdded>(&result, &id, "version_added")?;
-    if path == "Remove" {
+    if path == CleanupPath::Remove {
         assert!(added.is_empty());
         let removed = registry_events::<serde_json::Value>(&result, &id, "upload_removed")?;
         assert_eq!(removed.len(), 1);
@@ -750,7 +755,7 @@ async fn non_tail_upload_cleanup_preserves_unrelated_blob(
             Some(head_hash)
         );
         assert!(registry_events::<serde_json::Value>(&result, &id, "upload_removed")?.is_empty());
-        if path == "Uploaded" {
+        if path == CleanupPath::Uploaded {
             assert_version_bytes(&harness, &id, "head", head).await?;
         }
     }
@@ -965,32 +970,27 @@ async fn repeated_hash_approvals_keep_independent_retained_charges(
         .await?;
     let funded = storage_balance(&harness, &id, owner).await?;
     let mut previous_available = funded.available.as_yoctonear();
-    // Bounded history exercises identical code under multiple keys without an approved-hash ban.
-    for index in 0..16 {
+    // Two key lengths exercise independent retained charges without a history-count threshold.
+    let aliases = ["history-0", "history-10"];
+    for version_key in aliases {
         harness
             .call_function_borsh(owner, &id, "upload_code", code.to_vec(), NearToken::ZERO)
             .await?;
         let hash = Base58CryptoHash::from(near_api::types::CryptoHash::hash(&code).0);
-        approve(
-            &harness,
-            &id,
-            &format!("history-{index}"),
-            ApprovedCode::Uploaded(hash),
-        )
-        .await?;
+        approve(&harness, &id, version_key, ApprovedCode::Uploaded(hash)).await?;
         let balance = storage_balance(&harness, &id, owner).await?;
         assert_eq!(balance.total, funded.total);
         let available = balance.available.as_yoctonear();
         assert!(available < previous_available);
         previous_available = available;
     }
-    for index in 0..16 {
+    for version_key in aliases {
         harness
             .call_function_payable(
                 owner,
                 &id,
                 "remove_version",
-                serde_json::json!({"version_key": format!("history-{index}")}),
+                serde_json::json!({"version_key": version_key}),
                 PROBE_DEPOSIT,
             )
             .await?;
@@ -1003,6 +1003,6 @@ async fn repeated_hash_approvals_keep_independent_retained_charges(
     let versions: Vec<String> = harness
         .view_json(&id, "list_versions", serde_json::json!({}))
         .await?;
-    assert_eq!(versions.len(), 16);
+    assert_eq!(versions.len(), aliases.len());
     Ok(())
 }

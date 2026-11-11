@@ -84,13 +84,11 @@ async fn local_code_upgrade_cannot_stake_unused_storage_credits(
 
     let payer = h.create_user("solvency-payer").await?;
     let sink = h.create_user("solvency-sink").await?;
-    let bounds: Value = h
-        .view_json(&registry, "storage_balance_bounds", json!({}))
-        .await?;
-    let minimum: u128 = bounds["min"]
-        .as_str()
-        .context("NEP-145 decimal registration minimum")?
-        .parse()?;
+    let minimum = h
+        .storage_balance_bounds(&registry)
+        .await?
+        .min
+        .as_yoctonear();
     assert!(minimum > 0);
     // Leave ample protocol-owned funds for the existing metadata, Owner's future slots and gas,
     // but not enough to stake a local copy of this exact Wasm. No sandbox state patch is used.

@@ -1,12 +1,16 @@
 //! Upgrade deployed V1 registries, including the mainnet 3.1.0 release, through owner-only
 //! `upgrade`. Retain the 2.0.0 in-flight callback compatibility case.
 
+mod support;
+
 use anyhow::{Context, Result};
+
 use near_api::types::AccountId;
 use near_sdk::json_types::{Base58CryptoHash, Base64VecU8};
 use near_token::NearToken;
 use rstest::rstest;
 use serde::Serialize;
+use support::registry_event_logs;
 use templar_common::{
     market::{MarketConfiguration, YieldWeights},
     registry::{RegistryEntryView, VersionAvailability, VersionInfo, VersionSource},
@@ -369,24 +373,7 @@ async fn a_deploy_in_flight_across_the_upgrade_still_finalizes(
         "the callback 2.0.0 enqueued must finalize on the new code",
     );
 
-    let events = result
-        .operation
-        .final_outcome()
-        .context("the deployment and upgrade have an outcome")?
-        .receipts
-        .iter()
-        .filter(|receipt| {
-            receipt.contract_id == registry_id
-                && receipt.status == templar_gateway_types::operation::ReceiptStatus::Succeeded
-        })
-        .flat_map(|receipt| &receipt.logs)
-        .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
-        .map(serde_json::from_str::<serde_json::Value>)
-        .collect::<Result<Vec<_>, _>>()?;
-    let deployed = events
-        .into_iter()
-        .filter(|event| event["standard"] == "templar-registry" && event["event"] == "deployed")
-        .collect::<Vec<_>>();
+    let deployed = registry_event_logs(&result, &registry_id, "deployed")?;
     let [event] = deployed.as_slice() else {
         panic!("expected one legacy deployed event, got {}", deployed.len());
     };

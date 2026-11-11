@@ -55,21 +55,33 @@ pub struct V2 {
     pub storage_entry_overhead: u64,
 }
 
+impl V2 {
+    fn with_collections(
+        versions: IterableMap<String, VersionEntry>,
+        registry: IterableMap<AccountId, RegistryEntry>,
+    ) -> Self {
+        let storage_entry_overhead = Contract::initialize_storage_management();
+        Self {
+            versions,
+            registry,
+            uploads: IterableMap::new(StorageKey::Uploads),
+            version_storage: LookupMap::new(StorageKey::VersionStorage),
+            available_storage_balance: NearToken::ZERO,
+            pending_deployment_storage: NearToken::ZERO,
+            storage_entry_overhead,
+        }
+    }
+}
+
 impl StateVersion for V2 {
     const VERSION: u32 = 2;
 
     type NewArgs = ();
 
     fn new((): ()) -> VersionedState<Self> {
-        let storage_entry_overhead = Contract::initialize_storage_management();
-        VersionedState::new(Self {
-            versions: IterableMap::new(StorageKey::Versions),
-            registry: IterableMap::new(StorageKey::Registry),
-            uploads: IterableMap::new(StorageKey::Uploads),
-            version_storage: LookupMap::new(StorageKey::VersionStorage),
-            available_storage_balance: NearToken::from_yoctonear(0),
-            pending_deployment_storage: NearToken::ZERO,
-            storage_entry_overhead,
-        })
+        VersionedState::new(Self::with_collections(
+            IterableMap::new(StorageKey::Versions),
+            IterableMap::new(StorageKey::Registry),
+        ))
     }
 }
