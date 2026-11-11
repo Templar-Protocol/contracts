@@ -204,6 +204,18 @@ mod tests {
     }
 
     #[test]
+    fn role_schema_retains_only_legacy_canonical_values() {
+        use near_sdk::serde_json;
+
+        let schema =
+            serde_json::to_value(schemars::schema_for!(Role)).expect("role schema serializes");
+        assert_eq!(
+            schema["enum"],
+            serde_json::json!(["ModifyRoles", "TrustedUpdater"])
+        );
+    }
+
+    #[test]
     fn legacy_role_variants_and_admin_patterns_remain_exhaustive() {
         use Role::{ModifyRoles, TrustedUpdater};
 
