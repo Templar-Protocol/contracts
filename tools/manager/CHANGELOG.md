@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Plan fresh market proxy-governance execution from the exact operation being
+  created, with live gas limits, before governance accounts or proposals exist.
+
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 
 ### Added
