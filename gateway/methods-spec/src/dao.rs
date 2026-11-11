@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
+use templar_primitives::{SU128, SU64};
 
 /// Sputnik policy with its native JSON representation.
 ///
@@ -12,19 +15,52 @@ use templar_gateway_macros::MethodSpec;
 pub struct Policy(#[schemars(with = "schema::Policy")] pub sputnikdao2::Policy);
 
 /// Sputnik proposal, including its ID, in the contract's flattened JSON form.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
-pub struct ProposalOutput(
-    #[schemars(with = "schema::ProposalOutput")] pub sputnikdao2::ProposalOutput,
-);
+pub struct ProposalOutput(pub ProposalRecord);
 
-impl Clone for ProposalOutput {
-    fn clone(&self) -> Self {
-        Self(sputnikdao2::ProposalOutput {
-            id: self.0.id,
-            proposal: self.0.proposal.clone(),
-        })
-    }
+/// Flattened proposal identity and body, retaining the native caller field layout.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "SputnikProposalOutput")]
+pub struct ProposalRecord {
+    pub id: u64,
+    #[serde(flatten)]
+    pub proposal: Proposal,
+}
+
+/// Read-side body shared by the canonical 2.3.1 DAO and the modern wire form.
+///
+/// Contract enums retain their native serializers. Audit history is absent on
+/// the canonical DAO; `None` must not become a fabricated available empty log.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "SputnikProposal")]
+pub struct Proposal {
+    pub proposer: AccountId,
+    pub description: String,
+    #[schemars(schema_with = "schema::proposal_kind")]
+    pub kind: sputnikdao2::ProposalKind,
+    #[schemars(with = "schema::ProposalStatus")]
+    pub status: sputnikdao2::ProposalStatus,
+    pub vote_counts: HashMap<String, [VoteCount; 3]>,
+    #[schemars(with = "HashMap<AccountId, schema::Vote>")]
+    pub votes: HashMap<AccountId, sputnikdao2::proposals::Vote>,
+    pub submission_time: SU64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<Vec<schema::ProposalLog>>")]
+    pub last_actions_log: Option<Vec<sputnikdao2::action_log::ProposalLog>>,
+}
+
+/// Preserve canonical numeric counts and modern decimal-string counts exactly.
+///
+/// Numeric counts are bounded by the JSON decoder's exact unsigned integer
+/// range; larger counts remain supported in the modern `u128` string form.
+/// Floats are rejected rather than rounded into an integer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+#[schemars(rename = "SputnikVoteCount")]
+pub enum VoteCount {
+    Number(u64),
+    Decimal(SU128),
 }
 
 /// Get a Sputnik DAO's current policy and proposal bond.
@@ -67,9 +103,8 @@ impl Clone for AddProposal {
     }
 }
 
-// Schema-only counterparts for the pinned Sputnik revision. Runtime values
-// always use Sputnik's types above; these mirrors describe every wire variant,
-// including private ActionCall fields and the flattened ProposalOutput.
+// Schema-only counterparts for native policy, input, and enum serializers,
+// including private ActionCall fields. The typed read body above owns its schema.
 mod schema {
     #![allow(
         dead_code,
@@ -217,6 +252,12 @@ mod schema {
         },
     }
 
+    pub(super) fn proposal_kind(
+        generator: &mut schemars::gen::SchemaGenerator,
+    ) -> schemars::schema::Schema {
+        generator.subschema_for::<ProposalKind>()
+    }
+
     #[derive(JsonSchema)]
     #[schemars(rename = "SputnikConfig", deny_unknown_fields)]
     struct Config {
@@ -261,22 +302,8 @@ mod schema {
     }
 
     #[derive(JsonSchema)]
-    #[schemars(rename = "SputnikProposalOutput")]
-    pub struct ProposalOutput {
-        id: u64,
-        proposer: AccountId,
-        description: String,
-        kind: ProposalKind,
-        status: ProposalStatus,
-        vote_counts: HashMap<String, [SU128; 3]>,
-        votes: HashMap<AccountId, Vote>,
-        submission_time: SU64,
-        last_actions_log: Vec<ProposalLog>,
-    }
-
-    #[derive(JsonSchema)]
     #[schemars(rename = "SputnikProposalStatus")]
-    enum ProposalStatus {
+    pub(super) enum ProposalStatus {
         InProgress,
         Approved,
         Rejected,
@@ -288,7 +315,7 @@ mod schema {
 
     #[derive(JsonSchema)]
     #[schemars(rename = "SputnikVote")]
-    enum Vote {
+    pub(super) enum Vote {
         Approve,
         Reject,
         Remove,
@@ -296,7 +323,7 @@ mod schema {
 
     #[derive(JsonSchema)]
     #[schemars(rename = "SputnikProposalLog")]
-    struct ProposalLog {
+    pub(super) struct ProposalLog {
         block_height: SU64,
     }
 }
@@ -310,6 +337,59 @@ mod tests {
 
     fn validator<T: JsonSchema>() -> jsonschema::Validator {
         jsonschema::draft7::new(&serde_json::to_value(schema_for!(T)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn canonical_proposal_preserves_absent_history_and_numeric_votes() {
+        // Finalized get_proposal(0) from templar.sputnik-dao.near, version 2.3.1.
+        let wire = json!({
+            "id": 0,
+            "proposer": "megha19.near",
+            "description": "Update Parameters",
+            "kind": {"ChangePolicyUpdateParameters": {"parameters": {
+                "proposal_bond": "0",
+                "proposal_period": "604800000000000",
+                "bounty_bond": "100000000000000000000000",
+                "bounty_forgiveness_period": "604800000000000"
+            }}},
+            "status": "Approved",
+            "vote_counts": {"council": [1, 0, 0]},
+            "votes": {"megha19.near": "Approve"},
+            "submission_time": "1731091001220274516"
+        });
+        let proposal: ProposalOutput = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(proposal.0.id, 0);
+        assert!(proposal.0.proposal.last_actions_log.is_none());
+        assert_eq!(serde_json::to_value(&proposal).unwrap(), wire);
+        assert!(validator::<ProposalOutput>().is_valid(&wire));
+    }
+
+    #[test]
+    fn proposal_wire_preserves_available_history_and_exact_vote_counts() {
+        let schema = validator::<ProposalOutput>();
+        for history in [json!([]), json!([{"block_height": "456"}])] {
+            for counts in [
+                json!([u64::MAX, 0, 0]),
+                json!([u128::MAX.to_string(), "0", "0"]),
+            ] {
+                let wire = json!({
+                    "id": 7, "proposer": "member.near", "description": "test",
+                    "kind": "Vote", "status": "InProgress",
+                    "vote_counts": {"council": counts},
+                    "votes": {"member.near": "Approve"}, "submission_time": "123",
+                    "last_actions_log": history
+                });
+                let encoded = serde_json::to_string(&wire).unwrap();
+                let proposal: ProposalOutput = serde_json::from_str(&encoded).unwrap();
+                assert!(proposal.0.proposal.last_actions_log.is_some());
+                assert_eq!(serde_json::to_value(&proposal).unwrap(), wire);
+                assert!(schema.is_valid(&wire), "{wire}");
+            }
+        }
+        // deserialize_any cannot represent larger JSON integers exactly.
+        for count in ["18446744073709551616", "1.5", "-1"] {
+            assert!(serde_json::from_str::<super::VoteCount>(count).is_err());
+        }
     }
 
     #[test]

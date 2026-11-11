@@ -1,5 +1,6 @@
 use anyhow::{Context as _, Result};
 use near_account_id::AccountId;
+use near_api::types::transaction::actions::Action;
 use serde_json::{json, Value};
 use templar_gateway_core::{GatewayContext, GatewayError, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch;
@@ -353,42 +354,53 @@ async fn execute_governance_plan_through_dao(
     council: &[ManagedAccountId; 2],
     dao_id: &AccountId,
     plan: templar_gateway_core::OperationPlan,
-) -> Result<()> {
+) -> Result<WriteOperationResult> {
     let mut steps = plan.steps.into_iter();
     let transaction = steps.next().context("governance call transaction")?;
     anyhow::ensure!(steps.next().is_none(), "one governance call required");
     let transaction = serde_json::to_value(transaction)?;
-    let submitted = harness
-        .execute(
-            proposer,
-            serde_json::from_value::<dao::AddProposal>(json!({
-                "dao_id": dao_id,
-                "proposal": {"description":"Governance execution with DAO gas headroom",
-                    "kind":{"FunctionCall":{"receiver_id":transaction["receiver_id"],
-                        "actions":[transaction["actions"][0]["FunctionCall"]]}}}
-            }))?,
-        )
-        .await?;
+    let request = serde_json::from_value::<dao::AddProposal>(json!({
+        "dao_id": dao_id,
+        "proposal": {"description":"Governance execution with DAO gas headroom",
+            "kind":{"FunctionCall":{"receiver_id":transaction["receiver_id"],
+                "actions":[transaction["actions"][0]["FunctionCall"]]}}}
+    }))?;
+    let expected_kind = request.proposal.kind.clone();
+    let submitted = harness.execute(proposer, request).await?;
     let id = proposal_id(&submitted)?;
-    let stored = get_proposal(harness, dao_id, id).await?;
-    for voter in council {
-        let voted = vote(harness, voter, dao_id, &stored).await?;
-        anyhow::ensure!(
-            failed_receipts(&voted).next().is_none(),
-            "DAO vote failed: {:?}",
-            voted.operation
-        );
-    }
-    Ok(())
+    let stored = harness
+        .client()?
+        .read(dao::GetProposal {
+            dao_id: dao_id.clone(),
+            id,
+        })
+        .await?;
+    assert_eq!(
+        stored.0.proposal.kind, expected_kind,
+        "DAO approval must freeze the receiver, method, gas, deposit, and argument bytes"
+    );
+    let stored = serde_json::to_value(stored)?;
+    let first = vote(harness, &council[0], dao_id, &stored).await?;
+    anyhow::ensure!(
+        failed_receipts(&first).next().is_none(),
+        "first DAO vote failed: {:?}",
+        first.operation
+    );
+    vote(harness, &council[1], dao_id, &stored).await
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one real DAO lifecycle compares default and explicit gas, frozen actions and failures"
+)]
 #[tokio::test]
-async fn explicit_governance_budgets_execute_target_through_real_dao_threshold() -> Result<()> {
+async fn governance_budgets_execute_target_through_real_dao_threshold() -> Result<()> {
     use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
     use templar_gateway_methods_spec::{proxy_oracle, proxy_oracle_governance as gov};
     use templar_gateway_types::ProposalEncoding;
     use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
     use templar_proxy_oracle_near_common::request::OracleRequest;
+    use templar_proxy_oracle_near_governance_common::Operation;
 
     let harness = SandboxHarness::start().await?;
     let proposer = harness.create_user("governance-proposer").await?;
@@ -422,57 +434,194 @@ async fn explicit_governance_budgets_execute_target_through_real_dao_threshold()
     let governance = harness
         .deploy_governance_contract(oracle.clone(), dao_id.clone())
         .await?;
-    let id = harness
-        .client()?
-        .read(gov::NextProposalId {
+    let context = || GatewayContext::from_near_client(harness.gateway_client());
+    for (create_gas, execute_gas, method_name, is_manually_tripped, child_fails) in [
+        (None, None, "admin_set_manual_trip", true, false),
+        (
+            Some(NearGas::from_tgas(100)),
+            Some(NearGas::from_tgas(200)),
+            "admin_set_manual_trip",
+            false,
+            false,
+        ),
+        (None, None, "missing_governance_target", false, true),
+    ] {
+        let id = harness
+            .client()?
+            .read(gov::NextProposalId {
+                governance_id: governance.clone(),
+            })
+            .await?;
+        let operation: Operation = serde_json::from_value(json!({"TargetFunctionCall":{
+            "method_name":method_name,
+            "args":Base64Bytes(serde_json::to_vec(&json!({
+                "id":feed,"is_manually_tripped":is_manually_tripped,"metadata":null
+            }))?),
+            "attached_deposit":"0","gas":"100000000000000"
+        }}))?;
+        let request = gov::CreateProposal {
             governance_id: governance.clone(),
-        })
-        .await?;
-    let operation = serde_json::from_value(json!({"TargetFunctionCall":{
-        "method_name":"admin_set_manual_trip",
-        "args":Base64Bytes(serde_json::to_vec(&json!({"id":feed,"is_manually_tripped":true,"metadata":null}))?),
-        "attached_deposit":"0","gas":"100000000000000"
-    }}))?;
-    let create = <Dispatch as PlanWrite<gov::CreateProposal, GatewayContext>>::plan(
-        WriteRequest {
-            signer_account_id: ManagedAccountId(dao_id.clone()),
-            idempotency_key: None,
-            body: gov::CreateProposal {
+            id,
+            operation: operation.clone(),
+            requested_ttl: Nanoseconds::from_secs(1),
+            encoding: ProposalEncoding::Json,
+            gas: create_gas,
+        };
+        let dao_count: u64 = harness
+            .view_json(&dao_id, "get_last_proposal_id", json!({}))
+            .await?;
+        let mut impossible = request.clone();
+        let Operation::TargetFunctionCall(call) = &mut impossible.operation else {
+            unreachable!("fixture uses a target call");
+        };
+        call.gas = harness
+            .gateway_client()
+            .chain()
+            .protocol_limits()
+            .await?
+            .max_total_prepaid_gas;
+        let rejected = <Dispatch as PlanWrite<gov::CreateProposal, GatewayContext>>::plan(
+            WriteRequest {
+                signer_account_id: ManagedAccountId(dao_id.clone()),
+                idempotency_key: None,
+                body: impossible,
+            },
+            context(),
+        )
+        .await;
+        assert!(matches!(
+            rejected,
+            Err(GatewayError::RequestPreconditionFailed(_))
+        ));
+        assert!(harness
+            .client()?
+            .read(gov::GetProposal {
                 governance_id: governance.clone(),
                 id,
-                operation,
-                requested_ttl: Nanoseconds::from_secs(1),
-                encoding: ProposalEncoding::Json,
-                gas: Some(NearGas::from_tgas(100)),
+            })
+            .await?
+            .is_none());
+        assert_eq!(
+            harness
+                .view_json::<u64>(&dao_id, "get_last_proposal_id", json!({}))
+                .await?,
+            dao_count,
+            "impossible execution must fail before submitting a DAO proposal"
+        );
+        let create = <Dispatch as PlanWrite<gov::CreateProposal, GatewayContext>>::plan(
+            WriteRequest {
+                signer_account_id: ManagedAccountId(dao_id.clone()),
+                idempotency_key: None,
+                body: request,
             },
-        },
-        GatewayContext::from_near_client(harness.gateway_client()),
-    )
-    .await?;
-    execute_governance_plan_through_dao(&harness, &proposer, &council, &dao_id, create).await?;
-    harness.fast_forward(10).await?;
-    let execute = <Dispatch as PlanWrite<gov::ExecuteProposal, GatewayContext>>::plan(
-        WriteRequest {
-            signer_account_id: ManagedAccountId(dao_id.clone()),
-            idempotency_key: None,
-            body: gov::ExecuteProposal {
-                governance_id: governance,
+            context(),
+        )
+        .await?;
+        if let Some(explicit) = create_gas {
+            let [Action::FunctionCall(action)] = &create.steps[0].actions[..] else {
+                panic!("expected one governance FunctionCall");
+            };
+            assert_eq!(action.gas, explicit);
+        }
+        let created =
+            execute_governance_plan_through_dao(&harness, &proposer, &council, &dao_id, create)
+                .await?;
+        assert!(failed_receipts(&created).next().is_none(), "{created:?}");
+        assert_eq!(
+            harness
+                .client()?
+                .read(gov::GetProposal {
+                    governance_id: governance.clone(),
+                    id,
+                })
+                .await?
+                .context("governance proposal created by the DAO")?
+                .operation,
+            operation,
+            "planning and DAO forwarding must not rewrite the approved child gas"
+        );
+        harness.fast_forward(10).await?;
+
+        // Child gas alone cannot run the wrapper. Reject locally before a DAO proposal exists.
+        let before: u64 = harness
+            .view_json(&dao_id, "get_last_proposal_id", json!({}))
+            .await?;
+        for gas in [NearGas::from_gas(0), NearGas::from_tgas(100)] {
+            let rejected = <Dispatch as PlanWrite<gov::ExecuteProposal, GatewayContext>>::plan(
+                WriteRequest {
+                    signer_account_id: ManagedAccountId(dao_id.clone()),
+                    idempotency_key: None,
+                    body: gov::ExecuteProposal {
+                        governance_id: governance.clone(),
+                        id,
+                        gas: Some(gas),
+                    },
+                },
+                context(),
+            )
+            .await;
+            assert!(matches!(
+                rejected,
+                Err(GatewayError::RequestPreconditionFailed(_))
+            ));
+        }
+        assert_eq!(
+            harness
+                .view_json::<u64>(&dao_id, "get_last_proposal_id", json!({}))
+                .await?,
+            before
+        );
+
+        let execute = <Dispatch as PlanWrite<gov::ExecuteProposal, GatewayContext>>::plan(
+            WriteRequest {
+                signer_account_id: ManagedAccountId(dao_id.clone()),
+                idempotency_key: None,
+                body: gov::ExecuteProposal {
+                    governance_id: governance.clone(),
+                    id,
+                    gas: execute_gas,
+                },
+            },
+            context(),
+        )
+        .await?;
+        if let Some(explicit) = execute_gas {
+            let [Action::FunctionCall(action)] = &execute.steps[0].actions[..] else {
+                panic!("expected one governance FunctionCall");
+            };
+            assert_eq!(action.gas, explicit);
+        }
+        let executed =
+            execute_governance_plan_through_dao(&harness, &proposer, &council, &dao_id, execute)
+                .await?;
+        if child_fails {
+            assert!(
+                failed_receipts(&executed).any(|receipt| receipt.contract_id == oracle),
+                "a consumed governance proposal must not hide detached target failure: {executed:?}"
+            );
+        } else {
+            assert!(failed_receipts(&executed).next().is_none(), "{executed:?}");
+        }
+        assert_eq!(
+            harness
+                .client()?
+                .read(proxy_oracle::GetProxyCircuitBreakerSet {
+                    oracle_id: oracle.clone(),
+                    id: feed,
+                })
+                .await?
+                .context("configured breaker set")?
+                .is_manually_tripped(),
+            is_manually_tripped
+        );
+        assert!(harness
+            .client()?
+            .read(gov::GetProposal {
+                governance_id: governance.clone(),
                 id,
-                gas: Some(NearGas::from_tgas(200)),
-            },
-        },
-        GatewayContext::from_near_client(harness.gateway_client()),
-    )
-    .await?;
-    execute_governance_plan_through_dao(&harness, &proposer, &council, &dao_id, execute).await?;
-    assert!(harness
-        .client()?
-        .read(proxy_oracle::GetProxyCircuitBreakerSet {
-            oracle_id: oracle,
-            id: feed,
-        })
-        .await?
-        .context("configured breaker set")?
-        .is_manually_tripped());
+            })
+            .await?
+            .is_none());
+    }
     Ok(())
 }

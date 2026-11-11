@@ -110,7 +110,9 @@ pub struct CreateProposal {
     pub requested_ttl: Nanoseconds,
     #[serde(default, skip_serializing_if = "ProposalEncoding::is_json")]
     pub encoding: ProposalEncoding,
-    /// Attached call gas; defaults to 300 Tgas when omitted.
+    /// Optional attached gas override. Omitted gas uses a conservative payload-sized budget,
+    /// leaving headroom for a single Sputnik forwarded call. Planning checks live protocol
+    /// limits and rejects child reservations that leave no possible execution headroom.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gas: Option<NearGas>,
 }
@@ -129,7 +131,11 @@ pub struct CancelProposal {
 pub struct ExecuteProposal {
     pub governance_id: near_account_id::AccountId,
     pub id: u32,
-    /// Attached call gas; defaults to 300 Tgas when omitted.
+    /// Optional attached gas override. Omitted gas is planned from the stored operation:
+    /// declared target gas or self-upgrade migration reservation plus payload-sized wrapper
+    /// headroom and buffer. Defaults also leave a conservative single-call Sputnik allowance.
+    /// Overrides must exceed any child reservation and stay within the live protocol cap;
+    /// they are not guaranteed sufficient, or safe to forward through an arbitrary DAO.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gas: Option<NearGas>,
 }
