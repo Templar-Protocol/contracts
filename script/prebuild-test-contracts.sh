@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
 cd "$ROOT_DIR"
 cargo run -p templar-contract-artifacts --features workspace-loader,clap --bin prebuild-test-contracts -- --workspace-root "$ROOT_DIR" "$@" 1>&2
 
-# External fixtures have separate source/build/checksum pins, not Templar release
+# External fixtures have separate RPC identity/checksum pins, not Templar release
 # IDs. Full prebuilds and --check include them; an explicit workspace --artifact
 # selection (or release --resolve) keeps its existing narrow behavior.
 _sputnik_fixture=1
@@ -22,6 +22,6 @@ for _prebuild_arg in "$@"; do
     esac
 done
 if [ "$_sputnik_fixture" -eq 1 ]; then
-    python3 "$ROOT_DIR/script/build-sputnik-fixture.py" "${_sputnik_check[@]}"
+    python3 "$ROOT_DIR/script/fetch-sputnik-fixture.py" "${_sputnik_check[@]}"
 fi
 unset _sputnik_fixture _sputnik_check _prebuild_arg

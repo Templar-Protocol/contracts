@@ -12,6 +12,16 @@ Use `just test-fast` for the complete non-node gate, including non-node
 integration targets, or `just test-sandbox` for the node-backed gate. The sandbox recipe prebuilds NEAR contracts before
 starting its pooled `neard` instances; pass `--stale` to reuse the contracts already built into `target/near`.
 
+The full prebuild also provisions the hash-pinned real Sputnik DAO deployed at
+mainnet `templar.sputnik-dao.near` (version `2.3.1`). `just fetch-sputnik-fixture`
+downloads its current finalized `view_code` using only Python 3.11+ and HTTPS;
+it accepts only the checked-in code hash and decoded Wasm SHA-256.
+`just fetch-sputnik-fixture --check` verifies the cached fixture without network,
+and `--refetch` downloads again without changing either pin. A canonical DAO
+upgrade fails closed; no historical-block lookup or source-build fallback is
+used. See [the fixture provisioning guide](../../contract/artifacts/README.md#pinned-external-sputnik-dao-fixture)
+for the cache path and pin-update policy.
+
 Run the artifact drift check separately when validating the release catalog.
 It may compile the Rust test crate, but does not build contract WASM:
 

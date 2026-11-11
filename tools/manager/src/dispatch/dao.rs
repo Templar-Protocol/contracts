@@ -135,7 +135,7 @@ pub(crate) fn returned_proposal_id(operation: &WriteOperationResult) -> anyhow::
 }
 
 pub(crate) fn ensure_proposal_matches(
-    stored: &sputnikdao2::ProposalOutput,
+    stored: &dao::ProposalRecord,
     proposal_id: u64,
     proposer: &AccountId,
     expected: &ProposalInput,

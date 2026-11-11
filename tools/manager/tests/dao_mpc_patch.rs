@@ -467,7 +467,11 @@ async fn requires_sandbox_mpc_stamped_patch_executes_through_real_sputnik(
     );
     let mut expected = before;
     expected.insert(b"STATE".to_vec(), expected_state);
-    assert_eq!(raw_storage(harness, &controlled.0).await?, expected);
+    assert_eq!(
+        raw_storage(harness, &controlled.0).await?,
+        expected,
+        "patch execution result: {executed}"
+    );
     assert_eq!(
         harness
             .gateway_client()
