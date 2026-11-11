@@ -7,7 +7,7 @@ use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_methods_spec::{dao, tx};
 use templar_gateway_testing::{failed_receipts, SandboxHarness};
 use templar_gateway_types::{
-    common::{ContractArgs, WriteOperationResult, WriteRequest},
+    common::{ContractArgs, TxExecutionStatus, WriteOperationResult, WriteRequest},
     Base64Bytes, ContractMethodName, ManagedAccountId, NearGas, NearToken,
 };
 
@@ -92,6 +92,36 @@ async fn vote(
         .await
 }
 
+async fn assert_submitted_proposal_bond(
+    harness: &SandboxHarness,
+    signer: &ManagedAccountId,
+    submitted: &WriteOperationResult,
+    expected: NearToken,
+) -> Result<()> {
+    let observed = harness
+        .client()?
+        .read(tx::Get {
+            tx_hash: submitted
+                .operation
+                .latest_tx_hash()
+                .context("DAO submission hash")?,
+            sender_account_id: signer.0.clone(),
+            wait_until: Some(TxExecutionStatus::Final),
+            encoding: tx::ValueEncoding::Json,
+        })
+        .await?;
+    assert_eq!(observed.status, tx::Status::Succeeded);
+    assert!(observed.failed_receipts.is_empty());
+    let transaction = observed.transaction.context("original DAO submission")?;
+    assert_eq!(transaction.action_count, 1);
+    let [call] = transaction.function_calls.as_slice() else {
+        anyhow::bail!("DAO submission must contain exactly one function call");
+    };
+    assert_eq!(call.method_name.0, "add_proposal");
+    assert_eq!(call.deposit, expected);
+    Ok(())
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one real DAO lifecycle proves bond, policy, threshold and downstream execution"
@@ -103,6 +133,7 @@ async fn dao_proposals_enforce_live_bond_policy_and_threshold() -> Result<()> {
     let council_a = harness.create_user("council-a").await?;
     let council_b = harness.create_user("council-b").await?;
     let outsider = harness.create_user("outsider").await?;
+    let initial_bond = NearToken::from_millinear(100);
     let policy = json!({
         "roles": [
             {"name": "proposers", "kind": {"Group": [proposer]},
@@ -114,7 +145,7 @@ async fn dao_proposals_enforce_live_bond_policy_and_threshold() -> Result<()> {
         "default_vote_policy": {
             "weight_kind": "RoleWeight", "quorum": "2", "threshold": "2"
         },
-        "proposal_bond": NearToken::from_millinear(100),
+        "proposal_bond": initial_bond,
         "proposal_period": "604800000000000",
         "bounty_bond": "0",
         "bounty_forgiveness_period": "86400000000000"
@@ -154,11 +185,7 @@ async fn dao_proposals_enforce_live_bond_policy_and_threshold() -> Result<()> {
 
     // Bypass the planner to verify the deployed contract also enforces authorization and bond.
     for (signer, deposit, reason) in [
-        (
-            &outsider,
-            NearToken::from_millinear(100),
-            "ERR_PERMISSION_DENIED",
-        ),
+        (&outsider, initial_bond, "ERR_PERMISSION_DENIED"),
         (&proposer, NearToken::ZERO, "ERR_MIN_BOND"),
     ] {
         let input = proposal(&dao_id, &harness.ft_contract_id)?;
@@ -186,6 +213,7 @@ async fn dao_proposals_enforce_live_bond_policy_and_threshold() -> Result<()> {
     let input = proposal(&dao_id, &harness.ft_contract_id)?;
     let expected_body = serde_json::to_value(&input.proposal)?;
     let submitted = harness.execute(&proposer, input).await?;
+    assert_submitted_proposal_bond(&harness, &proposer, &submitted, initial_bond).await?;
     let id = proposal_id(&submitted)?;
     let stored = get_proposal(&harness, &dao_id, id).await?;
     assert_eq!(stored["id"], id);
@@ -245,9 +273,117 @@ async fn dao_proposals_enforce_live_bond_policy_and_threshold() -> Result<()> {
     let subsequent = harness
         .execute(&proposer, proposal(&dao_id, &harness.ft_contract_id)?)
         .await?;
+    assert_submitted_proposal_bond(&harness, &proposer, &subsequent, new_bond).await?;
     assert_eq!(
         get_proposal(&harness, &dao_id, proposal_id(&subsequent)?).await?["status"],
         "InProgress"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_token_weighted_votes_preserve_the_full_u128_count() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let member = harness.create_user("weighted-member").await?;
+    let staking = harness.create_user("weighted-staking").await?;
+    let policy: dao::Policy = serde_json::from_value(json!({
+        "roles": [{
+            "name": "members", "kind": {"Group": [member]},
+            "permissions": ["*:*"], "vote_policy": {}
+        }],
+        "default_vote_policy": {"weight_kind": "RoleWeight", "quorum": "1", "threshold": "1"},
+        "proposal_bond": "0", "proposal_period": "604800000000000",
+        "bounty_bond": "0", "bounty_forgiveness_period": "86400000000000"
+    }))?;
+    let dao_id = harness.deploy_sputnik_dao("weighted-dao", policy.0).await?;
+
+    for kind in [
+        json!({"SetStakingContract": {"staking_id": staking}}),
+        json!({"ChangePolicyUpdateDefaultVotePolicy": {"vote_policy": {
+            "weight_kind": "TokenWeight", "quorum": "1", "threshold": "1"
+        }}}),
+    ] {
+        let submitted = harness
+            .execute(
+                &member,
+                serde_json::from_value::<dao::AddProposal>(json!({
+                    "dao_id": dao_id,
+                    "proposal": {"description": "Configure token-weighted voting", "kind": kind}
+                }))?,
+            )
+            .await?;
+        let id = proposal_id(&submitted)?;
+        let stored = get_proposal(&harness, &dao_id, id).await?;
+        let approved = vote(&harness, &member, &dao_id, &stored).await?;
+        assert!(failed_receipts(&approved).next().is_none());
+        assert_eq!(
+            get_proposal(&harness, &dao_id, id).await?["status"],
+            "Approved"
+        );
+    }
+
+    // Canonical delegation registration charges 16 bytes at the pinned sandbox's
+    // 10^19 yoctoNEAR storage price; only the configured staking account may call it.
+    harness
+        .execute(
+            &staking,
+            tx::FunctionCall {
+                receiver_id: dao_id.clone(),
+                method_name: ContractMethodName("register_delegation".to_owned()),
+                args: ContractArgs::Json(json!({"account_id": member})),
+                gas: NearGas::from_tgas(30),
+                deposit: NearToken::from_yoctonear(160_000_000_000_000_000_000),
+            },
+        )
+        .await?;
+    harness
+        .execute(
+            &staking,
+            tx::FunctionCall {
+                receiver_id: dao_id.clone(),
+                method_name: ContractMethodName("delegate".to_owned()),
+                args: ContractArgs::Json(json!({
+                    "account_id": member, "amount": u128::MAX.to_string()
+                })),
+                gas: NearGas::from_tgas(30),
+                deposit: NearToken::ZERO,
+            },
+        )
+        .await?;
+    let submitted = harness
+        .execute(
+            &member,
+            serde_json::from_value::<dao::AddProposal>(json!({
+                "dao_id": dao_id,
+                "proposal": {"description": "Full-range token weight", "kind": "Vote"}
+            }))?,
+        )
+        .await?;
+    let id = proposal_id(&submitted)?;
+    let stored = get_proposal(&harness, &dao_id, id).await?;
+    let approved = vote(&harness, &member, &dao_id, &stored).await?;
+    assert!(failed_receipts(&approved).next().is_none());
+    #[derive(serde::Deserialize)]
+    struct CanonicalCounts {
+        vote_counts: std::collections::HashMap<String, [u128; 3]>,
+    }
+    let canonical: CanonicalCounts = harness
+        .gateway_client()
+        .contract(dao_id.clone())
+        .view_function("get_proposal", serde_json::to_vec(&json!({"id": id}))?)
+        .await?;
+    assert_eq!(canonical.vote_counts["members"][0], u128::MAX);
+    let proposal = harness
+        .client()?
+        .read(dao::GetProposal { dao_id, id })
+        .await?;
+    assert_eq!(
+        proposal.0.proposal.vote_counts["members"][0],
+        dao::VoteCount::Decimal(u128::MAX.into())
+    );
+    assert_eq!(
+        serde_json::to_value(proposal)?["vote_counts"]["members"][0].as_str(),
+        Some(u128::MAX.to_string().as_str())
     );
     Ok(())
 }

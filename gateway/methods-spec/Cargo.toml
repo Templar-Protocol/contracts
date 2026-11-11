@@ -11,7 +11,7 @@ description = "Contract-method specifications for the Templar gateway"
 near-account-id = { workspace = true, features = ["serde", "schemars"] }
 schemars.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 sputnikdao2.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-gateway-macros.workspace = true

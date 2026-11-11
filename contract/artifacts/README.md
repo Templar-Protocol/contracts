@@ -183,6 +183,13 @@ validate existing bytes without contacting RPC. Missing or mismatching cached
 bytes fail under `--check`; mismatching bytes also fail on the default path.
 The Wasm remains untracked and is never entered into the release catalog.
 
+The node CI job caches this file separately under the fixture manifest's hash;
+the normal Rust cache prunes non-Cargo directories under `target`. Cache restore
+never replaces checksum verification. Cold or evicted caches still need the RPC
+and the recorded code to remain deployed. If the canonical account changes,
+preserve previously verified bytes or review a new pin; the downloader cannot
+recover the old pin from current state and never silently follows an upgrade.
+
 Rust sandbox tests use `wasm::sputnik_dao().await` or
 `SandboxHarness::deploy_sputnik_dao(label, policy).await`. The deployment helper
 accepts the pinned dependency's complete `sputnikdao2::Policy`, including

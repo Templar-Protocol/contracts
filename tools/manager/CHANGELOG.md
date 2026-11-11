@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Plan fresh market proxy-governance execution from the exact operation being
   created, with live gas limits, before governance accounts or proposals exist.
+- Allow exact outer execution gas via `execute-proposal --call-gas` and
+  `create-proposal --execute-when-ready --execute-call-gas`, without changing
+  the stored operation's child gas or argument bytes.
 
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 

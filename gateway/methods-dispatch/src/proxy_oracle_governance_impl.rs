@@ -388,7 +388,9 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
             }
         }?;
         let [Action::FunctionCall(action)] = &mut transaction.actions[..] else {
-            unreachable!("governance create codec produces one FunctionCall");
+            return Err(GatewayError::Internal(
+                "governance create codec did not produce one FunctionCall".to_owned(),
+            ));
         };
         action.gas = create_gas(action.args.len(), body.gas, &limits)?;
         Ok(OperationPlan::from(transaction))

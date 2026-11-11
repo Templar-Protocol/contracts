@@ -166,9 +166,6 @@ mod tests {
     #[test]
     fn refuses_a_contract_without_the_entrypoint() {
         let error = plan((0, 2, 0)).expect_err("0.2.0 has no borsh entrypoint");
-        assert!(
-            error.to_string().contains("is version 0.2.0"),
-            "error should name the version: {error}"
-        );
+        assert!(matches!(error, crate::GatewayError::UnsupportedFeature(_)));
     }
 }

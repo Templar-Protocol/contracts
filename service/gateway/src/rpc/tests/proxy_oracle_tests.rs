@@ -403,11 +403,17 @@ async fn borsh_encoding_carries_a_proposal_json_cannot() -> Result<()> {
         },
     };
 
-    stack
-        .controller
-        .request::<proxy_oracle_governance::CreateProposal>(&create(ProposalEncoding::Json))
-        .await
-        .expect_err("a json transaction this large should be rejected");
+    let rejected = stack
+        .gateway
+        .request_write::<
+            proxy_oracle_governance::CreateProposal,
+            templar_gateway_methods_dispatch::Dispatch,
+        >(create(ProposalEncoding::Json))
+        .await;
+    assert!(matches!(
+        rejected,
+        Err(templar_gateway_core::GatewayError::RequestPreconditionFailed(_))
+    ));
 
     // The rejected transaction never reached the contract, so id 1 is still next.
     let _ = stack
