@@ -48,8 +48,9 @@ Adopt one registry capability and storage model with these boundaries:
    guarantee of keyless children (`contract/registry/src/lib.rs:624-633,720-726`). The current
    deployment process installs a deployer key, confirms the child works, replaces it with a freshly
    derived MPC/DAO-controlled key, and has the DAO delete the deployer key to prove the new key
-   works. Installing the MPC key directly would remove that confirmation step and still require
-   full-access-key support, so restricting this capability to Owner would not eliminate it.
+   works. After each rotation, list the child's keys and confirm that only the MPC/DAO-controlled
+   key remains. Installing the MPC key directly would remove that confirmation step and still
+   require full-access-key support, so restricting this capability to Owner would not eliminate it.
    `RegistryEvent::Deployed` version 1.1.0 adds nullable `deployer` and `full_access_keys` to the
    successful finalization event for provenance; the `Deployment` view is unchanged. New finalizer
    calls carry optional, serde-defaulted metadata and emit `Some` values; legacy in-flight calls
@@ -83,12 +84,13 @@ Adopt one registry capability and storage model with these boundaries:
    reservations even when the registry is already underfunded
    (`contract/registry/src/lib.rs:577-593,747-789`). Upgrade deploy, migration, and the post-upgrade
    solvency check share one atomic receipt. A direct call may attach 300 Tgas. After DAO handoff,
-   the upgrade action must use `GlobalHash` with already-published code and empty migration
-   arguments: the tested DAO action has 280 Tgas beneath a 300-Tgas outer `act_proposal`, and the
-   rollout must not put WASM in proposal input (`contract/registry/src/lib.rs:311-335`;
-   `contract/registry/tests/roles.rs`).
-   DAO proposal tooling must let operators override gas values, including a simple `--gas
-   "250 Tgas"`-style option, rather than relying on an unadjustable default.
+   the upgrade action must use `GlobalHash` with already-published code, and the rollout must not
+   put WASM in proposal input. `migrate_args` is empty only for same-state-version upgrades;
+   otherwise it carries the migration chain required by the target version. The tested same-V2 DAO
+   action has 280 Tgas beneath a 300-Tgas outer `act_proposal`
+   (`contract/registry/src/lib.rs:311-335`; `contract/registry/tests/roles.rs`). Registry-DAO
+   proposal tooling must let operators override gas values, including a simple `--gas
+   "280 Tgas"`-style option, rather than relying on an unadjustable default.
 6. **Roll out only through verified DAO operation.** Use the documented canary-first procedure:
    drain legacy in-flight callbacks, verify the V1 migration and historical data, grant explicit
    roles, and transfer ownership through real DAO acceptance. Before deleting keys, prove DAO
@@ -106,7 +108,6 @@ Adopt one registry capability and storage model with these boundaries:
 - **Require Owner for non-empty `full_access_keys`, or remove the parameter.** Rejected: this
   would break the established deployer-key to MPC/DAO-key rotation and its confirmation step while
   still leaving the deployment process dependent on full-access-key support.
-
 - **Replace Owner with an RBAC Admin role or remove ownership.** That would centralize the same
   authority under another name while requiring owner-slot, API, and DAO-handoff migration. It adds
   risk without improving the required Uploader/Deployer separation.
@@ -129,10 +130,11 @@ funding and trust management: uploaders need enough available credit, approval c
 payer top-up, the registry needs protocol-owned backing, and every supplied child key and Deployer
 must be treated as security-sensitive.
 
-`Deployed` now records the Deployer and supplied full-access keys for incident provenance; the
-`Deployment` view remains unchanged. Storage accounting involves trusted operator parties and
-small NEAR amounts. If a storage-credit shortfall needs reconciliation, a manual top-up or
-adjustment is acceptable; solvency checks may block storage withdrawals until it is resolved.
+`Deployed` must record the Deployer and supplied full-access keys for incident provenance before
+#708 merges; the `Deployment` view remains unchanged. Storage accounting involves trusted operator
+parties and small NEAR amounts. If a storage-credit shortfall needs reconciliation, manual
+reconciliation through a protocol-owned top-up is acceptable; solvency checks may block storage
+withdrawals until it is resolved.
 
 The following checks are required before rollout:
 
