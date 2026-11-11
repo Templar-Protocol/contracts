@@ -44,9 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Production submissions remain disabled pending real converter semantics and
   intermediate-state safety admission.
 - Governance `create-proposal` and `execute-proposal` accept optional `--call-gas`
-  for the outer governance call, retaining 300 Tgas when omitted. On creation,
-  put it before `oracle`/`self`; the operation's separate `--gas` still controls
-  the target call frozen in the proposal.
+  overrides. Omitted gas is budgeted by the gateway from payload work, a buffer,
+  and execution's stored child reservation, subject to live protocol limits.
+  On creation, put an override before `oracle`/`self`; the operation's separate
+  `--gas` still controls the target call frozen in the proposal. Existing plans
+  retain their approved bytes and gas.
 
 ### Changed
 

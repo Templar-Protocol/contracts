@@ -247,7 +247,7 @@ def manual_trip(run, stage, feed, tripped, before_write, oracle_checkpoint):
                                               "tripped": tripped})).decode("ascii")
         transition = predict_manual_trip(run, feed, tripped, metadata, oracle_checkpoint)
         argv = ["proxy-oracle", "governance", "create-proposal", "--governance-id", feed["governance"],
-                "--id", str(proposal_id), "--requested-ttl", "0ns", "--call-gas", "100Tgas"]
+                "--id", str(proposal_id), "--requested-ttl", "0ns"]
         operation_args = ["oracle", "set-manual-trip", "--price-id", feed["feed"], "--metadata-base64", metadata]
         if tripped:
             operation_args.append("--tripped")
@@ -318,7 +318,7 @@ def manual_trip(run, stage, feed, tripped, before_write, oracle_checkpoint):
         # If the proposal disappeared, only the durable ordinary lifecycle may reconcile
         # an already executed transaction; it must never infer success from consumption.
         plan_path = run.plan_cmd(["proxy-oracle", "governance", "execute-proposal", "--governance-id",
-                                  feed["governance"], "--id", str(spec["governance_id"]), "--call-gas", "200Tgas"],
+                                  feed["governance"], "--id", str(spec["governance_id"])],
                                  run.campaign["dao"], directory / "execute.plan.json")
         args = decoded_call(run.load(relative(run, plan_path)), feed["governance"], "execute_proposal")
         require(args == {"id": spec["governance_id"]}, "execution plan ID differs")

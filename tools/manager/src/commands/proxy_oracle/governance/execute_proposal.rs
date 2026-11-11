@@ -18,7 +18,7 @@ pub struct ExecuteProposalArgs {
     /// failing if it has not yet matured.
     #[arg(long, conflicts_with = "print")]
     when_ready: bool,
-    /// Gas attached to the outer governance execute call (default: 300 Tgas).
+    /// Optional outer-call gas override; otherwise the gateway budgets stored child gas and wrapper work.
     /// The target operation retains the gas frozen in its proposal.
     #[arg(long, value_name = "GAS")]
     call_gas: Option<Gas>,

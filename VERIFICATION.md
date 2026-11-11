@@ -8,9 +8,9 @@ production submissions remain disabled. No production deployment, conversion,
 release or PR merge was performed. Deterministic genuine Ed25519 signatures do
 not establish distributed-MPC availability.
 
-The controlled-local implementation is complete on `feat/hot-omni-4-orchestration`.
-Historical full-matrix evidence and current focused verification are distinguished
-below.
+Controlled-local code is on `feat/hot-omni-4-orchestration`. This follow-up verifies
+the canonical DAO fixture and automatic gas; historical full-matrix evidence and
+earlier focused verification are distinguished below. Open review findings remain.
 [Published-head CI](https://github.com/Templar-Protocol/contracts/actions?query=branch%3Afeat%2Fhot-omni-4-orchestration)
 and human review are separate from this local evidence; no merge approval is claimed.
 
@@ -18,7 +18,57 @@ The approved full-matrix environment is the repository's CI-standard
 `NEAR_SANDBOX_BLOCK_MS=120`, with serialized node cases. Actual chain validity and
 expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
 
-## Frozen full-stack scope
+## Canonical DAO fixture and governance gas follow-up
+
+PR #713 implementation: `e4795353df81ddb7108cf0da597f9b27e777bfb6`.
+The fixture is now current finalized `view_code` from mainnet
+`templar.sputnik-dao.near` (observed version `2.3.1`), not an upstream source build.
+RPC code hash: `4zSoHkLjJWZm34Psd4Eq2WUXHELt6LxtKmUXpsZWAECp`.
+WASM SHA-256: `3b4a563dcbfb10f004bd1f912a35df0c83a6eaade8cd8f70bc626d9ab92f19b9`.
+The downloader never specifies a historical block or automatically changes pins.
+A warm check verifies the pinned bytes offline; it does not prove the live account
+has remained unchanged since the fetch.
+
+| Surface | Command / scenario | Observed result |
+|---|---|---|
+| Canonical download | `just fetch-sputnik-fixture --refetch`; `just fetch-sputnik-fixture --check` in PR1 | Live finalized download and offline checksum check passed. Executable help, Python AST parse and wrapper Bash syntax passed. |
+| Downloader integrity | Throwaway local HTTP-server smoke exercising the actual downloader entrypoint | Current/final query, cold fetch and offline warm/check passed. Wrong code hash, wrong decoded SHA-256, invalid base64, invalid WASM and RPC errors each refused without replacing verified cache; missing offline cache refused without networking. |
+| DTO, schema and gas policy | `just test-fast -p templar-gateway-methods-spec -p templar-gateway-methods-dispatch -p templar-gateway-core -p templar-gateway-catalog -p templar-proxy-oracle-near-governance-common --lib` | All 178 passed; one ignored generator skipped. Canonical missing history/numeric votes and modern present history/decimal strings retain their wire forms. Numeric votes above `u64` or fractional values fail closed instead of being rounded; decimal strings support full `u128`. |
+| Real DAO/governance | Rebuild with `./script/prebuild-test-contracts.sh --artifact proxy-governance`, then `env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-gateway-core -p templar-proxy-oracle-near-governance-contract --test dao --test governed_operations --test-threads 1` | All seven passed: policy/bond/threshold behavior, default and exact override budgets, frozen action values/argument bytes, detached target failure visibility, target builders, Borsh entrypoints, oracle upgrade and governance self-upgrade. |
+| PR1 compile/lint | `cargo check --workspace`; `cargo clippy -p templar-gateway-methods-spec -p templar-gateway-methods-dispatch -p templar-gateway-core -p templar-gateway-testing -p templar-proxy-oracle-near-governance-common -p templar-proxy-oracle-near-governance-contract --all-targets -- -D warnings`; final `cargo clippy -p templar-gateway-core --test dao -- -D warnings` | Passed. The known workspace unknown `clippy::ignore_without_reason` warning remains; no change-specific finding remains. Formatting and whitespace checks passed. |
+| PR3 typed consumers | `just test-fast -p templar-manager`; `env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --test dao_mpc_patch --test-threads 1`; manager all-target Clippy and final `--test dao_mpc_patch` Clippy | All 627 fast tests and four real-Sputnik stamped-patch cases passed with the canonical fixture. Both transports, live-state drift refusal and actual-period expiry passed. PR3's finalized-state assertion now waits for transaction `FINAL`, not an arbitrary height jump; complete raw-state/code/nonce assertions remain intact. |
+| Integrated fast/compile/lint | `just test-fast -p templar-manager -p templar-gateway-core -p templar-gateway-methods-spec -p templar-gateway-methods-dispatch -p templar-gateway-catalog -p templar-gateway-testing -p templar-sandbox`; `cargo check --workspace`; `cargo clippy -p templar-manager -p templar-gateway-core --all-targets --features templar-manager/asset-migration-acceptance -- -D warnings` | All 808 fast tests passed; 20 node/ignored tests excluded. Compilation and Clippy passed with only the known unknown-lint warning. No new one-off CI target or timeout increase. |
+| Automatic-gas script consumers | Two complete/restart opt-in commands below, through real CLI/shell/Python/neard | Both passed with canonical Sputnik and no script-authored outer gas override: FT/delegate/local restore and MT/raw/global-hash restore. These are two focused cases, not a rerun of all 79 script cases. Existing plans are loaded unchanged rather than replanned. |
+| Actual CLI/config/docs surface | `target/debug/tmplrmgr proxy-oracle governance create-proposal --help`; corresponding `execute-proposal --help`; changed Python AST parse; opt-in manifest and fixture-guide link inspection | Passed. Help describes automatic budgets and optional overrides. Both one-off targets still require `asset-migration-acceptance`; NEAR CI remains 45 minutes. |
+
+Current complete/restart commands:
+
+```bash
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration complete_and_restart_without_duplicate_financial_writes::case_1_borrow_ft --test-threads 1
+env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --features asset-migration-acceptance --test asset_migration complete_and_restart_without_duplicate_financial_writes::case_2_collateral_mt --test-threads 1
+```
+
+Receipt calibration used a throwaway real-neard program at 120 ms cadence, the
+canonical DAO and explicit 200 Tgas outer calls. Values below are governance
+receipt gas burnt, not child reservations or total DAO execution cost.
+
+| Operation | Create (Tgas) | Execute (Tgas) |
+|---|---:|---:|
+| Role edit | 1.911 | 2.268 |
+| Target call with 100 Tgas reserved | 1.967 | 2.220 |
+| Artificial 32 KiB method policy | 6.733 | 3.165 |
+
+All six measured calls succeeded. An artificial 128 KiB policy sample subsequently
+failed in a DAO receipt despite a governance-created event; its exact cause was
+not diagnosed. It is not counted as success. These samples support conservative
+allowances, not a population-level 99% guarantee for arbitrary payloads, DAO
+versions, policies or multi-action proposals. The throwaway program was removed.
+
+The following scope and evidence are earlier checkpoints, not proof against the
+new canonical fixture.
+
+
+## Historical simplification target
 
 The selected target is all four PRs, each against its immediate base: 121 distinct
 changed files across these frozen comparisons.
@@ -30,7 +80,7 @@ changed files across these frozen comparisons.
 | #715 | `f1346cd71eb6910d316946e41be626508787e0a5` | `fc049c59148aa38430c6d6da361f4354327d0648` |
 | #717 | `fc049c59148aa38430c6d6da361f4354327d0648` | `bbf0ae392f4c6f94e79d0fcab8ea5530bc6e4f75` |
 
-## Exercised evidence
+## Earlier checkpoint evidence
 
 | Surface | Command / scenario | Observed result |
 |---|---|---|
@@ -63,11 +113,11 @@ changed files across these frozen comparisons.
 Current converter test-WASM SHA-256:
 `816ca6854413c9e8cdaf1263b3a9c3cc8f4f1505ec7163fc7b8b5dcbd8cfa4dc`.
 
-Pinned real Sputnik revision:
+Historical source-built Sputnik fixture used by the earlier evidence:
 `5434a59dec23ee0c49df8c8c4350c208a7e75b0b`; WASM SHA-256:
 `389494bc38a43140edc2717f364c8bb8bcf05a9dcc5ace3dfdb956d574a6bbb3`.
 
-### Current focused script commands
+### Earlier focused script commands
 
 Each invocation passed; together they selected 11 distinct script cases.
 
@@ -83,6 +133,11 @@ env NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager --fea
 
 ## Review and operational limits
 
+- Fresh review findings outside this PR713-specific follow-up remain unresolved:
+  [decimal edit admission in #714](https://github.com/Templar-Protocol/contracts/pull/714#discussion_r4533461930),
+  [ambiguous proposal-submission identity in #715](https://github.com/Templar-Protocol/contracts/pull/715#discussion_r4533480537),
+  and [interrupted journal-anchor publication in #717](https://github.com/Templar-Protocol/contracts/pull/717#discussion_r4533499090).
+  They are not claimed fixed by this batch; the stack is not merge-ready.
 - Historical full-matrix and current focused acceptance are separate. CI and
   human review must assess the exact published head; local proof is not approval.
 - Native read batching and concurrent independent native observations are
