@@ -22,6 +22,7 @@ near-contract-standards.workspace = true
 near-openapi-client.workspace = true
 reqwest.workspace = true
 near-sdk = { workspace = true, default-features = false, features = ["non-contract-usage"] }
+near-sdk-contract-tools.workspace = true
 serde.workspace = true
 serde_json_canonicalizer.workspace = true
 serde_json.workspace = true

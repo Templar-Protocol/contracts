@@ -33,6 +33,10 @@ pub const MAX_PENDING_PROPOSALS: u32 = 64;
 /// Gas a governance-driven `admin_upgrade` target call needs (a full contract self-deploy + migrate).
 pub const GAS_FOR_ADMIN_UPGRADE: Gas = Gas::from_tgas(280);
 
+/// Child gas reserved by governance for the migration batched onto a self-upgrade.
+/// Off-chain execution planners must leave this gas available after wrapper execution.
+pub const GAS_FOR_SELF_UPGRADE_MIGRATE: Gas = Gas::from_tgas(250);
+
 /// A raw call dispatched to the governed proxy oracle. The generic form every target operation now
 /// takes: governance validates only that the method is named and gas is non-zero — semantic
 /// validation is the target contract's responsibility.

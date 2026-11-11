@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::Nanoseconds;
 use templar_gateway_macros::MethodSpec;
-use templar_gateway_types::ProposalEncoding;
+use templar_gateway_types::{NearGas, ProposalEncoding};
 use templar_proxy_oracle_near_governance_common::{
     GovernancePolicy, GovernancePolicyWire, Operation, Proposal, Role,
 };
@@ -110,6 +110,11 @@ pub struct CreateProposal {
     pub requested_ttl: Nanoseconds,
     #[serde(default, skip_serializing_if = "ProposalEncoding::is_json")]
     pub encoding: ProposalEncoding,
+    /// Optional attached gas override. Omitted gas uses a conservative payload-sized budget,
+    /// leaving headroom for a single Sputnik forwarded call. Planning checks live protocol
+    /// limits and rejects child reservations that leave no possible execution headroom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gas: Option<NearGas>,
 }
 
 /// Cancel a governance proposal.
@@ -126,6 +131,13 @@ pub struct CancelProposal {
 pub struct ExecuteProposal {
     pub governance_id: near_account_id::AccountId,
     pub id: u32,
+    /// Optional attached gas override. Omitted gas is planned from the stored operation:
+    /// declared target gas or self-upgrade migration reservation plus payload-sized wrapper
+    /// headroom and buffer. Defaults also leave a conservative single-call Sputnik allowance.
+    /// Overrides must exceed any child reservation and stay within the live protocol cap;
+    /// they are not guaranteed sufficient, or safe to forward through an arbitrary DAO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gas: Option<NearGas>,
 }
 
 #[cfg(test)]
@@ -133,7 +145,7 @@ mod tests {
     use templar_common::Nanoseconds;
     use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation, Role};
 
-    use super::{CreateProposal, ProposalEncoding};
+    use super::{CreateProposal, ExecuteProposal, ProposalEncoding};
 
     fn body(encoding: ProposalEncoding) -> CreateProposal {
         CreateProposal {
@@ -146,7 +158,30 @@ mod tests {
             }),
             requested_ttl: Nanoseconds::zero(),
             encoding,
+            gas: None,
         }
+    }
+
+    #[test]
+    fn omitted_gas_preserves_legacy_idempotency_params() {
+        let create = serde_json::to_value(body(ProposalEncoding::Json)).unwrap();
+        assert!(create.get("gas").is_none(), "{create}");
+        let legacy_create = serde_json::json!({
+            "governance_id": "gov.near", "id": 7,
+            "operation": {"Reflexive": {"SetRole": {
+                "account_id": "op.near", "role": "Admin", "set": true
+            }}},
+            "requested_ttl": "0"
+        });
+        let decoded: CreateProposal = serde_json::from_value(legacy_create.clone()).unwrap();
+        assert_eq!(decoded.gas, None);
+        assert_eq!(create, legacy_create);
+        assert_eq!(serde_json::to_value(decoded).unwrap(), legacy_create);
+
+        let legacy_execute = serde_json::json!({"governance_id": "gov.near", "id": 7});
+        let decoded: ExecuteProposal = serde_json::from_value(legacy_execute.clone()).unwrap();
+        assert_eq!(decoded.gas, None);
+        assert_eq!(serde_json::to_value(decoded).unwrap(), legacy_execute);
     }
 
     /// The persisted idempotency fingerprint hashes these params, so a default request must

@@ -4,6 +4,7 @@
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
+use near_sdk::Gas;
 use serde::Serialize;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_client::Client;
@@ -22,6 +23,7 @@ use crate::context::{print_json, CliContext};
 /// proposal's TTL to elapse before executing it.
 pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow::Result<()> {
     let execute_when_ready = args.execute_when_ready();
+    let execute_call_gas = args.execute_call_gas();
     let authorization = Authorization::try_from(&args.signer)?;
     let preflight = args.preflight.clone();
     let requires_upgrade_preflight = args.requires_upgrade_preflight();
@@ -77,7 +79,8 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
             super::upgrade_preflight::gate_governed_oracle(&ctx, &governance_id, &preflight)
                 .await?;
         }
-        let result = execute_now(&ctx, &client, &signer, &governance_id, id).await?;
+        let result =
+            execute_now(&ctx, &client, &signer, &governance_id, id, execute_call_gas).await?;
         Some(result)
     } else {
         None
@@ -120,6 +123,7 @@ async fn execute_now(
     signer: &ManagedAccountId,
     governance_id: &AccountId,
     id: u32,
+    call_gas: Option<Gas>,
 ) -> anyhow::Result<WriteOperationResult> {
     let result = client
         .execute_as(
@@ -127,6 +131,7 @@ async fn execute_now(
             gov::ExecuteProposal {
                 governance_id: governance_id.clone(),
                 id,
+                gas: call_gas,
             },
         )
         .await?;

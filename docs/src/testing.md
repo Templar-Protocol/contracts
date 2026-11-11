@@ -12,6 +12,16 @@ Use `just test-fast` for the complete non-node gate, including non-node
 integration targets, or `just test-sandbox` for the node-backed gate. The sandbox recipe prebuilds NEAR contracts before
 starting its pooled `neard` instances; pass `--stale` to reuse the contracts already built into `target/near`.
 
+The full prebuild also provisions the hash-pinned real Sputnik DAO deployed at
+mainnet `templar.sputnik-dao.near` (version `2.3.1`). `just fetch-sputnik-fixture`
+downloads its current finalized `view_code` using only Python 3.11+ and HTTPS;
+it accepts only the checked-in code hash and decoded Wasm SHA-256.
+`just fetch-sputnik-fixture --check` verifies the cached fixture without network,
+and `--refetch` downloads again without changing either pin. A canonical DAO
+upgrade fails closed; no historical-block lookup or source-build fallback is
+used. See [the fixture provisioning guide](../../contract/artifacts/README.md#pinned-external-sputnik-dao-fixture)
+for the cache path and pin-update policy.
+
 Run the artifact drift check separately when validating the release catalog —
 pure in-memory invariant checks, no builds:
 
@@ -102,3 +112,17 @@ Because local blocks are faster than CI's, a test that leans on *incidental*
 block cadence to cross a time boundary will pass in one place and fail in the
 other. Advance chain time explicitly with `fast_forward` rather than relying on
 how long some operations happen to take.
+
+### Sandbox State Patches
+
+The workspace pins `near-sandbox = "=0.3.11"` so pooled nodes, owned harnesses,
+and native replay all launch nearcore **2.12.0**. This is the first stable release
+containing [the commit-aware patch tracker](https://github.com/near/nearcore/pull/15534).
+Nearcore 2.11.0 and 2.11.1 can permanently discard a patch during block
+preprocessing or an old-chunk transition while acknowledging its consumption.
+Polling longer cannot recover a discarded patch; do not compensate by resending
+records or relaxing finalized-state checks.
+
+The pinned RPC waits for committed state, not finalized visibility. Continue
+waiting for the patched key or exact metadata to reach `Final` before signing
+or capturing a replay checkpoint.

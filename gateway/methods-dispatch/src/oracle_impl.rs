@@ -320,6 +320,51 @@ async fn get_price_onchain<C: HasNearClient>(
     }
 }
 
+/// Resolve every configured source, then check freshness against one chain clock.
+pub(crate) async fn get_fresh_proxy_source_price<C: HasNearClient>(
+    ctx: &C,
+    oracle_id: AccountId,
+    price_id: PriceIdentifier,
+    max_age: Nanoseconds,
+) -> GatewayResult<Option<pyth::Price>> {
+    let Some(proxy) = get_proxy(ctx, oracle_id, price_id).await? else {
+        return Ok(None);
+    };
+    let requested_filter = templar_proxy_oracle_kernel::proxy::FreshnessFilter::new(
+        Some(max_age),
+        Some(Nanoseconds::from_ns(0)),
+    );
+    let mut prices = Vec::new();
+    for source in proxy.sources() {
+        // Disable the legacy resolver's wall-clock age restriction. Apply both
+        // age limits after every source view has completed.
+        let Some(price) =
+            resolve_proxy_entry_price_onchain(ctx, source, Nanoseconds::from_ns(u64::MAX))
+                .await?
+                .as_ref()
+                .and_then(convert::pyth_price_try_to_kernel)
+        else {
+            return Ok(None);
+        };
+        if price.price <= 0 {
+            return Ok(None);
+        }
+        prices.push(Some(price));
+    }
+    let now = Nanoseconds::from_ns(ctx.near_client().chain().block(None).await?.timestamp_ns);
+    if prices.iter().flatten().any(|price| {
+        !proxy.freshness_filter.accepts(price, now) || !requested_filter.accepts(price, now)
+    }) {
+        return Ok(None);
+    }
+    Ok(proxy
+        .aggregator
+        .aggregate(prices)
+        .ok()
+        .as_ref()
+        .and_then(convert::pyth_price_try_from_kernel))
+}
+
 async fn resolve_proxy_entry_price<C: HasNearClient>(
     ctx: &C,
     inputs: &ResolutionInputs,

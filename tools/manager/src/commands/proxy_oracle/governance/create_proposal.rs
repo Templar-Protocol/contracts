@@ -42,6 +42,9 @@ pub struct CreateProposal {
     /// Blocks for the full (effective) TTL, so it is only practical for short ones.
     #[arg(long, conflicts_with = "print")]
     execute_when_ready: bool,
+    /// Gas attached to the subsequent outer execution call; does not change the proposal.
+    #[arg(long, value_name = "GAS", requires = "execute_when_ready")]
+    execute_call_gas: Option<Gas>,
     /// Argument encoding for the contract call. `borsh` is cheaper and carries larger payloads, but
     /// leaves an operation explorers and indexers cannot read — use it for wasm upgrades.
     #[arg(long, value_enum, default_value = "json")]
@@ -63,6 +66,10 @@ impl CreateProposal {
     /// Whether to wait for maturity and execute after creating.
     pub fn execute_when_ready(&self) -> bool {
         self.execute_when_ready
+    }
+
+    pub fn execute_call_gas(&self) -> Option<Gas> {
+        self.execute_call_gas
     }
 
     /// Whether this proposal has to be preflighted against the state new oracle code will load.
@@ -111,6 +118,7 @@ impl CreateProposal {
             operation: self.operation.into_operation()?,
             requested_ttl: self.requested_ttl,
             encoding: self.encoding,
+            gas: None,
         })
     }
 }

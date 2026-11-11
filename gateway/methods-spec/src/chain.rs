@@ -20,3 +20,17 @@ pub struct GetBlock {
 )]
 #[method(read = "chain.getProtocolLimits", output = templar_gateway_types::ProtocolLimits)]
 pub struct GetProtocolLimits;
+
+/// Fetch the live protocol transaction validity window in blocks.
+#[derive(
+    MethodSpec, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default,
+)]
+#[method(read = "chain.getTransactionValidityPeriod", output = u64)]
+pub struct GetTransactionValidityPeriod;
+
+/// Fetch the endpoint's exact chain ID and genesis hash.
+#[derive(
+    MethodSpec, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default,
+)]
+#[method(read = "chain.getIdentity", output = templar_gateway_types::ChainIdentity)]
+pub struct GetIdentity;

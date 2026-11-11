@@ -126,6 +126,22 @@ impl BoundContractClient for MarketClient<'_> {
 }
 
 impl MarketClient<'_> {
+    /// Read configuration at the exact block used by a complete state snapshot.
+    /// This bypasses the immutable configuration cache used by ordinary reads.
+    pub async fn get_configuration_at(
+        &self,
+        block_hash: templar_gateway_types::CryptoHash,
+    ) -> crate::GatewayResult<MarketConfiguration> {
+        self.inner
+            .view_function_at(
+                self.contract_id.clone(),
+                "get_configuration",
+                serde_json::to_vec(&())?,
+                near_api::types::Reference::AtBlockHash(block_hash.0),
+            )
+            .await
+    }
+
     pub async fn cached_get_configuration(&self) -> crate::GatewayResult<MarketConfiguration> {
         load_cached(
             &self.inner.cache().market.configuration,

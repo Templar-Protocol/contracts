@@ -2,13 +2,16 @@ use async_trait::async_trait;
 use near_api::types::transaction::actions::{
     Action, DeployContractAction, FunctionCallAction, TransferAction,
 };
-use near_api::types::transaction::result::{ExecutionOutcome, ValueOrReceiptId};
+use near_api::types::transaction::result::{
+    ExecutionFinalResult, ExecutionOutcome, ValueOrReceiptId,
+};
 use templar_gateway_core::{
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::tx;
 use templar_gateway_types::{
-    operation::ReceiptStatus, protocol::MAX_ACTIONS_PER_RECEIPT, NearGas, NearToken,
+    operation::ReceiptStatus, protocol::MAX_ACTIONS_PER_RECEIPT, ContractMethodName, CryptoHash,
+    NearGas, NearToken,
 };
 
 use crate::Dispatch;
@@ -21,10 +24,12 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
             .chain()
             .get_transaction(
                 request.tx_hash.into(),
-                request.sender_account_id,
+                request.sender_account_id.clone(),
                 request.wait_until.unwrap_or_default().into(),
             )
             .await?;
+
+        let transaction = transaction_inspection(&result, &request)?;
 
         // Sum tokens burnt across the transaction and all receipts (the signer's
         // true cost) before consuming `result` for the return value below.
@@ -44,6 +49,7 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
             .collect();
 
         Ok(tx::GetResult {
+            transaction,
             receipts,
             status: if result.is_success() {
                 tx::Status::Succeeded
@@ -75,6 +81,59 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
             },
         })
     }
+}
+
+fn transaction_inspection(
+    result: &ExecutionFinalResult,
+    request: &tx::Get,
+) -> GatewayResult<Option<tx::TransactionInspection>> {
+    if result.is_pending() {
+        return Ok(None);
+    }
+    let original = result.transaction();
+    // SignedTransactionView lacks the original block hash, so the SDK's
+    // reconstructed Transaction cannot reproduce its original transaction hash.
+    let hash = CryptoHash(result.outcome().transaction_hash);
+    if hash != request.tx_hash || original.signer_id() != &request.sender_account_id {
+        return Err(GatewayError::NearQuery(
+            "transaction status metadata does not match the requested hash and sender".to_owned(),
+        ));
+    }
+    let action_count = u32::try_from(original.actions().len())
+        .map_err(|_| GatewayError::NearQuery("transaction action count exceeds u32".to_owned()))?;
+    let mut function_calls = Vec::new();
+    let mut delegate_actions = Vec::new();
+    for (action, index) in original.actions().iter().zip(0..action_count) {
+        match action {
+            Action::FunctionCall(call) => function_calls.push(tx::FunctionCallInspection {
+                index,
+                method_name: ContractMethodName(call.method_name.clone()),
+                args: call.args.clone().into(),
+                gas: call.gas,
+                deposit: call.deposit,
+            }),
+            Action::Delegate(delegate) => {
+                let message = near_primitives::signable_message::SignableMessage::new(
+                    &delegate.delegate_action,
+                    near_primitives::signable_message::SignableMessageType::DelegateAction,
+                );
+                let hash = near_primitives::hash::CryptoHash::hash_borsh(message);
+                delegate_actions.push(tx::DelegateActionInspection {
+                    index,
+                    payload_hash: CryptoHash(near_api::CryptoHash(hash.0)),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(Some(tx::TransactionInspection {
+        hash,
+        signer_id: original.signer_id().clone(),
+        receiver_id: original.receiver_id().clone(),
+        action_count,
+        function_calls,
+        delegate_actions,
+    }))
 }
 
 fn receipt_record(outcome: ExecutionOutcome, encoding: tx::ValueEncoding) -> tx::ReceiptRecord {

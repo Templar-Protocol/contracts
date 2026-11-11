@@ -149,6 +149,53 @@ artifacts are missing from `target/near` and exit non-zero without building.
 ./script/prebuild-test-contracts.sh --artifact market,mock-ft
 ```
 
+### Pinned external Sputnik DAO fixture
+
+The complete test prebuild also provisions the **real Sputnik DAO** deployed at
+mainnet `templar.sputnik-dao.near` (version `2.3.1`). It is external test data,
+not an `ArtifactId`, a mock, or a Templar release. Explicit `--artifact` selections
+keep building only the selected workspace contracts. The full `--check` path and
+`just test-sandbox --stale` verify the external fixture as well.
+
+```bash
+just fetch-sputnik-fixture
+just fetch-sputnik-fixture --check
+just fetch-sputnik-fixture --refetch
+```
+
+Provisioning requires only Python 3.11+ and, for a cold cache or `--refetch`,
+access to the mainnet RPC endpoint recorded in
+`gateway/testing/fixtures/sputnik-dao.json`. The downloader requests the account's
+**current finalized** code with `query` / `view_code` and `finality = final`;
+it never queries an old block or builds a replacement contract from source.
+
+The manifest pins the expected code hash and decoded Wasm SHA-256
+`3b4a563dcbfb10f004bd1f912a35df0c83a6eaade8cd8f70bc626d9ab92f19b9`.
+The downloader validates the RPC code hash, base64, Wasm header, and decoded
+checksum before atomically publishing
+`target/test-fixtures/sputnik-dao/sputnikdao2.wasm`. A canonical-account upgrade
+fails closed without replacing cached bytes. `--refetch` explicitly downloads
+again under the **same pins**; it cannot accept an upgrade. A pin change requires
+reviewed fixture evidence, not a command-line bypass.
+
+Warm verification is offline: both the default cached path and `--check`
+validate existing bytes without contacting RPC. Missing or mismatching cached
+bytes fail under `--check`; mismatching bytes also fail on the default path.
+The Wasm remains untracked and is never entered into the release catalog.
+
+The node CI job caches this file separately under the fixture manifest's hash;
+the normal Rust cache prunes non-Cargo directories under `target`. Cache restore
+never replaces checksum verification. Cold or evicted caches still need the RPC
+and the recorded code to remain deployed. If the canonical account changes,
+preserve previously verified bytes or review a new pin; the downloader cannot
+recover the old pin from current state and never silently follows an upgrade.
+
+Rust sandbox tests use `wasm::sputnik_dao().await` or
+`SandboxHarness::deploy_sputnik_dao(label, policy).await`. The deployment helper
+accepts the pinned dependency's complete `sputnikdao2::Policy`, including
+multi-member groups, vote thresholds, and restricted proposer permissions.
+The loader rechecks the fixture's checksum before caching its bytes.
+
 ## Cutting a release
 
 Merging the release PR tags the version but builds nothing. Cut the WASM for a

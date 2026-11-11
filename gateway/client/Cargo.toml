@@ -13,8 +13,10 @@ near-api.workspace = true
 url.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true
+templar-gateway-methods-spec.workspace = true
 templar-gateway-store.workspace = true
 templar-gateway-types.workspace = true
+templar-proxy-oracle-near-governance-common.workspace = true
 
 [features]
 # Derive `clap::ValueEnum` on `Network` for CLI consumers.

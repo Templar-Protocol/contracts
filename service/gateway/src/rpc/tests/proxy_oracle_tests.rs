@@ -79,6 +79,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
                 ),
                 requested_ttl: Nanoseconds::zero(),
                 encoding: ProposalEncoding::Json,
+                gas: None,
             },
         })
         .await?;
@@ -112,6 +113,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             body: proxy_oracle_governance::ExecuteProposal {
                 governance_id: governance_id.clone(),
                 id: 1,
+                gas: None,
             },
         })
         .await?;
@@ -152,6 +154,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
                 }),
                 requested_ttl: Nanoseconds::zero(),
                 encoding: ProposalEncoding::Json,
+                gas: None,
             },
         })
         .await?;
@@ -396,17 +399,21 @@ async fn borsh_encoding_carries_a_proposal_json_cannot() -> Result<()> {
             operation: oversized.clone(),
             requested_ttl: Nanoseconds::zero(),
             encoding,
+            gas: None,
         },
     };
 
     let rejected = stack
-        .controller
-        .request::<proxy_oracle_governance::CreateProposal>(&create(ProposalEncoding::Json))
-        .await
-        .expect_err("a json transaction this large should be rejected")
-        .to_string();
-    // 413, not `TransactionSizeExceeded`: the JSON-RPC body cap trips before validation.
-    assert!(rejected.contains("status: 413"), "{rejected}");
+        .gateway
+        .request_write::<
+            proxy_oracle_governance::CreateProposal,
+            templar_gateway_methods_dispatch::Dispatch,
+        >(create(ProposalEncoding::Json))
+        .await;
+    assert!(matches!(
+        rejected,
+        Err(templar_gateway_core::GatewayError::RequestPreconditionFailed(_))
+    ));
 
     // The rejected transaction never reached the contract, so id 1 is still next.
     let _ = stack

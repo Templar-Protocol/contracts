@@ -1,6 +1,7 @@
 pub mod account;
 pub mod chain;
 pub mod contract;
+pub mod dao;
 pub mod ft;
 pub mod intents;
 pub mod lazer;
@@ -40,16 +41,21 @@ pub mod vault;
 macro_rules! for_each_read_method {
     ($callback:ident) => {
         $callback!($crate::account::Get);
+        $callback!($crate::account::GetSpendableBalance);
         $callback!($crate::account::GetCode);
         $callback!($crate::account::ViewState);
         $callback!($crate::account::GetAccessKey);
         $callback!($crate::account::ListAccessKeys);
         $callback!($crate::chain::GetBlock);
+        $callback!($crate::chain::GetIdentity);
         $callback!($crate::chain::GetProtocolLimits);
+        $callback!($crate::chain::GetTransactionValidityPeriod);
         $callback!($crate::contract::ViewFunction);
         $callback!($crate::contract::GetKind);
         $callback!($crate::contract::GetVersion);
         $callback!($crate::contract::GetStateVersion);
+        $callback!($crate::dao::GetPolicy);
+        $callback!($crate::dao::GetProposal);
         $callback!($crate::ft::GetBalanceOf);
         $callback!($crate::lazer::GetFeedsData);
         $callback!($crate::lst_oracle::GetOracleId);
@@ -103,6 +109,8 @@ macro_rules! for_each_read_method {
         $callback!($crate::mt::GetBatchSupply);
         $callback!($crate::proxy_oracle::ListProxies);
         $callback!($crate::proxy_oracle::GetProxy);
+        $callback!($crate::proxy_oracle::GetCachedPrice);
+        $callback!($crate::proxy_oracle::GetFreshSourcePrice);
         $callback!($crate::proxy_oracle::PriceFeedExists);
         $callback!($crate::proxy_oracle::GetProxyCircuitBreakerSet);
         $callback!($crate::proxy_oracle_governance::NextProposalId);
@@ -126,6 +134,7 @@ macro_rules! for_each_read_method {
         $callback!($crate::storage::GetBalanceBounds);
         $callback!($crate::storage::GetBalanceOf);
         $callback!($crate::token::GetBalanceOf);
+        $callback!($crate::token::GetMetadata);
         $callback!($crate::tx::Get);
         $callback!($crate::universal_account::GetKey);
         $callback!($crate::oracle::GetPriceResolutionDependencies);
@@ -151,6 +160,7 @@ macro_rules! for_each_write_method {
         $callback!($crate::account::AddKey);
         $callback!($crate::account::DeleteKey);
         $callback!($crate::account::Delete);
+        $callback!($crate::dao::AddProposal);
         $callback!($crate::ft::Transfer);
         $callback!($crate::ft::TransferCall);
         $callback!($crate::intents::ExecuteIntents);

@@ -155,6 +155,10 @@ sandbox-up *args:
     done
     SANDBOX_NODE_COUNT='{{ sandbox_test_threads }}' ./script/sandbox-up.sh
 
+# Fetch the hash-pinned canonical Sputnik DAO test fixture; never a release.
+fetch-sputnik-fixture *args:
+    python3 ./script/fetch-sputnik-fixture.py {{ args }}
+
 # Benchmark the sandbox harness primitives on a dedicated neard (never a pooled
 # node) — block-latency floor, per-tx and per-patch costs, fixture setup.
 bench-sandbox *args:
