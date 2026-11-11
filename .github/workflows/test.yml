@@ -115,7 +115,7 @@ jobs:
               - 'script/check-artifact-drift.sh'
               - 'script/postgres-up.sh'
               - 'script/prebuild-test-contracts.sh'
-              - 'script/build-sputnik-fixture.py'
+              - 'script/fetch-sputnik-fixture.py'
               - 'script/sandbox-down.sh'
               - 'script/sandbox-up.sh'
               - 'service/funding-bridge/src/**'

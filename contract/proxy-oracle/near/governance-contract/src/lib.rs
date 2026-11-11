@@ -55,7 +55,8 @@ impl_versioned_state!(Contract, State, state::migration::Migration);
 
 impl Contract {
     /// Gas for the `migrate` call batched onto a `SelfUpgrade` self-deploy of this contract.
-    pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
+    pub const GAS_FOR_MIGRATE: Gas =
+        templar_proxy_oracle_near_governance_common::GAS_FOR_SELF_UPGRADE_MIGRATE;
 
     fn assert_authorized(&self, operation: &Operation) {
         let required = operation.required_role(self.header.ttls());

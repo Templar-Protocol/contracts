@@ -79,7 +79,10 @@ Methods in the same namespace should stay at roughly the same level of abstracti
 ## Sputnik DAO Proposals
 
 `dao.getPolicy { dao_id }` returns the native policy; `dao.getProposal { dao_id, id }`
-returns the native flattened proposal, including its ID. Both use the pinned Sputnik wire types.
+returns the flattened proposal, including its ID. Policy and proposal-input types reuse
+the pinned Sputnik serializers. The typed proposal read boundary also preserves the
+canonical deployed DAO's numeric vote counts and absent audit history, alongside
+modern decimal-string counts and available history. Missing history is not an empty log.
 `dao.addProposal { dao_id, proposal }` plans `add_proposal` with the current exact proposal bond
 and 30 Tgas. Policy preflight rejects known-ineligible proposers, including proposal-kind-specific
 permissions; delegated-token membership is left to the contract. Authorization and the bond can
@@ -90,11 +93,18 @@ the submission, then fetch that exact proposal. Do not derive it from a later pr
 Execution and downstream receipt success must be verified separately.
 
 `proxyOracleGovernance.createProposal` and `executeProposal` accept optional exact
-`gas` overrides while preserving their direct-call defaults. A proposal forwarded
-through Sputnik must leave gas for the DAO and its callback; forwarding the full
-prepaid maximum cannot execute. Budget the governance wrapper and its inner target
-separately. The local migration fixture exercises both threshold-approved calls,
-the effective governance timelock, and the actual target receipt.
+`gas` overrides. When omitted, planning budgets payload-sized governance work and
+a safety buffer; execution additionally reserves the stored target call's declared
+gas, or the authoritative self-upgrade migration gas and deployment overhead.
+Defaults leave a conservative single-call Sputnik forwarding/callback allowance
+within the live protocol cap. Impossible budgets are rejected, never clamped.
+An explicit override remains available for direct or separately budgeted callers,
+but must exceed the child reservation and satisfy the protocol cap.
+
+These are conservative, receipt-calibrated planning allowances, not a statistical
+99% guarantee for arbitrary DAO versions, policies, payloads or multi-action proposals.
+Already-approved child gas and transaction bytes are never rewritten. A successful
+governance receipt also does not prove detached target success; inspect child receipts.
 
 ## Snapshot-Bound Market Reads
 
