@@ -39,6 +39,36 @@ struct PendingProposalUsage {
     cancellation_log_bytes: u64,
 }
 
+impl PendingProposalUsage {
+    fn add(&mut self, id: u32, proposal: &Proposal<Operation>) -> Option<()> {
+        self.body_bytes = self
+            .body_bytes
+            .checked_add(proposal_body_size(&proposal.operation, &proposal.created_by).ok()?)?;
+        self.cancellation_log_bytes = self
+            .cancellation_log_bytes
+            .checked_add(cancellation_event_size(id, &proposal.operation).ok()?)?;
+        Some(())
+    }
+
+    fn release(mut self, id: u32, proposal: &Proposal<Operation>) -> Self {
+        self.body_bytes = self
+            .body_bytes
+            .checked_sub(
+                proposal_body_size(&proposal.operation, &proposal.created_by)
+                    .expect_or_reject("measure proposal body"),
+            )
+            .unwrap_or_else(|| env::panic_str("Corrupt pending proposal accounting"));
+        self.cancellation_log_bytes = self
+            .cancellation_log_bytes
+            .checked_sub(
+                cancellation_event_size(id, &proposal.operation)
+                    .expect_or_reject("measure cancellation event"),
+            )
+            .unwrap_or_else(|| env::panic_str("Corrupt pending proposal accounting"));
+        self
+    }
+}
+
 /// Wraps the versioned governance `State` (kernel ledger header, proposal bodies, governed oracle
 /// account). Role membership lives in `near-sdk-contract-tools` RBAC storage, separate from `state`.
 #[derive(Debug, Rbac, PanicOnDefault)]
@@ -94,46 +124,48 @@ impl Contract {
         u32::try_from(id).unwrap_or_else(|_| env::panic_str("Proposal ID exceeds u32"))
     }
 
+    fn pending_usage_key() -> Vec<u8> {
+        near_sdk::borsh::to_vec(&StorageKey::PendingProposalBytes)
+            .expect_or_reject("serialize storage key")
+    }
+
+    /// Persisted totals; `None` until the first admission under this release measures the queue.
     fn pending_usage() -> Option<PendingProposalUsage> {
-        let key = near_sdk::borsh::to_vec(&StorageKey::PendingProposalBytes)
-            .expect_or_reject("serialize storage key");
-        env::storage_read(&key).map(|bytes| {
-            let usage: PendingProposalUsage = near_sdk::borsh::from_slice(&bytes)
+        let usage: PendingProposalUsage =
+            near_sdk::borsh::from_slice(&env::storage_read(&Self::pending_usage_key())?)
                 .unwrap_or_else(|_| env::panic_str("Corrupt pending proposal accounting"));
-            require!(
-                usage.body_bytes <= MAX_GOVERNANCE_WORKING_SET_BYTES
-                    && usage.cancellation_log_bytes <= MAX_PENDING_CANCELLATION_LOG_BYTES,
-                "Corrupt pending proposal accounting"
-            );
-            usage
-        })
+        require!(
+            usage.body_bytes <= MAX_GOVERNANCE_WORKING_SET_BYTES
+                && usage.cancellation_log_bytes <= MAX_PENDING_CANCELLATION_LOG_BYTES,
+            "Corrupt pending proposal accounting"
+        );
+        Some(usage)
     }
 
-    fn set_pending_usage(usage: &PendingProposalUsage) {
-        let key = near_sdk::borsh::to_vec(&StorageKey::PendingProposalBytes)
-            .expect_or_reject("serialize storage key");
-        let value =
-            near_sdk::borsh::to_vec(usage).expect_or_reject("serialize proposal accounting");
-        env::storage_write(&key, &value);
+    /// Persisted totals, else totals measured from the queue when it fits the aggregate limits.
+    /// Reads every pending body, so only admission and revocation (which purges anyway) call it.
+    fn measured_pending_usage(&self) -> Option<PendingProposalUsage> {
+        if let Some(usage) = Self::pending_usage() {
+            return Some(usage);
+        }
+        let mut usage = PendingProposalUsage::default();
+        for &id in self.header.active_ids() {
+            let id = Self::id_to_u32(id);
+            usage.add(id, self.proposals.get(&id).unwrap_or_reject())?;
+        }
+        (self
+            .state_size()
+            .checked_add(usage.body_bytes)
+            .is_some_and(|size| size <= MAX_GOVERNANCE_WORKING_SET_BYTES)
+            && usage.cancellation_log_bytes <= MAX_PENDING_CANCELLATION_LOG_BYTES)
+            .then_some(usage)
     }
 
-    fn remove_pending_usage(id: u32, proposal: &Proposal<Operation>) {
-        if let Some(mut usage) = Self::pending_usage() {
-            usage.body_bytes = usage
-                .body_bytes
-                .checked_sub(
-                    proposal_body_size(&proposal.operation, &proposal.created_by)
-                        .expect_or_reject("measure proposal body"),
-                )
-                .unwrap_or_else(|| env::panic_str("Corrupt pending proposal accounting"));
-            usage.cancellation_log_bytes = usage
-                .cancellation_log_bytes
-                .checked_sub(
-                    cancellation_event_size(id, &proposal.operation)
-                        .expect_or_reject("measure cancellation event"),
-                )
-                .unwrap_or_else(|| env::panic_str("Corrupt pending proposal accounting"));
-            Self::set_pending_usage(&usage);
+    fn write_pending_usage(usage: Option<PendingProposalUsage>) {
+        if let Some(usage) = usage {
+            let value =
+                near_sdk::borsh::to_vec(&usage).expect_or_reject("serialize proposal accounting");
+            env::storage_write(&Self::pending_usage_key(), &value);
         }
     }
 
@@ -169,9 +201,10 @@ impl Contract {
         let proposal = self.proposals.get(&id).unwrap_or_reject();
         let kind = proposal.operation.kind();
         let method = proposal.operation.method();
-        Self::remove_pending_usage(id, proposal);
+        let usage = Self::pending_usage().map(|usage| usage.release(id, proposal));
         self.header.cancel(u64::from(id)).unwrap_or_reject();
         self.proposals.remove(&id).unwrap_or_reject();
+        Self::write_pending_usage(usage);
         Event::Cancelled { id, kind, method }.emit();
     }
 
@@ -214,12 +247,8 @@ impl Contract {
             env::panic_str("too many pending proposals");
         }
         let creator = env::predecessor_account_id();
-        let mut usage = Self::pending_usage().unwrap_or_else(|| {
-            require!(
-                self.header.active_ids().is_empty(),
-                "Drain legacy proposals before activating pending byte accounting"
-            );
-            PendingProposalUsage::default()
+        let mut usage = self.measured_pending_usage().unwrap_or_else(|| {
+            env::panic_str("Drain legacy proposals before activating pending byte accounting")
         });
         self.assert_policy_recovery();
         let size =
@@ -268,8 +297,8 @@ impl Contract {
         }
         let kind = proposal.operation.kind();
         let method = proposal.operation.method();
-        Self::set_pending_usage(&usage);
         self.proposals.insert(id, proposal);
+        Self::write_pending_usage(Some(usage));
         Event::Created { id, kind, method }.emit();
         &self.proposals[&id]
     }
@@ -355,27 +384,30 @@ impl ProxyGovernanceInterface for Contract {
         {
             Self::assert_can_set_role(account_id, *role, *set);
         }
-        if let Operation::Reflexive(ReflexiveOperation::SetRole {
-            account_id,
-            role,
-            set: false,
-        }) = &proposal.operation
-        {
-            if <Self as Rbac>::has_role(account_id, role)
-                && self.header.active_ids().len() > 1
-                && Self::pending_usage().is_none()
-            {
-                env::panic_str("Drain legacy proposals before revoking roles");
-            }
-        }
+        let revokes_held_role = matches!(
+            &proposal.operation,
+            Operation::Reflexive(ReflexiveOperation::SetRole {
+                account_id,
+                role,
+                set: false,
+            }) if <Self as Rbac>::has_role(account_id, role)
+        );
+        let usage =
+            if revokes_held_role && self.header.active_ids().len() > 1 {
+                Some(self.measured_pending_usage().unwrap_or_else(|| {
+                    env::panic_str("Drain legacy proposals before revoking roles")
+                }))
+            } else {
+                Self::pending_usage()
+            };
 
         // Commit the authoritative transition first (validates, enforces
         // maturity, drops the id from the pending set), then fire effects.
         self.header
             .execute(u64::from(id), &proposal, Nanoseconds::near_timestamp())
             .unwrap_or_reject();
-        Self::remove_pending_usage(id, &proposal);
         let operation = self.proposals.remove(&id).unwrap_or_reject().operation;
+        Self::write_pending_usage(usage.map(|usage| usage.release(id, &proposal)));
         let kind = operation.kind();
         let method = operation.method();
 

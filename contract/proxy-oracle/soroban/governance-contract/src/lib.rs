@@ -29,7 +29,7 @@ pub use events::{
 
 use engine::{effective_ttl, execute_action, now, require_authorized};
 use storage::{
-    extend_active_proposal_ttls, load_header, load_proposal, proposal_from_kernel,
+    extend_active_proposal_ttls, find_proposal, load_header, load_proposal, proposal_from_kernel,
     proposal_to_kernel, remove_proposal, save_header, save_pending_bytes, save_proposal, DataKey,
     KernelGovernance,
 };
@@ -150,13 +150,13 @@ impl ProxyOracleGovernance {
     pub fn cancel_proposal(env: Env, caller: Address, id: u64) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         caller.require_auth();
-        let proposal = load_proposal(&env, id).ok_or(GovernanceError::ProposalNotFound)?;
-        if caller != proposal.created_by && !roles::has_role(&env, &caller, Role::Admin) {
+        let stored = find_proposal(&env, id).ok_or(GovernanceError::ProposalNotFound)?;
+        if caller != stored.proposal.created_by && !roles::has_role(&env, &caller, Role::Admin) {
             return Err(GovernanceError::Unauthorized);
         }
         let mut header = load_header(&env)?;
         header.cancel(id).map_err(map_cancel_error)?;
-        remove_proposal(&env, id)?;
+        remove_proposal(&env, stored)?;
         save_header(&env, &header);
         ProposalRevoked { id }.publish(&env);
         Ok(())
@@ -164,7 +164,8 @@ impl ProxyOracleGovernance {
 
     pub fn execute_proposal(env: Env, caller: Address, id: u64) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
-        let proposal = load_proposal(&env, id).ok_or(GovernanceError::ProposalNotFound)?;
+        let stored = find_proposal(&env, id).ok_or(GovernanceError::ProposalNotFound)?;
+        let proposal = stored.proposal.clone();
         require_authorized(&env, &caller, &proposal.operation)?;
         let mut header = load_header(&env)?;
         // Commit the authoritative state transition first: the kernel
@@ -175,7 +176,7 @@ impl ProxyOracleGovernance {
         header
             .execute(id, &kernel_proposal, now(&env)?)
             .map_err(map_execute_error)?;
-        remove_proposal(&env, id)?;
+        remove_proposal(&env, stored)?;
         execute_action(&env, &mut header, &proposal.operation, &caller)?;
         save_header(&env, &header);
         ProposalAccepted { id }.publish(&env);

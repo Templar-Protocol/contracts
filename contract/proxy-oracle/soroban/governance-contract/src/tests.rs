@@ -2146,7 +2146,9 @@ fn revocation_preserves_admin_override_and_fails_closed_on_missing_body() {
         &GovernanceAction::SetRole(delegate.clone(), Role::Admin, false),
         &0,
     );
-    env.as_contract(&governance, || remove_proposal(&env, 0).unwrap());
+    env.as_contract(&governance, || {
+        remove_proposal(&env, find_proposal(&env, 0).unwrap()).unwrap();
+    });
     let bytes_before = env.as_contract(&governance, || storage::pending_bytes(&env).unwrap());
     assert_eq!(
         client.try_execute_proposal(&admin, &2),
@@ -2199,7 +2201,9 @@ fn idempotent_admin_grant_needs_no_new_acceptance_and_noop_revoke_does_not_sweep
         (&admin, 2_u64, &pending, 0_u64).into_val(&env),
     );
     client.create_proposal(&admin, &2, &pending, &0);
-    env.as_contract(&governance, || remove_proposal(&env, 2).unwrap());
+    env.as_contract(&governance, || {
+        remove_proposal(&env, find_proposal(&env, 2).unwrap()).unwrap();
+    });
     authorize_call(
         &env,
         &admin,

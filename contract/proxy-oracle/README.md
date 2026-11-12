@@ -66,7 +66,7 @@ The NEAR governance contract is initialized as its own contract account with `ne
 
 Enforcement and lifecycle are separate. Unenforced breakers still evaluate and can trip while the set has no existing blocking trip. Re-arming changes only the addressed breaker and preserves both shared histories.
 
-`get_proxy_circuit_breaker_set` exposes only registered assets with semantically valid breaker state. Removal retains a reset tombstone carrying `next_id`; recreation never reuses an old breaker ID. The tombstone keeps no rules or history. Corrupt/missing allocator state is an upgrade/recovery blocker, not permission to reset the counter: removal/recreation cannot safely repair unknown allocator history. Old code may already have deleted it, which requires an explicit operator inventory before any upgrade.
+`get_proxy_circuit_breaker_set` exposes only registered assets with semantically valid breaker state. Removal retains a reset tombstone carrying `next_id`; recreation never reuses an old breaker ID. The tombstone keeps no rules or history. Corrupt/missing allocator state is an upgrade/recovery blocker, not permission to reset the counter: removal/recreation cannot safely repair unknown allocator history. Old code may already have deleted it: after the upgrade, `admin_set_proxy` panics with `Invalid circuit breaker set` for any feed whose cache epoch outlived its breaker set, and no on-chain path restores that allocator. Such a feed stays removed until a further code upgrade; the `upgrade.removed_feed_allocators` preflight check lists them.
 
 The role a method requires comes from its resolved policy, so what a role can do depends entirely on the deployed policy table. A **fresh** deployment via `tmplrmgr proxy-oracle governance create --ttl-default …` starts with **no per-method overrides**: every target method resolves to `default_target` and is therefore Admin-only, and granting `ManualTripper` or `CircuitBreakerOperator` on such a deployment does nothing until overrides exist. Pass `--policy-file` (see `governance-policy.example.json` in this directory) to deploy a real table, or add entries later with `SetMethodPolicy` proposals. The natural table below is what the **v0→v1 migration** seeds, and what the example file reproduces: manual trip/untrip (`admin_set_manual_trip`) requires `Role::ManualTripper`; circuit-breaker lifecycle methods (`admin_rearm`, `admin_set_enforced`) require `Role::CircuitBreakerOperator`; proxy definitions and circuit-breaker configuration/add/remove require `Role::ProxyConfigurationManager`. All reflexive operations — policy edits (`SetReflexiveTtl`, `SetTargetDefault`, `SetMethodPolicy`), `SetRole`, and `SelfUpgrade` — require `Role::Admin`, since they govern governance itself. Governance roles are multi-role memberships managed with targeted `SetRole { account_id, role, set }` operations: `set: true` grants the named role and `set: false` revokes only that named role. `Role::Admin` is the global governance superuser role and may act on any proposal; removing the final `Role::Admin` membership is rejected.
 
@@ -79,6 +79,8 @@ without changing persisted layouts:
 - `upgrade.breakers`: stored sets decode and satisfy runtime rules.
 - `upgrade.source_weights`: this stable identifier checks nonempty/distinct
   source descriptors, median quorum, and positive weights.
+- `upgrade.removed_feed_allocators`: warns on feeds whose cache epoch outlived
+  their breaker set; the upgraded contract cannot re-add them.
 - `upgrade.governance_ledger`: the stored active-ID header remains valid.
 - `upgrade.pending_rearm`: reject old absolute-time rearm payloads, but retain
   compatible relative-delay calls.
@@ -87,7 +89,8 @@ without changing persisted layouts:
   `CircuitBreakerSet::add` operations, not merely by expected ID. Missing or
   undecodable sets, stale expected add IDs, invalid add payloads and absent
   mutation targets require inspection and drain/cancellation; compatible queued
-  adds are not rejected wholesale. Current state cannot prove allocator history
+  adds are not rejected wholesale, and a target a valid queued add installs
+  counts as present. Current state cannot prove allocator history
   already deleted by old code.
 - `upgrade.pending_resources`: exact serialized state+body working set, policy
   recoverability, and cancellation-log bytes against the same limits the new
@@ -111,10 +114,14 @@ target-call body is still admissible when the rest of the queue is small.
 Policy edits are admitted only while the resulting policy remains removable
 within the same budget, so an accepted configuration cannot lock itself in.
 Admission counts bytes exactly (Borsh for bodies, the NEP-297 encoder for
-logs); backpressure is rejection without reservation or mutation. An unmarked
-legacy queue without accounting still drains: existing bodies can be cancelled
-or ordinarily executed, while new admissions and non-noop revocations wait
-until it is empty. This bound preserves atomic revocation liveness; it does not
+logs); backpressure is rejection without reservation or mutation. A legacy
+queue has no persisted totals; the first admission or revocation measures them
+from the pending bodies. Rolling back to a release without this accounting
+while proposals are queued leaves the totals wrong, so upgrades are
+forward-only. A queue that does not fit
+the aggregate limits still drains: existing bodies can be cancelled or
+ordinarily executed, while new admissions and non-noop revocations wait until
+it fits. This bound preserves atomic revocation liveness; it does not
 guarantee scheduling fairness.
 
 ### Bring-up and hardening

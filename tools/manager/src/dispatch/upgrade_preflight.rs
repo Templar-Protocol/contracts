@@ -9,7 +9,7 @@
 //! cannot drift. Reads are deliberately untyped where a deployed contract may still serialize a
 //! pre-upgrade shape: a body the new types reject is the finding, not a transport error.
 
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
@@ -27,7 +27,7 @@ use templar_proxy_oracle_kernel::proxy::{
     circuit_breaker::{CircuitBreaker, CircuitBreakerSet},
     Proxy,
 };
-use templar_proxy_oracle_near_common::input::Source;
+use templar_proxy_oracle_near_common::{input::Source, state::v1::StorageKey as OracleStorageKey};
 use templar_proxy_oracle_near_governance_common::{
     cancellation_event_size, governance_kernel::Governance, policy_recovery_working_set_bytes,
     proposal_body_size, target::method, FunctionCall, GovernancePolicy, LegacyOperation,
@@ -246,6 +246,10 @@ async fn run(
             reporter.record(Check::new("upgrade.source_weights", Status::failed(detail)));
         }
     }
+    reporter.record(Check::new(
+        "upgrade.removed_feed_allocators",
+        removed_feed_allocators(ctx, oracle_id).await,
+    ));
 
     let governance_id = match governance {
         GovernanceResolution::Resolved(Some(governance_id)) => governance_id,
@@ -329,6 +333,74 @@ async fn run(
                 Status::failed(detail),
             ));
         }
+    }
+}
+
+/// Raw `UnorderedMap` keys (`prefix ++ 'i' ++ borsh(key)`) of one oracle map, as price ids.
+async fn oracle_map_ids(
+    ctx: &CliContext,
+    oracle_id: &AccountId,
+    map: OracleStorageKey,
+) -> anyhow::Result<BTreeSet<PriceIdentifier>> {
+    let mut prefix = near_sdk::borsh::to_vec(&map)?;
+    prefix.push(b'i');
+    let entries = ctx
+        .client
+        .read(account::ViewState {
+            account_id: oracle_id.clone(),
+            prefix: prefix.clone().into(),
+        })
+        .await
+        .with_context(|| format!("view state of {oracle_id}"))?;
+    entries
+        .into_iter()
+        .map(|entry| {
+            let key = entry
+                .key
+                .0
+                .strip_prefix(prefix.as_slice())
+                .context("view_state returned a key outside the requested prefix")?;
+            Ok(near_sdk::borsh::from_slice(key)?)
+        })
+        .collect()
+}
+
+/// Feeds whose cache epoch outlived their breaker set. Code before allocator tombstones deleted
+/// the set on removal, and current code refuses to recreate such a feed rather than guess its
+/// next breaker ID.
+fn removed_feed_allocator_status(
+    epochs: &BTreeSet<PriceIdentifier>,
+    breaker_sets: &BTreeSet<PriceIdentifier>,
+) -> Status {
+    let orphaned: Vec<String> = epochs
+        .difference(breaker_sets)
+        .map(ToString::to_string)
+        .collect();
+    if orphaned.is_empty() {
+        Status::passed("every feed with a cache epoch retains its breaker allocator")
+    } else {
+        Status::warned(format!(
+            "after upgrade, admin_set_proxy cannot re-add these removed feeds: old code deleted \
+             their breaker allocator and no on-chain path restores it. Keep them removed or plan \
+             a further code upgrade: {}",
+            orphaned.join(", ")
+        ))
+    }
+}
+
+async fn removed_feed_allocators(ctx: &CliContext, oracle_id: &AccountId) -> Status {
+    let ids = async {
+        Ok::<_, anyhow::Error>((
+            oracle_map_ids(ctx, oracle_id, OracleStorageKey::CacheEpochs).await?,
+            oracle_map_ids(ctx, oracle_id, OracleStorageKey::CircuitBreakers).await?,
+        ))
+    }
+    .await;
+    match ids {
+        Ok((epochs, breaker_sets)) => removed_feed_allocator_status(&epochs, &breaker_sets),
+        Err(error) => Status::failed(format!(
+            "inventory removed-feed allocators: {error:#}; establish it another way before upgrade"
+        )),
     }
 }
 
@@ -489,8 +561,13 @@ fn pending_breaker_target(
     Ok(Some((serde_json::from_slice(&call.args.0)?, usage)))
 }
 
-fn breaker_lifecycle_problem(args: &PendingBreakerArgs, set: &CircuitBreakerSet) -> Option<String> {
-    (!set.breakers().contains_key(&args.breaker_id))
+/// `queued` holds the breaker IDs that queued adds for the same proxy will install.
+fn breaker_lifecycle_problem(
+    args: &PendingBreakerArgs,
+    set: &CircuitBreakerSet,
+    queued: &BTreeSet<u32>,
+) -> Option<String> {
+    (!set.breakers().contains_key(&args.breaker_id) && !queued.contains(&args.breaker_id))
         .then(|| format!("breaker {} no longer exists", args.breaker_id))
 }
 
@@ -508,6 +585,47 @@ fn pending_add_problem(set: &CircuitBreakerSet, adds: &[(u32, CircuitBreaker)]) 
     None
 }
 
+/// Checks queued adds per proxy, then every queued use of an existing breaker against the committed
+/// set plus the IDs those valid adds will install.
+fn queued_lifecycle_problems(
+    sets: &BTreeMap<PriceIdentifier, Result<CircuitBreakerSet, String>>,
+    installs: &BTreeMap<PriceIdentifier, Vec<(u32, CircuitBreaker)>>,
+    existing: Vec<(u32, PendingBreakerArgs)>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut queued_ids: BTreeMap<PriceIdentifier, BTreeSet<u32>> = BTreeMap::new();
+    for (proxy, adds) in installs {
+        let Some(Ok(set)) = sets.get(proxy) else {
+            continue;
+        };
+        match pending_add_problem(set, adds) {
+            Some(problem) => problems.push(format!("proxy {proxy}: {problem}")),
+            None => {
+                queued_ids.insert(*proxy, adds.iter().map(|(id, _)| *id).collect());
+            }
+        }
+    }
+    let no_queued_ids = BTreeSet::new();
+    for (proposal_id, args) in existing {
+        let problem = match sets.get(&args.id) {
+            Some(Ok(set)) => breaker_lifecycle_problem(
+                &args,
+                set,
+                queued_ids.get(&args.id).unwrap_or(&no_queued_ids),
+            ),
+            Some(Err(error)) => Some(error.clone()),
+            None => Some("lifecycle was not inspected".to_owned()),
+        };
+        if let Some(problem) = problem {
+            problems.push(format!(
+                "proposal {proposal_id}, proxy {}: {problem}",
+                args.id
+            ));
+        }
+    }
+    problems
+}
+
 async fn pending_breaker_lifecycles(
     ctx: &CliContext,
     oracle_id: &AccountId,
@@ -516,6 +634,7 @@ async fn pending_breaker_lifecycles(
     let mut sets = BTreeMap::new();
     let mut problems = Vec::new();
     let mut installs: BTreeMap<PriceIdentifier, Vec<(u32, CircuitBreaker)>> = BTreeMap::new();
+    let mut existing = Vec::new();
     for (proposal_id, body) in bodies {
         let (args, usage) = match pending_breaker_target(body) {
             Ok(Some(target)) => target,
@@ -576,25 +695,9 @@ async fn pending_breaker_lifecycles(
             }
             continue;
         }
-        let problem = match set {
-            Ok(set) => breaker_lifecycle_problem(&args, set),
-            Err(error) => Some(error.clone()),
-        };
-        if let Some(problem) = problem {
-            problems.push(format!(
-                "proposal {proposal_id}, proxy {}: {problem}",
-                args.id
-            ));
-        }
+        existing.push((*proposal_id, args));
     }
-    for (proxy, adds) in installs {
-        let Some(Ok(set)) = sets.get(&proxy) else {
-            continue;
-        };
-        if let Some(problem) = pending_add_problem(set, &adds) {
-            problems.push(format!("proxy {proxy}: {problem}"));
-        }
-    }
+    problems.extend(queued_lifecycle_problems(&sets, &installs, existing));
     if problems.is_empty() {
         Status::passed(
             "pending breaker IDs match current lifecycles; compatible adds remain queued. \
@@ -980,15 +1083,17 @@ mod tests {
     use templar_proxy_oracle_near_common::request::OracleRequest;
     use templar_proxy_oracle_near_governance_common::MAX_PENDING_PROPOSALS;
     use templar_proxy_oracle_near_governance_common::{
-        governance_kernel as kernel_governance, target, GovernancePolicy, LegacyTtlConfig,
+        governance_kernel as kernel_governance, target, GovernancePolicy, LegacyOperation,
+        LegacyTtlConfig,
     };
 
     use super::{
         aggregator_config_status, breaker_lifecycle_problem, breakers_status, classify_breaker_set,
         governance_ledger_status, governance_resolution_failure_checks, governance_state_budget,
         has_incompatible_rearm_payload, pending_add_problem, pending_breaker_target,
-        pending_rearm_status, pending_resource_status, BreakerIdUse, BreakerVerdict,
-        PendingBreakerArgs, PriceIdentifier, Source, Status, Value,
+        pending_rearm_status, pending_resource_status, queued_lifecycle_problems,
+        removed_feed_allocator_status, BTreeMap, BTreeSet, BreakerIdUse, BreakerVerdict,
+        PendingBreakerArgs, PriceIdentifier, Serialize, Source, Status, Value,
     };
 
     fn price_id(byte: u8) -> PriceIdentifier {
@@ -1228,20 +1333,55 @@ mod tests {
             breaker_id: 0,
             breaker: None,
         };
+        let none = BTreeSet::new();
         assert!(pending_add_problem(&set, &[(0, sample_breaker())]).is_none());
-        assert!(breaker_lifecycle_problem(&args, &set).is_some());
+        assert!(breaker_lifecycle_problem(&args, &set, &none).is_some());
+        assert!(breaker_lifecycle_problem(&args, &set, &BTreeSet::from([0])).is_none());
         set.add(0, sample_breaker()).unwrap();
         assert!(pending_add_problem(&set, &[(0, sample_breaker())]).is_some());
-        assert!(breaker_lifecycle_problem(&args, &set).is_none());
+        assert!(breaker_lifecycle_problem(&args, &set, &none).is_none());
         set.reset_preserving_next_id();
         set.set_config(CircuitBreakerSetConfig {
             sample_interval_ns: Nanoseconds::zero(),
             history_len: 4,
         })
         .unwrap();
-        assert!(breaker_lifecycle_problem(&args, &set).is_some());
+        assert!(breaker_lifecycle_problem(&args, &set, &none).is_some());
         assert!(pending_add_problem(&set, &[(0, sample_breaker())]).is_some());
         assert!(pending_add_problem(&set, &[(1, sample_breaker())]).is_none());
+    }
+
+    #[test]
+    fn removed_feed_without_breaker_set_is_reported() {
+        let epochs = BTreeSet::from([price_id(1), price_id(2), price_id(3)]);
+        let sets = BTreeSet::from([price_id(1), price_id(3)]);
+        let Status::Warned { detail } = removed_feed_allocator_status(&epochs, &sets) else {
+            panic!("an epoch without a breaker set must be reported");
+        };
+        assert!(detail.contains(&price_id(2).to_string()), "{detail}");
+        assert!(!detail.contains(&price_id(1).to_string()), "{detail}");
+        assert!(matches!(
+            removed_feed_allocator_status(&sets, &sets),
+            Status::Passed { .. }
+        ));
+    }
+
+    #[test]
+    fn queued_add_satisfies_later_operations_on_the_breaker_it_installs() {
+        let use_of = |breaker_id| PendingBreakerArgs {
+            id: price_id(1),
+            breaker_id,
+            breaker: None,
+        };
+        let sets = BTreeMap::from([(price_id(1), Ok(breaker_set(4)))]);
+        let installs = BTreeMap::from([(price_id(1), vec![(0, sample_breaker())])]);
+        assert!(queued_lifecycle_problems(&sets, &installs, vec![(2, use_of(0))]).is_empty());
+        let problems = queued_lifecycle_problems(&sets, &installs, vec![(2, use_of(1))]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("breaker 1 no longer exists"));
+        let invalid = BTreeMap::from([(price_id(1), vec![(1, sample_breaker())])]);
+        let problems = queued_lifecycle_problems(&sets, &invalid, vec![(2, use_of(1))]);
+        assert_eq!(problems.len(), 2, "{problems:?}");
     }
 
     #[test]
@@ -1281,9 +1421,12 @@ mod tests {
             min_relative_step_change: Decimal::ONE_HALF,
         });
         let operation = if legacy {
-            json!({"AddCircuitBreaker": {
-                "id": price_id(3), "breaker_id": 7, "breaker": breaker,
-            }})
+            serde_json::to_value(LegacyOperation::AddCircuitBreaker {
+                id: price_id(3),
+                breaker_id: 7,
+                breaker,
+            })
+            .unwrap()
         } else {
             json!({"TargetFunctionCall": target::admin_add_circuit_breaker(
                 price_id(3), 7, breaker, None,
@@ -1298,6 +1441,14 @@ mod tests {
         assert!(pending_breaker_target(&Value::Null).is_err());
     }
 
+    /// The pre-relative-delay `admin_rearm` argument shape.
+    #[derive(Serialize)]
+    struct AbsoluteRearmArgs {
+        id: PriceIdentifier,
+        breaker_id: u32,
+        armed_after_ns: Nanoseconds,
+    }
+
     #[test]
     fn pending_relative_rearm_is_compatible_but_absolute_rearm_requires_intervention() {
         use templar_proxy_oracle_near_governance_common::target;
@@ -1305,9 +1456,11 @@ mod tests {
         assert!(!has_incompatible_rearm_payload(
             &json!({"TargetFunctionCall": call})
         ));
-        call.args.0 = serde_json::to_vec(&json!({
-            "id": price_id(4), "breaker_id": 2, "armed_after_ns": "5",
-        }))
+        call.args.0 = serde_json::to_vec(&AbsoluteRearmArgs {
+            id: price_id(4),
+            breaker_id: 2,
+            armed_after_ns: Nanoseconds::from_ns(5),
+        })
         .unwrap();
         assert!(has_incompatible_rearm_payload(
             &json!({"TargetFunctionCall": call})

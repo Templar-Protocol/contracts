@@ -32,7 +32,7 @@ use crate::resolve::GovernanceTarget;
 pub struct CreateProposal {
     #[command(flatten)]
     pub(crate) target: GovernanceTarget,
-    /// Proposal id; fetched from the governance contract's next id when omitted
+    /// Proposal id; fetched from the governance contract's next id when omitted.
     /// Re-running without this flag selects a new request; retry an uncertain send with its original ID.
     #[arg(long, value_name = "ID")]
     id: Option<u32>,

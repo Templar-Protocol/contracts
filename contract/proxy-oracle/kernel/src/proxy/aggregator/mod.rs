@@ -23,7 +23,7 @@ serialize! {
     }
 }
 
-/// Structural admission errors. Historic configuration decoding remains unchanged.
+/// Structural admission errors; decoding a stored configuration does not apply them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigError {
     EmptySources,

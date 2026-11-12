@@ -9,9 +9,9 @@ use near_sdk::{
 use near_sdk_contract_tools::rbac::Rbac;
 use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Nanoseconds};
 use templar_proxy_oracle_near_governance_common::{
-    CreateProposalArgs, GovernancePolicy, GovernancePolicyWire, LegacyOperation, MethodPolicy,
-    Operation, ReflexiveKind, ReflexiveOperation, ReflexiveTtls, Role, GAS_FOR_ADMIN_UPGRADE,
-    MAX_PROPOSAL_TTL,
+    proposal_body_size, CreateProposalArgs, GovernancePolicy, GovernancePolicyWire,
+    LegacyOperation, MethodPolicy, Operation, ReflexiveKind, ReflexiveOperation, ReflexiveTtls,
+    Role, GAS_FOR_ADMIN_UPGRADE, MAX_GOVERNANCE_WORKING_SET_BYTES, MAX_PROPOSAL_TTL,
 };
 
 use crate::{Contract, ProxyGovernanceInterface};
@@ -1171,8 +1171,46 @@ fn pending_byte_accounting_releases_cancelled_and_executed_bodies() {
     );
 }
 
+fn legacy_create(contract: &mut Contract, id: u32, operation: Operation) {
+    let proposal = contract
+        .header
+        .create(
+            u64::from(id),
+            operation,
+            Nanoseconds::near_timestamp(),
+            near_sdk::env::predecessor_account_id(),
+            Nanoseconds::zero(),
+        )
+        .unwrap();
+    contract.proposals.insert(id, proposal);
+}
+
+fn queue_usage(contract: &Contract) -> (u64, u64) {
+    contract
+        .header
+        .active_ids()
+        .iter()
+        .map(|&id| {
+            let id = u32::try_from(id).unwrap();
+            let proposal = &contract.proposals[&id];
+            (
+                proposal_body_size(&proposal.operation, &proposal.created_by).unwrap(),
+                templar_proxy_oracle_near_governance_common::cancellation_event_size(
+                    id,
+                    &proposal.operation,
+                )
+                .unwrap(),
+            )
+        })
+        .fold((0, 0), |(body, log), (b, l)| (body + b, log + l))
+}
+
+fn stored_usage() -> Option<(u64, u64)> {
+    Contract::pending_usage().map(|usage| (usage.body_bytes, usage.cancellation_log_bytes))
+}
+
 #[test]
-fn legacy_queue_must_drain_before_byte_accounting_activates() {
+fn unaccounted_legacy_queue_is_measured_on_admission_and_revocation() {
     testing_env!(context_with_admin());
     let mut contract = contract();
     allow_immediate_role_changes(&mut contract);
@@ -1183,20 +1221,52 @@ fn legacy_queue_must_drain_before_byte_accounting_activates() {
         set_role("delegate.near", Role::ManualTripper, false),
         Nanoseconds::zero(),
     );
-    let key = near_sdk::borsh::to_vec(&crate::StorageKey::PendingProposalBytes).unwrap();
-    near_sdk::env::storage_remove(&key);
+    near_sdk::env::storage_remove(
+        &near_sdk::borsh::to_vec(&crate::StorageKey::PendingProposalBytes).unwrap(),
+    );
+    assert_eq!(stored_usage(), None);
+
+    testing_env!(context_with_account("delegate.near"));
+    contract.create_proposal(2, manual_trip(), Nanoseconds::zero());
+    assert_eq!(stored_usage(), Some(queue_usage(&contract)));
+
+    near_sdk::env::storage_remove(
+        &near_sdk::borsh::to_vec(&crate::StorageKey::PendingProposalBytes).unwrap(),
+    );
+    testing_env!(context_with_admin());
+    contract.execute_proposal(1);
+    assert!(!contract.has_role("delegate.near".parse().unwrap(), Role::ManualTripper));
+    assert_eq!(contract.proposal_count(), 1);
+    assert_eq!(stored_usage(), Some(queue_usage(&contract)));
+}
+
+#[test]
+fn oversized_legacy_queue_still_blocks_admission_and_revocation() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    allow_immediate_role_changes(&mut contract);
+    grant_role(&mut contract, "delegate.near", Role::ManualTripper);
+    let mut oversized = admin_function_call("m", 0, Gas::from_tgas(1));
+    let Operation::TargetFunctionCall(call) = &mut oversized else {
+        unreachable!()
+    };
+    call.args.0 = vec![0; usize::try_from(MAX_GOVERNANCE_WORKING_SET_BYTES).unwrap()];
+    legacy_create(&mut contract, 0, oversized);
+    legacy_create(
+        &mut contract,
+        1,
+        set_role("delegate.near", Role::ManualTripper, false),
+    );
     let before = contract.header.clone();
     assert!(panics(|| {
         contract.create_proposal(2, manual_trip(), Nanoseconds::zero());
     }));
     assert!(panics(|| contract.execute_proposal(1)));
     assert_eq!(contract.header, before);
-    assert!(contract.has_role("delegate.near".parse().unwrap(), Role::ManualTripper));
     contract.cancel_proposal(0);
     contract.execute_proposal(1);
-    assert_eq!(contract.proposal_count(), 0);
     contract.create_proposal(2, manual_trip(), Nanoseconds::zero());
-    assert!(Contract::pending_usage().is_some());
+    assert_eq!(stored_usage(), Some(queue_usage(&contract)));
 }
 
 #[test]
@@ -1215,9 +1285,9 @@ fn legacy_unmarked_policy_execution_still_enforces_recovery() {
         }),
         Nanoseconds::zero(),
     );
-    // A legacy queue has no byte accounting until it drains. Policy recovery
-    // must still hold when executing that queue, or no later proposal could
-    // remove the admitted key.
+    // A legacy queue has no byte accounting until the first admission or
+    // revocation measures it. Policy recovery must still hold when executing
+    // that queue, or no later proposal could remove the admitted key.
     near_sdk::env::storage_remove(
         &near_sdk::borsh::to_vec(&crate::StorageKey::PendingProposalBytes).unwrap(),
     );

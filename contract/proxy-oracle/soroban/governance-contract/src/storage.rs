@@ -99,20 +99,33 @@ pub fn save_pending_bytes(env: &Env, bytes: u32) {
     env.storage().instance().set(&DataKey::PendingBytes, &bytes);
 }
 
-pub fn load_proposal(env: &Env, id: u64) -> Option<Proposal> {
-    for slot in 0..PROPOSAL_GROUP_COUNT {
+/// A pending body together with the group holding it, so removal need not rescan the groups.
+pub struct StoredProposal {
+    id: u64,
+    slot: u64,
+    group: Map<u64, Proposal>,
+    pub proposal: Proposal,
+}
+
+pub fn find_proposal(env: &Env, id: u64) -> Option<StoredProposal> {
+    (0..PROPOSAL_GROUP_COUNT).find_map(|slot| {
         let key = DataKey::ProposalGroup(slot);
-        let group: Option<Map<u64, Proposal>> = env.storage().persistent().get(&key);
-        if let Some(proposal) = group.and_then(|group| group.get(id)) {
-            env.storage().persistent().extend_ttl(
-                &key,
-                DEFAULT_TTL_THRESHOLD,
-                DEFAULT_TTL_EXTEND_TO,
-            );
-            return Some(proposal);
-        }
-    }
-    None
+        let group: Map<u64, Proposal> = env.storage().persistent().get(&key)?;
+        let proposal = group.get(id)?;
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+        Some(StoredProposal {
+            id,
+            slot,
+            group,
+            proposal,
+        })
+    })
+}
+
+pub fn load_proposal(env: &Env, id: u64) -> Option<Proposal> {
+    find_proposal(env, id).map(|stored| stored.proposal)
 }
 
 pub fn extend_active_proposal_ttls(env: &Env) {
@@ -165,29 +178,25 @@ pub fn save_proposal(
     Err(GovernanceError::InvalidInput)
 }
 
-pub fn remove_proposal(env: &Env, id: u64) -> Result<(), GovernanceError> {
-    for slot in 0..PROPOSAL_GROUP_COUNT {
-        let key = DataKey::ProposalGroup(slot);
-        let Some(mut group): Option<Map<u64, Proposal>> = env.storage().persistent().get(&key)
-        else {
-            continue;
-        };
-        let Some(proposal) = group.get(id) else {
-            continue;
-        };
-        let bytes = pending_bytes(env)?
-            .checked_sub(proposal_bytes(env, &proposal))
-            .ok_or(GovernanceError::InvalidInput)?;
-        group.remove_unchecked(id);
-        if group.is_empty() {
-            env.storage().persistent().remove(&key);
-        } else {
-            env.storage().persistent().set(&key, &group);
-        }
-        save_pending_bytes(env, bytes);
-        return Ok(());
+pub fn remove_proposal(env: &Env, stored: StoredProposal) -> Result<(), GovernanceError> {
+    let StoredProposal {
+        id,
+        slot,
+        mut group,
+        proposal,
+    } = stored;
+    let bytes = pending_bytes(env)?
+        .checked_sub(proposal_bytes(env, &proposal))
+        .ok_or(GovernanceError::InvalidInput)?;
+    let key = DataKey::ProposalGroup(slot);
+    group.remove_unchecked(id);
+    if group.is_empty() {
+        env.storage().persistent().remove(&key);
+    } else {
+        env.storage().persistent().set(&key, &group);
     }
-    Err(GovernanceError::ProposalNotFound)
+    save_pending_bytes(env, bytes);
+    Ok(())
 }
 
 pub fn proposal_to_kernel(proposal: Proposal) -> KernelProposal {
