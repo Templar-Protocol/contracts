@@ -4,7 +4,10 @@ use std::{
 };
 
 use anyhow::Context;
+use clap::CommandFactory as _;
 use serde::Deserialize;
+
+use crate::cli::Cli;
 
 const PROFILE_DIR_ENV: &str = "TEMPLAR_SOROBAN_VAULT_PROFILE_DIR";
 const PROFILE_ENV: &str = "TEMPLAR_SOROBAN_VAULT_PROFILE";
@@ -175,7 +178,8 @@ fn push_leaf_profile_args(
     raw_args: &[String],
     profile: &ProfileConfig,
 ) {
-    if needs_admin(raw_args) {
+    let commands = command_path(raw_args);
+    if needs_admin(&commands) {
         push_profile_arg(
             expanded,
             raw_args,
@@ -184,7 +188,7 @@ fn push_leaf_profile_args(
             profile.admin.as_deref(),
         );
     }
-    if needs_adapter_admin(raw_args) {
+    if needs_adapter_admin(&commands) {
         push_profile_arg(
             expanded,
             raw_args,
@@ -193,7 +197,7 @@ fn push_leaf_profile_args(
             profile.adapter_admin.as_deref(),
         );
     }
-    if needs_caller(raw_args) {
+    if needs_caller(&commands) {
         push_profile_arg(
             expanded,
             raw_args,
@@ -202,7 +206,7 @@ fn push_leaf_profile_args(
             profile.caller.as_deref().or(profile.admin.as_deref()),
         );
     }
-    if needs_operator(raw_args) {
+    if needs_operator(&commands) {
         push_profile_arg(
             expanded,
             raw_args,
@@ -230,7 +234,25 @@ fn push_profile_arg(
     expanded.push(value.to_string());
 }
 
-fn needs_admin(raw_args: &[String]) -> bool {
+fn command_path(raw_args: &[String]) -> Vec<String> {
+    // Required leaf arguments may come from the profile. Only inspect the
+    // recognized subcommands here; run() still parses the expanded args strictly.
+    let Ok(matches) = Cli::command()
+        .ignore_errors(true)
+        .try_get_matches_from(raw_args)
+    else {
+        return Vec::new();
+    };
+    let mut commands = Vec::new();
+    let mut current = &matches;
+    while let Some((name, subcommand)) = current.subcommand() {
+        commands.push(name.to_string());
+        current = subcommand;
+    }
+    commands
+}
+
+fn needs_admin(commands: &[String]) -> bool {
     [
         "stack",
         "plan-accept",
@@ -267,10 +289,10 @@ fn needs_admin(raw_args: &[String]) -> bool {
         "set-supply-queue",
     ]
     .into_iter()
-    .any(|command| raw_args.iter().any(|arg| arg == command))
+    .any(|command| commands.iter().any(|arg| arg == command))
 }
 
-fn needs_caller(raw_args: &[String]) -> bool {
+fn needs_caller(commands: &[String]) -> bool {
     [
         "extend-ttl",
         "allocate-supply",
@@ -279,20 +301,20 @@ fn needs_caller(raw_args: &[String]) -> bool {
         "refresh-markets",
     ]
     .into_iter()
-    .any(|command| raw_args.iter().any(|arg| arg == command))
+    .any(|command| commands.iter().any(|arg| arg == command))
 }
 
-fn needs_adapter_admin(raw_args: &[String]) -> bool {
-    primary_command(raw_args).as_deref() == Some("deploy")
+fn needs_adapter_admin(commands: &[String]) -> bool {
+    commands.first().is_some_and(|command| command == "deploy")
         && ["stack", "resume", "adapters"]
             .into_iter()
-            .any(|command| raw_args.iter().any(|arg| arg == command))
+            .any(|command| commands.iter().any(|arg| arg == command))
 }
 
-fn needs_operator(raw_args: &[String]) -> bool {
+fn needs_operator(commands: &[String]) -> bool {
     ["deposit", "mint", "withdraw", "execute-withdraw"]
         .into_iter()
-        .any(|command| raw_args.iter().any(|arg| arg == command))
+        .any(|command| commands.iter().any(|arg| arg == command))
 }
 
 fn has_flag(raw_args: &[String], flag: &str) -> bool {
@@ -387,6 +409,80 @@ mod tests {
     use crate::cli::Cli;
 
     use super::*;
+
+    fn write_leaf_defaults(dir: &Path, name: &str) {
+        fs::write(
+            profile_path(dir, name),
+            r#"
+admin = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+caller = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+operator = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+adapter_admin = "vault"
+"#,
+        )
+        .expect("write profile");
+    }
+
+    #[test]
+    fn command_names_in_profile_values_do_not_inject_leaf_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["deposit", "stack", "refresh-markets"] {
+            write_leaf_defaults(dir.path(), name);
+            let raw = ["tmplr-soroban-vault", "--profile", name, "status"].map(String::from);
+            let expanded = expand_args_with_dir(&raw, dir.path()).expect("expand args");
+            Cli::try_parse_from(expanded).expect("status must not receive leaf flags");
+        }
+    }
+
+    #[test]
+    fn command_names_in_other_option_values_do_not_inject_leaf_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_leaf_defaults(dir.path(), "testnet");
+        let raw = [
+            "tmplr-soroban-vault",
+            "--profile",
+            "testnet",
+            "--state",
+            "stack",
+            "--workspace-path",
+            "deposit",
+            "--rpc-url",
+            "refresh-markets",
+            "status",
+        ]
+        .map(String::from);
+        let expanded = expand_args_with_dir(&raw, dir.path()).expect("expand args");
+        Cli::try_parse_from(expanded).expect("option values must not become commands");
+    }
+
+    #[test]
+    fn leaf_defaults_fill_required_arguments_before_strict_parsing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_leaf_defaults(dir.path(), "testnet");
+        for (command, flags) in [
+            (
+                vec!["user", "deposit", "--assets-raw", "1"],
+                vec!["--operator"],
+            ),
+            (vec!["curator", "refresh-markets"], vec!["--caller"]),
+            (
+                vec!["deploy", "plan", "stack"],
+                vec!["--admin", "--adapter-admin"],
+            ),
+            (vec!["deploy", "plan", "adapters"], vec!["--adapter-admin"]),
+        ] {
+            let raw = ["tmplr-soroban-vault", "--profile", "testnet"]
+                .into_iter()
+                .chain(command)
+                .map(String::from)
+                .collect::<Vec<_>>();
+            let expanded = expand_args_with_dir(&raw, dir.path()).expect("expand args");
+            for flag in flags {
+                assert!(expanded.iter().any(|arg| arg == flag), "missing {flag}");
+            }
+            Cli::try_parse_from(expanded).expect("profile should provide required defaults");
+        }
+    }
 
     #[test]
     fn profile_expansion_injects_defaults_without_overriding_cli_flags() {
