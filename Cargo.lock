@@ -13121,12 +13121,18 @@ name = "templar-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "borsh 1.6.1",
  "hex-literal",
  "libfuzzer-sys",
  "near-sdk",
+ "num-bigint 0.4.8",
+ "postcard",
  "primitive-types 0.14.0",
+ "rstest",
  "templar-common",
  "templar-curator-primitives",
+ "templar-primitives",
+ "templar-proxy-oracle-kernel",
  "templar-soroban-custodial-adapter",
  "templar-soroban-runtime",
  "templar-vault-kernel",
