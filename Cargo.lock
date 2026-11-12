@@ -6270,8 +6270,7 @@ dependencies = [
 [[package]]
 name = "near-openapi-types"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33e29423e4795f7733d7c431ec7c4edcd6e199cc8a5ea4843834660f13bbfa8a"
+source = "git+https://github.com/Templar-Protocol/near-openapi-client-rs?rev=f96c0441dbc6c491085821a1c743fb97b58dc745#f96c0441dbc6c491085821a1c743fb97b58dc745"
 dependencies = [
  "bs58 0.5.1",
  "chrono",

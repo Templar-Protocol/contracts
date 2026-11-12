@@ -172,6 +172,16 @@ configuration cache and uses the exact snapshot block rather than a newer finali
   requested hash/sender metadata fails closed. Receipt success alone does not
   establish that a transaction executed the expected proposal or signed payload.
 
+## Runtime SDK Compatibility
+
+The sandbox pin selects nearcore 2.12 for its committed state-patch repair.
+Its RPC global-contract identifiers use `hash` / `account_id`; the SDK must accept
+those tags while preserving canonical `CodeHash` / `AccountId` action JSON.
+The workspace uses the [pinned generator correction](https://github.com/Templar-Protocol/near-openapi-client-rs/commit/f96c0441dbc6c491085821a1c743fb97b58dc745)
+in its root `[patch.crates-io]` table. Until an upstream release includes this fix,
+Rust consumers outside the workspace need the same patch in their own root manifest:
+Cargo patches are not inherited by dependent workspaces.
+
 ## Local DB
 
 - Use a local Postgres server with separate databases per crate.
