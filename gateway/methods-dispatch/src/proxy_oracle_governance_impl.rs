@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use near_account_id::AccountId;
 use near_api::{
     types::{
-        crypto::KeyType,
+        crypto::{signature::Secp256K1Signature, KeyType, SECP256K1_SIGNATURE_LENGTH},
         transaction::{actions::Action, TransactionV0},
+        Signature,
     },
     PublicKey,
 };
@@ -175,15 +176,19 @@ fn create_gas(
     bounded_gas(estimate, 0, bytes, override_gas, limits)
 }
 
+// nearcore's PostQuantumSignatures activation also counts signatures in size limits (#15878).
+const SIGNED_TRANSACTION_SIZE_PROTOCOL_VERSION: u32 = 85;
+
 /// Bound the direct V0 transaction, not just its function-call arguments.
 ///
-/// Planning has no signing key, so reserve the larger supported SECP256K1 key:
-/// this is exact for that key type and conservative by 32 bytes for Ed25519.
-/// Nearcore's transaction-size limit excludes the signature. A DAO forwarding
-/// transaction has its own envelope and must be checked separately.
+/// Planning has no signing key, so reserve the largest SDK-supported SECP256K1
+/// key and, from protocol 85, its serialized signature. Earlier protocols count
+/// only the unsigned transaction. Both envelopes are conservative for Ed25519.
+/// A DAO forwarding transaction has its own envelope and must be checked separately.
 fn validate_create_transaction_size(
     planned: PlannedTransaction,
     limits: &ProtocolLimits,
+    protocol_version: u32,
 ) -> GatewayResult<PlannedTransaction> {
     let transaction = TransactionV0 {
         signer_id: planned.signer_account_id.0,
@@ -193,9 +198,18 @@ fn validate_create_transaction_size(
         block_hash: near_api::types::CryptoHash([0; 32]),
         actions: planned.actions,
     };
-    // Count the canonical encoding without allocating or copying the payload.
-    let bytes = u64::try_from(borsh::object_length(&transaction)?)
-        .map_err(|_| gas_error("governance transaction size overflow"))?;
+    let signature_bytes = if protocol_version >= SIGNED_TRANSACTION_SIZE_PROTOCOL_VERSION {
+        borsh::object_length(&Signature::SECP256K1(Secp256K1Signature(
+            [0; SECP256K1_SIGNATURE_LENGTH],
+        )))?
+    } else {
+        0
+    };
+    // Count canonical bytes without allocating, copying, hashing, or signing the payload.
+    let bytes = borsh::object_length(&transaction)?
+        .checked_add(signature_bytes)
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| gas_error("governance transaction size overflow"))?;
     if bytes > limits.max_transaction_size {
         return Err(gas_error(
             "governance proposal transaction exceeds the live transaction size limit with a conservative signing-key envelope",
@@ -381,7 +395,11 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
         let governance_id = body.governance_id;
-        let limits = ctx.near_client().chain().protocol_limits().await?;
+        let (limits, protocol_version) = ctx
+            .near_client()
+            .chain()
+            .protocol_limits_with_version()
+            .await?;
         // A conservative execution estimate is not a minimum: a later explicit
         // direct-call budget may fit. Reject only a child reservation that leaves
         // no protocol-permitted gas for governance itself.
@@ -421,7 +439,8 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
             ));
         };
         action.gas = create_gas(action.args.len(), body.gas, &limits)?;
-        validate_create_transaction_size(transaction, &limits).map(OperationPlan::from)
+        validate_create_transaction_size(transaction, &limits, protocol_version)
+            .map(OperationPlan::from)
     }
 }
 
@@ -501,7 +520,11 @@ mod tests {
     };
 
     use near_api::{
-        types::{crypto::KeyType, transaction::TransactionV0},
+        types::{
+            crypto::{signature::Secp256K1Signature, KeyType, SECP256K1_SIGNATURE_LENGTH},
+            transaction::{SignedTransaction, Transaction, TransactionV0},
+            Signature,
+        },
         NetworkConfig, PublicKey,
     };
     use templar_common::upgrade::UpgradeSource;
@@ -655,6 +678,7 @@ mod tests {
     async fn create_proposal_checks_complete_transaction_size(
         #[case] encoding: ProposalEncoding,
         #[case] gas: Option<NearGas>,
+        #[values(84, 85)] protocol_version: u32,
     ) {
         let server = MockServer::start().await;
         let max_size = Arc::new(AtomicU64::new(limits().max_transaction_size));
@@ -664,6 +688,7 @@ mod tests {
                 let rpc: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
                 let result = match rpc["method"].as_str().unwrap() {
                     "EXPERIMENTAL_protocol_config" => serde_json::json!({
+                        "protocol_version": protocol_version,
                         "runtime_config": {
                             "transaction_costs": {"storage_usage_config": {
                                 "num_bytes_account": 100, "num_extra_bytes_record": 40
@@ -727,7 +752,16 @@ mod tests {
             block_hash: near_api::types::CryptoHash([0; 32]),
             actions: planned.actions,
         };
-        let complete_size = u64::try_from(borsh::to_vec(&transaction).unwrap().len()).unwrap();
+        let encoded = if protocol_version >= 85 {
+            borsh::to_vec(&SignedTransaction::new(
+                Signature::SECP256K1(Secp256K1Signature([0; SECP256K1_SIGNATURE_LENGTH])),
+                Transaction::V0(transaction),
+            ))
+        } else {
+            borsh::to_vec(&transaction)
+        }
+        .unwrap();
+        let complete_size = u64::try_from(encoded.len()).unwrap();
         max_size.store(complete_size, Ordering::Relaxed);
         assert!(
             <Dispatch as PlanWrite<_, _>>::plan(request.clone(), context.clone())

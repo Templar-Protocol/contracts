@@ -67,6 +67,13 @@ impl ChainClient<'_> {
         self.rpc(&protocol_config_request()).await
     }
 
+    /// Read limits and their active protocol version from one finalized configuration.
+    /// Missing version metadata is an error, not an implicit legacy-size rule.
+    pub async fn protocol_limits_with_version(&self) -> GatewayResult<(ProtocolLimits, u32)> {
+        self.rpc(&ProtocolLimitsWithVersionRequest(protocol_config_request()))
+            .await
+    }
+
     /// Transaction validity window in blocks from the endpoint's live protocol configuration.
     pub async fn transaction_validity_period(&self) -> GatewayResult<u64> {
         self.rpc(&TransactionValidityPeriodRequest(protocol_config_request()))
@@ -191,6 +198,28 @@ async fn query_protocol_config(
 struct StorageByteCostRequest(JsonRpcRequestForExperimentalProtocolConfig);
 
 struct TransactionValidityPeriodRequest(JsonRpcRequestForExperimentalProtocolConfig);
+
+struct ProtocolLimitsWithVersionRequest(JsonRpcRequestForExperimentalProtocolConfig);
+
+impl ChainRpcRequest for ProtocolLimitsWithVersionRequest {
+    type Output = (ProtocolLimits, u32);
+
+    async fn query(
+        &self,
+        client: &near_openapi_client::Client,
+    ) -> Result<Result<Self::Output, String>, near_openapi_client::Error<()>> {
+        Ok(query_protocol_config(client, &self.0)
+            .await?
+            .and_then(|result| {
+                let version = result.protocol_version.ok_or_else(|| {
+                    "protocol config does not include protocol version".to_owned()
+                })?;
+                let limits =
+                    protocol_limits_from_response(result).map_err(|error| error.to_string())?;
+                Ok((limits, version))
+            }))
+    }
+}
 
 impl ChainRpcRequest for TransactionValidityPeriodRequest {
     type Output = u64;

@@ -110,10 +110,13 @@ Exact overrides remain available for direct or separately budgeted callers and m
 be positive and within the protocol cap. Execution overrides must also exceed the
 child reservation; creation reserves only its own work, not the future child call.
 
-Proposal creation also checks the live direct V0 transaction-size cap, excluding
-signatures, using the largest supported public key (64-byte SECP256K1). This is
-32 bytes conservative for 32-byte Ed25519 keys. Forwarding DAO transactions
-have separate envelopes and need their own size checks.
+Proposal creation also checks the live direct V0 transaction-size cap using the
+largest SDK-supported public key (64-byte SECP256K1). Before protocol 85 the cap
+excludes signatures; from protocol 85 the planner also reserves the serialized
+SECP256K1 signature, including its type tag. Ed25519 envelopes are smaller.
+Version and limits come from one finalized protocol configuration; missing version
+metadata fails planning. Forwarding DAO transactions have separate envelopes and
+need their own size checks.
 
 These are conservative, receipt-calibrated planning allowances, not a statistical
 99% guarantee for arbitrary DAO versions, policies, payloads or multi-action proposals.
