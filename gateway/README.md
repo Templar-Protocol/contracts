@@ -111,9 +111,9 @@ be positive and within the protocol cap. Execution overrides must also exceed th
 child reservation; creation reserves only its own work, not the future child call.
 
 Proposal creation also checks the live direct V0 transaction-size cap, excluding
-signatures, with the largest supported key envelope (32 bytes conservative for
-Ed25519). Forwarding DAO transactions have separate envelopes and need their own
-size checks.
+signatures, using the largest supported public key (64-byte SECP256K1). This is
+32 bytes conservative for 32-byte Ed25519 keys. Forwarding DAO transactions
+have separate envelopes and need their own size checks.
 
 These are conservative, receipt-calibrated planning allowances, not a statistical
 99% guarantee for arbitrary DAO versions, policies, payloads or multi-action proposals.
