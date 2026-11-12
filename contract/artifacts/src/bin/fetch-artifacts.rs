@@ -4,17 +4,36 @@
 //! cache is `just artifacts-clean`, which removes the directory this prints —
 //! the cache is disposable, so it needs no code of its own.
 
-use std::process::ExitCode;
+use std::{path::PathBuf, process::ExitCode};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use templar_contract_artifacts::fetch;
 
 /// With no flags, downloads every pinned release in the catalog.
 #[derive(Debug, Parser)]
+#[command(args_conflicts_with_subcommands = true)]
 struct Args {
     /// Print the resolved cache directory and exit.
     #[arg(long)]
     print_path: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Download a pinned external WASM without adding a contract catalog entry.
+    Download {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        sha256: String,
+        #[arg(long)]
+        length: usize,
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -23,10 +42,10 @@ fn main() -> ExitCode {
     if args.print_path {
         return print_path();
     }
-    prefetch()
+    fetch(args.command)
 }
 
-fn prefetch() -> ExitCode {
+fn fetch(command: Option<Command>) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -38,13 +57,28 @@ fn prefetch() -> ExitCode {
         }
     };
 
-    match runtime.block_on(fetch::prefetch_all()) {
-        Ok(count) => {
-            println!("{count} released artifact(s) cached under {}", root_label());
+    let result = runtime.block_on(async {
+        match command {
+            Some(Command::Download {
+                url,
+                sha256,
+                length,
+                output,
+            }) => fetch::download_pinned(&url, length, &sha256, &output)
+                .await
+                .map(|_| format!("Verified WASM saved to {}", output.display())),
+            None => fetch::prefetch_all()
+                .await
+                .map(|count| format!("{count} released artifact(s) cached under {}", root_label())),
+        }
+    });
+    match result {
+        Ok(message) => {
+            println!("{message}");
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("failed to populate the artifact cache: {error}");
+            eprintln!("failed to fetch artifact: {error}");
             ExitCode::FAILURE
         }
     }

@@ -121,6 +121,26 @@ pub enum FetchError {
         actual: String,
     },
 
+    #[error("{url} returned {actual} bytes; expected {expected}")]
+    PinnedLengthMismatch {
+        url: String,
+        expected: usize,
+        actual: usize,
+    },
+
+    #[error("{url} hashes to {actual}; expected {expected}")]
+    PinnedHashMismatch {
+        url: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("{url} is not a WebAssembly 1.0 module")]
+    InvalidWasm { url: String },
+
+    #[error("cannot download {url} while TEMPLAR_ARTIFACT_OFFLINE is set")]
+    OfflineDownload { url: String },
+
     #[error("artifact cache I/O failed at {path}: {source}")]
     Cache {
         path: PathBuf,
@@ -294,32 +314,33 @@ async fn released(artifact: ReleaseArtifact, version: &str) -> Result<Vec<u8>, F
     }
 
     let url = asset_url(release);
-    let bytes = download(&url).await?;
-
-    // Before the digest, so a size disagreement reports bytes a reader can
-    // check against the Release rather than an opaque hash.
-    if bytes.len() != release.length {
-        return Err(FetchError::LengthMismatch {
-            artifact,
-            version: version.to_owned(),
-            url,
-            expected: release.length,
-            actual: bytes.len(),
-        });
-    }
-
-    let actual = sha256_hex(&bytes);
-    if actual != expected {
-        return Err(FetchError::HashMismatch {
-            artifact,
-            version: version.to_owned(),
-            url,
-            expected: expected.to_owned(),
-            actual,
-        });
-    }
-
-    write_atomically(&path, &bytes)?;
+    let bytes = download_pinned(&url, release.length, expected, &path)
+        .await
+        .map_err(|error| match error {
+            FetchError::PinnedLengthMismatch {
+                url,
+                expected,
+                actual,
+            } => FetchError::LengthMismatch {
+                artifact,
+                version: version.to_owned(),
+                url,
+                expected,
+                actual,
+            },
+            FetchError::PinnedHashMismatch {
+                url,
+                expected,
+                actual,
+            } => FetchError::HashMismatch {
+                artifact,
+                version: version.to_owned(),
+                url,
+                expected,
+                actual,
+            },
+            other => other,
+        })?;
     Ok(remember(key, bytes))
 }
 
@@ -356,6 +377,47 @@ pub async fn prefetch_all() -> Result<usize, FetchError> {
         }
     }
     Ok(cached)
+}
+
+/// Download an explicitly pinned WASM without adding it to the release catalog.
+///
+/// Uses the same HTTP client, retries, integrity checks and atomic publication
+/// as catalogued releases. Existing output is untouched on download or
+/// verification failure. The caller owns cache-hit policy.
+pub async fn download_pinned(
+    url: &str,
+    length: usize,
+    sha256: &str,
+    path: &Path,
+) -> Result<Vec<u8>, FetchError> {
+    if std::env::var_os("TEMPLAR_ARTIFACT_OFFLINE").is_some() {
+        return Err(FetchError::OfflineDownload {
+            url: url.to_owned(),
+        });
+    }
+    let bytes = download(url).await?;
+    if bytes.len() != length {
+        return Err(FetchError::PinnedLengthMismatch {
+            url: url.to_owned(),
+            expected: length,
+            actual: bytes.len(),
+        });
+    }
+    let actual = sha256_hex(&bytes);
+    if actual != sha256 {
+        return Err(FetchError::PinnedHashMismatch {
+            url: url.to_owned(),
+            expected: sha256.to_owned(),
+            actual,
+        });
+    }
+    if !bytes.starts_with(b"\0asm\x01\0\0\0") {
+        return Err(FetchError::InvalidWasm {
+            url: url.to_owned(),
+        });
+    }
+    write_atomically(path, &bytes)?;
+    Ok(bytes)
 }
 
 /// Statuses worth another attempt: rate limiting and server-side faults. Every

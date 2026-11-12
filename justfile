@@ -155,7 +155,7 @@ sandbox-up *args:
     done
     SANDBOX_NODE_COUNT='{{ sandbox_test_threads }}' ./script/sandbox-up.sh
 
-# Fetch the hash-pinned canonical Sputnik DAO test fixture; never a release.
+# Fetch/check the hash-pinned external Sputnik DAO fixture from its archived release.
 fetch-sputnik-fixture *args:
     python3 ./script/fetch-sputnik-fixture.py {{ args }}
 
