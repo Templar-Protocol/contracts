@@ -83,6 +83,10 @@ async fn serve_once(
 #[case::missing_asset(Outcome::MissingAsset)]
 #[tokio::test]
 async fn only_verified_wasm_replaces_existing_output(#[case] outcome: Outcome) {
+    if std::env::var_os("TEMPLAR_ARTIFACT_OFFLINE").is_some() {
+        eprintln!("Skipping loopback download cases in artifact offline mode");
+        return;
+    }
     let output = Output::new().unwrap();
     std::fs::write(&output.0, PREVIOUS).unwrap();
     let body = if matches!(outcome, Outcome::NotWasm) {

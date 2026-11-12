@@ -241,17 +241,22 @@ mod request_serialization {
 
     impl Serialize for Policy<'_> {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            let policy = self.0;
+            // SDK field additions must fail compilation rather than disappear from identity.
+            let sputnikdao2::Policy {
+                roles,
+                default_vote_policy,
+                proposal_bond,
+                proposal_period,
+                bounty_bond,
+                bounty_forgiveness_period,
+            } = self.0;
             let mut state = serializer.serialize_struct("Policy", 6)?;
-            state.serialize_field("roles", &Roles(&policy.roles))?;
-            state.serialize_field("default_vote_policy", &policy.default_vote_policy)?;
-            state.serialize_field("proposal_bond", &policy.proposal_bond)?;
-            state.serialize_field("proposal_period", &policy.proposal_period)?;
-            state.serialize_field("bounty_bond", &policy.bounty_bond)?;
-            state.serialize_field(
-                "bounty_forgiveness_period",
-                &policy.bounty_forgiveness_period,
-            )?;
+            state.serialize_field("roles", &Roles(roles))?;
+            state.serialize_field("default_vote_policy", default_vote_policy)?;
+            state.serialize_field("proposal_bond", proposal_bond)?;
+            state.serialize_field("proposal_period", proposal_period)?;
+            state.serialize_field("bounty_bond", bounty_bond)?;
+            state.serialize_field("bounty_forgiveness_period", bounty_forgiveness_period)?;
             state.end()
         }
     }
@@ -268,14 +273,19 @@ mod request_serialization {
 
     impl Serialize for Role<'_> {
         fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            let role = self.0;
-            let mut permissions: Vec<_> = role.permissions.iter().collect();
+            let sputnikdao2::RolePermission {
+                name,
+                kind,
+                permissions,
+                vote_policy,
+            } = self.0;
+            let mut permissions: Vec<_> = permissions.iter().collect();
             permissions.sort_unstable();
             let mut state = serializer.serialize_struct("RolePermission", 4)?;
-            state.serialize_field("name", &role.name)?;
-            state.serialize_field("kind", &RoleKind(&role.kind))?;
+            state.serialize_field("name", name)?;
+            state.serialize_field("kind", &RoleKind(kind))?;
             state.serialize_field("permissions", &permissions)?;
-            state.serialize_field("vote_policy", &role.vote_policy)?;
+            state.serialize_field("vote_policy", vote_policy)?;
             state.end()
         }
     }
