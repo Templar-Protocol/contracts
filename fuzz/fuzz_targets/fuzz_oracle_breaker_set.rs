@@ -78,12 +78,30 @@ enum AggregatorKind {
     MedianHigh,
 }
 
+/// A median quorum: usually one the proxy's sources can meet, sometimes any `u8`.
+#[derive(Arbitrary, Debug, Clone, Copy)]
+enum QuorumInput {
+    Reachable(u8),
+    Raw(u8),
+}
+
+impl QuorumInput {
+    fn get(self) -> u32 {
+        match self {
+            Self::Reachable(quorum) => {
+                u32::try_from(usize::from(quorum) % (MAX_SOURCES + 1)).unwrap_or_default()
+            }
+            Self::Raw(quorum) => quorum.into(),
+        }
+    }
+}
+
 #[derive(Arbitrary, Debug)]
 struct ProxyInput {
     kind: AggregatorKind,
     source_count: u8,
     weights: [u32; MAX_SOURCES],
-    min_sources: u8,
+    min_sources: QuorumInput,
     max_age_s: Option<u16>,
     max_clock_drift_s: Option<u16>,
 }
@@ -102,12 +120,12 @@ impl ProxyInput {
             AggregatorKind::Priority => Aggregator::priority(0..source_count),
             AggregatorKind::MedianLow => {
                 let mut median = MedianLow::new(weighted());
-                median.min_sources = self.min_sources.into();
+                median.min_sources = self.min_sources.get();
                 Aggregator::MedianLow(median)
             }
             AggregatorKind::MedianHigh => {
                 let mut median = MedianHigh::new(weighted());
-                median.min_sources = self.min_sources.into();
+                median.min_sources = self.min_sources.get();
                 Aggregator::MedianHigh(median)
             }
         };
