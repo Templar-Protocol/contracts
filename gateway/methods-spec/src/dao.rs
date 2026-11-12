@@ -161,11 +161,16 @@ pub struct GetProposal {
 /// Planning rejects known-ineligible proposers. Token-weight membership may be
 /// unknown, and the contract remains authoritative for permission and bond checks.
 /// Proposal submission is not approval or execution of the proposed actions.
+///
+/// Request serialization sorts only native group-membership and permission sets
+/// for stable idempotency identity. Role and action order and native JSON forms
+/// remain unchanged.
 #[derive(MethodSpec, Serialize, Deserialize, JsonSchema)]
 #[method(write = "dao.addProposal")]
 pub struct AddProposal {
     pub dao_id: AccountId,
     #[schemars(with = "schema::ProposalInput")]
+    #[serde(serialize_with = "request_serialization::proposal")]
     pub proposal: sputnikdao2::ProposalInput,
 }
 
@@ -177,6 +182,116 @@ impl Clone for AddProposal {
                 description: self.proposal.description.clone(),
                 kind: self.proposal.kind.clone(),
             },
+        }
+    }
+}
+
+mod request_serialization {
+    use serde::{
+        ser::{SerializeStruct, SerializeStructVariant},
+        Serialize, Serializer,
+    };
+    use sputnikdao2::{ProposalKind, VersionedPolicy};
+
+    pub(super) fn proposal<S: Serializer>(
+        proposal: &sputnikdao2::ProposalInput,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(rename = "ProposalInput")]
+        struct Input<'a> {
+            description: &'a str,
+            #[serde(serialize_with = "kind")]
+            kind: &'a ProposalKind,
+        }
+
+        Input {
+            description: &proposal.description,
+            kind: &proposal.kind,
+        }
+        .serialize(serializer)
+    }
+
+    fn kind<S: Serializer>(kind: &ProposalKind, serializer: S) -> Result<S::Ok, S::Error> {
+        match kind {
+            ProposalKind::ChangePolicy {
+                policy: VersionedPolicy::Current(policy),
+            } => {
+                let mut variant =
+                    serializer.serialize_struct_variant("ProposalKind", 1, "ChangePolicy", 1)?;
+                // VersionedPolicy is untagged: Current serializes as the policy itself.
+                variant.serialize_field("policy", &Policy(policy))?;
+                variant.end()
+            }
+            ProposalKind::ChangePolicyAddOrUpdateRole { role } => {
+                let mut variant = serializer.serialize_struct_variant(
+                    "ProposalKind",
+                    13,
+                    "ChangePolicyAddOrUpdateRole",
+                    1,
+                )?;
+                variant.serialize_field("role", &Role(role))?;
+                variant.end()
+            }
+            _ => kind.serialize(serializer),
+        }
+    }
+
+    struct Policy<'a>(&'a sputnikdao2::Policy);
+
+    impl Serialize for Policy<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let policy = self.0;
+            let mut state = serializer.serialize_struct("Policy", 6)?;
+            state.serialize_field("roles", &Roles(&policy.roles))?;
+            state.serialize_field("default_vote_policy", &policy.default_vote_policy)?;
+            state.serialize_field("proposal_bond", &policy.proposal_bond)?;
+            state.serialize_field("proposal_period", &policy.proposal_period)?;
+            state.serialize_field("bounty_bond", &policy.bounty_bond)?;
+            state.serialize_field(
+                "bounty_forgiveness_period",
+                &policy.bounty_forgiveness_period,
+            )?;
+            state.end()
+        }
+    }
+
+    struct Roles<'a>(&'a [sputnikdao2::RolePermission]);
+
+    impl Serialize for Roles<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq(self.0.iter().map(Role))
+        }
+    }
+
+    struct Role<'a>(&'a sputnikdao2::RolePermission);
+
+    impl Serialize for Role<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let role = self.0;
+            let mut permissions: Vec<_> = role.permissions.iter().collect();
+            permissions.sort_unstable();
+            let mut state = serializer.serialize_struct("RolePermission", 4)?;
+            state.serialize_field("name", &role.name)?;
+            state.serialize_field("kind", &RoleKind(&role.kind))?;
+            state.serialize_field("permissions", &permissions)?;
+            state.serialize_field("vote_policy", &role.vote_policy)?;
+            state.end()
+        }
+    }
+
+    struct RoleKind<'a>(&'a sputnikdao2::RoleKind);
+
+    impl Serialize for RoleKind<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            match self.0 {
+                sputnikdao2::RoleKind::Group(members) => {
+                    let mut members: Vec<_> = members.iter().collect();
+                    members.sort_unstable();
+                    serializer.serialize_newtype_variant("RoleKind", 2, "Group", &members)
+                }
+                kind => kind.serialize(serializer),
+            }
         }
     }
 }

@@ -346,7 +346,7 @@ pub(crate) async fn get_fresh_proxy_source_price<C: HasNearClient>(
         else {
             return Ok(None);
         };
-        if price.price <= 0 {
+        if !price.has_strictly_positive_confidence_interval() {
             return Ok(None);
         }
         prices.push(Some(price));

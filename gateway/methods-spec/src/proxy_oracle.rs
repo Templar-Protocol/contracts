@@ -38,10 +38,11 @@ pub struct GetCachedPrice {
     pub age: u64,
 }
 
-/// Resolve on-chain sources only when every transformed source is positive and
-/// fresh under both the deployed filter and `age` (seconds), at the chain clock.
-/// Future publications are rejected. This does not read the accepted cache or
-/// certify breaker state; it establishes all-source readiness before aggregation.
+/// Resolve on-chain sources only when every transformed source has a strictly
+/// positive confidence interval and is fresh under both the deployed filter and
+/// `age` (seconds), at the chain clock. Future publications are rejected.
+/// This does not read the accepted cache or certify breaker state; it establishes
+/// all-source readiness before aggregation.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(read = "proxyOracle.getFreshSourcePrice", output = Option<Price>)]
 pub struct GetFreshSourcePrice {

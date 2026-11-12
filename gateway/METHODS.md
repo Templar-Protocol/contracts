@@ -168,7 +168,7 @@
 | `proxyOracle.adminSetProxy` | write | `AdminSetProxy` → `WriteOperationResult` | Set (or clear, with a null `proxy`) a proxy price feed definition. |
 | `proxyOracle.create` | write | `Create` → `WriteOperationResult` | Create a proxy oracle from the registry. |
 | `proxyOracle.getCachedPrice` | read | `GetCachedPrice` → `Option<Price>` | Read a proxy's accepted cached price, subject to its stored breaker state and age. |
-| `proxyOracle.getFreshSourcePrice` | read | `GetFreshSourcePrice` → `Option<Price>` | Resolve on-chain sources only when every transformed source is positive and fresh under both the deployed filter and `age` (seconds), at the chain clock. Future publications are rejected. This does not read the accepted cache or certify breaker state; it establishes all-source readiness before aggregation. |
+| `proxyOracle.getFreshSourcePrice` | read | `GetFreshSourcePrice` → `Option<Price>` | Resolve on-chain sources only when every transformed source has a strictly positive confidence interval and is fresh under both the deployed filter and `age` (seconds), at the chain clock. Future publications are rejected. This does not read the accepted cache or certify breaker state; it establishes all-source readiness before aggregation. |
 | `proxyOracle.getProxy` | read | `GetProxy` → `Option<Proxy<Source>>` | Get a proxy price feed definition. |
 | `proxyOracle.getProxyCircuitBreakerSet` | read | `GetProxyCircuitBreakerSet` → `Option<CircuitBreakerSet>` | Get the circuit breaker set configured for a proxy price feed. |
 | `proxyOracle.listProxies` | read | `ListProxies` → `Vec<PriceIdentifier>` | List proxy price feeds. |

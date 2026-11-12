@@ -69,6 +69,10 @@ async fn readiness_requires_every_source_at_the_chain_clock() -> Result<()> {
         Some(price(200, now + 86_400)?),
         Some(price(200, now.saturating_sub(600))?),
         Some(price(-200, now)?),
+        Some(Price {
+            conf: 200_u64.into(),
+            ..price(200, now)?
+        }),
         None,
     ] {
         harness

@@ -1,6 +1,12 @@
 use async_trait::async_trait;
 use near_account_id::AccountId;
-use near_api::types::transaction::actions::Action;
+use near_api::{
+    types::{
+        crypto::KeyType,
+        transaction::{actions::Action, TransactionV0},
+    },
+    PublicKey,
+};
 use serde::Serialize;
 use templar_gateway_core::{
     client::{
@@ -15,7 +21,8 @@ use templar_gateway_core::{
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
 use templar_gateway_types::{
-    common::WriteRequest, NearGas, ProposalEncoding, ProtocolLimits, ProxyGovernance,
+    common::WriteRequest, ManagedAccountId, NearGas, ProposalEncoding, ProtocolLimits,
+    ProxyGovernance,
 };
 use templar_proxy_oracle_near_governance_common::{
     GovernancePolicy, GovernancePolicyWire, Operation, Proposal, ReflexiveOperation, Role,
@@ -160,17 +167,46 @@ fn create_gas(
 ) -> GatewayResult<NearGas> {
     let bytes =
         u64::try_from(encoded_bytes).map_err(|_| gas_error("governance proposal size overflow"))?;
-    if bytes > limits.max_transaction_size {
-        return Err(gas_error(
-            "encoded governance proposal exceeds the live transaction size limit",
-        ));
-    }
     let estimate = checked_gas_sum(
         CREATE_BASE_GAS + WRAPPER_BUFFER_GAS,
         bytes,
         PAYLOAD_GAS_PER_BYTE,
     )?;
     bounded_gas(estimate, 0, bytes, override_gas, limits)
+}
+
+/// Bound the direct V0 transaction, not just its function-call arguments.
+///
+/// Planning has no signing key, so reserve the larger supported SECP256K1 key:
+/// this is exact for that key type and conservative by 32 bytes for Ed25519.
+/// Nearcore's transaction-size limit excludes the signature. A DAO forwarding
+/// transaction has its own envelope and must be checked separately.
+fn validate_create_transaction_size(
+    planned: PlannedTransaction,
+    limits: &ProtocolLimits,
+) -> GatewayResult<PlannedTransaction> {
+    let transaction = TransactionV0 {
+        signer_id: planned.signer_account_id.0,
+        public_key: PublicKey::empty(KeyType::SECP256K1),
+        nonce: 0,
+        receiver_id: planned.receiver_id,
+        block_hash: near_api::types::CryptoHash([0; 32]),
+        actions: planned.actions,
+    };
+    // Count the canonical encoding without allocating or copying the payload.
+    let bytes = u64::try_from(borsh::object_length(&transaction)?)
+        .map_err(|_| gas_error("governance transaction size overflow"))?;
+    if bytes > limits.max_transaction_size {
+        return Err(gas_error(
+            "governance proposal transaction exceeds the live transaction size limit with a conservative signing-key envelope",
+        ));
+    }
+    Ok(PlannedTransaction {
+        signer_account_id: ManagedAccountId(transaction.signer_id),
+        receiver_id: transaction.receiver_id,
+        actions: transaction.actions,
+        continue_on_failure: planned.continue_on_failure,
+    })
 }
 
 /// The governance contract's `new(proxy_oracle_id, admin_id, policy)`.
@@ -385,7 +421,7 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
             ));
         };
         action.gas = create_gas(action.args.len(), body.gas, &limits)?;
-        Ok(OperationPlan::from(transaction))
+        validate_create_transaction_size(transaction, &limits).map(OperationPlan::from)
     }
 }
 
@@ -459,13 +495,28 @@ impl Dispatch {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    };
+
+    use near_api::{
+        types::{crypto::KeyType, transaction::TransactionV0},
+        NetworkConfig, PublicKey,
+    };
     use templar_common::upgrade::UpgradeSource;
+    use templar_gateway_core::{GatewayContext, GatewayError, PlanWrite};
     use templar_gateway_types::{NearGas, ProtocolLimits};
     use templar_proxy_oracle_near_governance_common::{
         Operation, ReflexiveOperation, Role, GAS_FOR_SELF_UPGRADE_MIGRATE,
     };
 
-    use super::{checked_gas_sum, create_gas, execute_gas};
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+    use super::{
+        checked_gas_sum, create_gas, execute_gas, proxy_oracle_governance, Dispatch,
+        ProposalEncoding, WriteRequest,
+    };
 
     fn operation() -> Operation {
         Operation::Reflexive(ReflexiveOperation::SetRole {
@@ -581,11 +632,8 @@ mod tests {
     }
 
     #[test]
-    fn payload_bounds_fail_even_with_explicit_gas() {
+    fn storage_bounds_fail_even_with_explicit_gas() {
         let mut restricted = limits();
-        restricted.max_transaction_size = 1_024;
-        assert!(create_gas(1_024, Some(NearGas::from_tgas(100)), &restricted).is_ok());
-        assert!(create_gas(1_025, Some(NearGas::from_tgas(100)), &restricted).is_err());
         let operation = target(NearGas::from_tgas(100), 1_024);
         let size = u64::try_from(borsh::object_length(&operation).unwrap()).unwrap();
         restricted.max_length_storage_value = size;
@@ -596,5 +644,100 @@ mod tests {
             create_gas(65_536, None, &limits()).unwrap()
                 > create_gas(1_024, None, &limits()).unwrap()
         );
+    }
+
+    #[rstest::rstest]
+    #[case::json_default(ProposalEncoding::Json, None)]
+    #[case::json_override(ProposalEncoding::Json, Some(NearGas::from_tgas(100)))]
+    #[case::borsh_default(ProposalEncoding::Borsh, None)]
+    #[case::borsh_override(ProposalEncoding::Borsh, Some(NearGas::from_tgas(100)))]
+    #[tokio::test]
+    async fn create_proposal_checks_complete_transaction_size(
+        #[case] encoding: ProposalEncoding,
+        #[case] gas: Option<NearGas>,
+    ) {
+        let server = MockServer::start().await;
+        let max_size = Arc::new(AtomicU64::new(limits().max_transaction_size));
+        let live_max_size = Arc::clone(&max_size);
+        Mock::given(method("POST"))
+            .respond_with(move |request: &wiremock::Request| {
+                let rpc: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let result = match rpc["method"].as_str().unwrap() {
+                    "EXPERIMENTAL_protocol_config" => serde_json::json!({
+                        "runtime_config": {
+                            "transaction_costs": {"storage_usage_config": {
+                                "num_bytes_account": 100, "num_extra_bytes_record": 40
+                            }},
+                            "wasm_config": {"limit_config": {
+                                "max_transaction_size": live_max_size.load(Ordering::Relaxed),
+                                "max_total_prepaid_gas": "300000000000000",
+                                "max_length_storage_key": 2048,
+                                "max_length_storage_value": 4_194_304
+                            }}
+                        }
+                    }),
+                    "query" => {
+                        assert_eq!(rpc["params"]["method_name"], "contract_source_metadata");
+                        serde_json::json!({
+                            "block_hash": "11111111111111111111111111111111",
+                            "block_height": 1,
+                            "logs": [],
+                            "result": serde_json::to_vec(&serde_json::json!({
+                                "version": "0.3.0", "standards": []
+                            })).unwrap()
+                        })
+                    }
+                    unexpected => panic!("unexpected RPC method {unexpected}"),
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "jsonrpc": "2.0", "id": rpc["id"], "result": result
+                }))
+            })
+            .mount(&server)
+            .await;
+        let context = GatewayContext::new(NetworkConfig::from_rpc_url(
+            "test",
+            server.uri().parse().unwrap(),
+        ))
+        .unwrap();
+        let request = WriteRequest {
+            signer_account_id: templar_gateway_types::ManagedAccountId(
+                "administrator.near".parse().unwrap(),
+            ),
+            idempotency_key: None,
+            body: proxy_oracle_governance::CreateProposal {
+                governance_id: "governance.near".parse().unwrap(),
+                id: 7,
+                operation: target(NearGas::from_tgas(100), 1_024),
+                requested_ttl: templar_common::Nanoseconds::zero(),
+                encoding,
+                gas,
+            },
+        };
+        let plan = <Dispatch as PlanWrite<_, _>>::plan(request.clone(), context.clone())
+            .await
+            .unwrap();
+        let planned = plan.steps.into_iter().next().unwrap();
+        // Planning does not know the signing key: use the larger supported key.
+        let transaction = TransactionV0 {
+            signer_id: planned.signer_account_id.0,
+            public_key: PublicKey::empty(KeyType::SECP256K1),
+            nonce: 0,
+            receiver_id: planned.receiver_id,
+            block_hash: near_api::types::CryptoHash([0; 32]),
+            actions: planned.actions,
+        };
+        let complete_size = u64::try_from(borsh::to_vec(&transaction).unwrap().len()).unwrap();
+        max_size.store(complete_size, Ordering::Relaxed);
+        assert!(
+            <Dispatch as PlanWrite<_, _>>::plan(request.clone(), context.clone())
+                .await
+                .is_ok()
+        );
+        max_size.store(complete_size - 1, Ordering::Relaxed);
+        let error = <Dispatch as PlanWrite<_, _>>::plan(request, context)
+            .await
+            .expect_err("a transaction one byte over the live cap must fail planning");
+        assert!(matches!(error, GatewayError::RequestPreconditionFailed(_)));
     }
 }

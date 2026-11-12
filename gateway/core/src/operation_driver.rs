@@ -659,3 +659,6 @@ pub fn request_fingerprint<T: Serialize>(method: &str, params: &T) -> GatewayRes
     }))?;
     Ok(Sha256::digest(payload).into())
 }
+
+#[cfg(test)]
+mod dao_idempotency;

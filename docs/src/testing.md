@@ -19,7 +19,7 @@ shared Rust artifact downloader; cold provisioning requires Python 3.11+ and Car
 `just fetch-sputnik-fixture --check` verifies warm bytes offline, and `--refetch`
 downloads again under the same pins. The original account/code hash is provenance,
 not a dependency on current mainnet state. See
-[the fixture provisioning guide](../../contract/artifacts/README.md#pinned-external-sputnik-dao-fixture)
+[the fixture provisioning guide](https://github.com/Templar-Protocol/contracts/blob/dev/contract/artifacts/README.md#pinned-external-sputnik-dao-fixture)
 for enforced pins, cache behavior and publication policy.
 
 Run the artifact drift check separately when validating the release catalog —

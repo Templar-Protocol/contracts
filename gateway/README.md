@@ -79,9 +79,9 @@ Methods in the same namespace should stay at roughly the same level of abstracti
 ## Sputnik DAO Proposals
 
 `dao.getPolicy { dao_id }` returns the native policy; `dao.getProposal { dao_id, id }`
-returns the flattened proposal, including its ID. Policy and proposal-input types reuse
-the pinned Sputnik serializers. The typed proposal read boundary also preserves the
-canonical deployed DAO's absent audit history alongside available modern history.
+returns the flattened proposal, including its ID. Policy and proposal-input types
+retain the pinned Sputnik JSON forms. The typed proposal read boundary also preserves
+the canonical deployed DAO's absent audit history alongside available modern history.
 Missing history is not an empty log. Numeric vote counts through `u64::MAX` retain
 their number representation; larger canonical counts are parsed exactly as `u128`
 and returned in the established decimal-string form. Modern decimal-string counts
@@ -93,6 +93,8 @@ counts above JavaScript's safe-integer range.
 and 30 Tgas. Policy preflight rejects known-ineligible proposers, including proposal-kind-specific
 permissions; delegated-token membership is left to the contract. Authorization and the bond can
 change after planning, so contract checks remain authoritative.
+Request serialization sorts group-membership and permission sets for stable
+idempotency identity; roles and action sequences retain their order.
 
 Submission success means a proposal was created, not approved or executed. Read the ID returned by
 the submission, then fetch that exact proposal. Do not derive it from a later proposal counter.
@@ -107,6 +109,11 @@ within the live protocol cap. Defaults that do not fit are rejected, never clamp
 Exact overrides remain available for direct or separately budgeted callers and must
 be positive and within the protocol cap. Execution overrides must also exceed the
 child reservation; creation reserves only its own work, not the future child call.
+
+Proposal creation also checks the live direct V0 transaction-size cap, excluding
+signatures, with the largest supported key envelope (32 bytes conservative for
+Ed25519). Forwarding DAO transactions have separate envelopes and need their own
+size checks.
 
 These are conservative, receipt-calibrated planning allowances, not a statistical
 99% guarantee for arbitrary DAO versions, policies, payloads or multi-action proposals.
@@ -151,9 +158,10 @@ configuration cache and uses the exact snapshot block rather than a newer finali
   EMA cache directly. A live source does not imply a populated or usable cache;
   clearing a manual trip still requires a successful refresh.
 - `proxyOracle.getFreshSourcePrice { oracle_id, id, age }` requires every effective
-  stored source to be present, transformable, positive, convertible, nonfuture,
-  and fresh under both the deployed filter and requested age, using a chain block
-  timestamp read after all source views. These reads are not one block-pinned
+  stored source to be present, transformable, convertible, nonfuture, and have a
+  strictly positive confidence interval. It must be fresh under both the deployed
+  filter and requested age, using a chain block timestamp read after all source
+  views. These reads are not one block-pinned
   snapshot or an atomic guarantee about a later transaction. The method does not
   change `oracle.getPrice` or the supplied `oracle.resolvePriceAllSources`
   resolver's existing semantics.
