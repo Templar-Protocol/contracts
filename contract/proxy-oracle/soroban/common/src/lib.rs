@@ -298,6 +298,16 @@ impl SorobanDecimal {
     pub fn to_decimal(&self) -> Decimal {
         Decimal::from(self)
     }
+
+    /// Whether postcard preserves this exact value instead of rounding its fractional bits.
+    #[must_use]
+    pub fn is_postcard_representable(&self) -> bool {
+        let decimal = self.to_decimal();
+        postcard::to_allocvec(&decimal)
+            .ok()
+            .and_then(|bytes| postcard::from_bytes::<Decimal>(&bytes).ok())
+            == Some(decimal)
+    }
 }
 
 impl From<&SorobanDecimal> for Decimal {
@@ -376,6 +386,26 @@ impl CircuitBreakerConfig {
             return Err(ContractError::InvalidInput);
         }
         Ok(breaker)
+    }
+
+    pub fn validate_postcard_representation(&self) -> Result<(), ContractError> {
+        let representable = match self {
+            Self::StepwiseChange(config) => config.max_relative_change.is_postcard_representable(),
+            Self::MonotonicRun(config) => {
+                config.min_relative_step_change.is_postcard_representable()
+            }
+            Self::WindowedChangeDelta(config) => {
+                config.max_relative_mean_change.is_postcard_representable()
+            }
+            Self::CumulativeChange(config) => {
+                config.max_relative_change.is_postcard_representable()
+            }
+        };
+        if representable {
+            Ok(())
+        } else {
+            Err(ContractError::InvalidInput)
+        }
     }
 
     #[must_use]
@@ -591,6 +621,20 @@ mod tests {
                 max_relative_change: threshold,
             }),
         ]
+    }
+
+    #[test]
+    fn breaker_parser_rejects_postcard_unrepresentable_thresholds() {
+        let env = Env::default();
+        assert!(SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF).is_postcard_representable());
+        let threshold = Decimal::from_repr([1, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(!SorobanDecimal::from_decimal(&env, threshold).is_postcard_representable());
+        for config in breakers(&env, threshold) {
+            assert_eq!(
+                config.validate_postcard_representation(),
+                Err(ContractError::InvalidInput)
+            );
+        }
     }
 
     #[test]

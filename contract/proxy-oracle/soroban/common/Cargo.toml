@@ -12,7 +12,8 @@ path = "src/lib.rs"
 
 [dependencies]
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
-templar-primitives = { path = "../../../../primitives", version = "0.1.3", default-features = false }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+templar-primitives = { path = "../../../../primitives", version = "0.1.3", default-features = false, features = ["serde"] }
 templar-proxy-oracle-kernel = { path = "../../kernel", version = "0.1.4", default-features = false }
 
 [dev-dependencies]

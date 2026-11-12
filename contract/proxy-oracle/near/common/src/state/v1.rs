@@ -256,6 +256,15 @@ impl State {
         if let Some(proxy) = proxy {
             let proxy_changed = existing_proxy.as_ref() != Some(&proxy);
             let missing_breaker_set = breaker_set.is_none();
+            let aggregator_changed = existing_proxy
+                .as_ref()
+                .is_some_and(|current| current.aggregator != proxy.aggregator);
+            if aggregator_changed {
+                let mut set =
+                    breaker_set.unwrap_or_else(|| env::panic_str("Invalid circuit breaker set"));
+                set.reset_preserving_next_id();
+                self.circuit_breakers.insert(&id, &set);
+            }
             self.proxies.insert(&id, &proxy);
             if missing_breaker_set {
                 self.circuit_breakers
@@ -340,7 +349,7 @@ mod tests {
     use templar_common::Decimal;
     use templar_proxy_oracle_kernel::proxy::{
         aggregator::Aggregator,
-        circuit_breaker::{MonotonicRun, StepwiseChange},
+        circuit_breaker::{MonotonicRun, StepwiseChange, UncheckedCircuitBreakerSet},
         FreshnessFilter,
     };
 
@@ -588,6 +597,7 @@ mod tests {
         state.set_proxy(price_id, Some(proxy(price_id)));
         state.circuit_breakers.remove(&price_id);
         let before_epoch = state.cache_epoch(price_id);
+
         for replacement in [None, Some(proxy(price_id))] {
             assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 state.set_proxy(price_id, replacement);
@@ -597,6 +607,48 @@ mod tests {
             assert_eq!(state.cache_epoch(price_id), before_epoch);
             assert!(state.circuit_breakers.get(&price_id).is_none());
         }
+    }
+    #[test]
+    fn aggregator_reconfiguration_resets_breakers_but_preserves_next_id() {
+        testing_env!(VMContextBuilder::new().build());
+        let price_id = PriceIdentifier([0x16; 32]);
+        let mut state = state();
+        state.set_proxy(price_id, Some(proxy(price_id)));
+        let mut entry = state.proxy_entry_mut(price_id).unwrap();
+        entry
+            .configure_circuit_breakers(CircuitBreakerSetConfig {
+                sample_interval_ns: Nanoseconds::zero(),
+                history_len: 2,
+            })
+            .unwrap();
+        entry.add_circuit_breaker(0, breaker()).unwrap();
+        entry.add_circuit_breaker(1, breaker()).unwrap();
+
+        let mut freshness_only = proxy(price_id);
+        freshness_only.freshness_filter =
+            FreshnessFilter::new(Some(Nanoseconds::from_secs(1)), Some(Nanoseconds::zero()));
+        state.set_proxy(price_id, Some(freshness_only));
+        assert_eq!(
+            state
+                .get_proxy_circuit_breaker_set(price_id)
+                .unwrap()
+                .breaker_count(),
+            2
+        );
+
+        let mut replacement = proxy(price_id);
+        replacement.aggregator = Aggregator::median_high([OracleRequest::pyth(
+            "pyth-oracle.near".parse().unwrap(),
+            price_id,
+        )
+        .into()]);
+        state.set_proxy(price_id, Some(replacement));
+        let mut expected = UncheckedCircuitBreakerSet::from(CircuitBreakerSet::empty());
+        expected.next_id = 2;
+        assert_eq!(
+            state.get_proxy_circuit_breaker_set(price_id),
+            Some(CircuitBreakerSet::try_from(expected).unwrap())
+        );
     }
 
     #[test]

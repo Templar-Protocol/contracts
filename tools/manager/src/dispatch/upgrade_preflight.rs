@@ -24,10 +24,13 @@ use templar_gateway_types::common::{ContractArgs, Pagination};
 use templar_gateway_types::contract::ContractKind;
 use templar_gateway_types::Base64Bytes;
 use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{CircuitBreaker, CircuitBreakerSet},
+    circuit_breaker::{CircuitBreaker, CircuitBreakerError, CircuitBreakerSet},
     Proxy,
 };
-use templar_proxy_oracle_near_common::{input::Source, state::v1::StorageKey as OracleStorageKey};
+use templar_proxy_oracle_near_common::{
+    governance::MAX_CIRCUIT_BREAKERS_PER_PROXY, input::Source,
+    state::v1::StorageKey as OracleStorageKey,
+};
 use templar_proxy_oracle_near_governance_common::{
     cancellation_event_size, governance_kernel::Governance, policy_recovery_working_set_bytes,
     proposal_body_size, target::method, FunctionCall, GovernancePolicy, LegacyOperation,
@@ -610,6 +613,12 @@ fn pending_add_problem(set: &CircuitBreakerSet, adds: &[(u32, CircuitBreaker)]) 
     let mut ordered: Vec<_> = adds.iter().collect();
     ordered.sort_by_key(|(breaker_id, _)| *breaker_id);
     for (breaker_id, breaker) in ordered {
+        if set.breaker_count() >= MAX_CIRCUIT_BREAKERS_PER_PROXY {
+            return Some(format!(
+                "add breaker {breaker_id}: {}",
+                CircuitBreakerError::TooManyBreakers
+            ));
+        }
         if let Err(error) = set.add(*breaker_id, breaker.clone()) {
             return Some(format!("add breaker {breaker_id}: {error}"));
         }
@@ -1117,6 +1126,7 @@ mod tests {
         pending_rearm_status, pending_resource_status, queued_lifecycle_problems,
         removed_feed_allocator_status, BTreeMap, BTreeSet, BreakerVerdict, PendingBreakerArgs,
         PendingBreakerTarget, PriceIdentifier, Serialize, Source, Status, Value,
+        MAX_CIRCUIT_BREAKERS_PER_PROXY,
     };
 
     fn price_id(byte: u8) -> PriceIdentifier {
@@ -1428,6 +1438,11 @@ mod tests {
         raw["next_id"] = json!(u32::MAX);
         let exhausted: CircuitBreakerSet = serde_json::from_value(raw).unwrap();
         assert!(pending_add_problem(&exhausted, &[(u32::MAX, sample_breaker())]).is_some());
+        let mut full = breaker_set(4);
+        for id in 0..u32::try_from(MAX_CIRCUIT_BREAKERS_PER_PROXY).unwrap() {
+            full.add(id, sample_breaker()).unwrap();
+        }
+        assert!(pending_add_problem(&full, &[(16, sample_breaker())]).is_some());
         let invalid = CircuitBreaker::StepwiseChange(StepwiseChange {
             max_relative_change: Decimal::from(2_u8),
         });

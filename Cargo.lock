@@ -13812,6 +13812,7 @@ dependencies = [
 name = "templar-proxy-oracle-soroban-common"
 version = "0.1.4"
 dependencies = [
+ "postcard",
  "rstest",
  "soroban-sdk",
  "templar-primitives",

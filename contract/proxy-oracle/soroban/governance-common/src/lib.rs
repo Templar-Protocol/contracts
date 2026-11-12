@@ -259,14 +259,17 @@ pub fn validate_action(
                 .map_err(|_| GovernanceError::InvalidInput)
         }
         GovernanceAction::AddBreaker(_, CircuitBreakerConfig::CumulativeChange(config)) => {
-            if is_valid_relative_change(config.max_relative_change.to_decimal()) {
+            if is_valid_relative_change(config.max_relative_change.to_decimal())
+                && config.max_relative_change.is_postcard_representable()
+            {
                 Ok(())
             } else {
                 Err(GovernanceError::InvalidInput)
             }
         }
         GovernanceAction::AddBreaker(_, config) => config
-            .to_kernel(None)
+            .validate_postcard_representation()
+            .and_then(|()| config.to_kernel(None))
             .map(|_| ())
             .map_err(|_| GovernanceError::InvalidInput),
         GovernanceAction::Rearm(_, _, config) => {
@@ -390,6 +393,41 @@ mod tests {
                 window_len: 17,
                 lookback_windows: 1,
                 max_relative_mean_change: threshold,
+            }),
+        ] {
+            assert_eq!(
+                validate_action(&GovernanceAction::AddBreaker(asset.clone(), config), 1024),
+                Err(GovernanceError::InvalidInput)
+            );
+        }
+    }
+    #[test]
+    fn static_breaker_admission_rejects_postcard_unrepresentable_threshold() {
+        use templar_primitives::Decimal;
+        use templar_proxy_oracle_soroban_common::{
+            CumulativeChangeConfig, MonotonicRunConfig, SorobanDecimal, StepwiseChangeConfig,
+            WindowedChangeDeltaConfig, MAX_HISTORY_RECORDS,
+        };
+
+        let env = soroban_sdk::Env::default();
+        let asset = Asset::Other(soroban_sdk::Symbol::new(&env, "BTC"));
+        let threshold =
+            SorobanDecimal::from_decimal(&env, Decimal::from_repr([1, 0, 0, 0, 0, 0, 0, 0]));
+        for config in [
+            CircuitBreakerConfig::StepwiseChange(StepwiseChangeConfig {
+                max_relative_change: threshold.clone(),
+            }),
+            CircuitBreakerConfig::MonotonicRun(MonotonicRunConfig {
+                max_streak: MAX_HISTORY_RECORDS - 1,
+                min_relative_step_change: threshold.clone(),
+            }),
+            CircuitBreakerConfig::WindowedChangeDelta(WindowedChangeDeltaConfig {
+                window_len: 2,
+                lookback_windows: 1,
+                max_relative_mean_change: threshold.clone(),
+            }),
+            CircuitBreakerConfig::CumulativeChange(CumulativeChangeConfig {
+                max_relative_change: threshold,
             }),
         ] {
             assert_eq!(
