@@ -10,8 +10,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use templar_contract_artifacts::{build_artifact, load_artifact_bytes, ArtifactId};
+use templar_contract_artifacts::{build_artifact, load_artifact_bytes, sha256_hex, ArtifactId};
 use tokio::sync::OnceCell;
 
 /// Deploy-argument shape for the mock Ref Finance exchange's `new` call and
@@ -96,7 +95,7 @@ pub async fn sputnik_dao() -> &'static [u8] {
         let bytes = std::fs::read(path)
             .expect("missing real Sputnik fixture: run just fetch-sputnik-fixture");
         assert_eq!(
-            format!("{:x}", Sha256::digest(&bytes)),
+            sha256_hex(&bytes),
             pin.wasm_sha256,
             "Sputnik fixture checksum mismatch: run just fetch-sputnik-fixture --refetch"
         );
