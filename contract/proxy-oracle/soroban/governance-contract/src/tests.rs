@@ -120,6 +120,41 @@ fn sample_proxy_config(env: &Env, asset: Asset, _source: Address) -> ProxyConfig
     }
 }
 
+fn maximum_proxy_config(env: &Env) -> (Asset, ProxyConfig) {
+    let asset = Asset::Other(Symbol::new(env, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    let mut sources = Vec::new(env);
+    for _ in 0..16 {
+        sources.push_back(SourceConfig {
+            oracle: Address::generate(env),
+            asset: asset.clone(),
+            expected_decimals: 18,
+        });
+    }
+    let config = ProxyConfig {
+        aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianHigh(
+            templar_proxy_oracle_soroban_common::MedianConfig {
+                sources,
+                min_sources: 16,
+            },
+        ),
+        max_age_secs: 30,
+        max_clock_drift_secs: 5,
+    };
+    (asset, config)
+}
+
+fn assert_revocation_fits_transaction_limits(env: &Env) {
+    let resources = env.cost_estimate().resources();
+    assert!(
+        resources.disk_read_entries + resources.memory_read_entries + resources.write_entries
+            <= 100
+    );
+    assert!(resources.write_entries <= 50);
+    assert!(resources.write_bytes <= 132_096);
+    assert!(resources.contract_events_size_bytes <= 8_192);
+    assert!(env.cost_estimate().budget().cpu_instruction_cost() < 100_000_000);
+}
+
 fn accept_now(env: &Env, governance_id: &Address, admin: &Address, proposal_id: u64) {
     env.as_contract(governance_id, || {
         ProxyOracleGovernance::execute_proposal(env.clone(), admin.clone(), proposal_id).unwrap();
@@ -2274,15 +2309,7 @@ fn sparse_full_queue_revocation_fits_default_transaction_resource_limits() {
     assert_eq!(client.active_ids().len(), 64);
     env.cost_estimate().budget().reset_default();
     client.execute_proposal(&admin, &504);
-    let resources = env.cost_estimate().resources();
-    assert!(
-        resources.disk_read_entries + resources.memory_read_entries + resources.write_entries
-            <= 100
-    );
-    assert!(resources.write_entries <= 50);
-    assert!(resources.write_bytes <= 132_096);
-    assert!(resources.contract_events_size_bytes <= 8_192);
-    assert!(env.cost_estimate().budget().cpu_instruction_cost() < 100_000_000);
+    assert_revocation_fits_transaction_limits(&env);
     assert!(client.active_ids().is_empty());
     assert_eq!(client.next_proposal_id(), 505);
     for index in 0..63_u64 {
@@ -2306,22 +2333,7 @@ fn maximum_proposal_group_encoding_fits_ledger_entry_limit() {
     use soroban_sdk::{xdr::ToXdr, Map};
     let env = Env::default();
     let creator = Address::generate(&env);
-    let asset = Asset::Other(Symbol::new(&env, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
-    let mut config = sample_proxy_config(&env, asset.clone(), creator.clone());
-    let mut sources = Vec::new(&env);
-    for _ in 0..16 {
-        sources.push_back(SourceConfig {
-            oracle: Address::generate(&env),
-            asset: asset.clone(),
-            expected_decimals: 18,
-        });
-    }
-    config.aggregator = templar_proxy_oracle_soroban_common::AggregatorConfig::MedianHigh(
-        templar_proxy_oracle_soroban_common::MedianConfig {
-            sources,
-            min_sources: 16,
-        },
-    );
+    let (asset, config) = maximum_proxy_config(&env);
     let proposals = [
         GovernanceAction::SetProxy(asset.clone(), config),
         GovernanceAction::SetManualTrip(asset, true, Some(Bytes::from_array(&env, &[255; 1024]))),
@@ -2353,22 +2365,7 @@ fn byte_bounded_mixed_queue_rejects_atomically_and_admin_revoke_fits() {
         roles::grant(&env, &delegate, Role::ManualTripper, &admin).unwrap();
     });
     let client = ProxyOracleGovernanceClient::new(&env, &governance);
-    let asset = Asset::Other(Symbol::new(&env, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
-    let mut sources = Vec::new(&env);
-    for _ in 0..16 {
-        sources.push_back(SourceConfig {
-            oracle: Address::generate(&env),
-            asset: asset.clone(),
-            expected_decimals: 18,
-        });
-    }
-    let mut config = sample_proxy_config(&env, asset.clone(), delegate.clone());
-    config.aggregator = templar_proxy_oracle_soroban_common::AggregatorConfig::MedianHigh(
-        templar_proxy_oracle_soroban_common::MedianConfig {
-            sources,
-            min_sources: 16,
-        },
-    );
+    let (asset, config) = maximum_proxy_config(&env);
     let large = GovernanceAction::SetProxy(asset.clone(), config);
     let small = GovernanceAction::SetManualTrip(asset, true, None);
     let mut large_ids = StdVec::new();
@@ -2429,15 +2426,7 @@ fn byte_bounded_mixed_queue_rejects_atomically_and_admin_revoke_fits() {
     );
     env.cost_estimate().budget().reset_default();
     client.execute_proposal(&admin, &id);
-    let resources = env.cost_estimate().resources();
-    assert!(env.cost_estimate().budget().cpu_instruction_cost() < 100_000_000);
-    assert!(
-        resources.disk_read_entries + resources.memory_read_entries + resources.write_entries
-            <= 100
-    );
-    assert!(resources.write_entries <= 50);
-    assert!(resources.write_bytes <= 132_096);
-    assert!(resources.contract_events_size_bytes <= 8_192);
+    assert_revocation_fits_transaction_limits(&env);
     assert!(!client.has_role(&delegate, &Role::ManualTripper));
     assert_eq!(client.next_proposal_id(), id + 1);
     for proposal_id in small_ids {
@@ -2483,15 +2472,7 @@ fn admin_revocation_keeps_only_operations_allowed_by_remaining_roles() {
     );
     env.cost_estimate().budget().reset_default();
     client.execute_proposal(&admin, &63);
-    let resources = env.cost_estimate().resources();
-    assert!(env.cost_estimate().budget().cpu_instruction_cost() < 100_000_000);
-    assert!(
-        resources.disk_read_entries + resources.memory_read_entries + resources.write_entries
-            <= 100
-    );
-    assert!(resources.write_entries <= 50);
-    assert!(resources.write_bytes <= 132_096);
-    assert!(resources.contract_events_size_bytes <= 8_192);
+    assert_revocation_fits_transaction_limits(&env);
     assert!(!client.has_role(&delegate, &Role::Admin));
     assert!(client.has_role(&delegate, &Role::ManualTripper));
     for id in 0..60_u64 {

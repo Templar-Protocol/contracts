@@ -26,7 +26,8 @@ pub type KernelProposal =
     templar_proxy_oracle_governance_kernel::Proposal<GovernanceAction, soroban_sdk::Address>;
 
 pub const PROPOSALS_PER_GROUP: u64 = 8;
-pub const PROPOSAL_GROUP_COUNT: u64 = 8;
+pub const PROPOSAL_GROUP_COUNT: u64 =
+    (crate::MAX_PENDING_PROPOSALS as u64).div_ceil(PROPOSALS_PER_GROUP);
 
 // Leave room below the 132,096-byte transaction write limit for group keys,
 // map entries, ledger envelopes, the instance header, and role mutations.

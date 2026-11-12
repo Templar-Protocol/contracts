@@ -528,9 +528,39 @@ enum BreakerIdUse {
     Existing,
 }
 
-fn pending_breaker_target(
-    body: &Value,
-) -> anyhow::Result<Option<(PendingBreakerArgs, BreakerIdUse)>> {
+enum PendingBreakerTarget {
+    Install {
+        id: PriceIdentifier,
+        breaker_id: u32,
+        breaker: CircuitBreaker,
+    },
+    Existing(PendingBreakerArgs),
+}
+
+impl PendingBreakerTarget {
+    fn from_args(args: PendingBreakerArgs, usage: BreakerIdUse) -> anyhow::Result<Self> {
+        match usage {
+            BreakerIdUse::Install => {
+                let breaker = args.breaker.context("add is missing its breaker payload")?;
+                Ok(Self::Install {
+                    id: args.id,
+                    breaker_id: args.breaker_id,
+                    breaker,
+                })
+            }
+            BreakerIdUse::Existing => Ok(Self::Existing(args)),
+        }
+    }
+
+    fn id(&self) -> PriceIdentifier {
+        match self {
+            Self::Install { id, .. } => *id,
+            Self::Existing(args) => args.id,
+        }
+    }
+}
+
+fn pending_breaker_target(body: &Value) -> anyhow::Result<Option<PendingBreakerTarget>> {
     let operation = body
         .get("operation")
         .context("missing proposal body/operation")?;
@@ -541,7 +571,8 @@ fn pending_breaker_target(
         ("SetEnforced", BreakerIdUse::Existing),
     ] {
         if let Some(args) = operation.get(name) {
-            return Ok(Some((PendingBreakerArgs::deserialize(args)?, usage)));
+            let args = PendingBreakerArgs::deserialize(args)?;
+            return Ok(Some(PendingBreakerTarget::from_args(args, usage)?));
         }
     }
     let Some(raw_call) = operation
@@ -558,7 +589,8 @@ fn pending_breaker_target(
         _ => return Ok(None),
     };
     let call = FunctionCall::deserialize(raw_call)?;
-    Ok(Some((serde_json::from_slice(&call.args.0)?, usage)))
+    let args = serde_json::from_slice(&call.args.0)?;
+    Ok(Some(PendingBreakerTarget::from_args(args, usage)?))
 }
 
 /// `queued` holds the breaker IDs that queued adds for the same proxy will install.
@@ -636,7 +668,7 @@ async fn pending_breaker_lifecycles(
     let mut installs: BTreeMap<PriceIdentifier, Vec<(u32, CircuitBreaker)>> = BTreeMap::new();
     let mut existing = Vec::new();
     for (proposal_id, body) in bodies {
-        let (args, usage) = match pending_breaker_target(body) {
+        let target = match pending_breaker_target(body) {
             Ok(Some(target)) => target,
             Ok(None) => continue,
             Err(error) => {
@@ -646,14 +678,13 @@ async fn pending_breaker_lifecycles(
                 continue;
             }
         };
-        let set = match sets.entry(args.id) {
+        let id = target.id();
+        let set = match sets.entry(id) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let request_args = match serde_json::to_value(PriceIdArgs { id: args.id }) {
+                let request_args = match serde_json::to_value(PriceIdArgs { id }) {
                     Ok(args) => args,
-                    Err(error) => {
-                        return Status::failed(format!("encode proxy {}: {error}", args.id))
-                    }
+                    Err(error) => return Status::failed(format!("encode proxy {id}: {error}")),
                 };
                 let result = ctx
                     .client
@@ -674,28 +705,20 @@ async fn pending_breaker_lifecycles(
                 entry.insert(set)
             }
         };
-        if matches!(usage, BreakerIdUse::Install) {
-            if set.is_ok() {
-                if let Some(breaker) = args.breaker {
-                    installs
-                        .entry(args.id)
-                        .or_default()
-                        .push((args.breaker_id, breaker));
-                } else {
-                    problems.push(format!(
-                        "proposal {proposal_id}, proxy {}: add is missing its breaker payload",
-                        args.id
-                    ));
+        match target {
+            PendingBreakerTarget::Install {
+                id,
+                breaker_id,
+                breaker,
+            } => {
+                if set.is_ok() {
+                    installs.entry(id).or_default().push((breaker_id, breaker));
+                } else if let Err(error) = &set {
+                    problems.push(format!("proposal {proposal_id}, proxy {id}: {error}"));
                 }
-            } else if let Err(error) = &set {
-                problems.push(format!(
-                    "proposal {proposal_id}, proxy {}: {error}",
-                    args.id
-                ));
             }
-            continue;
+            PendingBreakerTarget::Existing(args) => existing.push((*proposal_id, args)),
         }
-        existing.push((*proposal_id, args));
     }
     problems.extend(queued_lifecycle_problems(&sets, &installs, existing));
     if problems.is_empty() {
@@ -824,7 +847,7 @@ fn pending_resource_status(
         ))
     } else {
         Status::passed(format!(
-            "{detail}. Unaccounted legacy queues must drain before new admissions/revocation; \
+            "{detail}. Fitting legacy queues are measured on first admission/revocation; \
              compatible pending bodies remain executable/cancellable"
         ))
     }
@@ -1092,8 +1115,8 @@ mod tests {
         governance_ledger_status, governance_resolution_failure_checks, governance_state_budget,
         has_incompatible_rearm_payload, pending_add_problem, pending_breaker_target,
         pending_rearm_status, pending_resource_status, queued_lifecycle_problems,
-        removed_feed_allocator_status, BTreeMap, BTreeSet, BreakerIdUse, BreakerVerdict,
-        PendingBreakerArgs, PriceIdentifier, Serialize, Source, Status, Value,
+        removed_feed_allocator_status, BTreeMap, BTreeSet, BreakerVerdict, PendingBreakerArgs,
+        PendingBreakerTarget, PriceIdentifier, Serialize, Source, Status, Value,
     };
 
     fn price_id(byte: u8) -> PriceIdentifier {
@@ -1432,13 +1455,45 @@ mod tests {
                 price_id(3), 7, breaker, None,
             ).unwrap()})
         };
-        let (args, usage) = pending_breaker_target(&json!({"operation": operation}))
+        let target = pending_breaker_target(&json!({"operation": operation.clone()}))
             .unwrap()
             .unwrap();
-        assert_eq!(args.id, price_id(3));
-        assert_eq!(args.breaker_id, 7);
-        assert!(matches!(usage, BreakerIdUse::Install));
+        let PendingBreakerTarget::Install { id, breaker_id, .. } = target else {
+            panic!("expected an install target");
+        };
+        assert_eq!(id, price_id(3));
+        assert_eq!(breaker_id, 7);
         assert!(pending_breaker_target(&Value::Null).is_err());
+
+        let invalid = if legacy {
+            let mut operation = operation;
+            operation["AddCircuitBreaker"]
+                .as_object_mut()
+                .unwrap()
+                .remove("breaker");
+            operation
+        } else {
+            let mut call =
+                target::admin_add_circuit_breaker(price_id(3), 7, sample_breaker(), None).unwrap();
+            call.args.0 = serde_json::to_vec(&MissingBreakerArgs {
+                id: price_id(3),
+                breaker_id: 7,
+            })
+            .unwrap();
+            json!({"TargetFunctionCall": call})
+        };
+        let Err(error) = pending_breaker_target(&json!({"operation": invalid})) else {
+            panic!("missing breaker payload must be rejected");
+        };
+        assert!(error
+            .to_string()
+            .contains("add is missing its breaker payload"));
+    }
+
+    #[derive(Serialize)]
+    struct MissingBreakerArgs {
+        id: PriceIdentifier,
+        breaker_id: u32,
     }
 
     /// The pre-relative-delay `admin_rearm` argument shape.
@@ -1483,12 +1538,7 @@ mod tests {
             admin_function_call: Nanoseconds::zero(),
         };
         let policy = legacy_ttls.into_policy();
-        let v0 = <kernel_governance::Governance<LegacyTtlConfig> as near_sdk::borsh::BorshDeserialize>::deserialize(
-            &mut &near_sdk::borsh::to_vec(&kernel_governance::Governance::new(
-                legacy_ttls,
-                MAX_PENDING_PROPOSALS,
-            )).unwrap()[..],
-        ).unwrap();
+        let v0 = kernel_governance::Governance::new(legacy_ttls, MAX_PENDING_PROPOSALS);
         let v0_bytes = near_sdk::borsh::to_vec(&v0).unwrap();
         let v1 = kernel_governance::Governance::new(policy, MAX_PENDING_PROPOSALS);
         let v1_bytes = near_sdk::borsh::to_vec(&v1).unwrap();

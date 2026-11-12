@@ -129,7 +129,7 @@ impl Contract {
             .expect_or_reject("serialize storage key")
     }
 
-    /// Persisted totals; `None` until the first admission under this release measures the queue.
+    /// Persisted totals; `None` until admission or revocation measures the queue.
     fn pending_usage() -> Option<PendingProposalUsage> {
         let usage: PendingProposalUsage =
             near_sdk::borsh::from_slice(&env::storage_read(&Self::pending_usage_key())?)

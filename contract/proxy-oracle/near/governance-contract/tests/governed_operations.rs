@@ -472,7 +472,7 @@ async fn legacy_unmarked_policy_execution_rolls_back_through_real_receipt(
     )
     .await?;
     // Migrating a real released contract produces an unmarked legacy queue;
-    // no byte accounting exists until it drains.
+    // byte accounting starts on the first admission or revocation.
     harness
         .deploy_and_init(
             &governance.0,

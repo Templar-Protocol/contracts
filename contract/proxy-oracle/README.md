@@ -103,6 +103,8 @@ check, and `--print` submits nothing.
 
 Run `tmplrmgr proxy-oracle preflight --oracle-id <oracle-id>` for each known deployment before preparing an upgrade. Registry sweeps require `list_deployments_by_kind`; a release catalog is not evidence of current deployment. Inventory the exact old Wasm/hash, state version, proxy/governance identities, owner/roles, proxy configs, breaker sets, and pending bodies. Drain/cancel only breaker-ID operations that may refer to a lifecycle deleted by old code; do not cancel compatible operations merely because code changes. A rejected or unknown allocator must be investigated without resetting its ID history. Production upgrade approval remains blocked when that inventory cannot be established.
 
+`view_state` may refuse large accounts. `upgrade.removed_feed_allocators` fails rather than skipping when the allocator inventory cannot be established this way.
+
 
 ### Aggregate resource limits
 

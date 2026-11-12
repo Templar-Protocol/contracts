@@ -165,19 +165,18 @@ impl ProxyOracleGovernance {
     pub fn execute_proposal(env: Env, caller: Address, id: u64) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         let stored = find_proposal(&env, id).ok_or(GovernanceError::ProposalNotFound)?;
-        let proposal = stored.proposal.clone();
-        require_authorized(&env, &caller, &proposal.operation)?;
+        require_authorized(&env, &caller, &stored.proposal.operation)?;
         let mut header = load_header(&env)?;
         // Commit the authoritative state transition first: the kernel
         // re-validates the operation, enforces maturity, and drops the proposal
         // from the pending set. Only then do we fire side effects, so they can
         // never run for a proposal the kernel would reject.
-        let kernel_proposal = proposal_to_kernel(proposal.clone());
+        let kernel_proposal = proposal_to_kernel(stored.proposal.clone());
         header
             .execute(id, &kernel_proposal, now(&env)?)
             .map_err(map_execute_error)?;
         remove_proposal(&env, stored)?;
-        execute_action(&env, &mut header, &proposal.operation, &caller)?;
+        execute_action(&env, &mut header, &kernel_proposal.operation, &caller)?;
         save_header(&env, &header);
         ProposalAccepted { id }.publish(&env);
         Ok(())

@@ -244,7 +244,7 @@ impl State {
 
     pub fn set_proxy(&mut self, id: PriceIdentifier, proxy: Option<Proxy<Source>>) {
         let existing_proxy = self.proxies.get(&id);
-        let mut breaker_set = self.circuit_breakers.get(&id);
+        let breaker_set = self.circuit_breakers.get(&id);
         if breaker_set
             .as_ref()
             .is_some_and(|set| set.validate().is_err())
@@ -265,7 +265,7 @@ impl State {
                 self.invalidate_price_cache(id);
             }
         } else {
-            if let Some(mut set) = breaker_set.take() {
+            if let Some(mut set) = breaker_set {
                 set.reset_preserving_next_id();
                 self.circuit_breakers.insert(&id, &set);
             }

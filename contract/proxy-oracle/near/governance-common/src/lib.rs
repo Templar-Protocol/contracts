@@ -47,15 +47,14 @@ pub const ADMIN_RESERVED_CANCELLATION_LOG_BYTES: u64 = 512;
 /// # Errors
 /// Returns an error if serialization fails or the size overflows.
 pub fn proposal_body_size(operation: &Operation, created_by: &AccountId) -> std::io::Result<u64> {
-    let operation_size = near_sdk::borsh::object_length(operation)?;
-    let timestamp_size = near_sdk::borsh::object_length(&Nanoseconds::zero())?;
-    let creator_size = near_sdk::borsh::object_length(created_by)?;
-    let total = timestamp_size
-        .checked_mul(2)
-        .and_then(|size| size.checked_add(operation_size))
-        .and_then(|size| size.checked_add(creator_size))
-        .ok_or_else(|| std::io::Error::other("proposal size overflow"))?;
-    u64::try_from(total).map_err(std::io::Error::other)
+    let proposal = governance_kernel::Proposal {
+        operation,
+        created_at: Nanoseconds::zero(),
+        ttl: Nanoseconds::zero(),
+        created_by,
+    };
+    near_sdk::borsh::object_length(&proposal)
+        .and_then(|size| u64::try_from(size).map_err(std::io::Error::other))
 }
 
 /// Exact bytes of the cancellation log emitted for this proposal.
