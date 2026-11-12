@@ -32,3 +32,8 @@ shared doc.
   `cargo +nightly-2025-11-25 fuzz run --target x86_64-unknown-linux-gnu <target> -- -max_total_time=60`.
 - **Record coverage changes.** Any reduction in what's fuzzed goes in
   `README.md`'s status tables in the same change.
+- **Keep the oracle reference model in step with the kernel.** The `fuzz_oracle_*`
+  targets compare `templar-proxy-oracle-kernel` against `src/oracle/`. A deliberate
+  change to breaker, aggregation, freshness or set semantics must update the model
+  in the same change; a model mismatch after such a change is expected, not a bug.
+  Run `just test-fast -p templar-fuzz --lib` for the model's own unit tests.
