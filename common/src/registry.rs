@@ -3,6 +3,31 @@ use near_sdk::{
     near, AccountId,
 };
 
+/// Delegated registry authority; Owner bypasses action guards without a synthetic membership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, near_sdk::BorshStorageKey)]
+#[near(serializers = [json, borsh(use_discriminant = true)])]
+#[repr(u8)]
+pub enum Role {
+    Uploader = 0,
+    Deployer = 1,
+}
+
+/// Code approved by the Owner without including WASM bytes in the approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub enum ApprovedCode {
+    Uploaded(Base58CryptoHash),
+    Global(Base58CryptoHash),
+}
+
+/// Pending upload metadata; views never expose the stored WASM bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub struct UploadInfo {
+    pub uploader: AccountId,
+    pub code_len: u32,
+}
+
 /// Store the wasm or publish it as a global contract — the only open question once the bytes are
 /// in hand, which is why `registry.addArtifactVersion` still takes this.
 ///
@@ -123,6 +148,54 @@ mod tests {
     }
 
     #[rstest]
+    #[case(Role::Uploader, 0, r#""Uploader""#)]
+    #[case(Role::Deployer, 1, r#""Deployer""#)]
+    fn role_wire_format(#[case] role: Role, #[case] tag: u8, #[case] expected: &str) {
+        assert_eq!(near_sdk::borsh::to_vec(&role).unwrap(), [tag]);
+        assert_eq!(near_sdk::borsh::from_slice::<Role>(&[tag]).unwrap(), role);
+        assert_eq!(serde_json::to_string(&role).unwrap(), expected);
+        assert_eq!(serde_json::from_str::<Role>(expected).unwrap(), role);
+    }
+
+    #[rstest]
+    #[case(
+        ApprovedCode::Uploaded(Base58CryptoHash::from([7u8; 32])),
+        r#"{"version_key":"market@1.5.0","code":{"Uploaded":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"}}"#,
+    )]
+    #[case(
+        ApprovedCode::Global(Base58CryptoHash::from([7u8; 32])),
+        r#"{"version_key":"market@1.5.0","code":{"Global":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"}}"#,
+    )]
+    fn approved_code_wire_format(#[case] code: ApprovedCode, #[case] expected: &str) {
+        #[derive(Debug, PartialEq)]
+        #[near(serializers = [json])]
+        struct Approval {
+            version_key: String,
+            code: ApprovedCode,
+        }
+        let approval = Approval {
+            version_key: "market@1.5.0".to_string(),
+            code,
+        };
+        assert_eq!(serde_json::to_string(&approval).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_str::<Approval>(expected).unwrap(),
+            approval
+        );
+    }
+
+    #[test]
+    fn upload_info_wire_format() {
+        let info = UploadInfo {
+            uploader: "uploader.near".parse().unwrap(),
+            code_len: 4,
+        };
+        let expected = r#"{"uploader":"uploader.near","code_len":4}"#;
+        assert_eq!(serde_json::to_string(&info).unwrap(), expected);
+        assert_eq!(serde_json::from_str::<UploadInfo>(expected).unwrap(), info);
+    }
+
+    #[rstest]
     #[case(VersionAvailability::Stored { code_len: 521_039 }, json!({ "Stored": { "code_len": 521_039 } }))]
     #[case(VersionAvailability::Global, json!("Global"))]
     #[case(VersionAvailability::Removed, json!("Removed"))]
@@ -220,8 +293,59 @@ mod tests {
         RegistryEvent::Deployed {
             account_id: "one.registry.near".parse().unwrap(),
             deployment: deployment(),
+            deployer: Some("deployer.near".parse().unwrap()),
+            full_access_keys: Some(vec!["ed25519:5BGSaf6YjVm7565VzWQHNxoyEjwr3jUpRJSGjREvU9dB".parse().unwrap()]),
         },
-        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"deployed","data":{"account_id":"one.registry.near","version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","block_height":"42"}}"#
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.1.0","event":"deployed","data":{"account_id":"one.registry.near","version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","block_height":"42","deployer":"deployer.near","full_access_keys":["ed25519:5BGSaf6YjVm7565VzWQHNxoyEjwr3jUpRJSGjREvU9dB"]}}"#
+    )]
+    #[case::deployed_without_keys(
+        RegistryEvent::Deployed {
+            account_id: "one.registry.near".parse().unwrap(),
+            deployment: deployment(),
+            deployer: Some("deployer.near".parse().unwrap()),
+            full_access_keys: Some(Vec::new()),
+        },
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.1.0","event":"deployed","data":{"account_id":"one.registry.near","version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","block_height":"42","deployer":"deployer.near","full_access_keys":[]}}"#
+    )]
+    #[case::deployed_legacy_callback(
+        RegistryEvent::Deployed {
+            account_id: "one.registry.near".parse().unwrap(),
+            deployment: deployment(),
+            deployer: None,
+            full_access_keys: None,
+        },
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.1.0","event":"deployed","data":{"account_id":"one.registry.near","version_key":"market@1.5.0","code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","block_height":"42","deployer":null,"full_access_keys":null}}"#
+    )]
+    #[case::code_uploaded(
+        RegistryEvent::CodeUploaded {
+            code_hash: Base58CryptoHash::from([7u8; 32]),
+            uploader: "uploader.near".parse().unwrap(),
+            code_len: 4,
+        },
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"code_uploaded","data":{"code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","uploader":"uploader.near","code_len":4}}"#
+    )]
+    #[case::upload_removed(
+        RegistryEvent::UploadRemoved {
+            code_hash: Base58CryptoHash::from([7u8; 32]),
+            uploader: "uploader.near".parse().unwrap(),
+        },
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"upload_removed","data":{"code_hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx","uploader":"uploader.near"}}"#
+    )]
+    #[case::role_granted(
+        RegistryEvent::RoleSet {
+            account_id: "uploader.near".parse().unwrap(),
+            role: Role::Uploader,
+            is_granted: true,
+        },
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"role_set","data":{"account_id":"uploader.near","role":"Uploader","is_granted":true}}"#
+    )]
+    #[case::role_revoked(
+        RegistryEvent::RoleSet {
+            account_id: "deployer.near".parse().unwrap(),
+            role: Role::Deployer,
+            is_granted: false,
+        },
+        r#"EVENT_JSON:{"standard":"templar-registry","version":"1.0.0","event":"role_set","data":{"account_id":"deployer.near","role":"Deployer","is_granted":false}}"#
     )]
     fn event_wire_format(#[case] event: RegistryEvent, #[case] expected: &str) {
         near_sdk::testing_env!(near_sdk::test_utils::VMContextBuilder::new().build());
@@ -263,10 +387,33 @@ pub enum RegistryEvent {
         code_hash: Base58CryptoHash,
     },
     /// A deployment's account was created and initialized, and the name now resolves to it.
-    #[event_version("1.0.0")]
+    /// Legacy in-flight finalizers emit null provenance because they did not carry it.
+    #[event_version("1.1.0")]
     Deployed {
         account_id: AccountId,
         #[serde(flatten)]
         deployment: Deployment,
+        deployer: Option<AccountId>,
+        full_access_keys: Option<Vec<near_sdk::PublicKey>>,
+    },
+    /// Code was stored pending Owner approval.
+    #[event_version("1.0.0")]
+    CodeUploaded {
+        code_hash: Base58CryptoHash,
+        uploader: AccountId,
+        code_len: u32,
+    },
+    /// A pending upload was removed and its storage credit released to the payer.
+    #[event_version("1.0.0")]
+    UploadRemoved {
+        code_hash: Base58CryptoHash,
+        uploader: AccountId,
+    },
+    /// A successful role setter, following the proxy oracle's historical role-set payload.
+    #[event_version("1.0.0")]
+    RoleSet {
+        account_id: AccountId,
+        role: Role,
+        is_granted: bool,
     },
 }
