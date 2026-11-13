@@ -175,6 +175,18 @@ configuration cache and uses the exact snapshot block rather than a newer finali
   requested hash/sender metadata fails closed. Receipt success alone does not
   establish that a transaction executed the expected proposal or signed payload.
 
+## RPC Access and Key Failover
+
+Every gateway request to a NEAR RPC endpoint goes through `NearRpc`
+(`gateway/core/src/near_rpc.rs`); `gateway/clippy.toml` rejects near-api's
+network-taking methods (`fetch_from`, `send_to`, `fetch_tx_nonce`) anywhere else.
+`NetworkConfigBuilder::backup_api_key` adds a second key for the same endpoint.
+A request the primary key's endpoint refuses with 401, 402 or 403 is repeated
+once with the backup key, and the primary is skipped for 60 seconds, logging
+`API key refused; sending the backup key` once per pause. Any other failure is
+returned as before and never reaches the backup. The backup key replaces only a
+primary key, so it is never sent where the primary sends none.
+
 ## Runtime SDK Compatibility
 
 The sandbox pin selects nearcore 2.12 for its committed state-patch repair.

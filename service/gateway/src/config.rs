@@ -7,8 +7,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
-use near_api::NetworkConfig;
-use templar_gateway_client::NetworkConfigBuilder;
+use templar_gateway_client::{NearRpc, NetworkConfigBuilder};
 use templar_gateway_core::{PooledSigner, RedactedString, SharedOperationStore};
 use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
 use templar_gateway_store::{MemoryStore, PostgresStore};
@@ -18,12 +17,11 @@ use url::Url;
 /// The URLs a network will actually request. Any embedded `apiKey` has already
 /// been moved to the header by the builder, and HTTP requests never send a
 /// fragment, so two URLs differing only in those reach the same node.
-fn request_targets(network: &NetworkConfig) -> Vec<Url> {
+fn request_targets(network: &NearRpc) -> Vec<Url> {
     network
-        .rpc_endpoints
-        .iter()
-        .map(|endpoint| {
-            let mut url = endpoint.url.clone();
+        .endpoint_urls()
+        .map(|url| {
+            let mut url = url.clone();
             url.set_fragment(None);
             url
         })
@@ -146,7 +144,7 @@ impl Config {
     /// paired with a plaintext endpoint, which would send the key in cleartext;
     /// and an archival URL equal to the primary, which cannot corroborate what
     /// the primary has garbage collected.
-    pub fn build_networks(&self) -> Result<(NetworkConfig, Option<NetworkConfig>)> {
+    pub fn build_networks(&self) -> Result<(NearRpc, Option<NearRpc>)> {
         let api_key = self
             .near_rpc_api_key
             .as_ref()
@@ -173,9 +171,7 @@ impl Config {
         .into_iter()
         .filter_map(|(flag, network)| network.map(|network| (flag, network)))
         {
-            if network.rpc_endpoints.iter().any(|endpoint| {
-                endpoint.bearer_header.is_some() && endpoint.url.scheme() != "https"
-            }) {
+            if network.sends_key_in_cleartext() {
                 // Deliberately without the URL: it may carry the key it is being
                 // rejected for exposing.
                 bail!("{flag} carries an API key and must use https://, or the key travels in cleartext");

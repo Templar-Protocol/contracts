@@ -13186,6 +13186,7 @@ version = "0.3.1"
 dependencies = [
  "clap",
  "near-api",
+ "rstest",
  "templar-common",
  "templar-contract-artifacts",
  "templar-gateway-artifacts-dispatch",
@@ -13198,6 +13199,7 @@ dependencies = [
  "templar-proxy-oracle-near-governance-common",
  "tokio",
  "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -13241,6 +13243,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
  "wiremock",
 ]
 

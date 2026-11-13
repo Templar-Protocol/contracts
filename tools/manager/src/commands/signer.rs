@@ -343,7 +343,7 @@ mod tests {
     /// The `secret-key` backend never dials out, so resolution stays offline;
     /// this only satisfies the signature.
     fn offline_network() -> NetworkConfig {
-        NetworkConfigBuilder::new(Network::Testnet).build()
+        NetworkConfigBuilder::new(Network::Testnet).build_network_config()
     }
 
     /// Built rather than parsed: an ambient `SECRET_KEY` would otherwise decide

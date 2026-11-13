@@ -1,3 +1,8 @@
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixtures set up the sandbox directly"
+)]
+
 use std::sync::Arc;
 
 use anyhow::Result;

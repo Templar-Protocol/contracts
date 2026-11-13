@@ -1,3 +1,8 @@
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixtures set up the sandbox directly"
+)]
+
 use anyhow::Result;
 use near_api::Contract;
 use near_token::NearToken;
