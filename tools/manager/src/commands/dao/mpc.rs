@@ -147,6 +147,13 @@ pub struct Show {
     /// marker in the same way as `propose` (or exact text for a blind request).
     #[arg(long, value_name = "TEXT")]
     pub expected_description: Option<String>,
+    /// Verify the signature returned by this finalized DAO execution transaction,
+    /// even when the payload has expired or its nonce was already spent.
+    #[arg(long, value_name = "HASH", requires = "tx_signer")]
+    pub tx_hash: Option<CryptoHash>,
+    /// Sender of --tx-hash; both execution reference fields must be supplied.
+    #[arg(long, value_name = "ACCOUNT_ID", requires = "tx_hash")]
+    pub tx_signer: Option<AccountId>,
 }
 
 /// A proposal to review, and the MPC contract it must call.

@@ -332,16 +332,18 @@ fn sign_proposal_kind(
 
 pub(super) async fn show(ctx: CliContext, args: Show) -> anyhow::Result<()> {
     let source = args.plan.as_deref().map(SourcePlan::load).transpose()?;
-    print_json(
-        &review(
-            &ctx,
-            &args.review,
-            source.as_ref(),
-            args.expected_description.as_deref(),
-        )
-        .await?
-        .output,
+    let mut reviewed = review(
+        &ctx,
+        &args.review,
+        source.as_ref(),
+        args.expected_description.as_deref(),
     )
+    .await?;
+    if let (Some(tx_hash), Some(tx_signer)) = (args.tx_hash, args.tx_signer) {
+        let (_, evidence) = verified_signature(&ctx, &reviewed, tx_hash, &tx_signer).await?;
+        reviewed.output.signature_execution = Some(evidence);
+    }
+    print_json(&reviewed.output)
 }
 
 async fn validate_source_live(
@@ -623,12 +625,6 @@ async fn signed_payload(
     if output.payload.kind == PayloadKind::DelegateAction {
         validate_transport(ctx, &review.payload).await?;
     }
-    let proposal_id = executed.review.proposal_id;
-    anyhow::ensure!(
-        output.status == ProposalStatus::Approved,
-        "proposal {proposal_id} is {:?}, not Approved",
-        output.status
-    );
     anyhow::ensure!(
         output.key_installed,
         "{} no longer holds the derived key {}; nothing can relay this payload",
@@ -648,18 +644,43 @@ async fn signed_payload(
         output.payload.nonce
     );
 
+    verified_signature(ctx, &review, executed.tx_hash, &executed.tx_signer)
+        .await
+        .map(|(signed, _)| signed)
+}
+
+/// Historical signature proof deliberately excludes execution-only guards:
+/// a signature remains reviewable after nonce use, expiry, or key removal.
+async fn verified_signature(
+    ctx: &CliContext,
+    review: &Review,
+    tx_hash: near_api::CryptoHash,
+    tx_signer: &AccountId,
+) -> anyhow::Result<(Signed, SignatureExecution)> {
+    let output = &review.output;
+    let proposal_id = output.proposal_id;
+    anyhow::ensure!(
+        output.status == ProposalStatus::Approved,
+        "proposal {proposal_id} is {:?}, not Approved",
+        output.status
+    );
     let tx = ctx
         .client
         .read(tx::Get {
-            tx_hash: executed.tx_hash.into(),
-            sender_account_id: executed.tx_signer.clone(),
+            tx_hash: tx_hash.into(),
+            sender_account_id: tx_signer.clone(),
             wait_until: Some(TxExecutionStatus::Final),
             encoding: tx::ValueEncoding::Json,
         })
         .await?;
+    anyhow::ensure!(
+        tx.status == tx::Status::Succeeded,
+        "signature execution transaction {tx_hash} is {:?}, not Succeeded",
+        tx.status
+    );
     // One vote can execute several signing proposals; keep the one that verifies over this payload.
     let mut last_error = None;
-    for receipt in &tx.receipts {
+    for (receipt_index, receipt) in tx.receipts.into_iter().enumerate() {
         if receipt.executor_id != output.mpc_contract_id
             || receipt.status != templar_gateway_types::operation::ReceiptStatus::Succeeded
         {
@@ -673,7 +694,17 @@ async fn signed_payload(
             .and_then(SignatureResponse::into_signature)
             .and_then(|signature| review.payload.sign(signature, output.derived_public_key))
         {
-            Ok(signed) => return Ok(signed),
+            Ok(signed) => {
+                return Ok((
+                    signed,
+                    SignatureExecution {
+                        tx_hash: tx_hash.into(),
+                        sender_account_id: tx_signer.clone(),
+                        receipt_index,
+                        receipt,
+                    },
+                ));
+            }
             Err(error) => last_error = Some(error),
         }
     }
@@ -681,13 +712,23 @@ async fn signed_payload(
         None => anyhow::bail!(
             "transaction {} has no `sign` receipt from {} returning a signature; is it the \
              transaction that executed proposal {proposal_id}?",
-            executed.tx_hash,
+            tx_hash,
             output.mpc_contract_id,
         ),
         Some(error) => {
             Err(error.context("no signature in the transaction verifies over this payload"))
         }
     }
+}
+
+/// The exact finalized transaction and signature-bearing MPC receipt. The
+/// containing review binds its response to the approved payload and derived key.
+#[derive(Serialize)]
+struct SignatureExecution {
+    tx_hash: templar_gateway_types::CryptoHash,
+    sender_account_id: AccountId,
+    receipt_index: usize,
+    receipt: tx::ReceiptRecord,
 }
 
 /// What `near transaction send-signed-transaction` accepts.
@@ -741,6 +782,8 @@ struct ReviewOutput {
     /// The derived key has already signed at this nonce or a later one (or is
     /// gone): the payload was relayed, or superseded by another proposal.
     nonce_spent: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature_execution: Option<SignatureExecution>,
 }
 
 struct Review {
@@ -851,6 +894,7 @@ async fn review(
             head_height,
             // Anything sent now lands after `head_height`, so the last valid block is already too late.
             expired: head_height >= last_valid_block,
+            signature_execution: None,
         },
         payload: envelope.payload,
     })

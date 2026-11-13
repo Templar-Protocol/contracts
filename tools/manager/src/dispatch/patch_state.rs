@@ -103,44 +103,53 @@ pub(crate) async fn fetch_state(
     fetch_complete_state(ctx.network_config(), account_id, block.hash.into(), limits).await
 }
 
+/// Fetch independent snapshot components concurrently at the same immutable block.
+/// Code fetching follows account identity discovery; storage cursor pages remain ordered.
 pub async fn fetch_complete_state(
     network: &NetworkConfig,
     account_id: &AccountId,
     block_hash: CryptoHash,
     limits: &ProtocolLimits,
 ) -> Result<StateSnapshot> {
-    let account = Account(account_id.clone())
-        .view()
-        .at(Reference::AtBlockHash(block_hash))
-        .fetch_from(network)
-        .await
-        .with_context(|| format!("fetch account {account_id} at {block_hash}"))?;
-    ensure_block(account.block_hash, block_hash, "account")?;
-    ensure!(
-        !matches!(account.data.contract_state, ContractState::GlobalAccountId(_)),
-        "patch target {account_id} uses an unsupported mutable global contract publisher; only local code and immutable global code hashes are supported"
-    );
+    let ((account, contract, code), access_keys, (entries, request_count)) = tokio::try_join!(
+        async {
+            let account = Account(account_id.clone())
+                .view()
+                .at(Reference::AtBlockHash(block_hash))
+                .fetch_from(network)
+                .await
+                .with_context(|| format!("fetch account {account_id} at {block_hash}"))?;
+            ensure_block(account.block_hash, block_hash, "account")?;
+            ensure!(
+                !matches!(account.data.contract_state, ContractState::GlobalAccountId(_)),
+                "patch target {account_id} uses an unsupported mutable global contract publisher; only local code and immutable global code hashes are supported"
+            );
 
-    let contract = account_contract(&account.data.contract_state);
-    let code = fetch_code(
-        network,
-        account_id,
-        &account.data.contract_state,
-        block_hash,
-    )
-    .await?;
-    let mut access_keys = Account(account_id.clone())
-        .list_keys()
-        .at(Reference::AtBlockHash(block_hash))
-        .fetch_from(network)
-        .await
-        .with_context(|| format!("fetch access keys for {account_id} at {block_hash}"))?;
-    ensure_block(access_keys.block_hash, block_hash, "access keys")?;
-    access_keys
-        .data
-        .sort_by(|(left, _), (right, _)| left.cmp(right));
-
-    let (entries, request_count) = fetch_entries(network, account_id, block_hash).await?;
+            let contract = account_contract(&account.data.contract_state);
+            let code = fetch_code(
+                network,
+                account_id,
+                &account.data.contract_state,
+                block_hash,
+            )
+            .await?;
+            Ok((account, contract, code))
+        },
+        async {
+            let mut access_keys = Account(account_id.clone())
+                .list_keys()
+                .at(Reference::AtBlockHash(block_hash))
+                .fetch_from(network)
+                .await
+                .with_context(|| format!("fetch access keys for {account_id} at {block_hash}"))?;
+            ensure_block(access_keys.block_hash, block_hash, "access keys")?;
+            access_keys
+                .data
+                .sort_by(|(left, _), (right, _)| left.cmp(right));
+            Ok(access_keys)
+        },
+        fetch_entries(network, account_id, block_hash),
+    )?;
     verify_storage_usage(
         account.data.storage_usage,
         &contract,

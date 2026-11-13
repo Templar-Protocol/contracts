@@ -433,3 +433,26 @@ fn read_fallback_rejects_missing_json() {
 
     assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
 }
+
+#[test]
+fn read_batch_rejects_credentials() {
+    let error = Cli::try_parse_from([
+        "tmplrmgr",
+        "read-batch",
+        "--json",
+        "[]",
+        "--secret-key",
+        TEST_SECRET_KEY,
+    ])
+    .expect_err("batch reads must not accept signing credentials");
+
+    assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+}
+
+#[test]
+fn read_batch_rejects_conflicting_json_sources() {
+    let error = Cli::try_parse_from(["tmplrmgr", "read-batch", "--json", "[]", "--json-file", "-"])
+        .expect_err("a batch must have exactly one JSON source");
+
+    assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+}

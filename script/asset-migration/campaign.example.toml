@@ -1,0 +1,29 @@
+# Captured from a passing controlled local-neard run. The fixture has stopped.
+# Replace endpoint, chain/genesis, accounts, routes and code identity together
+# using fresh reads. This is a schema example, not a live deployment or keys.
+schema = 1
+environment = "sandbox"
+network = "testnet"
+rpc_url = "http://127.0.0.1:41035/"
+expected_chain_id = "test-chain-F9mSD"
+expected_genesis_hash = "G4QUw6hqCX6ZJZDyausc2qx4MfjDyqCDX7wUE58pRJAp"
+dao = "migration-dao-18.t2317771-0.funder"
+mpc_contract = "migration-signer-19.t2317771-0.funder"
+mpc_key_type = "ed25519"
+submitter = "migration-proposer-13.t2317771-0.funder"
+relayer = "migration-relayer-14.t2317771-0.funder"
+converter_profile = "local-one-to-one"
+converter_account = "migration-converter-22.t2317771-0.funder"
+converter_code_sha256 = "d96bb1c056009e19b476a1e2ad6317651a2ad4d6ea7fe396ad9ac7f55cad4b2e"
+approval_wait_seconds = 600
+finality_wait_seconds = 120
+dependency_scope_accounts = ["layout-market.testnet"]
+mpc_transport = "delegate-action"
+
+[[markets]]
+account = "layout-market.testnet"
+borrow_asset = "nep141:converted-borrow-21.t2317771-0.funder"
+
+[[conversions]]
+old_asset = "nep141:layout-borrow-8.t2317771-0.funder"
+new_asset = "nep141:converted-borrow-21.t2317771-0.funder"

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
+use near_api::types::AccountId;
 use serde::Serialize;
 use templar_gateway_methods_spec::{account, contract, tx};
 use templar_gateway_types::{common::ContractArgs, ManagedAccountId};
@@ -11,9 +11,8 @@ use crate::{
     context::{print_json, CliContext},
     dispatch::{
         patch::build,
-        patch_state::StateSnapshot,
         sandbox_replay::{
-            build_local_client, reset_account_metadata, setup_account, stage_local_code,
+            build_local_client, reset_account_metadata, setup_account, stage_snapshot_code,
             start_sandbox,
         },
     },
@@ -87,7 +86,13 @@ pub(super) async fn dry_run(ctx: CliContext, args: DryRun) -> Result<()> {
     )
     .await?;
     let local_client = build_local_client(&local_network, &[(&plan.spec.account_id, &secret_key)])?;
-    stage_code(&local_network, &plan, &built.state, &secret_key).await?;
+    stage_snapshot_code(
+        &local_network,
+        &plan.spec.account_id,
+        &built.state,
+        &secret_key,
+    )
+    .await?;
     reset_account_metadata(&local_network, &plan.spec.account_id, &built.state).await?;
     anyhow::ensure!(
         restore_matches(&local_client, &plan).await?,
@@ -190,42 +195,6 @@ fn ensure_plan_matches(plan: &PatchPlan, rederived: &PatchPlan) -> Result<()> {
         serde_json::to_vec(&expected)? == serde_json::to_vec(&actual)?,
         "the patch plan no longer matches its embedded spec and live target; re-run `patch plan`"
     );
-    Ok(())
-}
-
-async fn stage_code(
-    network: &NetworkConfig,
-    plan: &PatchPlan,
-    state: &StateSnapshot,
-    target_secret_key: &SecretKey,
-) -> Result<()> {
-    match plan.restore {
-        RestoreCode::Local { .. } => {
-            let client =
-                build_local_client(network, &[(&plan.spec.account_id, target_secret_key)])?;
-            stage_local_code(&client, &plan.spec.account_id, &state.code).await?;
-        }
-        RestoreCode::GlobalCodeHash { .. } => {
-            publish_global_code(network, plan, &state.code, target_secret_key).await?;
-        }
-    }
-    Ok(())
-}
-
-async fn publish_global_code(
-    network: &NetworkConfig,
-    plan: &PatchPlan,
-    code: &[u8],
-    target_secret_key: &SecretKey,
-) -> Result<()> {
-    let signer = Signer::from_secret_key(target_secret_key.clone())?;
-    Contract::deploy_global_contract_code(code.to_vec())
-        .as_hash()
-        .with_signer(plan.spec.account_id.clone(), signer)
-        .send_to(network)
-        .await
-        .context("publish hash global code")?
-        .assert_success();
     Ok(())
 }
 

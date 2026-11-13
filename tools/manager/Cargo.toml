@@ -10,6 +10,18 @@ license.workspace = true
 name = "tmplrmgr"
 path = "src/main.rs"
 
+[features]
+# One-off local campaign acceptance; excluded from the normal test/CI targets.
+asset-migration-acceptance = []
+
+[[test]]
+name = "asset_migration"
+required-features = ["asset-migration-acceptance"]
+
+[[test]]
+name = "asset_converter"
+required-features = ["asset-migration-acceptance"]
+
 [dependencies]
 anyhow.workspace = true
 # Decoding `registry.deploy` init args for display (ENG-544).

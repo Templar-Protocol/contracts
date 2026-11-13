@@ -19,6 +19,7 @@ pub(crate) mod patch_state;
 pub(crate) mod plan;
 pub(crate) mod preflight;
 mod proposals;
+mod proxy_manual_trip;
 mod reference;
 mod registry_upgrade;
 mod sandbox_replay;
@@ -84,6 +85,7 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
         Command::Query { command } => crate::query::run(ctx, command).await,
         Command::RecoverNep141(args) => teardown::recover_nep141(ctx, args).await,
         Command::Read(call) => generic::read(ctx, call).await,
+        Command::ReadBatch(call) => generic::read_batch(ctx, call).await,
         Command::Write(call) => generic::write(ctx, call).await,
     }
 }
@@ -227,6 +229,7 @@ async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> 
             ctx.read(a.into_spec(oracle_id)).await
         }
         ProxyOracleNs::Preflight(a) => upgrade_preflight::command(ctx, a).await,
+        ProxyOracleNs::PredictManualTrip(a) => proxy_manual_trip::predict(ctx, a).await,
         ProxyOracleNs::GetProxyCircuitBreakerSet(a) => {
             let oracle_id = a.target.resolve(&ctx).await?;
             ctx.read(a.into_spec(oracle_id)).await

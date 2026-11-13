@@ -14,7 +14,7 @@ use near_api::{
 };
 use near_sandbox::{
     config::{DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY},
-    Sandbox,
+    Sandbox, SandboxConfig,
 };
 use near_token::NearToken;
 use templar_common::{
@@ -107,7 +107,16 @@ impl SandboxHarness {
     /// too — but fixing it is a production change tracked in ENG-473. Until then
     /// the two tests that exercise the route need a pristine node.
     pub async fn start_owned() -> Result<Self> {
-        Self::start_on(start_owned_node().await?).await
+        Self::start_owned_with_config(sandbox_config()).await
+    }
+
+    /// Start a dedicated node with the supplied native launch configuration.
+    ///
+    /// Start from [`sandbox_config`] to retain the shared cadence, funder and
+    /// viewer settings. Long receipt-replay fixtures can raise
+    /// `gc_num_epochs_to_keep` in `additional_config` to retain their outcomes.
+    pub async fn start_owned_with_config(config: SandboxConfig) -> Result<Self> {
+        Self::start_on(start_owned_node(config).await?).await
     }
 
     async fn start_on((sandbox, network): (Option<Sandbox>, NetworkConfig)) -> Result<Self> {
@@ -1140,13 +1149,13 @@ async fn connect() -> Result<(Option<Sandbox>, NetworkConfig)> {
         );
         Ok((None, network))
     } else {
-        start_owned_node().await
+        start_owned_node(sandbox_config()).await
     }
 }
 
 /// Launch a dedicated `neard` for this harness.
-async fn start_owned_node() -> Result<(Option<Sandbox>, NetworkConfig)> {
-    let sandbox = Sandbox::start_sandbox_with_config(sandbox_config()).await?;
+async fn start_owned_node(config: SandboxConfig) -> Result<(Option<Sandbox>, NetworkConfig)> {
+    let sandbox = Sandbox::start_sandbox_with_config(config).await?;
     let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
     Ok((Some(sandbox), network))
 }
