@@ -121,6 +121,9 @@ Verification of the feed updater (`pyth-lazer-source-contract/src`):
   bit-flipped, truncated and extended payloads, which must fail without a write
   or store only admitted prices. `PROPTEST_CASES` scales a run.
 
+The ingest-window equivalence and decimal-key harnesses select the bundled Kissat
+solver for full-domain arithmetic proofs; no input domains or checks are reduced.
+
 ```bash
 cargo kani -p templar-proxy-oracle-soroban-pyth-lazer-source-contract
 PROPTEST_CASES=4096 just test-fast -p templar-proxy-oracle-soroban-pyth-lazer-source-contract --features testutils proptests
