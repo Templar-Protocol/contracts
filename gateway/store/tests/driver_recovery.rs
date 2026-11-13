@@ -391,7 +391,7 @@ impl ExecuteOperation for FakeExecutor {
     }
 }
 
-fn driver(store: Arc<MemoryStore>, executor: FakeExecutor) -> OperationDriver {
+fn driver(store: SharedOperationStore, executor: FakeExecutor) -> OperationDriver {
     OperationDriver::new(store, Arc::new(FakeSigner::default()), Arc::new(executor))
 }
 
@@ -796,16 +796,12 @@ async fn startup_recovery_counts_an_unloadable_operation_and_resumes_the_rest() 
         ],
     );
 
-    let result = OperationDriver::new(
-        store.clone(),
-        Arc::new(FakeSigner::default()),
-        Arc::new(executor),
-    )
-    .resume_incomplete_operations()
-    .await;
+    let result = driver(store.clone(), executor)
+        .resume_incomplete_operations()
+        .await;
 
     assert!(
-        matches!(&result, Err(GatewayError::IncompleteRecovery(message)) if message.starts_with("1 ")),
+        matches!(&result, Err(GatewayError::IncompleteRecovery(message)) if message == "1 operation(s) failed to resume"),
         "{result:?}"
     );
     assert_eq!(

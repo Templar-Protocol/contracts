@@ -1547,6 +1547,7 @@ mod tests {
     use templar_gateway_types::{NearGas, NearToken, OperationStatus};
 
     use super::*;
+    use std::collections::HashSet;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, FromRow)]
     struct StepTimestampRow {
@@ -2018,17 +2019,22 @@ mod tests {
         sqlx::query(
             "UPDATE gateway_step_executions SET signed_transaction = $2 WHERE operation_id = $1",
         )
-        .bind(uuid::Uuid::from_str(&undecodable.id.0).unwrap())
+        .bind(parse_operation_uuid(&undecodable.id).unwrap())
         .bind(vec![24_u8])
         .execute(&store.pool)
         .await
         .unwrap();
 
-        let mut incomplete = store.list_incomplete_operation_ids().await.unwrap();
-        incomplete.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut expected = vec![healthy.id, undecodable.id.clone()];
-        expected.sort_by(|left, right| left.0.cmp(&right.0));
-        assert_eq!(incomplete, expected);
+        let incomplete: HashSet<_> = store
+            .list_incomplete_operation_ids()
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            incomplete,
+            HashSet::from([healthy.id, undecodable.id.clone()])
+        );
         assert!(matches!(
             store.get_by_id(&undecodable.id).await,
             Err(GatewayError::InvalidStoredOperation(_))
