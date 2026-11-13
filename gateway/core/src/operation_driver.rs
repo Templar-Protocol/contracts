@@ -276,17 +276,26 @@ impl OperationDriver {
     /// resolve. Every operation is still attempted first, so a single wedged one
     /// does not block recovering the rest.
     pub async fn resume_incomplete_operations(&self) -> GatewayResult<()> {
-        let operations = self.store.list_incomplete_operations().await?;
+        let operation_ids = self.store.list_incomplete_operation_ids().await?;
         tracing::debug!(
-            operation_count = operations.len(),
+            operation_count = operation_ids.len(),
             "resuming incomplete gateway operations"
         );
         let mut failures = 0_usize;
-        for operation in operations {
-            let operation_id = operation.operation_id().clone();
+        for operation_id in operation_ids {
             let _operation_guard = self.operation_locks.lock(&operation_id).await;
-            let Some(operation) = self.store.get_by_id(&operation_id).await? else {
-                continue;
+            let operation = match self.store.get_by_id(&operation_id).await {
+                Ok(Some(operation)) => operation,
+                Ok(None) => continue,
+                Err(error) => {
+                    failures += 1;
+                    tracing::warn!(
+                        operation_id = %operation_id.0,
+                        %error,
+                        "failed to load incomplete gateway operation during startup recovery"
+                    );
+                    continue;
+                }
             };
 
             // Recovery runs before this process serves traffic, so any reservation

@@ -81,5 +81,6 @@ pub trait OperationStore: Send + Sync {
     /// non-reservation.
     async fn delete_reservation(&self, operation_id: &OperationId) -> GatewayResult<()>;
 
-    async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>>;
+    /// Ids only, so one undecodable operation cannot fail the whole listing.
+    async fn list_incomplete_operation_ids(&self) -> GatewayResult<Vec<OperationId>>;
 }
