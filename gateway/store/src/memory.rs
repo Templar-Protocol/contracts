@@ -203,7 +203,7 @@ impl OperationStore for MemoryStore {
         Ok(())
     }
 
-    async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>> {
+    async fn list_incomplete_operation_ids(&self) -> GatewayResult<Vec<OperationId>> {
         Ok(self
             .state
             .lock()
@@ -216,7 +216,7 @@ impl OperationStore for MemoryStore {
                     OperationStatus::Pending | OperationStatus::InProgress
                 )
             })
-            .cloned()
+            .map(|operation| operation.id.clone())
             .collect())
     }
 }

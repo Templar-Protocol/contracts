@@ -708,7 +708,110 @@ async fn startup_recovery_clears_a_backlog_of_expired_orphans() {
         .await
         .unwrap();
 
-    assert!(store.list_incomplete_operations().await.unwrap().is_empty());
+    assert!(store
+        .list_incomplete_operation_ids()
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// A [`MemoryStore`] whose load of one operation fails, as an undecodable row does.
+struct UnloadableStore {
+    inner: MemoryStore,
+    unloadable: OperationId,
+}
+
+#[async_trait]
+impl OperationStore for UnloadableStore {
+    async fn get_by_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> GatewayResult<Option<StoredOperation>> {
+        if *operation_id == self.unloadable {
+            return Err(GatewayError::InvalidStoredOperation(
+                "Unexpected variant tag: 24".to_owned(),
+            ));
+        }
+        self.inner.get_by_id(operation_id).await
+    }
+
+    async fn get_by_idempotency_key(
+        &self,
+        idempotency_key: &IdempotencyKey,
+    ) -> GatewayResult<Option<StoredOperation>> {
+        self.inner.get_by_idempotency_key(idempotency_key).await
+    }
+
+    async fn create_or_get_operation(
+        &self,
+        rpc_method: &str,
+        signer_account_id: ManagedAccountId,
+        idempotency_key: Option<IdempotencyKey>,
+        request_fingerprint_hash: [u8; 32],
+        request_payload: Vec<u8>,
+        plan: OperationPlan,
+    ) -> GatewayResult<CreateOperationResult> {
+        self.inner
+            .create_or_get_operation(
+                rpc_method,
+                signer_account_id,
+                idempotency_key,
+                request_fingerprint_hash,
+                request_payload,
+                plan,
+            )
+            .await
+    }
+
+    async fn save_operation(&self, operation: StoredOperation) -> GatewayResult<()> {
+        self.inner.save_operation(operation).await
+    }
+
+    async fn delete_reservation(&self, operation_id: &OperationId) -> GatewayResult<()> {
+        self.inner.delete_reservation(operation_id).await
+    }
+
+    async fn list_incomplete_operation_ids(&self) -> GatewayResult<Vec<OperationId>> {
+        self.inner.list_incomplete_operation_ids().await
+    }
+}
+
+#[tokio::test]
+async fn startup_recovery_counts_an_unloadable_operation_and_resumes_the_rest() {
+    let unloadable = OperationId("unloadable".to_owned());
+    let store = Arc::new(UnloadableStore {
+        inner: MemoryStore::new(),
+        unloadable: unloadable.clone(),
+    });
+    for id in ["orphan-0", "unloadable", "orphan-1"] {
+        let mut op = step_op(expired_submitted_step());
+        op.id = OperationId(id.to_owned());
+        store.save_operation(op).await.unwrap();
+    }
+    let executor = FakeExecutor::new(
+        vec![],
+        vec![
+            Ok(TransactionRecord::NoRecord),
+            Ok(TransactionRecord::NoRecord),
+        ],
+    );
+
+    let result = OperationDriver::new(
+        store.clone(),
+        Arc::new(FakeSigner::default()),
+        Arc::new(executor),
+    )
+    .resume_incomplete_operations()
+    .await;
+
+    assert!(
+        matches!(&result, Err(GatewayError::IncompleteRecovery(message)) if message.starts_with("1 ")),
+        "{result:?}"
+    );
+    assert_eq!(
+        store.list_incomplete_operation_ids().await.unwrap(),
+        vec![unloadable]
+    );
 }
 
 #[tokio::test]

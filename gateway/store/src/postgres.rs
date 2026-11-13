@@ -330,15 +330,14 @@ WHERE
         Ok(())
     }
 
-    async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>> {
-        let mut tx = begin_read_tx(&self.pool).await?;
-        let operation_rows = load_incomplete_operations_ordered(&mut tx).await?;
-        let mut operations = Vec::with_capacity(operation_rows.len());
-        for operation_row in operation_rows {
-            operations.push(load_stored_operation(&mut tx, operation_row).await?);
-        }
-        tx.commit().await?;
-        Ok(operations)
+    async fn list_incomplete_operation_ids(&self) -> GatewayResult<Vec<OperationId>> {
+        let operation_uuids = sqlx::query_scalar::<_, uuid::Uuid>(OPERATION_SELECT_INCOMPLETE_IDS)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(operation_uuids
+            .into_iter()
+            .map(|operation_uuid| OperationId(operation_uuid.to_string()))
+            .collect())
     }
 }
 
@@ -370,15 +369,6 @@ async fn load_operation_by_idempotency_key(
     sqlx::query_as::<_, OperationRow>(OPERATION_SELECT_BY_IDEMPOTENCY_KEY)
         .bind(idempotency_key.0.as_str())
         .fetch_optional(&mut **tx)
-        .await
-        .map_err(Into::into)
-}
-
-async fn load_incomplete_operations_ordered(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-) -> GatewayResult<Vec<OperationRow>> {
-    sqlx::query_as::<_, OperationRow>(OPERATION_SELECT_INCOMPLETE_ORDERED)
-        .fetch_all(&mut **tx)
         .await
         .map_err(Into::into)
 }
@@ -421,25 +411,15 @@ WHERE
     operation.idempotency_key = $1
 ";
 
-const OPERATION_SELECT_INCOMPLETE_ORDERED: &str = r"
+const OPERATION_SELECT_INCOMPLETE_IDS: &str = r"
 SELECT
-    operation.id,
-    operation.rpc_method,
-    operation.signer_account_id,
-    operation.idempotency_key,
-    operation.request_fingerprint_hash,
-    operation.request_payload,
-    plan.created_at AS plan_created_at,
-    operation.created_at,
-    operation.updated_at,
-    operation.completed_at
+    id
 FROM
-    gateway_operations AS operation
-    LEFT JOIN gateway_operation_plans AS plan ON plan.operation_id = operation.id
+    gateway_operations
 WHERE
-    operation.completed_at IS NULL
+    completed_at IS NULL
 ORDER BY
-    operation.created_at ASC
+    created_at ASC
 ";
 
 async fn load_stored_operation(
@@ -1955,7 +1935,7 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn list_incomplete_operations_uses_completed_at_filter(pool: PgPool) {
+    async fn list_incomplete_operation_ids_uses_completed_at_filter(pool: PgPool) {
         let store = PostgresStore {
             pool,
             schema: "public".to_owned(),
@@ -2004,9 +1984,55 @@ mod tests {
             .await
             .unwrap();
 
-        let incomplete = store.list_incomplete_operations().await.unwrap();
-        assert_eq!(incomplete.len(), 1);
-        assert_eq!(incomplete[0].id, pending.id);
+        let incomplete = store.list_incomplete_operation_ids().await.unwrap();
+        assert_eq!(incomplete, vec![pending.id]);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn list_incomplete_operation_ids_survives_an_undecodable_operation(pool: PgPool) {
+        let store = PostgresStore {
+            pool,
+            schema: "public".to_owned(),
+        };
+        let healthy = sample_operation(OperationStatus::Pending);
+        insert_operation_tx(&store.pool, &healthy, None)
+            .await
+            .unwrap();
+        let CreateOperationResult::Created(mut undecodable) = store
+            .create_or_get_operation(
+                "tx.transfer",
+                ManagedAccountId("signer.near".parse().unwrap()),
+                None,
+                [15; 32],
+                b"{}".to_vec(),
+                OperationPlan {
+                    steps: vec![sample_transaction()],
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a freshly created operation");
+        };
+        prepare_first_step(&store, &mut undecodable).await;
+        sqlx::query(
+            "UPDATE gateway_step_executions SET signed_transaction = $2 WHERE operation_id = $1",
+        )
+        .bind(uuid::Uuid::from_str(&undecodable.id.0).unwrap())
+        .bind(vec![24_u8])
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let mut incomplete = store.list_incomplete_operation_ids().await.unwrap();
+        incomplete.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut expected = vec![healthy.id, undecodable.id.clone()];
+        expected.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(incomplete, expected);
+        assert!(matches!(
+            store.get_by_id(&undecodable.id).await,
+            Err(GatewayError::InvalidStoredOperation(_))
+        ));
     }
 
     #[sqlx::test(migrations = "./migrations")]
