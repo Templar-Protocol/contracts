@@ -191,7 +191,12 @@ reported complete: the re-derivation runs before the journal is consulted.
 
 `tmplrmgr patch` builds one atomic transaction for a contract whose full-access
 key is still held: deploy the pinned PatchState WASM, apply guarded storage
-operations, then restore the exact local code or global-contract linkage.
+operations, then restore the exact local code or immutable global code-hash linkage.
+Mutable global contracts referenced by publisher account ID are unsupported: export,
+configuration generation, planning, replay, and apply reject these targets, including
+generic patches without a code-hash precondition. Previously authored plans using
+`global_account` restoration are rejected; only local and global-hash restoration
+are supported.
 
 ### Generate a market configuration patch
 

@@ -203,7 +203,6 @@ fn sha256_digest_uses_lowercase_hex() {
 
 #[test]
 fn restore_code_variants_round_trip_as_tagged_json() {
-    let account_id: AccountId = "code.near".parse().unwrap();
     let hash = CryptoHash::from(near_api::types::CryptoHash([7; 32]));
     let cases = [
         (
@@ -213,10 +212,6 @@ fn restore_code_variants_round_trip_as_tagged_json() {
         (
             RestoreCode::GlobalCodeHash { hash },
             r#"{"mode":"global_code_hash","hash":"US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx"}"#,
-        ),
-        (
-            RestoreCode::GlobalAccount { account_id },
-            r#"{"mode":"global_account","account_id":"code.near"}"#,
         ),
     ];
     for (restore, expected) in cases {
@@ -230,6 +225,10 @@ fn restore_code_variants_round_trip_as_tagged_json() {
             restore
         );
     }
+    assert!(serde_json::from_str::<RestoreCode>(
+        r#"{"mode":"global_account","account_id":"code.near"}"#
+    )
+    .is_err());
 }
 
 #[test]

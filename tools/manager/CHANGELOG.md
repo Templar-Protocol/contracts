@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact no-mutation checkpoints; optimistic height advancement is not finality.
 - Measure exact signed transport length without allocating a second wire buffer;
   raw broadcast validates the actual signed transport without rebuilding a duplicate estimate.
+- Restrict patch targets and restoration to local code and immutable global code
+  hashes. Reject mutable publisher-account targets even for unpinned generic
+  patches, and reject old `global_account` restoration plans.
 
 ### Added
 
