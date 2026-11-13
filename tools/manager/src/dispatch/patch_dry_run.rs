@@ -2,12 +2,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
-use near_crypto::KeyType;
-use near_primitives::{
-    account::{AccessKey, Account as ChainAccount, AccountContract},
-    state_record::StateRecord,
-};
-use near_token::NearToken;
 use serde::Serialize;
 use templar_gateway_methods_spec::{account, contract, tx};
 use templar_gateway_types::{common::ContractArgs, ManagedAccountId};
@@ -19,8 +13,8 @@ use crate::{
         patch::build,
         patch_state::StateSnapshot,
         sandbox_replay::{
-            build_local_client, random_secret_key, reset_account_metadata, setup_account,
-            stage_local_code, start_sandbox,
+            build_local_client, reset_account_metadata, setup_account, stage_local_code,
+            start_sandbox,
         },
     },
     spec::{
@@ -211,7 +205,7 @@ async fn stage_code(
                 build_local_client(network, &[(&plan.spec.account_id, target_secret_key)])?;
             stage_local_code(&client, &plan.spec.account_id, &state.code).await?;
         }
-        RestoreCode::GlobalCodeHash { .. } | RestoreCode::GlobalAccount { .. } => {
+        RestoreCode::GlobalCodeHash { .. } => {
             publish_global_code(network, plan, &state.code, target_secret_key).await?;
         }
     }
@@ -224,72 +218,14 @@ async fn publish_global_code(
     code: &[u8],
     target_secret_key: &SecretKey,
 ) -> Result<()> {
-    let (signer_id, signer_key) = match &plan.restore {
-        RestoreCode::Local { .. } => return Ok(()),
-        RestoreCode::GlobalCodeHash { .. } => {
-            (plan.spec.account_id.clone(), target_secret_key.clone())
-        }
-        RestoreCode::GlobalAccount { account_id } if account_id == &plan.spec.account_id => {
-            (account_id.clone(), target_secret_key.clone())
-        }
-        RestoreCode::GlobalAccount { account_id } => {
-            let secret_key = random_secret_key(KeyType::ED25519)?;
-            let public_key: near_crypto::PublicKey = secret_key
-                .public_key()
-                .to_string()
-                .parse()
-                .context("parse global publisher public key")?;
-            templar_sandbox::patch_records(
-                network,
-                vec![
-                    StateRecord::Account {
-                        account_id: account_id.clone(),
-                        account: ChainAccount::new(
-                            NearToken::from_near(100_000_000),
-                            NearToken::from_yoctonear(0),
-                            AccountContract::None,
-                            182,
-                        ),
-                    },
-                    StateRecord::AccessKey {
-                        account_id: account_id.clone(),
-                        public_key,
-                        access_key: AccessKey::full_access(),
-                    },
-                ],
-            )
-            .await?;
-            let public_key: near_crypto::PublicKey = secret_key
-                .public_key()
-                .to_string()
-                .parse()
-                .context("parse global publisher public key")?;
-            templar_sandbox::wait_until_final(network, account_id, &public_key).await?;
-            (account_id.clone(), secret_key)
-        }
-    };
-    let signer = Signer::from_secret_key(signer_key)?;
-    match &plan.restore {
-        RestoreCode::GlobalCodeHash { .. } => {
-            Contract::deploy_global_contract_code(code.to_vec())
-                .as_hash()
-                .with_signer(signer_id, signer)
-                .send_to(network)
-                .await
-                .context("publish hash global code")?
-                .assert_success();
-        }
-        RestoreCode::GlobalAccount { account_id } => {
-            Contract::deploy_global_contract_code(code.to_vec())
-                .as_account_id(account_id.clone())
-                .with_signer(signer)
-                .send_to(network)
-                .await
-                .context("publish account global code")?
-                .assert_success();
-        }
-        RestoreCode::Local { .. } => unreachable!(),
-    }
+    let signer = Signer::from_secret_key(target_secret_key.clone())?;
+    Contract::deploy_global_contract_code(code.to_vec())
+        .as_hash()
+        .with_signer(plan.spec.account_id.clone(), signer)
+        .send_to(network)
+        .await
+        .context("publish hash global code")?
+        .assert_success();
     Ok(())
 }
 
@@ -405,9 +341,6 @@ async fn restore_matches(
         RestoreCode::Local { .. } => account.code_hash == plan.target_code_hash.to_string(),
         RestoreCode::GlobalCodeHash { hash } => {
             account.global_contract_hash.as_deref() == Some(hash.to_string().as_str())
-        }
-        RestoreCode::GlobalAccount { account_id } => {
-            account.global_contract_account_id.as_ref() == Some(account_id)
         }
     })
 }

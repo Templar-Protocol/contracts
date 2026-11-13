@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Finalize every market-affecting configuration-patch fixture transaction and
   unsupported-code redeployment, including native refunds, before capturing
   exact no-mutation checkpoints; optimistic height advancement is not finality.
+- Restrict patch targets and restoration to local code and immutable global code
+  hashes. Reject mutable publisher-account targets even for unpinned generic
+  patches, and reject old `global_account` restoration plans.
 
 ### Added
 

@@ -19,7 +19,6 @@ pub const PATCH_PLAN_SCHEMA_VERSION: u32 = 3;
 pub enum RestoreCode {
     Local { code_hash: CryptoHash },
     GlobalCodeHash { hash: CryptoHash },
-    GlobalAccount { account_id: AccountId },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

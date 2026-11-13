@@ -186,9 +186,9 @@ pub(super) fn restore_from_state(state: &StateSnapshot) -> anyhow::Result<Restor
             Ok(RestoreCode::GlobalCodeHash { hash })
         }
         near_primitives::account::AccountContract::GlobalByAccount(account_id) => {
-            Ok(RestoreCode::GlobalAccount {
-                account_id: account_id.clone(),
-            })
+            anyhow::bail!(
+                "patch target uses unsupported mutable global contract publisher `{account_id}`; only local code and immutable global code hashes are supported"
+            )
         }
         near_primitives::account::AccountContract::None => {
             anyhow::bail!("patch target has no deployed contract code to restore")
@@ -405,13 +405,6 @@ pub(super) async fn build(
             },
             0,
             Status::passed("restore preserves the target global code hash"),
-        ),
-        RestoreCode::GlobalAccount { account_id } => (
-            ActionInput::UseGlobalContract {
-                contract_identifier: GlobalContractIdentifierInput::AccountId(account_id.clone()),
-            },
-            0,
-            Status::passed("restore preserves the target global code account"),
         ),
         RestoreCode::Local { code_hash } => {
             let code = Base64Bytes(state.code.clone());
