@@ -1,12 +1,12 @@
 pub mod account;
 pub mod contract;
+pub mod dao;
 pub mod deploy_common;
 pub mod duration;
 pub mod ft;
 pub mod full_access_key;
 pub mod keychain;
 pub mod market;
-pub mod mpc;
 pub mod oracle;
 pub mod owner;
 pub mod pagination;
@@ -78,9 +78,9 @@ pub fn write_atomically(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<
 
 pub use account::AccountNs;
 pub use contract::ContractNs;
+pub use dao::DaoNs;
 pub use ft::FtNs;
 pub use market::MarketNs;
-pub use mpc::MpcNs;
 pub use oracle::OracleNs;
 pub use owner::OwnerNs;
 pub use patch::PatchNs;

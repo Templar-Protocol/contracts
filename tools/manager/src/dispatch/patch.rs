@@ -87,40 +87,68 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             .with_context(|| format!("read {}", args.plan.display()))?;
         serde_json::from_str(&text).with_context(|| format!("parse {}", args.plan.display()))?
     };
+    let authorization = Authorization::try_from(&args.signer)?;
+    validate_live_plan(
+        &ctx,
+        &plan,
+        &authorization.account_id().0,
+        authorization.public_key()?.into(),
+        LivePlanOptions {
+            skip_check: &args.skip_check,
+            allow_unguarded: args.allow_unguarded,
+            no_dry_run: args.no_dry_run,
+        },
+    )
+    .await?;
+    ctx.write_authorized(authorization, plan.batch).await
+}
+
+#[derive(Default)]
+pub(super) struct LivePlanOptions<'a> {
+    pub skip_check: &'a [String],
+    pub allow_unguarded: bool,
+    pub no_dry_run: bool,
+}
+
+/// Rebuild against complete live state without changing any approved bytes.
+pub(super) async fn validate_live_plan(
+    ctx: &CliContext,
+    plan: &PatchPlan,
+    signer_id: &near_account_id::AccountId,
+    public_key: PublicKey,
+    options: LivePlanOptions<'_>,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         plan.schema == PATCH_PLAN_SCHEMA_VERSION,
         "patch plan schema {} is unsupported; re-run `patch plan`",
         plan.schema
     );
-    ensure_patch_has_operations(&plan)?;
-    let authorization = Authorization::try_from(&args.signer)?;
+    ensure_patch_has_operations(plan)?;
     anyhow::ensure!(
-        authorization.account_id().0 == plan.signer_id,
-        "patch plan expects signer `{}`, but apply uses `{}`",
+        signer_id == &plan.signer_id,
+        "patch plan expects signer `{}`, but execution uses `{signer_id}`",
         plan.signer_id,
-        authorization.account_id().0,
     );
-    let public_key = authorization.public_key()?;
     anyhow::ensure!(
-        public_key == templar_gateway_types::primitive::PublicKey::from(plan.public_key),
+        public_key == plan.public_key,
         "patch plan was reviewed for a different signing public key"
     );
     anyhow::ensure!(
-        !args
+        !options
             .skip_check
             .iter()
             .any(|id| id == "patch.dry_run" || id == "patch.state_complete"),
         "patch.dry_run and patch.state_complete are non-skippable"
     );
-    let mut reporter = ctx.reporter(&args.skip_check);
+    let mut reporter = ctx.reporter(options.skip_check);
     {
         let rederived = build(
-            &ctx,
+            ctx,
             &plan.source_path,
             plan.spec.clone(),
             plan.signer_id.clone(),
             plan.public_key,
-            args.allow_unguarded,
+            options.allow_unguarded,
             Some(&plan.restore),
             &mut reporter,
         )
@@ -135,7 +163,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             "the patch plan no longer matches its embedded spec and live target; re-run `patch plan`"
         );
     }
-    let dry_run_status = validate_dry_run_stamp(&plan, reporter.checks(), args.no_dry_run)?;
+    let dry_run_status = validate_dry_run_stamp(plan, reporter.checks(), options.no_dry_run)?;
     reporter.record(Check::new("patch.dry_run", dry_run_status));
     reporter.ensure_every_skip_matched()?;
     gate(
@@ -144,7 +172,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         "patch was not sent",
     )?;
     reporter.digest();
-    ctx.write_authorized(authorization, plan.batch).await
+    Ok(())
 }
 
 fn ensure_patch_signer(
