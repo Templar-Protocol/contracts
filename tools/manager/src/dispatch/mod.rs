@@ -5,6 +5,7 @@
 //! this file stays a readable index of the command surface.
 
 mod aggregate;
+pub(crate) mod dao;
 pub(crate) mod export;
 mod funding;
 pub(crate) mod generic;
@@ -30,9 +31,9 @@ use crate::cli::Command;
 use crate::commands::{
     account::AccountNs,
     contract::ContractNs,
+    dao::{mpc::MpcNs, DaoNs},
     ft::FtNs,
     market::{static_yield::StaticYieldNs, MarketNs},
-    mpc::MpcNs,
     oracle::OracleNs,
     owner::OwnerNs,
     patch::PatchNs,
@@ -77,7 +78,7 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
         Command::Oracle { command } => oracle(ctx, command).await,
         Command::Pyth { command } => pyth(ctx, command).await,
         Command::Redstone { command } => redstone(ctx, command).await,
-        Command::Mpc { command } => mpc(ctx, command).await,
+        Command::Dao { command } => dao(ctx, command).await,
         Command::Patch { command } => patch(ctx, command).await,
         Command::Spec { command } => spec(ctx, command).await,
         Command::Query { command } => crate::query::run(ctx, command).await,
@@ -110,6 +111,14 @@ async fn account(ctx: CliContext, ns: AccountNs) -> anyhow::Result<()> {
         AccountNs::AddKey(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
         AccountNs::DeleteKey(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
         AccountNs::Delete(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+    }
+}
+
+async fn dao(ctx: CliContext, ns: DaoNs) -> anyhow::Result<()> {
+    match ns {
+        DaoNs::Propose(args) => dao::propose(ctx, args).await,
+        DaoNs::GetProposal(args) => dao::get_proposal(ctx, args).await,
+        DaoNs::Mpc(ns) => mpc(ctx, ns).await,
     }
 }
 

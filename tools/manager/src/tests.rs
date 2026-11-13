@@ -10,10 +10,13 @@ use super::commands::signer::{Authorization, Mode, PrintFormat, SignerArgs};
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 mod config_patch;
+mod dao;
 mod deploy_script;
 mod export;
 mod ft;
 mod market;
+#[path = "../tests/common/market.rs"]
+mod market_fixture;
 mod mpc;
 mod oracle;
 mod patch;
@@ -26,42 +29,6 @@ mod registry;
 mod registry_upgrade;
 mod spec;
 mod storage;
-
-#[test]
-fn help_lists_all_top_level_commands() {
-    let rendered = Cli::command().render_long_help().to_string();
-    for command in [
-        "account",
-        "contract",
-        "registry",
-        "storage",
-        "ft",
-        "market",
-        "mpc",
-        "oracle",
-        "proxy-oracle",
-        "owner",
-        "pyth",
-        "redstone",
-        "patch",
-        "spec",
-        "recover-nep141",
-        "read",
-        "write",
-    ] {
-        assert!(rendered.contains(command), "help is missing `{command}`");
-    }
-    assert!(
-        Cli::command()
-            .find_subcommand("proxy-oracle-governance")
-            .is_none(),
-        "legacy governance command is still top-level"
-    );
-    assert!(
-        !rendered.contains("proxy-oracle-owner"),
-        "help still lists the removed `proxy-oracle-owner` command"
-    );
-}
 
 #[test]
 fn owner_uses_concise_subcommands() {

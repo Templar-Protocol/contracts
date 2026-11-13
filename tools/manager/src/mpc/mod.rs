@@ -6,3 +6,4 @@ pub mod dao;
 pub mod envelope;
 pub mod payload;
 pub mod signer_contract;
+pub(crate) mod source_plan;

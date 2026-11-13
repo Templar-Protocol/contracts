@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Finalize every market-affecting configuration-patch fixture transaction and
   unsupported-code redeployment, including native refunds, before capturing
   exact no-mutation checkpoints; optimistic height advancement is not finality.
+- Measure exact signed transport length without allocating a second wire buffer;
+  raw broadcast validates the actual signed transport without rebuilding a duplicate estimate.
 - Restrict patch targets and restoration to local code and immutable global code
   hashes. Reject mutable publisher-account targets even for unpinned generic
   patches, and reject old `global_account` restoration plans.
@@ -33,7 +35,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional `expect_json` view postconditions preserve exact nullable JSON values
   through TOML specs and stamped patch plans without changing existing encodings.
 - Code-hash preconditions and SHA-256-pinned file expressions for schema-3 patches.
+- `dao propose` and `dao get-proposal` share typed Sputnik policy, submission,
+  exact returned-ID readback, and structured proposal provenance.
+- MPC proposal/execution binds every approved action to one strict source plan;
+  stamped patch plans reuse the complete live `patch apply` guard.
+- MPC relay/broadcast retain structured transaction identity and receipt evidence
+  on failed or unknown submission outcomes.
+- Optional `dao mpc show --plan` and `--expected-description` bind a review to
+  its exact source and requested text without requiring unspent live state.
+- Raw MPC lifetime follows the chain's live transaction-validity period; source
+  checks precede block pinning and execution rechecks the inclusion bound without
+  changing approved bytes.
 
+### Changed
+
+- **Breaking:** move every top-level `mpc` command to `dao mpc`, without aliases.
+- **Breaking:** `dao mpc propose`, `relay`, and `broadcast` require one `--plan`
+  containing the exact ordinary transaction or guarded, stamped schema-3 patch.
 
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 

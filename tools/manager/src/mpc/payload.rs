@@ -17,18 +17,14 @@ use serde::{Deserialize, Serialize};
 use templar_gateway_core::PlannedTransaction;
 use templar_gateway_types::{Base64Bytes, BlockSummary, SignedDelegateActionInput};
 
-/// Genesis `transaction_validity_period` on mainnet and testnet: a transaction
-/// is accepted only within this many blocks of its `block_hash`.
-pub const TRANSACTION_VALIDITY_PERIOD_BLOCKS: u64 = 86_400;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadKind {
     /// A NEP-366 delegate action, relayed later by any account. Expires at an
     /// explicit block height, so it survives a long vote.
     DelegateAction,
-    /// A plain transaction, as `near-cli` signs. Bound to a recent block hash,
-    /// so it expires `TRANSACTION_VALIDITY_PERIOD_BLOCKS` after proposal.
+    /// A plain transaction, as `near-cli` signs. Bound to a recent block hash
+    /// and the actual chain's protocol-fixed transaction validity period.
     Transaction,
 }
 
@@ -51,6 +47,7 @@ pub struct BuildInputs {
     pub public_key: PublicKey,
     pub nonce: u64,
     pub block: BlockSummary,
+    /// Delegate-action lifetime only; raw transaction validity is protocol-fixed.
     pub valid_for_blocks: u64,
 }
 
@@ -59,14 +56,16 @@ pub struct BuildInputs {
 #[serde(rename_all = "snake_case")]
 pub enum Validity {
     MaxBlockHeight(u64),
-    /// Accepted for `TRANSACTION_VALIDITY_PERIOD_BLOCKS` after this block; its
-    /// height has to be looked up on chain.
+    /// Accepted within the chain's protocol-fixed validity period after this
+    /// block; both its height and the period must be read from that chain.
     BlockHash(CryptoHash),
 }
 
-/// The last block a transaction pinned to a block at `pinned_height` is accepted in.
-pub const fn transaction_last_valid_block(pinned_height: u64) -> u64 {
-    pinned_height.saturating_add(TRANSACTION_VALIDITY_PERIOD_BLOCKS)
+/// The last accepted inclusion height; raw transactions expire at `pinned + period`.
+pub const fn transaction_last_valid_block(pinned_height: u64, validity_period: u64) -> u64 {
+    pinned_height
+        .saturating_add(validity_period)
+        .saturating_sub(1)
 }
 
 /// The payload's fields, for review.
@@ -275,6 +274,21 @@ mod tests {
             valid_for_blocks: 500,
         })
         .expect("builds")
+    }
+
+    #[rstest]
+    #[case(488, 100, 587)]
+    #[case(1_000, 500, 1_499)]
+    #[case(1_000, 1, 1_000)]
+    fn transaction_expiry_uses_live_period(
+        #[case] pinned_height: u64,
+        #[case] validity_period: u64,
+        #[case] last_valid_block: u64,
+    ) {
+        assert_eq!(
+            transaction_last_valid_block(pinned_height, validity_period),
+            last_valid_block
+        );
     }
 
     #[rstest]
