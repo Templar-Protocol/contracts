@@ -948,7 +948,7 @@ async fn requires_sandbox_config_patch_rejects_code_drift_without_storage_drift(
             },
         )
         .await?;
-    finalize(harness, &seeded.market.market_id, deployed).await?;
+    finalize(harness, &seeded.market.market_id, &deployed).await?;
     let changed = snapshot(harness, &seeded.market.market_id).await?;
     assert_eq!(entries(&changed), entries(&before));
     assert_ne!(changed.code, before.code);
