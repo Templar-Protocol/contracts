@@ -156,7 +156,7 @@ pub(super) async fn stage_local_code(
     Ok(())
 }
 
-/// Stage exact effective code under the snapshot's original local/global identity.
+/// Stage exact effective code under the snapshot's local or immutable global-hash identity.
 /// The caller restores account metadata after staging transactions finalize.
 pub(super) async fn stage_snapshot_code(
     network: &NetworkConfig,
@@ -182,20 +182,8 @@ pub(super) async fn stage_snapshot_code(
                 .context("publish hash global code")?
                 .assert_success();
         }
-        AccountContract::GlobalByAccount(publisher_id) => {
-            let publisher_key = if publisher_id == account_id {
-                target_secret_key.clone()
-            } else {
-                setup_signer(network, publisher_id).await?
-            };
-            Contract::deploy_global_contract_code(state.code.clone())
-                .as_account_id(publisher_id.clone())
-                .with_signer(Signer::from_secret_key(publisher_key)?)
-                .wait_until(templar_gateway_core::FinalityPolicy::Final.transaction_status())
-                .send_to(network)
-                .await
-                .context("publish account global code")?
-                .assert_success();
+        AccountContract::GlobalByAccount(_) => {
+            anyhow::bail!("mutable global-account replay is unsupported")
         }
         AccountContract::None => anyhow::bail!("cannot stage a codeless replay account"),
     }

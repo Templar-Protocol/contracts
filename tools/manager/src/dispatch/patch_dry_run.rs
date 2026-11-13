@@ -311,9 +311,6 @@ async fn restore_matches(
         RestoreCode::GlobalCodeHash { hash } => {
             account.global_contract_hash.as_deref() == Some(hash.to_string().as_str())
         }
-        RestoreCode::GlobalAccount { account_id } => {
-            account.global_contract_account_id.as_ref() == Some(account_id)
-        }
     })
 }
 

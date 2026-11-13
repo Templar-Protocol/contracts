@@ -82,11 +82,13 @@ preserves each method's validation and result ordering, not a shared block or an
 atomic snapshot; the scripts still recheck every financial precondition.
 
 The initial market, dependency and oracle snapshots freeze resolved effective
-code hashes as well as account linkage. A global-account provider changing code
-after a configuration patch is still drift; the confirmed patch does not reset
-that baseline. Full token metadata is rechecked for changed roles, unchanged
-roles and scoped dependencies before preparing swap or resume proposals, at
-financial write boundaries, during reconciliation and on completed-run checks.
+code hashes as well as account linkage. Acceptance supports locally deployed
+contracts and immutable global-hash linkage only, not mutable global-account
+publishers. Code or linkage changes after a configuration patch remain drift;
+the confirmed patch does not reset that baseline. Full token metadata is
+rechecked for changed roles, unchanged roles and scoped dependencies before
+preparing swap or resume proposals, at financial write boundaries, during
+reconciliation and on completed-run checks.
 
 For one market, preparation also accepts `--market`, `--borrow-asset` and
 `--collateral-asset` with the shared campaign file. They conflict with an authored

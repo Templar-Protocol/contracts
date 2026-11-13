@@ -698,7 +698,7 @@ fn decode_bytes(value: &toml::Value, base: &Path) -> Result<Vec<u8>> {
     ChangedRoles::Both,
     TokenMode::Mt,
     TokenMode::Ft,
-    RestoreMode::GlobalAccount,
+    RestoreMode::GlobalHash,
     "transaction",
     false,
     false
@@ -716,7 +716,7 @@ fn decode_bytes(value: &toml::Value, base: &Path) -> Result<Vec<u8>> {
     ChangedRoles::Both,
     TokenMode::Mt,
     TokenMode::Mt,
-    RestoreMode::GlobalAccount,
+    RestoreMode::GlobalHash,
     "delegate-action",
     true,
     false
@@ -1779,7 +1779,7 @@ async fn requires_sandbox_scripts_drift_while_signature_waits_blocks_approved_pa
 ) -> Result<()> {
     let mut fixture = MigrationFixture::new(MigrationOptions {
         restore: if drift == "restore" {
-            RestoreMode::GlobalAccount
+            RestoreMode::GlobalHash
         } else {
             RestoreMode::Local
         },
@@ -1848,18 +1848,20 @@ async fn requires_sandbox_scripts_drift_while_signature_waits_blocks_approved_pa
             );
         }
         "restore" => {
-            let publisher = market["account_identity"]["global_contract_account_id"]
-                .as_str()
-                .context("global-account restore publisher")?
-                .parse()?;
-            Contract::deploy_global_contract_code(
-                templar_gateway_testing::wasm::mock_signer().await.to_vec(),
-            )
-            .as_account_id(publisher)
-            .with_signer(templar_gateway_testing::test_signer())
-            .send_to(&fixture.seeded.harness.network)
-            .await?
-            .assert_success();
+            Contract::deploy(controlled.0.clone())
+                .use_code(
+                    templar_gateway_testing::wasm::released(
+                        templar_gateway_testing::ArtifactId::Market,
+                        "1.6.1",
+                    )
+                    .await,
+                )
+                .without_init_call()
+                .with_signer(templar_gateway_testing::test_signer())
+                .wait_until(templar_gateway_core::FinalityPolicy::Final.transaction_status())
+                .send_to(&fixture.seeded.harness.network)
+                .await?
+                .assert_success();
         }
         "blob" => {
             let report = driver.run.join(
@@ -1895,7 +1897,7 @@ async fn requires_sandbox_scripts_drift_while_signature_waits_blocks_approved_pa
     fixture.approve_pending(&driver.run).await?;
     driver.handoff(&fixture)?;
     driver.assert_blocked(&fixture, "03-patch", 20).await?;
-    if !matches!(drift, "code" | "restore") {
+    if drift != "code" {
         ensure!(
             read(
                 &fixture,
@@ -2756,9 +2758,7 @@ async fn requires_sandbox_scripts_actual_spent_conversion_signature_cannot_be_re
 async fn requires_sandbox_scripts_one_diverged_cohort_member_blocks_shared_feed_resume(
 ) -> Result<()> {
     let mut fixture = MigrationFixture::new(MigrationOptions::default()).await?;
-    fixture
-        .add_shared_market(RestoreMode::GlobalAccount)
-        .await?;
+    fixture.add_shared_market(RestoreMode::GlobalHash).await?;
     let mut driver = Driver::new(&fixture, "transaction")?;
     driver.through(&mut fixture, "03-patch").await?;
     let peer = &fixture.additional_markets[0];
@@ -3371,239 +3371,6 @@ async fn requires_sandbox_scripts_partial_pause_preserves_checkpoint_across_exte
         ensure!(breaker["is_manually_tripped"] == expected);
     }
     Ok(())
-}
-
-#[rstest::rstest]
-#[case::market_provider(false)]
-#[case::oracle_provider(true)]
-#[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one provider-update timeline binds unchanged behavior and state to effective-code drift"
-)]
-async fn requires_sandbox_scripts_effective_provider_code_after_patch(
-    #[case] oracle: bool,
-) -> Result<()> {
-    let mut fixture = MigrationFixture::new(MigrationOptions {
-        restore: RestoreMode::GlobalAccount,
-        ..MigrationOptions::default()
-    })
-    .await?;
-    let (target, publisher, mut code) = if oracle {
-        let code = read(
-            &fixture,
-            "account.getCode",
-            json!({"account_id":fixture.proxy}),
-        )
-        .await?;
-        let code = STANDARD.decode(code.as_str().context("oracle WASM")?)?;
-        let (publisher, signer) = fixture
-            .seeded
-            .harness
-            .create_account_via_tx("oracle-global-provider", NearToken::from_near(100))
-            .await?;
-        Contract::deploy_global_contract_code(code.clone())
-            .as_account_id(publisher.clone())
-            .with_signer(signer)
-            .wait_until(templar_gateway_core::FinalityPolicy::Final.transaction_status())
-            .send_to(&fixture.seeded.harness.network)
-            .await?
-            .assert_success();
-        Contract::deploy(fixture.proxy.clone())
-            .use_global_account_id(publisher.clone())
-            .without_init_call()
-            .with_signer(templar_gateway_testing::test_signer())
-            .wait_until(templar_gateway_core::FinalityPolicy::Final.transaction_status())
-            .send_to(&fixture.seeded.harness.network)
-            .await?
-            .assert_success();
-        // Back the real global-linked state, not the much larger local WASM.
-        // A predictor that localizes code must not reject this valid oracle.
-        let actor = ManagedAccountId(fixture.proxy.clone());
-        let spendable = fixture
-            .seeded
-            .harness
-            .client()?
-            .read(account::GetSpendableBalance {
-                account_id: fixture.proxy.clone(),
-            })
-            .await?;
-        fixture::finalize(
-            &fixture.seeded.harness,
-            &actor.0,
-            &fixture
-                .seeded
-                .harness
-                .execute(
-                    &actor,
-                    tx::Transfer {
-                        receiver_id: fixture.outsider.0.clone(),
-                        amount: spendable
-                            .checked_sub(NearToken::from_millinear(500))
-                            .context("global oracle spendable reserve")?,
-                    },
-                )
-                .await?,
-        )
-        .await?;
-        (fixture.proxy.clone(), publisher, code)
-    } else {
-        let target = fixture.seeded.market.market_id.clone();
-        let publisher = identity(&fixture, target.as_str()).await?["global_contract_account_id"]
-            .as_str()
-            .context("market global provider")?
-            .parse()?;
-        let code = templar_gateway_testing::wasm::released(
-            templar_gateway_testing::ArtifactId::Market,
-            "1.6.1",
-        )
-        .await;
-        (target, publisher, code)
-    };
-    // Publishing global code burns its storage fee on every publication.
-    fixture::finalize(
-        &fixture.seeded.harness,
-        &fixture.outsider.0,
-        &fixture
-            .seeded
-            .harness
-            .execute(
-                &fixture.outsider,
-                tx::Transfer {
-                    receiver_id: publisher.clone(),
-                    amount: NearToken::from_near(50),
-                },
-            )
-            .await?,
-    )
-    .await?;
-    let mut driver = Driver::new(&fixture, "transaction")?;
-    driver.through(&mut fixture, "03-patch").await?;
-    let intent = driver.intent()?;
-    let market = &intent["markets"][0];
-    let account = market["account"].as_str().context("market account")?;
-    let before_identity = identity(&fixture, target.as_str()).await?;
-    let before_storage = raw_storage(&fixture.seeded.harness, &target).await?;
-    let market_storage = raw_storage(&fixture.seeded.harness, &account.parse()?).await?;
-    let configuration = read(
-        &fixture,
-        "market.getConfiguration",
-        json!({"market_id":account}),
-    )
-    .await?;
-    let keys = read(
-        &fixture,
-        "account.listAccessKeys",
-        json!({"account_id":account}),
-    )
-    .await?;
-    let mut inventories = Vec::new();
-    for role in market["roles"].as_array().context("roles")? {
-        for side in ["old_reference", "new_reference"] {
-            let reference = role[side].clone();
-            inventories.push((
-                reference.clone(),
-                balance(&fixture, &reference, account).await?,
-            ));
-        }
-    }
-    let mut hashes = Vec::new();
-    for changed in [false, true] {
-        if changed {
-            // A valid custom section changes bytes, not executable behavior.
-            code.extend_from_slice(&[0, 2, 1, b'x']);
-            Contract::deploy_global_contract_code(code.clone())
-                .as_account_id(publisher.clone())
-                .with_signer(templar_gateway_testing::test_signer())
-                .wait_until(templar_gateway_core::FinalityPolicy::Final.transaction_status())
-                .send_to(&fixture.seeded.harness.network)
-                .await?
-                .into_result()
-                .context("redeploy behavior-preserving global provider code")?;
-        }
-        let expected_hash = format!("{:x}", sha2::Sha256::digest(&code));
-        // Global code distribution can follow the publisher's finalized receipt.
-        // Observe the actual target code before testing admission against drift.
-        let report = 'visible: {
-            for observation in 0..20 {
-                let out = driver
-                    .root
-                    .join(format!("provider-{changed}-{observation}.toml"));
-                let exported = cli(
-                    &fixture,
-                    &[
-                        "patch",
-                        "export",
-                        target.as_str(),
-                        "--out",
-                        out.to_str().context("export")?,
-                    ],
-                    None,
-                )
-                .await?;
-                ensure!(
-                    exported.status.success(),
-                    "provider export: {}",
-                    String::from_utf8_lossy(&exported.stderr)
-                );
-                let report: Value = serde_json::from_slice(&exported.stdout)?;
-                if report["effective_code_sha256"] == expected_hash {
-                    break 'visible report;
-                }
-                ensure!(
-                    changed,
-                    "initial effective provider code differs: observed={}, expected={expected_hash}",
-                    report["effective_code_sha256"]
-                );
-                fixture.seeded.harness.fast_forward(1).await?;
-            }
-            bail!("global provider publication never became visible: expected {expected_hash}");
-        };
-        hashes.push(
-            report["effective_code_sha256"]
-                .as_str()
-                .context("effective code hash")?
-                .to_owned(),
-        );
-    }
-    ensure!(
-        hashes[0] != hashes[1],
-        "provider update did not change effective WASM"
-    );
-    ensure!(
-        identity(&fixture, target.as_str()).await? == before_identity,
-        "provider linkage changed"
-    );
-    ensure!(
-        raw_storage(&fixture.seeded.harness, &target).await? == before_storage,
-        "provider update changed storage"
-    );
-    driver.assert_blocked(&fixture, "04-swap", 20).await?;
-    ensure!(
-        raw_storage(&fixture.seeded.harness, &account.parse()?).await? == market_storage
-            && read(
-                &fixture,
-                "market.getConfiguration",
-                json!({"market_id":account})
-            )
-            .await?
-                == configuration
-            && read(
-                &fixture,
-                "account.listAccessKeys",
-                json!({"account_id":account})
-            )
-            .await?
-                == keys,
-        "effective-code guard changed market state, configuration or keys"
-    );
-    for (reference, expected) in inventories {
-        ensure!(
-            balance(&fixture, &reference, account).await? == expected,
-            "effective-code drift allowed inventory movement"
-        );
-    }
-    assert_manual(&fixture, true).await
 }
 
 /// Mutate the real FT fixture's native metadata entry, not any manager output.

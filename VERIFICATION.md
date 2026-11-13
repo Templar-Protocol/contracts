@@ -17,10 +17,49 @@ The approved full-matrix environment is the repository's CI-standard
 `NEAR_SANDBOX_BLOCK_MS=120`, with serialized node cases. Actual chain validity and
 expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
 
-## Post-merge configuration-patch refresh
+## Latest review fixes: local code and GlobalHash only
 
-The replacement second layer is [PR723](https://github.com/Templar-Protocol/contracts/pull/723),
-head `a77da4a1381bf52c61612fe429beb20313309992`, based on `dev` at
+PR723 head `3de9e7f7a578d831ab7fdcb9fdbf7057196d07b6` contains the final
+supported-mode decision: only normal local code and immutable GlobalHash are
+accepted. Mutable global-account targets, restoration plans and publisher replay
+paths are removed, including the former unpinned generic path. Existing schema-3
+local/hash encodings remain unchanged; old mutable-mode plans fail closed.
+
+Shared configuration validation now rejects aggregate yield weights above
+`u16::MAX`. The overflow regression failed before the fix; maximum valid totals
+still pass. No configuration/storage/event layout changed.
+
+| Focused current verification | Observed result |
+|---|---|
+| `just test-fast -p templar-common --lib` | 321 passed |
+| `just test-fast -p templar-manager patch --no-fail-fast` | 205 passed |
+| `cargo clippy -p templar-common -p templar-manager --all-targets -- -D warnings` | Passed; existing unknown-lint warning only |
+| `cargo check --offline -p templar-manager --all-targets --features asset-migration-acceptance` | Combined stack passed |
+
+The following three cases passed with configuration dispatch temporarily routed
+through the actual rebuilt CLI; the original test helper was restored:
+
+```sh
+NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager \
+  requires_sandbox_config_patch_rejects_mutable_global_account \
+  requires_sandbox_config_patch_invalid_documents_publish_nothing \
+  requires_sandbox_config_patch_generic_global_restore \
+  --test-threads 1 --no-fail-fast --success-output final
+```
+
+They prove mutable-target refusal for generated and pinned/unpinned generic
+patches without outputs or account mutation, overflow rejection, and successful
+immutable-hash generation/replay/apply. Campaign fixtures now use only Local or
+GlobalHash. Mutable-publisher-only cases were removed; distinct token, role,
+pause, cohort and immutable-linkage drift coverage remains. The full one-off
+campaign runtime matrix was not rerun for this cutover. Current-head CI and
+Royal's review remain separate gates.
+
+## Historical initial post-merge configuration-patch refresh
+
+The initial replacement second-layer checkpoint was
+[PR723](https://github.com/Templar-Protocol/contracts/pull/723) at
+`a77da4a1381bf52c61612fe429beb20313309992`, based on `dev` at
 `4cb16898ccd39a55dd89c32f33a33449b650da6d` (merged PR713 plus PR721).
 The third and fourth layers contain only their unique changes above that parent;
 no published history was force-pushed.

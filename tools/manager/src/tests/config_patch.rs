@@ -496,7 +496,6 @@ async fn generate(seeded: &SeededMarket, changes: &Value, output: &Path) -> Resu
 enum RestoreFixture {
     Local,
     GlobalHash,
-    GlobalAccount,
 }
 
 enum PatchScenario {
@@ -611,21 +610,6 @@ async fn exercise_patch(restore: RestoreFixture, scenario: PatchScenario) -> Res
             .await;
             let hash = harness.deploy_global_contract(code).await?;
             Some(GlobalContractIdentifierInput::CodeHash(hash.into()))
-        }
-        RestoreFixture::GlobalAccount => {
-            let publisher = harness.create_user("layout-publisher").await?;
-            let code = templar_gateway_testing::wasm::released(
-                templar_gateway_testing::ArtifactId::Market,
-                RELEASE,
-            )
-            .await;
-            Contract::deploy_global_contract_code(code)
-                .as_account_id(publisher.0.clone())
-                .with_signer(templar_gateway_testing::test_signer())
-                .send_to(&harness.network)
-                .await?
-                .assert_success();
-            Some(GlobalContractIdentifierInput::AccountId(publisher.0))
         }
     };
     if let Some(contract_identifier) = global {
@@ -815,17 +799,122 @@ async fn requires_sandbox_config_patch_generic_global_restore() -> Result<()> {
 }
 
 #[tokio::test]
-async fn requires_sandbox_config_patch_assets_global_account_restore() -> Result<()> {
-    exercise_patch(RestoreFixture::GlobalAccount, PatchScenario::Assets).await
+#[allow(
+    clippy::too_many_lines,
+    reason = "one refusal lifecycle checks generation, pinned/unpinned planning and full-account non-mutation"
+)]
+async fn requires_sandbox_config_patch_rejects_mutable_global_account() -> Result<()> {
+    use templar_gateway_methods_spec::account;
+
+    async fn checkpoint(harness: &SandboxHarness, account_id: &AccountId) -> Result<Value> {
+        let client = templar_gateway_client::Client::builder(harness.network.clone())
+            .finality_policy(templar_gateway_core::FinalityPolicy::Final)
+            .build()?;
+        Ok(json!({
+            "account":client.read(account::Get { account_id: account_id.clone() }).await?,
+            "keys":client.read(account::ListAccessKeys { account_id: account_id.clone() }).await?,
+            "storage":client.read(account::ViewState {
+                account_id: account_id.clone(), prefix: Base64Bytes(Vec::new())
+            }).await?
+        }))
+    }
+
+    let seeded = SeededMarket::new().await?;
+    let harness = &seeded.harness;
+    let account_id = &seeded.market.market_id;
+    let original = snapshot(harness, account_id).await?;
+    let publisher = harness.create_user("layout-publisher").await?;
+    Contract::deploy_global_contract_code(original.code.clone())
+        .as_account_id(publisher.0.clone())
+        .with_signer(templar_gateway_testing::test_signer())
+        .send_to(&harness.network)
+        .await?
+        .assert_success();
+    let linked = harness
+        .execute(
+            &ManagedAccountId(account_id.clone()),
+            tx::Batch {
+                receiver_id: account_id.clone(),
+                actions: vec![ActionInput::UseGlobalContract {
+                    contract_identifier: GlobalContractIdentifierInput::AccountId(
+                        publisher.0.clone(),
+                    ),
+                }],
+            },
+        )
+        .await?;
+    finalize(harness, account_id, &linked).await?;
+    harness.fast_forward(10).await?;
+    let before = checkpoint(harness, account_id).await?;
+    assert_eq!(
+        before["account"]["global_contract_account_id"],
+        json!(publisher.0)
+    );
+    let dir = OutputDir::new()?;
+    let output = dir.0.join("refused.toml");
+    generate(
+        &seeded,
+        &json!([{"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"}]),
+        &output,
+    )
+    .await
+    .expect_err("configuration generation must reject mutable global code");
+    assert!(!output.exists());
+    assert!(!dir.0.join("refused.blobs").exists());
+
+    // A manually authored generic patch must not bypass refusal by omitting
+    // the optional code-hash precondition.
+    for pinned in [false, true] {
+        let spec = dir.0.join(format!("generic-{pinned}.toml"));
+        let plan = dir.0.join(format!("generic-{pinned}.plan.json"));
+        let checks = if pinned {
+            json!([{"code_hash":templar_gateway_types::CryptoHash::from(
+                near_api::types::CryptoHash::hash(&original.code)
+            )}])
+        } else {
+            json!([])
+        };
+        let authored: crate::spec::patch::PatchSpec = serde_json::from_value(json!({
+            "schema":3,"account_id":account_id,
+            "op":[{
+                "op":"set","key":{"utf8":"STATE"},
+                "value":{"base64":STANDARD.encode(state(&original)?)},
+                "expect":{"hash":sha256(state(&original)?)}
+            }],
+            "check":checks
+        }))?;
+        std::fs::write(&spec, toml::to_string(&authored)?)?;
+        dispatch(
+            harness,
+            &[
+                "patch".into(),
+                "plan".into(),
+                spec.display().to_string(),
+                "--out".into(),
+                plan.display().to_string(),
+                "--signer-id".into(),
+                account_id.to_string(),
+                "--public-key".into(),
+                templar_gateway_testing::test_secret_key()?
+                    .public_key()
+                    .to_string(),
+            ],
+        )
+        .await
+        .expect_err("generic planning must reject mutable global code");
+        assert!(!plan.exists());
+    }
+    let after = checkpoint(harness, account_id).await?;
+    assert_eq!(
+        after, before,
+        "refusal must not mutate account, keys or raw storage"
+    );
+    Ok(())
 }
 
 #[tokio::test]
 async fn requires_sandbox_config_patch_receipt_guard_rolls_back_storage_and_code() -> Result<()> {
-    for restore in [
-        RestoreFixture::Local,
-        RestoreFixture::GlobalHash,
-        RestoreFixture::GlobalAccount,
-    ] {
+    for restore in [RestoreFixture::Local, RestoreFixture::GlobalHash] {
         exercise_patch(restore, PatchScenario::GuardMismatch).await?;
     }
     Ok(())
@@ -843,6 +932,7 @@ async fn requires_sandbox_config_patch_invalid_documents_publish_nothing() -> Re
         json!([{"op":"replace","path":"/protocol_account_id/child","value":"bad.test.near"}]),
         json!([{"op":"replace","path":"","value":{}}]),
         json!([{"op":"replace","path":"/borrow_mcr_maintenance","value":"0"}]),
+        json!([{"op":"replace","path":"/yield_weights","value":{"supply":u16::MAX,"static":{"recipient.near":1}}}]),
         json!([{"op":"replace","path":"/time_chunk_configuration","value":{"duration_ms":"2000"}}]),
         json!([{"op":"replace","path":"/borrow_interest_rate_strategy","value":{"Linear":{"base":"0.1","top":"0.2"}}}]),
         json!([{"op":"remove","path":"/protocol_account_id"}]),

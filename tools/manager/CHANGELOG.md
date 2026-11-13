@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changing normal harness defaults or unknown-outcome refusal.
 - Recheck full frozen cohort metadata at read-only swap/resume boundaries and
   during reconciliation, including unchanged dependencies and completed runs.
+- Restrict patch targets and restoration to local code and immutable global code
+  hashes. Reject mutable publisher-account targets even for unpinned generic
+  patches, and reject old `global_account` restoration plans.
 
 ### Added
 

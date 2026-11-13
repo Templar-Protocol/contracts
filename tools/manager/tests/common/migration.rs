@@ -61,7 +61,6 @@ pub enum RestoreMode {
     #[default]
     Local,
     GlobalHash,
-    GlobalAccount,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -743,24 +742,8 @@ async fn configure_restore(
         released_market::RELEASE,
     )
     .await;
-    let deploy = match mode {
-        RestoreMode::Local => unreachable!(),
-        RestoreMode::GlobalHash => Contract::deploy(market.0.clone())
-            .use_global_hash(harness.deploy_global_contract(bytes).await?),
-        RestoreMode::GlobalAccount => {
-            let (publisher, signer) = harness
-                .create_account_via_tx("migration-global", NearToken::from_near(100))
-                .await?;
-            Contract::deploy_global_contract_code(bytes)
-                .as_account_id(publisher.clone())
-                .with_signer(signer)
-                .send_to(&harness.network)
-                .await?
-                .assert_success();
-            Contract::deploy(market.0.clone()).use_global_account_id(publisher)
-        }
-    };
-    deploy
+    Contract::deploy(market.0.clone())
+        .use_global_hash(harness.deploy_global_contract(bytes).await?)
         .without_init_call()
         .with_signer(templar_gateway_testing::test_signer())
         .wait_until(TEST_FINALITY_POLICY.transaction_status())

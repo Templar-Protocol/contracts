@@ -120,6 +120,10 @@ pub async fn fetch_complete_state(
                 .await
                 .with_context(|| format!("fetch account {account_id} at {block_hash}"))?;
             ensure_block(account.block_hash, block_hash, "account")?;
+            ensure!(
+                !matches!(account.data.contract_state, ContractState::GlobalAccountId(_)),
+                "patch target {account_id} uses an unsupported mutable global contract publisher; only local code and immutable global code hashes are supported"
+            );
 
             let contract = account_contract(&account.data.contract_state);
             let code = fetch_code(
@@ -192,12 +196,9 @@ async fn fetch_code(
             .fetch_from(network)
             .await
             .with_context(|| format!("fetch global code {hash} at {block_hash}"))?,
-        ContractState::GlobalAccountId(publisher) => Contract::global_wasm()
-            .by_account_id(publisher.clone())
-            .at(Reference::AtBlockHash(block_hash))
-            .fetch_from(network)
-            .await
-            .with_context(|| format!("fetch global code from {publisher} at {block_hash}"))?,
+        ContractState::GlobalAccountId(_) => {
+            bail!("mutable global contract publishers are unsupported patch targets")
+        }
         ContractState::LocalHash(_) => Account(account_id.clone())
             .as_contract()
             .wasm()
