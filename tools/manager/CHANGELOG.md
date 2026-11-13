@@ -23,9 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact no-mutation checkpoints; optimistic height advancement is not finality.
 - Measure exact signed transport length without allocating a second wire buffer;
   raw broadcast validates the actual signed transport without rebuilding a duplicate estimate.
+- Preserve structured MT asset components without string coercion or reinterpreting
+  an invalid account suffix as part of the token ID. Opaque token IDs retain colons.
+- Retain original transaction outcomes in long local campaign fixtures without
+  changing normal harness defaults or unknown-outcome refusal.
+- Recheck full frozen cohort metadata at read-only swap/resume boundaries and
+  during reconciliation, including unchanged dependencies and completed runs.
 
 ### Added
 
+- `read-batch --json` / `--json-file` executes canonical gateway reads with at
+  most four calls in flight and returns a bare array in input order. Batch
+  items reject unknown fields and write methods; any error fails the command
+  without publishing a partial result. Reads are not an atomic or block-pinned
+  snapshot.
 - Read-only `market generate-patch config` authors guarded schema-3 configuration
   patches from a complete finalized snapshot, with exact released-layout admission,
   opaque-state preservation, typed validation, and review artifacts.
@@ -40,15 +51,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on failed or unknown submission outcomes.
 - Optional `dao mpc show --plan` and `--expected-description` bind a review to
   its exact source and requested text without requiring unspent live state.
+- Paired `dao mpc show --tx-hash` / `--tx-signer` verifies the original
+  signature-bearing vote against the frozen payload, including historical
+  recovery after nonce consumption or expiry.
+- Read-only `proxy-oracle predict-manual-trip` replays exact finalized WASM and
+  complete storage in an isolated sandbox to certify the expected raw-state
+  transition before a manual-trip approval.
+- Snapshot exports include the resolved effective code SHA-256, including
+  globally linked code, without changing the schema-3 patch plan.
 - Raw MPC lifetime follows the chain's live transaction-validity period; source
   checks precede block pinning and execution rechecks the inclusion bound without
   changing approved bytes.
+- Fixed-stage controlled local asset migration scripts freeze immutable campaign
+  intent, use DAO/governance and source-bound MPC approvals, and reconcile actual
+  resolver receipts, inventories, accounting and cached prices across restarts.
+  Production submissions remain disabled pending real converter semantics and
+  intermediate-state safety admission.
 
 ### Changed
 
 - **Breaking:** move every top-level `mpc` command to `dao mpc`, without aliases.
 - **Breaking:** `dao mpc propose`, `relay`, and `broadcast` require one `--plan`
   containing the exact ordinary transaction or guarded, stamped schema-3 patch.
+- Keep one-off script/converter acceptance behind the opt-in
+  `asset-migration-acceptance` feature rather than extending the normal CI gate.
+- Avoid temporary JSON and Borsh buffers during configuration decoding and
+  source-plan hashing without changing patch or approved-digest encodings.
 
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 

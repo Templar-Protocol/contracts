@@ -24,6 +24,7 @@ struct ExportReport {
     spec: PathBuf,
     blobs: PathBuf,
     entries: usize,
+    effective_code_sha256: String,
 }
 
 pub(super) async fn export(ctx: CliContext, args: Export) -> Result<()> {
@@ -84,6 +85,7 @@ pub(super) async fn export(ctx: CliContext, args: Export) -> Result<()> {
         spec: args.out,
         blobs: blob_dir,
         entries: state.entries.len(),
+        effective_code_sha256: hex::encode(Sha256::digest(&state.code)),
     })
 }
 

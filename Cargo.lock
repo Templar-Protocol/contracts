@@ -5939,6 +5939,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mock-asset-converter"
+version = "0.0.0"
+dependencies = [
+ "getrandom 0.2.17",
+ "near-sdk",
+ "templar-common",
+]
+
+[[package]]
 name = "mock-dao"
 version = "1.2.1"
 dependencies = [

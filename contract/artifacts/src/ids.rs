@@ -77,10 +77,11 @@ pub enum ArtifactId {
     MockReceiver,
     MockSigner,
     MockDao,
+    MockAssetConverter,
 }
 
 impl ArtifactId {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Registry,
         Self::Market,
         Self::Vault,
@@ -98,6 +99,7 @@ impl ArtifactId {
         Self::MockReceiver,
         Self::MockSigner,
         Self::MockDao,
+        Self::MockAssetConverter,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -123,6 +125,7 @@ impl ArtifactId {
             Self::MockReceiver => &MOCK_RECEIVER_METADATA,
             Self::MockSigner => &MOCK_SIGNER_METADATA,
             Self::MockDao => &MOCK_DAO_METADATA,
+            Self::MockAssetConverter => &MOCK_ASSET_CONVERTER_METADATA,
         }
     }
 
@@ -547,6 +550,12 @@ static MOCK_RECEIVER_METADATA: ArtifactMetadata = entry!(
 static MOCK_SIGNER_METADATA: ArtifactMetadata =
     entry!(MockSigner, "mock-signer", "mock_signer", "mock/signer");
 static MOCK_DAO_METADATA: ArtifactMetadata = entry!(MockDao, "mock-dao", "mock_dao", "mock/dao");
+static MOCK_ASSET_CONVERTER_METADATA: ArtifactMetadata = entry!(
+    MockAssetConverter,
+    "mock-asset-converter",
+    "mock_asset_converter",
+    "mock/asset-converter"
+);
 
 static SOROBAN_PROXY_ORACLE_METADATA: SorobanArtifactMetadata = SorobanArtifactMetadata {
     id: SorobanArtifactId::ProxyOracle,

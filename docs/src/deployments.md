@@ -754,3 +754,14 @@ impersonate a DAO after handoff: subsequent upgrades are direct DAO proposals.
 Registry-DAO proposal tooling must expose an explicit action-gas override before
 live rollout. Gateway/tmplrmgr upload/approval UX and removal of legacy
 `PublishGlobal` are separate follow-ups; this rollout does not depend on them.
+
+## Controlled local asset migration
+
+The fixed eight-stage procedure and campaign format are documented in
+[`script/asset-migration/README.md`](../../script/asset-migration/README.md).
+It uses ordinary Sputnik approvals, proxy governance, guarded native patch
+plans and plan-bound MPC execution; it does not implement a production bridge.
+Production submissions remain disabled until converter semantics and safe
+intermediate-state admission are available. Oracle pause alone is not market
+isolation. Exercised evidence and claim scope are maintained in
+[`VERIFICATION.md`](../../VERIFICATION.md).
