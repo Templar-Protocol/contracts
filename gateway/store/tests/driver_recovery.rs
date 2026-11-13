@@ -772,7 +772,10 @@ impl OperationStore for UnloadableStore {
     }
 
     async fn list_incomplete_operation_ids(&self) -> GatewayResult<Vec<OperationId>> {
-        self.inner.list_incomplete_operation_ids().await
+        let mut operation_ids = self.inner.list_incomplete_operation_ids().await?;
+        // Always exercise continuation after the failed load, regardless of map order.
+        operation_ids.sort_unstable_by_key(|operation_id| operation_id != &self.unloadable);
+        Ok(operation_ids)
     }
 }
 
