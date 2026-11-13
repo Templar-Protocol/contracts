@@ -12,6 +12,16 @@ Use `just test-fast` for the complete non-node gate, including non-node
 integration targets, or `just test-sandbox` for the node-backed gate. The sandbox recipe prebuilds NEAR contracts before
 starting its pooled `neard` instances; pass `--stale` to reuse the contracts already built into `target/near`.
 
+The full prebuild provisions the hash-pinned Sputnik DAO fixture archived from
+mainnet `templar.sputnik-dao.near` (version `2.3.1`).
+`just fetch-sputnik-fixture` downloads the fixed GitHub Release asset through the
+shared Rust artifact downloader; cold provisioning requires Python 3.11+ and Cargo.
+`just fetch-sputnik-fixture --check` verifies warm bytes offline, and `--refetch`
+downloads again under the same pins. The original account/code hash is provenance,
+not a dependency on current mainnet state. See
+[the fixture provisioning guide](https://github.com/Templar-Protocol/contracts/blob/dev/contract/artifacts/README.md#pinned-external-sputnik-dao-fixture)
+for enforced pins, cache behavior and publication policy.
+
 Run the artifact drift check separately when validating the release catalog —
 pure in-memory invariant checks, no builds:
 
@@ -102,3 +112,17 @@ Because local blocks are faster than CI's, a test that leans on *incidental*
 block cadence to cross a time boundary will pass in one place and fail in the
 other. Advance chain time explicitly with `fast_forward` rather than relying on
 how long some operations happen to take.
+
+### Sandbox State Patches
+
+The workspace pins `near-sandbox = "=0.3.11"` so pooled nodes, owned harnesses,
+and native replay all launch nearcore **2.12.0**. This is the first stable release
+containing [the commit-aware patch tracker](https://github.com/near/nearcore/pull/15534).
+Nearcore 2.11.0 and 2.11.1 can permanently discard a patch during block
+preprocessing or an old-chunk transition while acknowledging its consumption.
+Polling longer cannot recover a discarded patch; do not compensate by resending
+records or relaxing finalized-state checks.
+
+The pinned RPC waits for committed state, not finalized visibility. Continue
+waiting for the patched key or exact metadata to reach `Final` before signing
+or capturing a replay checkpoint.

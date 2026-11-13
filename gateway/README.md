@@ -68,12 +68,122 @@ Methods in the same namespace should stay at roughly the same level of abstracti
 - `storage.*`: NEP-145 standard operations
 - `artifact.*`: contract artifact (WASM byte) operations across the artifact catalog and `registry.addArtifactVersion`
 - `registry.*`, `market.*`, `ua.*`: protocol/domain-specific operations
+- `dao.*`: typed Sputnik policy reads and proposal submission
 
 ## Guidance
 
 - Prefer a domain namespace over a low-level namespace when the method represents a standard or protocol concept.
 - For token transfers and balances where the token standard is not fixed at the call site (e.g. an asset that may be NEP-141 or NEP-245), prefer the standard-agnostic `token.*` methods over `ft.*`/`mt.*`. They dispatch on the standard internally, so a caller cannot pick the wrong one.
 - A method must not carry an opaque payload when this codebase has types for it. Give it typed fields; leave the passthrough to the one designated escape-hatch method per namespace (`registry.deploy` for deploys, `contract.viewFunction` for reads). A command with typed args for some inputs and passthrough for others belongs on the typed method — the passthrough case is the escape hatch's.
+
+## Sputnik DAO Proposals
+
+`dao.getPolicy { dao_id }` returns the native policy; `dao.getProposal { dao_id, id }`
+returns the flattened proposal, including its ID. Policy and proposal-input types
+retain the pinned Sputnik JSON forms. The typed proposal read boundary also preserves
+the canonical deployed DAO's absent audit history alongside available modern history.
+Missing history is not an empty log. Numeric vote counts through `u64::MAX` retain
+their number representation; larger canonical counts are parsed exactly as `u128`
+and returned in the established decimal-string form. Modern decimal-string counts
+remain strings. No count is rounded through floating point, and shared JSON-number
+decoding is unchanged. JSON consumers still need lossless decoding for numeric
+counts above JavaScript's safe-integer range.
+
+`dao.addProposal { dao_id, proposal }` plans `add_proposal` with the current exact proposal bond
+and 30 Tgas. Policy preflight rejects known-ineligible proposers, including proposal-kind-specific
+permissions; delegated-token membership is left to the contract. Authorization and the bond can
+change after planning, so contract checks remain authoritative.
+Request serialization sorts group-membership and permission sets for stable
+idempotency identity; roles and action sequences retain their order.
+
+Submission success means a proposal was created, not approved or executed. Read the ID returned by
+the submission, then fetch that exact proposal. Do not derive it from a later proposal counter.
+Execution and downstream receipt success must be verified separately.
+
+`proxyOracleGovernance.createProposal` and `executeProposal` accept optional exact
+`gas` overrides. When omitted, planning budgets payload-sized governance work and
+a safety buffer; execution additionally reserves the stored target call's declared
+gas, or the authoritative self-upgrade migration gas and deployment overhead.
+Defaults leave a conservative single-call Sputnik forwarding/callback allowance
+within the live protocol cap. Defaults that do not fit are rejected, never clamped.
+Exact overrides remain available for direct or separately budgeted callers and must
+be positive and within the protocol cap. Execution overrides must also exceed the
+child reservation; creation reserves only its own work, not the future child call.
+
+Proposal creation also checks the live direct V0 transaction-size cap using the
+largest SDK-supported public key (64-byte SECP256K1). Before protocol 85 the cap
+excludes signatures; from protocol 85 the planner also reserves the serialized
+SECP256K1 signature, including its type tag. Ed25519 envelopes are smaller.
+Version and limits come from one finalized protocol configuration; missing version
+metadata fails planning. Forwarding DAO transactions have separate envelopes and
+need their own size checks.
+
+These are conservative, receipt-calibrated planning allowances, not a statistical
+99% guarantee for arbitrary DAO versions, policies, payloads or multi-action proposals.
+Already-approved child gas and transaction bytes are never rewritten. A successful
+governance receipt also does not prove detached target success; inspect child receipts.
+
+Rust SDK callers planning a create/execute sequence before governance deployment can use
+`Client<MethodsDispatch, Ctx>::plan_governance_execution(&self, request, &operation).await`.
+It accepts `WriteRequest<proxy_oracle_governance::ExecuteProposal>` and the governance-common
+`Operation`, and returns a `PlannedTransaction`. The lower-level
+`Dispatch::plan_governance_execution(request, &operation, ctx).await` is also available.
+Both use the same authoritative execution gas calculation and live protocol limits as ordinary
+execution planning, with the same exact override checks and one-yocto deposit, but do not read
+the governance account or stored proposal. Callers must bind the known immutable operation and
+proposal ID to the earlier create step; the resulting plan does not prove creation, authorization,
+or execution eligibility. Ordinary `plan_request` execution remains bound to the stored proposal
+and rejects a missing proposal.
+
+## Snapshot-Bound Market Reads
+
+Rust callers comparing a market's raw storage snapshot with its configuration can use
+`near_client.market(account).get_configuration_at(block_hash).await`. This typed read bypasses the ordinary
+configuration cache and uses the exact snapshot block rather than a newer finalized block.
+
+## Safety Inspection Reads
+
+- `account.getSpendableBalance { account_id }` returns liquid NEAR after storage
+  backing not already covered by locked stake, using the live protocol byte cost.
+  `account.get.amount` alone is not a spendable funding budget; gas and attached
+  deposits must still fit within the returned amount.
+- `chain.getIdentity` takes JSON `null` and returns the node's chain ID and actual
+  genesis block hash from `status`; it does not require archival block access.
+- `chain.getTransactionValidityPeriod` takes JSON `null` and returns a bare integer
+  validity window in blocks from the live `EXPERIMENTAL_protocol_config` response.
+  Query the selected endpoint rather than assuming mainnet/testnet defaults,
+  especially when using an RPC override.
+- `token.getMetadata { token }` uses the existing typed FT/MT token reference and
+  returns decimals plus optional name/symbol. MT identity is the complete opaque
+  token ID: missing IDs, ambiguous metadata, and absent/out-of-range decimals
+  fail rather than falling back to an embedded FT contract or inferred precision.
+- `proxyOracle.getCachedPrice { oracle_id, id, age }` reads the proxy's accepted
+  EMA cache directly. A live source does not imply a populated or usable cache;
+  clearing a manual trip still requires a successful refresh.
+- `proxyOracle.getFreshSourcePrice { oracle_id, id, age }` requires every effective
+  stored source to be present, transformable, convertible, nonfuture, and have a
+  strictly positive confidence interval. It must be fresh under both the deployed
+  filter and requested age, using a chain block timestamp read after all source
+  views. These reads are not one block-pinned
+  snapshot or an atomic guarantee about a later transaction. The method does not
+  change `oracle.getPrice` or the supplied `oracle.resolvePriceAllSources`
+  resolver's existing semantics.
+- `tx.get` includes optional original transaction inspection: reported hash,
+  signer, receiver, total action count, indexed top-level function calls, and
+  indexed canonical NEP-461 delegate payload hashes. Inner delegated calls are
+  not presented as top-level calls. Pending results have no inspection; mismatched
+  requested hash/sender metadata fails closed. Receipt success alone does not
+  establish that a transaction executed the expected proposal or signed payload.
+
+## Runtime SDK Compatibility
+
+The sandbox pin selects nearcore 2.12 for its committed state-patch repair.
+Its RPC global-contract identifiers use `hash` / `account_id`; the SDK must accept
+those tags while preserving canonical `CodeHash` / `AccountId` action JSON.
+The workspace uses the [pinned generator correction](https://github.com/Templar-Protocol/near-openapi-client-rs/commit/f96c0441dbc6c491085821a1c743fb97b58dc745)
+in its root `[patch.crates-io]` table. Until an upstream release includes this fix,
+Rust consumers outside the workspace need the same patch in their own root manifest:
+Cargo patches are not inherited by dependent workspaces.
 
 ## Local DB
 

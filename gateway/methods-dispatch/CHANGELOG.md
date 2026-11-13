@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Include the serialized signer signature in governance proposal size planning from protocol 85, retaining the unsigned transaction bound for earlier protocols.
+
 ## [0.6.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-dispatch-v0.6.0...templar-gateway-methods-dispatch-v0.6.1) - 2026-10-25
 
 ### Added

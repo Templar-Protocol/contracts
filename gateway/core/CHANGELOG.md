@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Read finalized protocol limits and their active version together without changing the `chain.getProtocolLimits` response.
+
 ## [0.5.2](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-core-v0.5.1...templar-gateway-core-v0.5.2) - 2026-10-14
 
 ### Added

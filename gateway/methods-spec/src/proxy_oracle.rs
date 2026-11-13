@@ -1,6 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::oracle::pyth::{Price, PriceIdentifier};
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::Base64Bytes;
 use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
@@ -27,6 +27,28 @@ pub struct ListProxies {
     pub oracle_id: near_account_id::AccountId,
     pub offset: Option<u32>,
     pub count: Option<u32>,
+}
+
+/// Read a proxy's accepted cached price, subject to its stored breaker state and age.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "proxyOracle.getCachedPrice", output = Option<Price>)]
+pub struct GetCachedPrice {
+    pub oracle_id: near_account_id::AccountId,
+    pub id: PriceIdentifier,
+    pub age: u64,
+}
+
+/// Resolve on-chain sources only when every transformed source has a strictly
+/// positive confidence interval and is fresh under both the deployed filter and
+/// `age` (seconds), at the chain clock. Future publications are rejected.
+/// This does not read the accepted cache or certify breaker state; it establishes
+/// all-source readiness before aggregation.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "proxyOracle.getFreshSourcePrice", output = Option<Price>)]
+pub struct GetFreshSourcePrice {
+    pub oracle_id: near_account_id::AccountId,
+    pub id: PriceIdentifier,
+    pub age: u64,
 }
 
 /// Get a proxy price feed definition.

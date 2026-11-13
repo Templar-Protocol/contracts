@@ -78,8 +78,8 @@ pub async fn patch_data(
     patch_records(network, records).await
 }
 
-/// State patches are optimistic; call [`wait_until_final`] before signing with a
-/// patched key, because near-api reads signer keys at `Final`.
+/// State patches commit before the RPC returns on the pinned sandbox release, but still need to
+/// reach `Final` before signing with a patched key, because near-api reads signer keys at `Final`.
 ///
 /// Large patches go over several requests, applied in order but not atomically: a failure leaves
 /// earlier batches applied, and only a record in the last batch reaching `Final` implies the rest

@@ -7,7 +7,7 @@ use templar_gateway_core::{
     GatewayError, {DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite},
 };
 use templar_gateway_methods_spec::account;
-use templar_gateway_types::{Base64Bytes, ContractMethodName};
+use templar_gateway_types::{Base64Bytes, ContractMethodName, NearToken};
 
 use crate::Dispatch;
 
@@ -88,6 +88,16 @@ impl<C: HasNearClient> DispatchRead<account::Get, C> for Dispatch {
             global_contract_hash,
             global_contract_account_id,
         })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<account::GetSpendableBalance, C> for Dispatch {
+    async fn dispatch(request: account::GetSpendableBalance, ctx: C) -> GatewayResult<NearToken> {
+        ctx.near_client()
+            .account()
+            .spendable_balance(request.account_id)
+            .await
     }
 }
 

@@ -21,6 +21,7 @@ reqwest.workspace = true
 rstest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sputnikdao2.workspace = true
 templar-common.workspace = true
 # `fetch` backs `wasm::released()`: migration and upgrade tests deploy the real
 # historical bytes, downloaded from each version's GitHub Release and verified

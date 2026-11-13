@@ -1,3 +1,4 @@
+use near_sdk_contract_tools::mt::{metadata::TokenMetadataAll, Token};
 use templar_primitives::SU128;
 
 use crate::client::{
@@ -6,6 +7,11 @@ use crate::client::{
 };
 
 use super::BoundContractClient;
+
+#[derive(serde::Serialize)]
+pub struct GetTokensArgs<'a> {
+    pub token_ids: &'a [&'a str],
+}
 
 #[derive(serde::Serialize)]
 pub struct GetBalanceOfArgs {
@@ -76,6 +82,8 @@ impl MtClient<'_> {
         pub fn mt_batch_balance_of(GetBatchBalanceOfArgs) -> Vec<SU128>;
         pub fn mt_supply(GetSupplyArgs) -> Option<SU128>;
         pub fn mt_batch_supply(GetBatchSupplyArgs) -> Vec<Option<SU128>>;
+        pub fn mt_token(GetTokensArgs<'_>) -> Vec<Option<Token>>;
+        pub fn mt_metadata_token_all(GetTokensArgs<'_>) -> Vec<TokenMetadataAll>;
     }
 
     contract_writes! {

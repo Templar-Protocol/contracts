@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use templar_contract_artifacts::{build_artifact, load_artifact_bytes, ArtifactId};
+use templar_contract_artifacts::{build_artifact, load_artifact_bytes, sha256_hex, ArtifactId};
 use tokio::sync::OnceCell;
 
 /// Deploy-argument shape for the mock Ref Finance exchange's `new` call and
@@ -71,6 +71,38 @@ wasm_fns! {
     vault => Vault,
     mock_signer => MockSigner,
     mock_dao => MockDao,
+}
+
+/// Exact, hash-pinned canonical Sputnik DAO fixture, not a Templar release or mock.
+///
+/// Provision with `just fetch-sputnik-fixture` (also part of the full test
+/// prebuild). Missing or modified bytes fail here rather than triggering a
+/// network fetch or silently substituting another DAO implementation.
+///
+/// # Panics
+/// If the fixture is absent or does not match its source-controlled checksum.
+pub async fn sputnik_dao() -> &'static [u8] {
+    #[derive(Deserialize)]
+    struct FixturePin {
+        wasm_sha256: String,
+    }
+
+    static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
+    WASM.get_or_init(|| async {
+        let pin: FixturePin = serde_json::from_str(include_str!("../fixtures/sputnik-dao.json"))
+            .expect("invalid Sputnik fixture metadata");
+        let path = workspace_root().join("target/test-fixtures/sputnik-dao/sputnikdao2.wasm");
+        let bytes = std::fs::read(path)
+            .expect("missing real Sputnik fixture: run just fetch-sputnik-fixture");
+        assert_eq!(
+            sha256_hex(&bytes),
+            pin.wasm_sha256,
+            "Sputnik fixture checksum mismatch: run just fetch-sputnik-fixture --refetch"
+        );
+        bytes
+    })
+    .await
+    .as_slice()
 }
 
 /// Bytes of a specific *released* version of a contract, for migration and

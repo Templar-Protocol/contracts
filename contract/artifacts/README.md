@@ -149,6 +149,53 @@ artifacts are missing from `target/near` and exit non-zero without building.
 ./script/prebuild-test-contracts.sh --artifact market,mock-ft
 ```
 
+### Pinned external Sputnik DAO fixture
+
+The complete test prebuild provisions the **real Sputnik DAO** captured from
+mainnet `templar.sputnik-dao.near` (version `2.3.1`) and archived as an
+[external fixture release](https://github.com/Templar-Protocol/contracts/releases/tag/fixture-sputnik-dao-2.3.1-3b4a563d).
+It is test data, not an `ArtifactId`, a mock, or a Templar contract release.
+Explicit `--artifact` selections
+keep building only the selected workspace contracts. The full `--check` path and
+`just test-sandbox --stale` verify the external fixture as well.
+
+```bash
+just fetch-sputnik-fixture
+just fetch-sputnik-fixture --check
+just fetch-sputnik-fixture --refetch
+```
+
+Cold provisioning requires Python 3.11+, Cargo and access to the fixed GitHub
+Release asset in `gateway/testing/fixtures/sputnik-dao.json`. It uses the shared
+Rust artifact downloader's HTTP client, bounded retries, integrity verification
+and atomic publication. No RPC query, source checkout or contract build is used.
+
+The manifest preserves the original account/code-hash provenance and pins the
+WASM length (`539647`) and SHA-256
+`3b4a563dcbfb10f004bd1f912a35df0c83a6eaade8cd8f70bc626d9ab92f19b9`.
+The exact bytes are unchanged from the chain-captured fixture. The downloader
+checks length, checksum and WASM header before atomically publishing
+`target/test-fixtures/sputnik-dao/sputnikdao2.wasm`.
+`--refetch` downloads again under the **same pins**; it cannot accept an upgrade.
+A pin change requires reviewed fixture evidence, not a command-line bypass.
+
+Warm verification is offline: the default cached path and `--check` validate
+existing bytes without invoking Cargo or using the network. Missing or
+mismatching cached bytes fail under `--check`; corruption also fails by default.
+The Wasm remains untracked and is never entered into the release catalog.
+
+The node CI job caches this file separately under the fixture manifest's hash;
+the normal Rust cache prunes non-Cargo directories under `target`. Cache restore
+never replaces checksum verification. Cold or evicted caches require the archived
+asset, not continued deployment of the original code. Published fixture assets
+are write-once: preserve old bytes and publish a new tag for any replacement.
+
+Rust sandbox tests use `wasm::sputnik_dao().await` or
+`SandboxHarness::deploy_sputnik_dao(label, policy).await`. The deployment helper
+accepts the pinned dependency's complete `sputnikdao2::Policy`, including
+multi-member groups, vote thresholds, and restricted proposer permissions.
+The loader rechecks the fixture's checksum before caching its bytes.
+
 ## Cutting a release
 
 Merging the release PR tags the version but builds nothing. Cut the WASM for a

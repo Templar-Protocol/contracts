@@ -695,6 +695,37 @@ impl SandboxHarness {
         Ok(id)
     }
 
+    /// Deploy the pinned real Sputnik DAO with the supplied complete policy.
+    ///
+    /// Use a multi-member group and an explicit vote threshold in `policy` to
+    /// exercise real proposal authorization and approval behavior.
+    pub async fn deploy_sputnik_dao(
+        &self,
+        label: &str,
+        policy: sputnikdao2::Policy,
+    ) -> Result<AccountId> {
+        let (id, signer) = self
+            .create_account(label, NearToken::from_near(100))
+            .await?;
+        deploy_contract(
+            &self.network,
+            id.clone(),
+            signer,
+            crate::wasm::sputnik_dao().await.to_vec(),
+            "new",
+            serde_json::json!({
+                "config": {
+                    "name": label,
+                    "purpose": "Gateway real Sputnik DAO integration fixture",
+                    "metadata": ""
+                },
+                "policy": policy
+            }),
+        )
+        .await?;
+        Ok(id)
+    }
+
     /// Deploy the mock Sputnik DAO with the given proposal bond and return its id.
     pub async fn deploy_mock_dao(
         &self,
@@ -992,6 +1023,7 @@ impl SandboxHarness {
                 operation,
                 requested_ttl: Nanoseconds::zero(),
                 encoding: ProposalEncoding::Json,
+                gas: None,
             },
         )
         .await?;
@@ -1000,6 +1032,7 @@ impl SandboxHarness {
             gov::ExecuteProposal {
                 governance_id: governance_id.clone(),
                 id: proposal_id,
+                gas: None,
             },
         )
         .await?;

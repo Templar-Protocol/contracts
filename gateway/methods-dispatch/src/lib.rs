@@ -2,6 +2,7 @@ mod account_impl;
 mod chain_impl;
 mod contract_abi;
 mod contract_impl;
+mod dao_impl;
 mod ft_impl;
 mod intents_impl;
 mod lazer_impl;

@@ -1,0 +1,8 @@
+{
+  "release_url": "https://github.com/Templar-Protocol/contracts/releases/download/fixture-sputnik-dao-2.3.1-3b4a563d/sputnikdao2.wasm",
+  "account_id": "templar.sputnik-dao.near",
+  "version": "2.3.1",
+  "code_hash": "4zSoHkLjJWZm34Psd4Eq2WUXHELt6LxtKmUXpsZWAECp",
+  "wasm_length": 539647,
+  "wasm_sha256": "3b4a563dcbfb10f004bd1f912a35df0c83a6eaade8cd8f70bc626d9ab92f19b9"
+}

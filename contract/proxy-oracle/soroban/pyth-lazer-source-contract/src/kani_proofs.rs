@@ -111,6 +111,7 @@ fn admission_skips_exactly_ineligible_or_unservable_feeds() {
 }
 
 #[kani::proof]
+#[kani::solver(kissat)]
 fn ingest_window_matches_exact_arithmetic() {
     let now_secs: u64 = kani::any();
     let freshness = FreshnessConfig {

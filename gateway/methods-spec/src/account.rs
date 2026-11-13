@@ -24,6 +24,13 @@ pub struct GetResult {
     pub global_contract_account_id: Option<AccountId>,
 }
 
+/// Liquid NEAR available after storage backing, using the live protocol byte cost.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "account.getSpendableBalance", output = NearToken)]
+pub struct GetSpendableBalance {
+    pub account_id: AccountId,
+}
+
 /// Fetch the deployed WASM bytes of a locally deployed contract.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(read = "account.getCode", output = Base64Bytes)]

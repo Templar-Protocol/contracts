@@ -24,3 +24,23 @@ impl<C: HasNearClient> DispatchRead<chain::GetProtocolLimits, C> for Dispatch {
         ctx.near_client().chain().protocol_limits().await
     }
 }
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<chain::GetTransactionValidityPeriod, C> for Dispatch {
+    async fn dispatch(_request: chain::GetTransactionValidityPeriod, ctx: C) -> GatewayResult<u64> {
+        ctx.near_client()
+            .chain()
+            .transaction_validity_period()
+            .await
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<chain::GetIdentity, C> for Dispatch {
+    async fn dispatch(
+        _request: chain::GetIdentity,
+        ctx: C,
+    ) -> GatewayResult<templar_gateway_types::ChainIdentity> {
+        ctx.near_client().chain().identity().await
+    }
+}
