@@ -1,10 +1,9 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use actix::Addr;
-use near_api::NetworkConfig;
 use templar_gateway_core::{
-    DispatchRead, GatewayContext, GatewayResult, HasNearClient, NearOperationExecutor,
-    NearTransactionSigner, OperationDriver, PlanWrite, PooledSigner, SharedOperationStore,
+    DispatchRead, GatewayContext, GatewayResult, HasNearClient, NearRpc, OperationDriver,
+    PlanWrite, PooledSigner, SharedOperationStore,
 };
 use templar_gateway_runtime::{
     map_mailbox_error, spawn_runtime, GatewayRuntime, ReadActor, RpcMessage,
@@ -40,19 +39,11 @@ where
         context: ContextType,
         signers: HashMap<ManagedAccountId, PooledSigner>,
         store: SharedOperationStore,
-        archival_network: Option<NetworkConfig>,
+        archival_network: Option<NearRpc>,
     ) -> GatewayResult<Self> {
         let signer_count = signers.len();
-
-        let near = context.near_client();
-        let finality_policy = near.finality_policy();
-        let signer = NearTransactionSigner::new(near.network().clone(), signers);
-        let executor = NearOperationExecutor::with_finality_policy(
-            near.network().clone(),
-            archival_network,
-            finality_policy,
-        );
-        let driver = OperationDriver::new(store, Arc::new(signer), Arc::new(executor));
+        let driver =
+            OperationDriver::for_near(context.near_client(), archival_network, signers, store);
 
         let (runtime, read) = spawn_runtime(context.clone())?;
         tracing::debug!(signer_count, "gateway service runtime initialized");

@@ -6,12 +6,12 @@ use near_api::{
         transaction::{actions::Action, PrepopulateTransaction, SignedTransaction},
         AccountId,
     },
-    NetworkConfig, PublicKey, SecretKey, Signer,
+    PublicKey, SecretKey, Signer,
 };
 use templar_gateway_types::ManagedAccountId;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-use crate::{GatewayError, GatewayResult};
+use crate::{GatewayError, GatewayResult, NearRpc};
 
 /// One pooled access key. NEAR nonces are per access key, so the guard must span
 /// nonce allocation through broadcast — hence the signer sits behind the mutex
@@ -173,7 +173,7 @@ impl SigningKeyLease {
     /// later nonce reaching the chain first invalidates this one.
     pub async fn presign(
         &self,
-        network: &NetworkConfig,
+        rpc: &NearRpc,
         receiver_id: AccountId,
         actions: Vec<Action>,
     ) -> GatewayResult<SignedTransaction> {
@@ -183,9 +183,8 @@ impl SigningKeyLease {
             actions,
         };
 
-        let (nonce, block_hash, _) = self
-            .signer
-            .fetch_tx_nonce(transaction.signer_id.clone(), self.public_key, network)
+        let (nonce, block_hash, _) = rpc
+            .fetch_tx_nonce(&self.signer, &transaction.signer_id, self.public_key)
             .await
             .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
 

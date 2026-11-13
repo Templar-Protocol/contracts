@@ -421,7 +421,7 @@ pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
         .rpc_url(cli.rpc_url.as_deref())
         .context("invalid RPC URL")?
         .api_key(cli.rpc_api_key.clone())
-        .build();
+        .build_network_config();
 
     Ok(CliContext {
         client: Client::read_only(network.clone())?,

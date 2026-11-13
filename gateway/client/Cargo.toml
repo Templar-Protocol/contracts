@@ -28,6 +28,8 @@ templar-contract-artifacts.workspace = true
 templar-gateway-artifacts-dispatch.workspace = true
 templar-gateway-artifacts-spec.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
+rstest.workspace = true
+wiremock.workspace = true
 
 [lints]
 workspace = true

@@ -26,6 +26,7 @@
 
 mod network;
 pub use network::{Network, NetworkConfigBuilder};
+pub use templar_gateway_core::NearRpc;
 
 mod pagination;
 pub use pagination::collect_paginated;
@@ -37,11 +38,11 @@ use std::{
     sync::Arc,
 };
 
-use near_api::{NetworkConfig, SecretKey};
+use near_api::SecretKey;
 use templar_gateway_core::{
     DispatchRead, FinalityPolicy, GatewayContext, GatewayError, GatewayResult, HasNearClient,
-    NearClient, NearOperationExecutor, NearTransactionSigner, OperationDriver, OperationPlan,
-    PlanWrite, PlannedTransaction, PooledSigner, SharedOperationStore,
+    NearClient, OperationDriver, OperationPlan, PlanWrite, PlannedTransaction, PooledSigner,
+    SharedOperationStore,
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
 use templar_gateway_store::MemoryStore;
@@ -59,8 +60,8 @@ use templar_gateway_types::{
 /// picks the [`OperationStore`](templar_gateway_core::OperationStore) backing
 /// idempotency/replay (an in-process [`MemoryStore`] by default).
 pub struct ClientBuilder {
-    network: NetworkConfig,
-    archival_network: Option<NetworkConfig>,
+    rpc: NearRpc,
+    archival_rpc: Option<NearRpc>,
     signers: HashMap<ManagedAccountId, PooledSigner>,
     store: SharedOperationStore,
     finality_policy: FinalityPolicy,
@@ -108,8 +109,8 @@ impl ClientBuilder {
     /// stays in flight rather than settling. Must point at a genuinely archival
     /// node.
     #[must_use]
-    pub fn archival_network(mut self, archival_network: Option<NetworkConfig>) -> Self {
-        self.archival_network = archival_network;
+    pub fn archival_network(mut self, archival_rpc: Option<NearRpc>) -> Self {
+        self.archival_rpc = archival_rpc;
         self
     }
 
@@ -129,19 +130,14 @@ impl ClientBuilder {
     pub fn build_parts(
         self,
     ) -> GatewayResult<(GatewayContext, OperationDriver, HashSet<ManagedAccountId>)> {
-        let context = GatewayContext::from_near_client(NearClient::with_finality_policy(
-            self.network.clone(),
-            self.finality_policy,
-        ));
+        let near = NearClient::with_finality_policy(self.rpc, self.finality_policy);
         let signer_account_ids = self.signers.keys().cloned().collect();
-        let signer = NearTransactionSigner::new(self.network.clone(), self.signers);
-        let executor = NearOperationExecutor::with_finality_policy(
-            self.network,
-            self.archival_network,
-            self.finality_policy,
-        );
-        let driver = OperationDriver::new(self.store, Arc::new(signer), Arc::new(executor));
-        Ok((context, driver, signer_account_ids))
+        let driver = OperationDriver::for_near(&near, self.archival_rpc, self.signers, self.store);
+        Ok((
+            GatewayContext::from_near_client(near),
+            driver,
+            signer_account_ids,
+        ))
     }
 
     /// Build the client, constructing the gateway context, signer, executor, and
@@ -188,12 +184,12 @@ impl<D, Ctx> std::fmt::Debug for Client<D, Ctx> {
 }
 
 impl Client {
-    /// Start building a client for `network`.
+    /// Start building a client for `rpc`.
     #[must_use]
-    pub fn builder(network: NetworkConfig) -> ClientBuilder {
+    pub fn builder(rpc: impl Into<NearRpc>) -> ClientBuilder {
         ClientBuilder {
-            network,
-            archival_network: None,
+            rpc: rpc.into(),
+            archival_rpc: None,
             signers: HashMap::new(),
             store: Arc::new(MemoryStore::new()),
             finality_policy: FinalityPolicy::default(),
@@ -201,8 +197,8 @@ impl Client {
     }
 
     /// Build a read-only client (no signing capability).
-    pub fn read_only(network: NetworkConfig) -> GatewayResult<Self> {
-        Self::builder(network).build()
+    pub fn read_only(rpc: impl Into<NearRpc>) -> GatewayResult<Self> {
+        Self::builder(rpc).build()
     }
 }
 
@@ -403,12 +399,12 @@ impl SigningClient {
     /// Connect a single-signer client for `account_id` from its secret key,
     /// backed by an in-process [`MemoryStore`].
     pub fn connect(
-        network: NetworkConfig,
+        rpc: impl Into<NearRpc>,
         account_id: impl Into<ManagedAccountId>,
         secret_key: SecretKey,
     ) -> GatewayResult<Self> {
         let account_id = account_id.into();
-        Client::builder(network)
+        Client::builder(rpc)
             .secret_key(account_id.clone(), secret_key)?
             .build()?
             .into_signing(account_id)
@@ -465,6 +461,11 @@ mod tests {
     use templar_gateway_types::NearToken;
 
     use super::{Client, Network, NetworkConfigBuilder};
+    use templar_gateway_methods_spec::chain::GetProtocolLimits;
+    use wiremock::{
+        matchers::{header, method},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     #[test]
     fn client_builder_defaults_to_executed_policy() {
@@ -541,5 +542,33 @@ mod tests {
             deposit: NearToken::from_yoctonear(1),
         };
         assert_plan_write::<AddArtifactVersion>();
+    }
+
+    /// Downstream services build their client this way.
+    #[tokio::test]
+    async fn a_refused_primary_key_reads_through_the_backup_key() {
+        const LIMITS: &str = r#"{"jsonrpc":"2.0","id":"0","result":{"runtime_config":{"transaction_costs":{"storage_usage_config":{"num_bytes_account":100,"num_extra_bytes_record":40}},"wasm_config":{"limit_config":{"max_transaction_size":123,"max_total_prepaid_gas":"456","max_length_storage_key":789,"max_length_storage_value":1011}}}}}"#;
+        let server = MockServer::start().await;
+        for (key, response) in [
+            ("PRIMARY", ResponseTemplate::new(402)),
+            ("BACKUP", ResponseTemplate::new(200).set_body_string(LIMITS)),
+        ] {
+            Mock::given(method("POST"))
+                .and(header("authorization", format!("Bearer {key}").as_str()))
+                .respond_with(response)
+                .mount(&server)
+                .await;
+        }
+        let rpc = NetworkConfigBuilder::from_url("test", server.uri().parse().unwrap())
+            .api_key(Some("PRIMARY".to_owned()))
+            .backup_api_key(Some("BACKUP".to_owned()))
+            .build();
+
+        let limits = Client::read_only(rpc)
+            .expect("client builds")
+            .read(GetProtocolLimits)
+            .await
+            .expect("the backup key answers");
+        assert_eq!(limits.max_transaction_size, 123);
     }
 }

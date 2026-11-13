@@ -1,0 +1,31 @@
+# Clippy reads only the nearest clippy.toml, so this repeats the root one.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+doc-valid-idents = ["RedStone"]
+
+disallowed-methods = [
+    { path = "near_api::advanced::RpcBuilder::fetch_from", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::RpcBuilder::fetch_from_mainnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::RpcBuilder::fetch_from_testnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::RpcBuilder::fetch_from_mainnet_archival", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::RpcBuilder::fetch_from_testnet_archival", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::MultiRpcBuilder::fetch_from", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::MultiRpcBuilder::fetch_from_mainnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::MultiRpcBuilder::fetch_from_testnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::MultiRpcBuilder::fetch_from_mainnet_archival", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::MultiRpcBuilder::fetch_from_testnet_archival", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteSignedTransaction::send_to", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteSignedTransaction::send_to_mainnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteSignedTransaction::send_to_testnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteSignedTransaction::presign_with", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteSignedTransaction::presign_with_mainnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteSignedTransaction::presign_with_testnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteMetaTransaction::send_to", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteMetaTransaction::send_to_mainnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteMetaTransaction::send_to_testnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteMetaTransaction::presign_with", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteMetaTransaction::presign_with_mainnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::advanced::ExecuteMetaTransaction::presign_with_testnet", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::Signer::fetch_tx_nonce", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+    { path = "near_api::signer::NEP413Payload::verify", reason = "reach the network through templar_gateway_core::NearRpc, which fails over to the backup API key" },
+]

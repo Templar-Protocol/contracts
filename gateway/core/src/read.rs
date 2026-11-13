@@ -77,11 +77,13 @@ impl NearClient {
     where
         T: DeserializeOwned + Send + Sync + 'static,
     {
-        Contract(contract_id.clone())
-            .call_function_raw(method_name, args)
-            .read_only()
-            .at(reference)
-            .fetch_from(self.network())
+        self.rpc()
+            .fetch(|| {
+                Contract(contract_id.clone())
+                    .call_function_raw(method_name, args.clone())
+                    .read_only()
+                    .at(reference.clone())
+            })
             .await
             .map(|response| response.data)
             .map_err(|error| account_query_error(contract_id, &error))
@@ -117,21 +119,26 @@ impl ReadNear for NearClient {
     where
         T: BorshDeserialize + Send + Sync + 'static,
     {
-        Contract(contract_id.clone())
-            .call_function_raw(method_name, args)
-            .read_only_borsh()
-            .at(self.finality_policy().query_reference())
-            .fetch_from(self.network())
+        self.rpc()
+            .fetch(|| {
+                Contract(contract_id.clone())
+                    .call_function_raw(method_name, args.clone())
+                    .read_only_borsh()
+                    .at(self.finality_policy().query_reference())
+            })
             .await
             .map(|response| response.data)
             .map_err(|error| account_query_error(contract_id, &error))
     }
 
     async fn view_global_contract_code(&self, code_hash: CryptoHash) -> GatewayResult<Vec<u8>> {
-        let code = Contract::global_wasm()
-            .by_hash(code_hash)
-            .at(self.finality_policy().query_reference())
-            .fetch_from(self.network())
+        let code = self
+            .rpc()
+            .fetch(|| {
+                Contract::global_wasm()
+                    .by_hash(code_hash)
+                    .at(self.finality_policy().query_reference())
+            })
             .await
             .map_err(|error| global_code_query_error(&error))?;
 
@@ -143,10 +150,13 @@ impl ReadNear for NearClient {
     }
 
     async fn view_account(&self, account_id: near_account_id::AccountId) -> GatewayResult<Account> {
-        let account = NearAccountView(account_id.clone())
-            .view()
-            .at(self.finality_policy().query_reference())
-            .fetch_from(self.network())
+        let account = self
+            .rpc()
+            .fetch(|| {
+                NearAccountView(account_id.clone())
+                    .view()
+                    .at(self.finality_policy().query_reference())
+            })
             .await
             .map_err(|error| account_query_error(account_id, &error))?;
         Ok(account.data)
@@ -157,10 +167,13 @@ impl ReadNear for NearClient {
         account_id: near_account_id::AccountId,
         public_key: PublicKey,
     ) -> GatewayResult<AccessKey> {
-        let key = NearAccountView(account_id.clone())
-            .access_key(public_key)
-            .at(self.finality_policy().query_reference())
-            .fetch_from(self.network())
+        let key = self
+            .rpc()
+            .fetch(|| {
+                NearAccountView(account_id.clone())
+                    .access_key(public_key)
+                    .at(self.finality_policy().query_reference())
+            })
             .await
             .map_err(|error| account_query_error(account_id, &error))?;
         Ok(key.data)
@@ -170,10 +183,13 @@ impl ReadNear for NearClient {
         &self,
         account_id: near_account_id::AccountId,
     ) -> GatewayResult<Vec<(PublicKey, AccessKey)>> {
-        let keys = NearAccountView(account_id.clone())
-            .list_keys()
-            .at(self.finality_policy().query_reference())
-            .fetch_from(self.network())
+        let keys = self
+            .rpc()
+            .fetch(|| {
+                NearAccountView(account_id.clone())
+                    .list_keys()
+                    .at(self.finality_policy().query_reference())
+            })
             .await
             .map_err(|error| account_query_error(account_id, &error))?;
         Ok(keys.data)
@@ -183,10 +199,12 @@ impl ReadNear for NearClient {
         &self,
         account_id: near_account_id::AccountId,
     ) -> GatewayResult<Base64Bytes> {
-        Contract(account_id.clone())
-            .wasm()
-            .at(self.finality_policy().query_reference())
-            .fetch_from(self.network())
+        self.rpc()
+            .fetch(|| {
+                Contract(account_id.clone())
+                    .wasm()
+                    .at(self.finality_policy().query_reference())
+            })
             .await
             .map_err(|error| account_query_error(account_id, &error))
             .and_then(|response| decode_base64(response.data.code_base64, "contract code"))
@@ -197,10 +215,12 @@ impl ReadNear for NearClient {
         account_id: near_account_id::AccountId,
         prefix: Vec<u8>,
     ) -> GatewayResult<Vec<(Base64Bytes, Base64Bytes)>> {
-        Contract(account_id.clone())
-            .view_storage_with_prefix(&prefix)
-            .at(self.finality_policy().query_reference())
-            .fetch_from(self.network())
+        self.rpc()
+            .fetch(|| {
+                Contract(account_id.clone())
+                    .view_storage_with_prefix(&prefix)
+                    .at(self.finality_policy().query_reference())
+            })
             .await
             .map_err(|error| account_query_error(account_id, &error))
             .and_then(|response| {
@@ -224,8 +244,10 @@ impl ReadNear for NearClient {
         tx_hash: CryptoHash,
         wait_until: TxExecutionStatus,
     ) -> GatewayResult<ExecutionFinalResult> {
-        Transaction::status_with_options(sender_account_id, tx_hash, wait_until)
-            .fetch_from(self.network())
+        self.rpc()
+            .fetch(|| {
+                Transaction::status_with_options(sender_account_id.clone(), tx_hash, wait_until)
+            })
             .await
             .map_err(|error| GatewayError::NearQuery(error.to_string()))
     }

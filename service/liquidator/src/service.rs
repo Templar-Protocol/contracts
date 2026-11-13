@@ -11,7 +11,7 @@ use near_sdk::AccountId;
 use templar_gateway_client::{
     collect_paginated, Client, Network, NetworkConfigBuilder, SigningClient,
 };
-use templar_gateway_core::GatewayContextBuilder;
+use templar_gateway_core::{GatewayContextBuilder, RedactedString};
 use templar_gateway_methods_spec::{contract, market, registry};
 use templar_gateway_oracle_updates_dispatch::GatewayContextBuilderOracleExt as _;
 use templar_gateway_types::common::Pagination;
@@ -67,7 +67,9 @@ pub struct ServiceConfig {
     /// Custom RPC URL (overrides the network default)
     pub near_rpc_url: Option<String>,
     /// API key for the RPC endpoint, sent as an `Authorization` header
-    pub near_rpc_api_key: Option<String>,
+    pub near_rpc_api_key: Option<RedactedString>,
+    /// Backup key for the same endpoint, sent only when the primary is refused
+    pub near_rpc_api_key_backup: Option<RedactedString>,
     /// Transaction timeout in seconds
     pub transaction_timeout: u64,
     /// Interval between liquidation scans in seconds
@@ -152,7 +154,8 @@ impl LiquidatorService {
         let network = NetworkConfigBuilder::new(config.network)
             .rpc_url(config.near_rpc_url.as_deref())
             .expect("invalid NEAR_RPC_URL")
-            .api_key(config.near_rpc_api_key.clone())
+            .api_key(config.near_rpc_api_key.as_deref().map(str::to_owned))
+            .backup_api_key(config.near_rpc_api_key_backup.as_deref().map(str::to_owned))
             .build();
 
         // The gateway client signs with `near_api::SecretKey`; the CLI parses a

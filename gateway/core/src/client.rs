@@ -31,7 +31,6 @@ use lst_oracle::LstOracleClient;
 use market::MarketClient;
 use mt::MtClient;
 use near_account_id::{AccountId, AccountIdRef};
-use near_api::NetworkConfig;
 use owner::OwnerClient;
 use proxy_governance::ProxyGovernanceClient;
 use proxy_oracle::ProxyOracleClient;
@@ -47,7 +46,7 @@ use token::TokenClient;
 use universal_account::UniversalAccountClient;
 use vault::VaultClient;
 
-use crate::FinalityPolicy;
+use crate::{FinalityPolicy, NearRpc};
 
 trait BoundContractClient {
     fn client(&self) -> &NearClient;
@@ -97,7 +96,7 @@ impl ContractWriteOptions {
 
 #[derive(Clone)]
 pub struct NearClient {
-    network: NetworkConfig,
+    rpc: NearRpc,
     cache: Arc<NearClientCache>,
     finality_policy: FinalityPolicy,
 }
@@ -105,27 +104,27 @@ pub struct NearClient {
 impl std::fmt::Debug for NearClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NearClient")
-            .field("network", &self.network)
+            .field("rpc", &self.rpc)
             .field("finality_policy", &self.finality_policy)
             .finish_non_exhaustive()
     }
 }
 
 impl NearClient {
-    pub fn new(network: NetworkConfig) -> Self {
-        Self::with_finality_policy(network, FinalityPolicy::default())
+    pub fn new(rpc: impl Into<NearRpc>) -> Self {
+        Self::with_finality_policy(rpc, FinalityPolicy::default())
     }
 
-    pub fn with_finality_policy(network: NetworkConfig, finality_policy: FinalityPolicy) -> Self {
+    pub fn with_finality_policy(rpc: impl Into<NearRpc>, finality_policy: FinalityPolicy) -> Self {
         Self {
-            network,
+            rpc: rpc.into(),
             cache: Arc::new(NearClientCache::new()),
             finality_policy,
         }
     }
 
-    pub fn network(&self) -> &NetworkConfig {
-        &self.network
+    pub(crate) fn rpc(&self) -> &NearRpc {
+        &self.rpc
     }
 
     pub const fn finality_policy(&self) -> FinalityPolicy {

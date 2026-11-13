@@ -7,6 +7,7 @@ mod error;
 mod executor;
 mod finality;
 mod near_client_provider;
+mod near_rpc;
 mod operation;
 mod operation_driver;
 mod oracle_resolution;
@@ -30,6 +31,7 @@ pub use executor::{
 };
 pub use finality::FinalityPolicy;
 pub use near_client_provider::HasNearClient;
+pub use near_rpc::NearRpc;
 pub use operation::{
     CompletedStep, CurrentStep, CurrentStepRef, OperationPlan, PendingPreparation,
     PlannedTransaction, PreparedCurrentStep, PreparedTransactionResult, RevertedStep,
