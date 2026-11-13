@@ -4,8 +4,8 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use borsh::{to_vec, BorshDeserialize};
 use chrono::{DateTime, Utc};
-use near_api::types::transaction::SignedTransaction;
-use near_api::types::CryptoHash as NearCryptoHash;
+use near_api::types::transaction::{SignedTransaction, Transaction, TransactionV0, TransactionV1};
+use near_api::types::{CryptoHash as NearCryptoHash, Signature};
 use serde_json::Value;
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -1522,7 +1522,18 @@ fn parse_signed_transaction(value: Option<Vec<u8>>) -> GatewayResult<SignedTrans
             )
         })
         .and_then(|bytes| {
-            SignedTransaction::try_from_slice(&bytes)
+            // near-api-types 0.8.6 derives a tagged decoder but writes V0 untagged.
+            // Remove this workaround once https://github.com/near/near-api-rs/issues/146
+            // is released and we upgrade. Keep the canonical-wire regression tests.
+            // V0 starts with an AccountId length (2..=64); only V1 starts with 1.
+            let decoded = match bytes.split_first() {
+                Some((1, payload)) => <(TransactionV1, Signature)>::try_from_slice(payload)
+                    .map(|(transaction, signature)| (Transaction::V1(transaction), signature)),
+                _ => <(TransactionV0, Signature)>::try_from_slice(&bytes)
+                    .map(|(transaction, signature)| (Transaction::V0(transaction), signature)),
+            };
+            decoded
+                .map(|(transaction, signature)| SignedTransaction::new(signature, transaction))
                 .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))
         })
 }
@@ -1539,10 +1550,7 @@ fn parse_crypto_hash(value: Option<&str>) -> GatewayResult<Option<CryptoHash>> {
 
 #[cfg(test)]
 mod tests {
-    use near_api::types::transaction::{
-        actions::{Action, TransferAction},
-        SignedTransaction, Transaction, TransactionV0,
-    };
+    use near_api::types::transaction::actions::{Action, TransferAction};
     use near_api::types::CryptoHash as NearCryptoHash;
     use templar_gateway_types::{NearGas, NearToken, OperationStatus};
 
@@ -1585,6 +1593,95 @@ mod tests {
             .parse()
             .unwrap();
         SignedTransaction::new(signature, transaction)
+    }
+
+    fn signed_transaction_with_priority(
+        signer_id: &str,
+        priority_fee: Option<u64>,
+    ) -> SignedTransaction {
+        let signed = dummy_signed_transaction();
+        let Transaction::V0(mut transaction) = signed.transaction else {
+            panic!("expected V0");
+        };
+        transaction.signer_id = signer_id.parse().unwrap();
+        transaction.actions = sample_transaction().actions;
+        let transaction = match priority_fee {
+            None => Transaction::V0(transaction),
+            Some(priority_fee) => Transaction::V1(TransactionV1 {
+                signer_id: transaction.signer_id,
+                public_key: transaction.public_key,
+                nonce: transaction.nonce,
+                receiver_id: transaction.receiver_id,
+                block_hash: transaction.block_hash,
+                actions: transaction.actions,
+                priority_fee,
+            }),
+        };
+        SignedTransaction::new(signed.signature, transaction)
+    }
+
+    #[rstest::rstest]
+    #[case::v0_minimum_account("aa", None)]
+    #[case::v0_maximum_account(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        None
+    )]
+    #[case::v1_priority_fee("signer.near", Some(19))]
+    fn canonical_signed_transaction_round_trip(
+        #[case] signer_id: &str,
+        #[case] priority_fee: Option<u64>,
+    ) {
+        let signed = signed_transaction_with_priority(signer_id, priority_fee);
+        let bytes = to_vec(&signed).unwrap();
+        let decoded = parse_signed_transaction(Some(bytes.clone())).unwrap();
+        assert_eq!(decoded.transaction, signed.transaction);
+        assert_eq!(decoded.signature, signed.signature);
+        assert_eq!(decoded.get_hash(), signed.get_hash());
+        assert_eq!(to_vec(&decoded).unwrap(), bytes);
+    }
+
+    #[rstest::rstest]
+    #[case::v0(None)]
+    #[case::v1(Some(19))]
+    fn malformed_signed_transactions_are_rejected(#[case] priority_fee: Option<u64>) {
+        let signed = signed_transaction_with_priority("signer.near", priority_fee);
+        let bytes = to_vec(&signed).unwrap();
+        for length in 0..bytes.len() {
+            assert!(
+                matches!(
+                    parse_signed_transaction(Some(bytes[..length].to_vec())),
+                    Err(GatewayError::InvalidStoredOperation(_))
+                ),
+                "accepted truncated transaction of length {length}"
+            );
+        }
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(matches!(
+            parse_signed_transaction(Some(trailing)),
+            Err(GatewayError::InvalidStoredOperation(_))
+        ));
+        let version_prefix = usize::from(priority_fee.is_some());
+        let mut invalid_account = bytes.clone();
+        invalid_account[version_prefix + 4] = b'/';
+        assert!(matches!(
+            parse_signed_transaction(Some(invalid_account)),
+            Err(GatewayError::InvalidStoredOperation(_))
+        ));
+        let mut invalid_key = bytes;
+        invalid_key[version_prefix + 4 + "signer.near".len()] = u8::MAX;
+        assert!(matches!(
+            parse_signed_transaction(Some(invalid_key)),
+            Err(GatewayError::InvalidStoredOperation(_))
+        ));
+    }
+
+    #[test]
+    fn missing_signed_transaction_is_rejected() {
+        assert!(matches!(
+            parse_signed_transaction(None),
+            Err(GatewayError::InvalidStoredOperation(_))
+        ));
     }
 
     fn sample_outcome() -> ExecutionOutcome {
@@ -1682,6 +1779,62 @@ mod tests {
             tx_hash: CryptoHash(NearCryptoHash::default()),
         });
         store.save_operation(operation.clone()).await.unwrap();
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn prepared_operation_round_trip(pool: PgPool) {
+        let store = PostgresStore {
+            pool,
+            schema: "public".to_owned(),
+        };
+        let mut transaction = sample_transaction();
+        transaction.signer_account_id =
+            ManagedAccountId("alice.relayer.tmplr.near".parse().unwrap());
+        let CreateOperationResult::Created(mut operation) = store
+            .create_or_get_operation(
+                "tx.transfer",
+                transaction.signer_account_id.clone(),
+                None,
+                [17; 32],
+                serde_json::to_vec(&serde_json::json!({})).unwrap(),
+                OperationPlan {
+                    steps: vec![transaction.clone()],
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a freshly created operation");
+        };
+        let signed =
+            signed_transaction_with_priority(transaction.signer_account_id.0.as_str(), None);
+        let bytes = to_vec(&signed).unwrap();
+        let hash = signed.get_hash();
+        operation.remaining_steps.pop_front();
+        operation.current_step = Some(CurrentStep::Prepared {
+            transaction: transaction.clone(),
+            signed_transaction: Box::new(signed.clone()),
+            tx_hash: hash.into(),
+        });
+        store.save_operation(operation.clone()).await.unwrap();
+
+        let restored = store.get_by_id(&operation.id).await.unwrap().unwrap();
+        let Some(CurrentStep::Prepared {
+            transaction: restored_transaction,
+            signed_transaction,
+            tx_hash,
+        }) = restored.current_step
+        else {
+            panic!("expected a restored Prepared step");
+        };
+        assert_eq!(restored_transaction, transaction);
+        assert_eq!(signed_transaction.transaction, signed.transaction);
+        assert_eq!(signed_transaction.signature, signed.signature);
+        assert_eq!(signed_transaction.get_hash(), hash);
+        assert_eq!(tx_hash, hash.into());
+        assert_eq!(to_vec(&signed_transaction).unwrap(), bytes);
+        assert!(restored.completed_steps.is_empty());
+        assert!(restored.remaining_steps.is_empty());
     }
 
     /// A progress save must not drop the operation's idempotency key — the
