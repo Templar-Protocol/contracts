@@ -5,6 +5,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use near_api::{types::AccountId, NetworkConfig};
 use near_jsonrpc_client::{
+    errors::{
+        JsonRpcError, JsonRpcServerError, JsonRpcServerResponseStatusError,
+        JsonRpcTransportRecvError, JsonRpcTransportSendError, RpcTransportError,
+    },
     methods::{
         query::RpcQueryRequest, sandbox_fast_forward::RpcSandboxFastForwardRequest,
         sandbox_patch_state::RpcSandboxPatchStateRequest, status::RpcStatusRequest,
@@ -172,6 +176,9 @@ pub async fn wait_until_final(
 /// `sandbox_patch_state` waits for committed state on the pinned sandbox release, not finalized
 /// visibility. An already-present access key cannot fence a later metadata patch, so compare the
 /// exact balance, storage usage and code linkage.
+///
+/// Retry transient RPC failures within the same deadline, but reject invalid requests,
+/// malformed responses and account/domain errors immediately.
 pub async fn wait_for_account_final(
     network: &NetworkConfig,
     account_id: &AccountId,
@@ -185,22 +192,31 @@ pub async fn wait_for_account_final(
         },
     };
     let mut last_seen = None;
+    let mut last_retryable_error = None;
     tokio::time::timeout(FINALITY_TIMEOUT, async {
         let mut backoff = FINALITY_POLL_MIN;
         loop {
-            let response = client
-                .call(&request)
-                .await
-                .with_context(|| format!("read finalized sandbox account {account_id}"))?;
-            let near_jsonrpc_primitives::types::query::QueryResponseKind::ViewAccount(actual) =
-                response.kind
-            else {
-                anyhow::bail!("unexpected finalized account response for {account_id}");
-            };
-            if &actual == expected {
-                return Ok(());
+            match client.call(&request).await {
+                Ok(response) => {
+                    let near_jsonrpc_primitives::types::query::QueryResponseKind::ViewAccount(
+                        actual,
+                    ) = response.kind
+                    else {
+                        anyhow::bail!("unexpected finalized account response for {account_id}");
+                    };
+                    if &actual == expected {
+                        return Ok(());
+                    }
+                    last_seen = Some((response.block_hash, actual));
+                }
+                Err(error) if retryable_account_query_error(&error) => {
+                    last_retryable_error = Some(error);
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("read finalized sandbox account {account_id}"));
+                }
             }
-            last_seen = Some((response.block_hash, actual));
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(FINALITY_POLL_MAX);
         }
@@ -209,9 +225,43 @@ pub async fn wait_for_account_final(
     .with_context(|| {
         format!(
             "sandbox account {account_id} metadata did not reach finality within \
-             {FINALITY_TIMEOUT:?}; expected {expected:?}; last finalized observation {last_seen:?}"
+             {FINALITY_TIMEOUT:?}; expected {expected:?}; last finalized observation {last_seen:?}; \
+             last retryable RPC error {last_retryable_error:?}"
         )
     })?
+}
+
+fn retryable_account_query_error(
+    error: &JsonRpcError<near_jsonrpc_primitives::types::query::RpcQueryError>,
+) -> bool {
+    use near_jsonrpc_primitives::types::query::RpcQueryError;
+
+    match error {
+        JsonRpcError::TransportError(
+            RpcTransportError::SendError(JsonRpcTransportSendError::PayloadSendError(error))
+            | RpcTransportError::RecvError(JsonRpcTransportRecvError::PayloadRecvError(error)),
+        ) => error.is_timeout() || error.is_connect() || error.is_body(),
+        JsonRpcError::ServerError(
+            JsonRpcServerError::InternalError { .. }
+            | JsonRpcServerError::HandlerError(
+                RpcQueryError::NoSyncedBlocks | RpcQueryError::InternalError { .. },
+            )
+            | JsonRpcServerError::ResponseStatusError(
+                JsonRpcServerResponseStatusError::TooManyRequests
+                | JsonRpcServerResponseStatusError::TimeoutError
+                | JsonRpcServerResponseStatusError::ServiceUnavailable,
+            ),
+        ) => true,
+        JsonRpcError::ServerError(JsonRpcServerError::ResponseStatusError(
+            JsonRpcServerResponseStatusError::Unexpected { status },
+        )) => matches!(
+            *status,
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+                | reqwest::StatusCode::BAD_GATEWAY
+                | reqwest::StatusCode::GATEWAY_TIMEOUT
+        ),
+        _ => false,
+    }
 }
 
 /// Sandbox launch configuration shared by owned and out-of-band nodes.
@@ -338,5 +388,273 @@ mod tests {
     #[test]
     fn no_records_means_no_requests() {
         assert!(batches(Vec::new()).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod account_finality_tests {
+    use std::{collections::VecDeque, sync::Arc};
+
+    use axum::{
+        extract::State,
+        http::StatusCode,
+        response::{IntoResponse, Response},
+        routing::post,
+        Json, Router,
+    };
+    use near_jsonrpc_primitives::{
+        errors::RpcError,
+        types::query::{QueryResponseKind, RpcQueryError, RpcQueryResponse},
+    };
+    use near_primitives::{hash::CryptoHash, views::AccountView};
+    use serde_json::{json, Value};
+    use tokio::{
+        sync::{mpsc, Mutex},
+        task::JoinHandle,
+    };
+
+    use super::{
+        retryable_account_query_error, wait_for_account_final, JsonRpcError, JsonRpcServerError,
+        JsonRpcServerResponseStatusError, NetworkConfig, FINALITY_TIMEOUT,
+    };
+
+    enum Reply {
+        Result(Value),
+        Error(RpcError),
+        Status(StatusCode),
+        Malformed,
+        Pending,
+    }
+
+    #[derive(Clone)]
+    struct ServerState {
+        replies: Arc<Mutex<VecDeque<Reply>>>,
+        requests: mpsc::UnboundedSender<Value>,
+    }
+
+    async fn respond(State(state): State<ServerState>, Json(request): Json<Value>) -> Response {
+        let reply = state.replies.lock().await.pop_front().unwrap();
+        state.requests.send(request.clone()).unwrap();
+        match reply {
+            Reply::Result(result) => Json(json!({
+                "jsonrpc": "2.0", "id": request["id"], "result": result,
+            }))
+            .into_response(),
+            Reply::Error(error) => Json(json!({
+                "jsonrpc": "2.0", "id": request["id"], "error": error,
+            }))
+            .into_response(),
+            Reply::Status(status) => status.into_response(),
+            Reply::Malformed => (StatusCode::OK, "{not json").into_response(),
+            Reply::Pending => std::future::pending().await,
+        }
+    }
+
+    struct RpcFixture {
+        network: NetworkConfig,
+        requests: mpsc::UnboundedReceiver<Value>,
+        server: JoinHandle<()>,
+    }
+
+    impl RpcFixture {
+        async fn new(replies: Vec<Reply>) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let (requests, receiver) = mpsc::unbounded_channel();
+            let app = Router::new()
+                .route("/", post(respond))
+                .with_state(ServerState {
+                    replies: Arc::new(Mutex::new(replies.into())),
+                    requests,
+                });
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            Self {
+                network: NetworkConfig::from_rpc_url("account-finality-test", url.parse().unwrap()),
+                requests: receiver,
+                server,
+            }
+        }
+
+        async fn assert_final_account_request(&mut self) {
+            let request = self.requests.recv().await.unwrap();
+            assert_eq!(request["method"], "query");
+            assert_eq!(
+                request["params"],
+                json!({
+                    "request_type": "view_account",
+                    "account_id": "market.near",
+                    "finality": "final",
+                })
+            );
+        }
+    }
+
+    impl Drop for RpcFixture {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    fn account() -> AccountView {
+        serde_json::from_value(json!({
+            "amount": "1000",
+            "locked": "0",
+            "code_hash": CryptoHash::default(),
+            "storage_usage": 100,
+        }))
+        .unwrap()
+    }
+
+    fn observed(account: AccountView) -> Reply {
+        Reply::Result(
+            serde_json::to_value(RpcQueryResponse {
+                kind: QueryResponseKind::ViewAccount(account),
+                block_height: 42,
+                block_hash: CryptoHash([7; 32]),
+            })
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn account_finality_recovers_from_transient_errors_and_compares_exact_metadata() {
+        let expected = account();
+        let mut stale = expected.clone();
+        stale.global_contract_account_id = Some("old-code.near".parse().unwrap());
+        let mut fixture = RpcFixture::new(vec![
+            Reply::Status(StatusCode::SERVICE_UNAVAILABLE),
+            Reply::Error(
+                RpcQueryError::InternalError {
+                    error_message: "node overloaded".into(),
+                }
+                .into(),
+            ),
+            observed(stale),
+            observed(expected.clone()),
+        ])
+        .await;
+
+        wait_for_account_final(&fixture.network, &"market.near".parse().unwrap(), &expected)
+            .await
+            .unwrap();
+        for _ in 0..4 {
+            fixture.assert_final_account_request().await;
+        }
+        assert!(fixture.requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn account_finality_retries_only_transient_server_statuses() {
+        for (status, retryable) in [
+            (StatusCode::INTERNAL_SERVER_ERROR, true),
+            (StatusCode::BAD_GATEWAY, true),
+            (StatusCode::GATEWAY_TIMEOUT, true),
+            (StatusCode::NOT_IMPLEMENTED, false),
+            (StatusCode::HTTP_VERSION_NOT_SUPPORTED, false),
+            (StatusCode::FORBIDDEN, false),
+            (StatusCode::NOT_FOUND, false),
+        ] {
+            let error = JsonRpcError::ServerError(JsonRpcServerError::ResponseStatusError(
+                JsonRpcServerResponseStatusError::Unexpected { status },
+            ));
+            assert_eq!(retryable_account_query_error(&error), retryable, "{status}");
+        }
+        for status in [
+            JsonRpcServerResponseStatusError::TooManyRequests,
+            JsonRpcServerResponseStatusError::TimeoutError,
+            JsonRpcServerResponseStatusError::ServiceUnavailable,
+        ] {
+            let error = JsonRpcError::ServerError(JsonRpcServerError::ResponseStatusError(status));
+            assert!(retryable_account_query_error(&error));
+        }
+    }
+
+    #[tokio::test]
+    async fn account_finality_rejects_permanent_errors_without_retrying() {
+        let expected = account();
+        let failures = [
+            Reply::Status(StatusCode::UNAUTHORIZED),
+            Reply::Status(StatusCode::BAD_REQUEST),
+            Reply::Status(StatusCode::FORBIDDEN),
+            Reply::Status(StatusCode::NOT_IMPLEMENTED),
+            Reply::Malformed,
+            Reply::Result(json!({"unexpected": "query result"})),
+            Reply::Result(json!({
+                "values": [], "proof": [], "block_height": 42,
+                "block_hash": CryptoHash::default(),
+            })),
+            Reply::Error(
+                RpcQueryError::UnknownAccount {
+                    requested_account_id: "market.near".parse().unwrap(),
+                    block_height: 42,
+                    block_hash: CryptoHash::default(),
+                }
+                .into(),
+            ),
+            Reply::Error(RpcError::parse_error("invalid request parameters".into())),
+            Reply::Error(RpcError::new(-32_602, "Invalid params".into(), None)),
+        ];
+        for failure in failures {
+            let mut fixture = RpcFixture::new(vec![failure, observed(expected.clone())]).await;
+            let error = wait_for_account_final(
+                &fixture.network,
+                &"market.near".parse().unwrap(),
+                &expected,
+            )
+            .await
+            .unwrap_err();
+            assert!(error
+                .downcast_ref::<tokio::time::error::Elapsed>()
+                .is_none());
+            fixture.assert_final_account_request().await;
+            assert!(fixture.requests.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn account_finality_timeout_retains_observation_and_last_transient_error() {
+        let expected = account();
+        let mut stale = expected.clone();
+        stale.storage_usage = 99;
+        let mut fixture = RpcFixture::new(vec![
+            observed(stale.clone()),
+            Reply::Status(StatusCode::SERVICE_UNAVAILABLE),
+            Reply::Pending,
+        ])
+        .await;
+        let network = fixture.network.clone();
+        let expected_for_task = expected.clone();
+        let task = tokio::spawn(async move {
+            wait_for_account_final(
+                &network,
+                &"market.near".parse().unwrap(),
+                &expected_for_task,
+            )
+            .await
+        });
+        // The third request proves the helper consumed both preceding responses. Freeze time
+        // only now, so the HTTP exchanges cannot race Tokio's idle-clock auto-advancement.
+        for _ in 0..3 {
+            fixture.assert_final_account_request().await;
+        }
+        tokio::time::pause();
+        tokio::time::advance(FINALITY_TIMEOUT).await;
+        let error = task.await.unwrap().unwrap_err();
+        let diagnostic = format!("{error:#}");
+        assert!(error
+            .downcast_ref::<tokio::time::error::Elapsed>()
+            .is_some());
+        assert!(
+            diagnostic.contains(&stale.storage_usage.to_string()),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(&CryptoHash([7; 32]).to_string()),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("ServiceUnavailable"), "{diagnostic}");
+        assert!(fixture.requests.try_recv().is_err());
     }
 }

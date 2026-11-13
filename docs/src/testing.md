@@ -143,6 +143,9 @@ restoring replay account metadata, wait until a `FINAL` account view matches the
 exact amount, locked balance, storage usage, and local/global code linkage.
 Finalize staging transactions and their refunds before that metadata reset;
 an old access key reaching finality does not fence a later account patch.
+The finalized-account fence retries transient connection, body-read, rate-limit,
+and service errors within its existing deadline. Permanent RPC errors fail
+immediately; a timeout retains the last account observation and retryable error.
 
 Keep native amount, locked balance, storage usage, code/global identity,
 effective code bytes, access keys/nonces, and raw storage comparisons separate
