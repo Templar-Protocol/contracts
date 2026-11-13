@@ -40,15 +40,43 @@ pub enum RedstoneNs {
 #[derive(Clone, Debug, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 pub enum RoleArg {
-    ModifyRoles,
+    #[value(alias = "modify-roles")]
+    Admin,
     TrustedUpdater,
 }
 
 impl From<RoleArg> for spec::RoleValue {
     fn from(arg: RoleArg) -> Self {
         match arg {
-            RoleArg::ModifyRoles => Self::ModifyRoles,
+            RoleArg::Admin => Self::Admin,
             RoleArg::TrustedUpdater => Self::TrustedUpdater,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Harness {
+        #[arg(long)]
+        role: RoleArg,
+    }
+
+    #[rstest::rstest]
+    #[case::admin("admin", spec::RoleValue::Admin, "modify_roles")]
+    #[case::legacy_admin("modify-roles", spec::RoleValue::Admin, "modify_roles")]
+    #[case::updater("trusted-updater", spec::RoleValue::TrustedUpdater, "trusted_updater")]
+    fn role_cli_values(
+        #[case] input: &str,
+        #[case] expected: spec::RoleValue,
+        #[case] canonical: &str,
+    ) {
+        let args = Harness::try_parse_from(["tmplrmgr", "--role", input]).unwrap();
+        let role: spec::RoleValue = args.role.into();
+        assert_eq!(role, expected);
+        assert_eq!(serde_json::to_value(role).unwrap(), canonical);
     }
 }

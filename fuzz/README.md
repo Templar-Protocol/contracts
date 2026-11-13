@@ -59,6 +59,14 @@ the boundary; don't make it unreachable).
 | `fuzz_borrow_overflow`, `fuzz_supply_overflow` | Boundary backstops: drive the operand sums across the full `u128` range and assert exactness up to the overflow boundary. The abort direction (which libfuzzer-sys can't observe) is covered by the paired `#[should_panic]` unit tests. |
 | `fuzz_snapshot` | Round-trip oracle: Borsh (storage codec) asserted **bit-lossless**; JSON (view codec) asserted to round-trip every *structural* field exactly while tolerating `Decimal`'s lossy display precision. Shows how to pick the right oracle strength per codec. |
 | `fuzz_deposit_msg` | Fuzzes the real `DepositMsg` parse path (the attacker-controlled `ft_transfer_call` `msg`): raw bytes must never panic the parser, and constructed messages round-trip idempotently. |
+| `fuzz_oracle_breaker_set` | Stateful differential: arbitrary sequences of proxy refreshes (price moves of any size; absent, stale and future-dated sources) and breaker governance (add/remove/enforce/rearm/reconfigure/manual trip) through the real `Proxy::resolve` + `CircuitBreakerSet`, held per step to an independent reference model in `src/oracle/` — value, events and whole state — plus model-free history, validity and storage round-trip invariants. |
+| `fuzz_oracle_deviation_math` | Differential against an arbitrary-precision reference: the four breaker rules' `should_trip` over any positive `i64` mantissa, any `i32` exponent and any `Decimal` threshold must match the exact decision, and trip wherever it exceeds the kernel's 512-bit word (fail-closed). |
+| `fuzz_oracle_breaker_codec` | Structure-aware codec target: arbitrary (possibly invalid) breaker sets are encoded with Borsh (NEAR) or postcard (Soroban), optionally corrupted, and decoded; an uncorrupted blob must decode exactly when structurally valid. |
+
+The `fuzz_oracle_*` targets share the reference model in [`src/oracle/`](./src/oracle/),
+written from the rules' definitions with `num-bigint` rather than copied from the
+kernel. Changing breaker, aggregation or freshness semantics in
+`templar-proxy-oracle-kernel` means changing the model in the same PR.
 
 Every target carries a `// MUTATION-CHECK:` note (P5) describing a one-line edit
 to the real code that should make it fail — run it when you change a target.
@@ -105,3 +113,4 @@ same crash. Each is backstopped so the excluded region is still covered:
 | `fuzz_price` | `decimals` in `[0, 30]` (extreme exponent gap excluded) | excluded region is [ENG-343](https://linear.app/templar-protocol/issue/ENG-343) |
 | `fuzz_price_calculations` | `decimals` in `[0, 18]`, `expo` in `[-12, -4]` (fuzzed), prices in `[1e5, ~1e9]` — combined gap kept inside `ratio`'s exact path | extreme-gap region is [ENG-343](https://linear.app/templar-protocol/issue/ENG-343) (owned by `fuzz_price`) |
 | `fuzz_decimals` | skips `base > optimal·(rate_2−rate_1)` for `Piecewise` (constructor underflow — whole region aborts, nothing to recover) | excluded region is [ENG-341](https://linear.app/templar-protocol/issue/ENG-341), abort pinned by `interest_rate_strategy::tests::piecewise_new_underflows_when_base_exceeds_cross_term` |
+| `fuzz_oracle_breaker_set` | quote and baseline exponents are `i8` (enough to cross the 512-bit fail-closed boundary) so sequences stay plausible; ≤ 4 sources, ≤ 32 history, ≤ 64 actions for speed | full `i32` exponent range on every rule in `fuzz_oracle_deviation_math` |

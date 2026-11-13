@@ -1,39 +1,67 @@
 #![allow(clippy::needless_pass_by_value)]
 
-use std::collections::HashMap;
+pub mod state;
+
+use std::{
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+};
 
 use near_sdk::{
     assert_one_yocto, env,
     json_types::{Base64VecU8, U64},
-    near, AccountId, PanicOnDefault,
+    near, AccountId, Gas, PanicOnDefault, Promise,
 };
 use near_sdk_contract_tools::{rbac::Rbac, Rbac};
 use templar_common::{
     contract::list,
     oracle::redstone::{
-        Config, FeedData, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
-        RedStoneEvent, Role,
+        Config, FeedData, FeedId, GetPrices, RedStoneContractInterface, RedStoneEvent, Role,
     },
+    upgrade::{UpgradeSource, MIGRATE_METHOD},
+    versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     UnwrapReject,
 };
 use templar_primitives::{strnum::SU256, time::Nanoseconds};
+
+use crate::state::State;
 
 #[derive(Rbac, PanicOnDefault)]
 #[rbac(roles = "Role")]
 #[near(contract_state)]
 pub struct Contract {
-    pub adapter: RedStoneAdapter,
+    pub state: VersionedState<State>,
+}
+
+impl_versioned_state!(Contract, State, crate::state::migration::Migration);
+
+impl Deref for Contract {
+    type Target = State;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for Contract {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
 }
 
 #[near]
 impl Contract {
+    /// Gas reserved for migration in the atomic self-deploy receipt.
+    pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
+
     #[init]
     pub fn new(config: Config, admin_id: AccountId) -> Self {
+        config.validate().unwrap_or_reject();
         let mut self_ = Self {
-            adapter: RedStoneAdapter::new(b"a", config),
+            state: State::new(config),
         };
 
-        <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::ModifyRoles);
+        <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::Admin);
         <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::TrustedUpdater);
 
         self_
@@ -41,6 +69,31 @@ impl Contract {
 
     pub fn get_config(&self) -> &Config {
         &self.adapter.config
+    }
+
+    /// Replace the verification policy for subsequent payloads, preserving cached feeds.
+    #[payable]
+    pub fn admin_set_config(&mut self, config: Config) {
+        assert_one_yocto();
+        <Self as Rbac>::require_role(&Role::Admin);
+        config.validate().unwrap_or_reject();
+        self.adapter.config = config;
+        RedStoneEvent::ConfigUpdated {
+            updater: env::predecessor_account_id(),
+            config: &self.adapter.config,
+        }
+        .emit();
+    }
+
+    /// Schedule an atomic self-deploy and migration; completion is receipt-level.
+    #[payable]
+    pub fn admin_upgrade(&mut self, code: UpgradeSource, migrate_args: Base64VecU8) -> Promise {
+        assert_one_yocto();
+        <Self as Rbac>::require_role(&Role::Admin);
+        if code.is_empty_code() {
+            env::panic_str("admin_upgrade: empty code blob");
+        }
+        code.deploy_and_migrate(MIGRATE_METHOD, migrate_args, Self::GAS_FOR_MIGRATE)
     }
 
     pub fn has_role(&self, account_id: AccountId, role: Role) -> bool {
@@ -57,7 +110,7 @@ impl Contract {
     ) {
         assert_one_yocto();
         let set = set.unwrap_or(true);
-        <Self as Rbac>::require_role(&Role::ModifyRoles);
+        <Self as Rbac>::require_role(&Role::Admin);
         if set {
             <Self as Rbac>::add_role(self, &account_id, &role);
         } else {

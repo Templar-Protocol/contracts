@@ -18,6 +18,30 @@ pub struct Config {
     pub min_interval_between_updates_ms: u64,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigValidationError {
+    #[error("signer_count_threshold must be greater than zero")]
+    ZeroSignerThreshold,
+    #[error(transparent)]
+    InvalidSigners(#[from] redstone::network::error::Error),
+}
+
+impl Config {
+    pub fn validate(&self) -> Result<(), ConfigValidationError> {
+        if self.signer_count_threshold == 0 {
+            return Err(ConfigValidationError::ZeroSignerThreshold);
+        }
+        redstone::contract::verification::verify_signers_config(
+            &self.redstone_signers(),
+            self.signer_count_threshold,
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests;
+
 pub const DATA_STALENESS: TimestampMillis = TimestampMillis::from_millis(30 * 60 * 60 * 1000);
 
 pub const FEED_TTL_SECS: u32 = 2 * 24 * 60 * 60;

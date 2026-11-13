@@ -14,11 +14,22 @@ use super::{
     FeedId, GetPrices,
 };
 
-#[derive(BorshStorageKey)]
-#[near(serializers = [json, borsh])]
+#[derive(Debug, PartialEq, Eq, BorshStorageKey)]
+#[near(serializers = [json, borsh(use_discriminant = true)])]
+#[repr(u8)]
 pub enum Role {
-    ModifyRoles,
-    TrustedUpdater,
+    #[serde(alias = "Admin")]
+    ModifyRoles = 0,
+    TrustedUpdater = 1,
+}
+
+impl Role {
+    /// Administrative authority, retaining the legacy role's wire and storage identity.
+    #[allow(
+        non_upper_case_globals,
+        reason = "variant-style alias preserves the public ModifyRoles variant"
+    )]
+    pub const Admin: Self = Self::ModifyRoles;
 }
 
 #[derive(Debug)]
@@ -172,6 +183,49 @@ mod tests {
     use super::*;
 
     use crate::oracle::redstone::config;
+
+    #[rstest::rstest]
+    #[case::legacy_admin("ModifyRoles", Role::Admin, "ModifyRoles", 0)]
+    #[case::admin("Admin", Role::Admin, "ModifyRoles", 0)]
+    #[case::updater("TrustedUpdater", Role::TrustedUpdater, "TrustedUpdater", 1)]
+    fn role_wire_identity(
+        #[case] input: &str,
+        #[case] expected: Role,
+        #[case] canonical: &str,
+        #[case] tag: u8,
+    ) {
+        use near_sdk::{borsh, serde_json};
+
+        let role: Role = serde_json::from_value(serde_json::json!(input)).unwrap();
+        assert_eq!(role, expected);
+        assert_eq!(serde_json::to_value(&role).unwrap(), canonical);
+        assert_eq!(borsh::to_vec(&role).unwrap(), vec![tag]);
+        assert_eq!(borsh::from_slice::<Role>(&[tag]).unwrap(), expected);
+    }
+
+    #[test]
+    fn role_schema_retains_only_legacy_canonical_values() {
+        use near_sdk::serde_json;
+
+        let schema =
+            serde_json::to_value(schemars::schema_for!(Role)).expect("role schema serializes");
+        assert_eq!(
+            schema["enum"],
+            serde_json::json!(["ModifyRoles", "TrustedUpdater"])
+        );
+    }
+
+    #[test]
+    fn legacy_role_variants_and_admin_patterns_remain_exhaustive() {
+        use Role::{ModifyRoles, TrustedUpdater};
+
+        let tag = match Role::Admin {
+            ModifyRoles => 0,
+            TrustedUpdater => 1,
+        };
+        assert_eq!(tag, 0);
+        assert!(matches!(ModifyRoles, Role::Admin));
+    }
 
     #[rstest::rstest]
     #[case::stellar(1_770_985_144_000, &hex!("45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9030a710019c56f0bec0000000200000015d1cb1a708c63264741b00ce097176e45f708914b8cfdca26b079877a70604e25aa0bcfa3a41df8212eddd51db3496b95c7c3dc4caa9ac9705602af0515db1b31c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9028ed04019c56f0bec000000020000001dcaf484941c0d206f1898185b953c6a92d7fd188b347505c0f5beb2030e06e3e1b2f7dfb45929ac7676136af93fee7f14a614b40fa4dc2d1e625dbece02eaca21c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9028ed04019c56f0bec00000002000000199bd54930138268baad2869e9ceb99b6bc67cd6b8a4cc98e05f0b1cd9b7f07066008208399a728fac3d1dc3ca407cb8199a0209377bceb0c48f2cc3d756078051b4254430000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006179a92ab8c019c56f0bec000000020000001f08af53ed34046f7f64cc02ffb7973252954d7c395e440693c896bffdbc2de1e31cf5675bf66583d3e3438f5002ae9c10870d4dc45de05c560b239aa3a2d50a41b425443000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000617a1187473019c56f0bec0000000200000011b96dc2763a692e3245ce4f1b0c16ea245c240204e99ebd323b340e58bfb14fb5f0465ce11b8dd52ff839547cc949d20e4e8ba0be43dd6417cade2a8ebfd8c9e1c425443000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000617a1187473019c56f0bec00000002000000114a02710892325b13afc74bbd350dd9ec80342b2d6c0c94df7b7a60dbf67a1b91b182fa4555e0e0db91e6258b279f00b7eeb8f5de9930e352d5321a6b8b64a031c00063137373039383531343539383223302e392e30237374656c6c61722d636f6e6e6563746f72000025000002ed57011e0000"))]

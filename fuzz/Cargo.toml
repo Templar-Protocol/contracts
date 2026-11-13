@@ -9,15 +9,23 @@ version = "0.0.0"
 
 [dependencies]
 arbitrary.workspace = true
+borsh.workspace = true
 hex-literal.workspace = true
 libfuzzer-sys.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
+num-bigint = "0.4"
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 primitive-types.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
+templar-primitives.workspace = true
+templar-proxy-oracle-kernel = { workspace = true, features = ["borsh", "serde"] }
 templar-vault-kernel = { path = "../contract/vault/kernel", features = ["postcard", "soroban"] }
 templar-curator-primitives = { path = "../contract/vault/curator-primitives", features = ["postcard"] }
 templar-soroban-runtime = { path = "../contract/vault/soroban", features = ["testutils"] }
 templar-soroban-custodial-adapter = { path = "../contract/vault/soroban/custodial-adapter", features = ["testutils"] }
+
+[dev-dependencies]
+rstest.workspace = true
 
 [lints]
 workspace = true
@@ -152,5 +160,23 @@ bench = false
 [[bin]]
 name = "fuzz_soroban_custodial_adapter"
 path = "fuzz_targets/fuzz_soroban_custodial_adapter.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_oracle_deviation_math"
+path = "fuzz_targets/fuzz_oracle_deviation_math.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_oracle_breaker_set"
+path = "fuzz_targets/fuzz_oracle_breaker_set.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_oracle_breaker_codec"
+path = "fuzz_targets/fuzz_oracle_breaker_codec.rs"
 test = false
 bench = false
