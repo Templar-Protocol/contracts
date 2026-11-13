@@ -268,6 +268,10 @@ impl MarketConfiguration {
             return Err(error::out_of_bounds("liquidation_maximum_spread"));
         }
 
+        if self.yield_weights.checked_total_weight().is_none() {
+            return Err(error::out_of_bounds("yield_weights"));
+        }
+
         Ok(())
     }
 
@@ -442,6 +446,24 @@ mod tests {
     #[test]
     fn valid_configuration_passes_validation() {
         valid_configuration().validate().unwrap();
+    }
+
+    #[rstest]
+    #[case(u16::MAX, 0, true)]
+    #[case(u16::MAX - 1, 1, true)]
+    #[case(u16::MAX, 1, false)]
+    fn configuration_yield_weight_total_bounds(
+        #[case] supply: u16,
+        #[case] static_weight: u16,
+        #[case] valid: bool,
+    ) {
+        let mut configuration = valid_configuration();
+        configuration.yield_weights = YieldWeights::new_with_supply_weight(supply)
+            .with_static("recipient.near".parse().unwrap(), static_weight);
+        assert_eq!(configuration.validate().is_ok(), valid);
+        if valid {
+            assert_eq!(configuration.yield_weights.total_weight().get(), u16::MAX);
+        }
     }
 
     #[test]

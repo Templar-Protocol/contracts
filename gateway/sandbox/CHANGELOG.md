@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Pin the sandbox dependency to nearcore 2.12.0's commit-aware state patch tracker, preventing acknowledged patches from being discarded before application; retain finalized-state fences.
 - Pair the workspace RPC decoder with nearcore 2.12's global-contract identifier tags, preserving failed receipts and canonical action JSON through the pinned SDK generator correction.
+- Retry transient RPC failures while waiting for exact finalized account metadata,
+  retaining the last observation and failure within the existing bounded deadline.
 
 ## [0.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-sandbox-v0.1.0...templar-sandbox-v0.1.1) - 2026-10-14
 
