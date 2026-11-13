@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0](https://github.com/Templar-Protocol/contracts/compare/templar-registry-contract-v3.1.1...templar-registry-contract-v4.0.0) - 2026-11-13
+
+### Added
+
+- *(registry)* [**breaking**] add role-gated uploads and DAO approvals ([#708](https://github.com/Templar-Protocol/contracts/pull/708))
+
 ### Changed
 
 - *(registry)* thread deployment provenance through backward-compatible finalization

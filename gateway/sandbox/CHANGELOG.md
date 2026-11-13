@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/Templar-Protocol/contracts/compare/templar-sandbox-v0.1.1...templar-sandbox-v0.1.2) - 2026-11-13
+
+### Added
+
+- *(gateway)* add DAO proposals and migration inspection reads ([#713](https://github.com/Templar-Protocol/contracts/pull/713))
+
 ### Fixed
 
 - Pin the sandbox dependency to nearcore 2.12.0's commit-aware state patch tracker, preventing acknowledged patches from being discarded before application; retain finalized-state fences.

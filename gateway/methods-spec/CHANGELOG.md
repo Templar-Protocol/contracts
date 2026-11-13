@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-spec-v0.6.1...templar-gateway-methods-spec-v0.6.2) - 2026-11-13
+
+### Added
+
+- *(redstone)* add adapter administration interface ([#709](https://github.com/Templar-Protocol/contracts/pull/709))
+- *(gateway)* add DAO proposals and migration inspection reads ([#713](https://github.com/Templar-Protocol/contracts/pull/713))
+
 ## [0.6.1](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-spec-v0.6.0...templar-gateway-methods-spec-v0.6.1) - 2026-10-25
 
 ### Added

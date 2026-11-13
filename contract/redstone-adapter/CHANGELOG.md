@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/Templar-Protocol/contracts/compare/templar-redstone-adapter-contract-v0.2.6...templar-redstone-adapter-contract-v0.2.7) - 2026-11-13
+
+### Added
+
+- *(redstone)* add adapter administration interface ([#709](https://github.com/Templar-Protocol/contracts/pull/709))
+
 ### Added
 
 - Atomic validated full configuration via `admin_set_config` and inline or
