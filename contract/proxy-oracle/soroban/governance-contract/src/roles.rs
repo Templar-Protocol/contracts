@@ -24,8 +24,23 @@ pub fn has_role(env: &Env, account: &Address, role: Role) -> bool {
     access_control::has_role(env, account, &role_symbol(env, role)).is_some()
 }
 
-pub fn grant(env: &Env, account: &Address, role: Role, caller: &Address) {
+pub fn grant(
+    env: &Env,
+    account: &Address,
+    role: Role,
+    caller: &Address,
+) -> Result<(), GovernanceError> {
+    if has_role(env, account, role) {
+        return Ok(());
+    }
+    if role == Role::Admin {
+        if *account == env.current_contract_address() {
+            return Err(GovernanceError::InvalidInput);
+        }
+        account.require_auth();
+    }
     access_control::grant_role_no_auth(env, account, &role_symbol(env, role), caller);
+    Ok(())
 }
 
 /// Revokes `role` from `account`. Granting/revoking is idempotent (revoking a
@@ -36,16 +51,16 @@ pub fn revoke(
     account: &Address,
     role: Role,
     caller: &Address,
-) -> Result<(), GovernanceError> {
+) -> Result<bool, GovernanceError> {
     let symbol = role_symbol(env, role);
     if access_control::has_role(env, account, &symbol).is_none() {
-        return Ok(());
+        return Ok(false);
     }
     if role == Role::Admin && access_control::get_role_member_count(env, &symbol) <= 1 {
         return Err(GovernanceError::LastAdmin);
     }
     access_control::revoke_role_no_auth(env, account, &symbol, caller);
-    Ok(())
+    Ok(true)
 }
 
 pub fn members(env: &Env, role: Role) -> Vec<Address> {
@@ -68,4 +83,27 @@ pub fn roles_of(env: &Env, account: &Address) -> Vec<Role> {
         }
     }
     out
+}
+
+pub fn extend_ttl(env: &Env) {
+    access_control::get_existing_roles(env);
+}
+
+pub fn extend_page(
+    env: &Env,
+    role: Role,
+    offset: u32,
+    count: u32,
+) -> Result<Option<u32>, GovernanceError> {
+    if !(1..=16).contains(&count) {
+        return Err(GovernanceError::InvalidInput);
+    }
+    let symbol = role_symbol(env, role);
+    let member_count = access_control::get_role_member_count(env, &symbol);
+    let page_end = offset.saturating_add(count).min(member_count);
+    for index in offset..page_end {
+        let account = access_control::get_role_member(env, &symbol, index);
+        access_control::has_role(env, &account, &symbol);
+    }
+    Ok((page_end < member_count).then_some(page_end))
 }

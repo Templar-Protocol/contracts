@@ -1,6 +1,6 @@
 //! Mock upstream SEP-40 price feed.
 //!
-//! The proxy-oracle runtime configures each source via `ProxyConfig.sources`
+//! The proxy-oracle runtime configures each source via its aggregator
 //! and reads it through the generated `PriceFeedClient` (calls `base()`,
 //! `decimals()`, `lastprice(asset)`). This contract implements that surface
 //! with instance storage you can poke from test code.
@@ -26,6 +26,10 @@ impl MockOracle {
         env.storage().instance().set(&Key::Base, &base);
         env.storage().instance().set(&Key::Decimals, &decimals);
         env.storage().instance().set(&Key::Resolution, &resolution);
+    }
+
+    pub fn set_decimals(env: Env, decimals: u32) {
+        env.storage().instance().set(&Key::Decimals, &decimals);
     }
 
     pub fn set_price(env: Env, asset: Asset, price: i128, timestamp: u64) {

@@ -144,7 +144,13 @@ impl<V: MedianVariant, S> Aggregate<S> for Median<V, S> {
             });
         }
 
-        values.sort_unstable();
+        values.sort_unstable_by(|(left, left_weight), (right, right_weight)| {
+            left.cmp(right)
+                .then_with(|| left.publish_time_ns.cmp(&right.publish_time_ns))
+                .then_with(|| left.exponent.cmp(&right.exponent))
+                .then_with(|| left.value.cmp(&right.value))
+                .then_with(|| left_weight.cmp(right_weight))
+        });
 
         Ok(values.swap_remove(V::median(&values)).0.into())
     }
@@ -175,6 +181,50 @@ mod tests {
                 .map(|weight| WeightedSource::new("source", *weight))
                 .collect(),
             min_sources,
+        }
+    }
+
+    #[test]
+    fn equal_price_metadata_is_permutation_independent() {
+        let older = price(100, 0, 100);
+        let newer = price(100, 0, 110);
+        for prices in [[older, newer], [newer, older]] {
+            let low = MedianLow::<i32>::new([WeightedSource::new(0, 1), WeightedSource::new(1, 1)]);
+            let high =
+                MedianHigh::<i32>::new([WeightedSource::new(0, 1), WeightedSource::new(1, 1)]);
+            assert_eq!(low.aggregate(prices.map(Some)).unwrap(), older);
+            assert_eq!(high.aggregate(prices.map(Some)).unwrap(), newer);
+        }
+    }
+
+    #[test]
+    fn scaled_equal_endpoints_preserve_deterministic_exponent_and_weight() {
+        let fine = price(100, 0, 100);
+        let coarse = Price {
+            price: 10,
+            expo: -5,
+            ..fine
+        };
+        for entries in [[(fine, 1), (coarse, 3)], [(coarse, 3), (fine, 1)]] {
+            let weights = entries.map(|(_, weight)| WeightedSource::<()>::new((), weight));
+            let prices = entries.map(|(price, _)| Some(price));
+            assert_eq!(
+                MedianLow::new(weights.clone()).aggregate(prices).unwrap(),
+                coarse
+            );
+            assert_eq!(MedianHigh::new(weights).aggregate(prices).unwrap(), coarse);
+        }
+        for prices in [[fine, coarse], [coarse, fine]] {
+            assert_eq!(
+                median_low(&[1, 1], 1).aggregate(prices.map(Some)).unwrap(),
+                fine
+            );
+            assert_eq!(
+                MedianHigh::<i32>::new([WeightedSource::new(0, 1), WeightedSource::new(1, 1)])
+                    .aggregate(prices.map(Some))
+                    .unwrap(),
+                coarse
+            );
         }
     }
 

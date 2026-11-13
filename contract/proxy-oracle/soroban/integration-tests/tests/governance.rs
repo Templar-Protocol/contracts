@@ -17,24 +17,18 @@
 //! G7 `requested_ttl` above `MAX_PROPOSAL_TTL_NS` is rejected.
 
 use soroban_sdk::Symbol;
-use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig};
+use templar_proxy_oracle_soroban_common::Asset;
 use templar_proxy_oracle_soroban_governance_common::{
     GovernanceAction, OperationKind, MAX_PROPOSAL_TTL_NS,
 };
-use templar_proxy_oracle_soroban_integration_tests::common::{ledger, Bootstrap};
+use templar_proxy_oracle_soroban_integration_tests::common::{
+    default_proxy_config, ledger, Bootstrap,
+};
 
 fn dummy_setproxy(b: &Bootstrap, label: &str) -> GovernanceAction {
     let asset = Asset::Other(Symbol::new(&b.env, label));
     let sources = b.source_configs(&asset);
-    GovernanceAction::SetProxy(
-        asset,
-        ProxyConfig {
-            sources,
-            min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
-        },
-    )
+    GovernanceAction::SetProxy(asset, default_proxy_config(sources))
 }
 
 #[test]

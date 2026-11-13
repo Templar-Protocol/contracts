@@ -340,6 +340,27 @@ pub(crate) fn check_operation_status(result: &WriteOperationResult) -> anyhow::R
     }
 }
 
+/// Governed execution is one-shot dispatch: even a nominally successful
+/// governance operation is a failure for the operator if its target receipt failed.
+/// Keep this stricter policy off ordinary writes that intentionally absorb failures.
+pub(crate) fn check_governed_execution_status(result: &WriteOperationResult) -> anyhow::Result<()> {
+    check_operation_status(result)?;
+    anyhow::ensure!(
+        result.operation.final_outcome().is_some(),
+        "governed execution {} has no final receipt evidence; its target outcome is unknown",
+        result.operation.id.0
+    );
+    let failed_contracts = failed_receipt_contracts(result);
+    anyhow::ensure!(
+        failed_contracts.is_empty(),
+        "governed execution {} dispatched but target receipt(s) failed on: {}; \
+         the proposal is consumed; inspect the transaction before deliberately resubmitting",
+        result.operation.id.0,
+        failed_contracts.join(", ")
+    );
+    Ok(())
+}
+
 /// Contracts whose receipts failed in the operation's final step. Non-empty
 /// even on a `Succeeded` operation when a callback absorbed a failed transfer.
 pub(crate) fn failed_receipt_contracts(result: &WriteOperationResult) -> Vec<&str> {
@@ -434,7 +455,10 @@ pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_operation_status, single_transaction, sputnik_function_call};
+    use super::{
+        check_governed_execution_status, check_operation_status, single_transaction,
+        sputnik_function_call,
+    };
     use near_account_id::AccountId;
     use near_api::types::transaction::actions::{Action, FunctionCallAction, TransferAction};
     use serde_json::json;
@@ -574,6 +598,26 @@ mod tests {
     fn succeeded_operation_is_ok() {
         check_operation_status(&result("Succeeded", "Succeeded"))
             .expect("a succeeded operation must not error");
+    }
+
+    #[test]
+    fn succeeded_dispatch_with_failed_target_is_rejected_only_for_governed_execution() {
+        let outcome = result("Succeeded", "Failed");
+        check_operation_status(&outcome).expect("ordinary writes may absorb failed receipts");
+        let error = check_governed_execution_status(&outcome)
+            .expect_err("a failed governed target is not successful execution");
+        assert!(error.to_string().contains("po-market.signer.testnet"));
+        for status in ["Failed", "Pending", "InProgress"] {
+            assert!(check_governed_execution_status(&result(status, "Succeeded")).is_err());
+        }
+        check_governed_execution_status(&result("Succeeded", "Succeeded"))
+            .expect("successful target receipts are accepted");
+        let mut missing_outcome = result("Succeeded", "Succeeded");
+        missing_outcome.operation.steps.clear();
+        assert!(check_governed_execution_status(&missing_outcome)
+            .expect_err("missing receipts cannot prove a target outcome")
+            .to_string()
+            .contains("unknown"));
     }
 
     #[test]

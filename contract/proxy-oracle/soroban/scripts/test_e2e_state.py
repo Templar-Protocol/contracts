@@ -189,6 +189,12 @@ class RpcQueue:
 
 
 class CheckpointSchemaTests(unittest.TestCase):
+    def test_old_aggregation_checkpoint_cannot_resume(self) -> None:
+        value = checkpoint()
+        value["schema_version"] = 1
+        with self.assertRaisesRegex(rehearsal.RehearsalError, "unsupported checkpoint schema"):
+            rehearsal.validate_checkpoint(value)
+
     def test_valid_checkpoint_accepts_reordered_phase_object(self) -> None:
         value = checkpoint()
         phase_results = value["phase_results"]
@@ -350,6 +356,14 @@ class CheckpointSchemaTests(unittest.TestCase):
 
 
 class InputValidationTests(unittest.TestCase):
+    def test_role_ttl_pages_reject_nonadvancing_or_malformed_offsets(self) -> None:
+        self.assertIsNone(rehearsal.decode_role_ttl_offset("void", 32))
+        self.assertEqual(rehearsal.decode_role_ttl_offset({"u32": 32}, 16), 32)
+        for value in ({"u32": 16}, {"u32": 0}, {"u32": -1},
+                      {"u32": 1 << 32}, {"u64": 32}, None):
+            with self.subTest(value=value), self.assertRaises(rehearsal.RehearsalError):
+                rehearsal.decode_role_ttl_offset(value, 16)
+
     def base_environment(self, directory: Path) -> dict[str, str]:
         return {"SRC": "operator", "OUT": str(directory / "out")}
 
@@ -570,9 +584,9 @@ class CheckpointStoreTests(unittest.TestCase):
             directory = Path(raw)
             first = self.make_store(directory)
             stale = rehearsal.CheckpointStore.load(directory / "state.json")
-            first.mutate(lambda value: value.__setitem__("schema_version", 1))
+            first.mutate(lambda value: value.__setitem__("schema_version", rehearsal.SCHEMA_VERSION))
             with self.assertRaisesRegex(rehearsal.RehearsalError, "revision conflict"):
-                stale.mutate(lambda value: value.__setitem__("schema_version", 1))
+                stale.mutate(lambda value: value.__setitem__("schema_version", rehearsal.SCHEMA_VERSION))
 
     def test_phase_results_must_be_contiguous(self) -> None:
         value = checkpoint()
@@ -1862,6 +1876,83 @@ class RehearsalLogicTests(unittest.TestCase):
             driver = self.governance_postcondition_driver(Path(raw), value, [9])
             driver.verify_deployment_postconditions("governance")
 
+    def test_partial_timelock_hardening_requires_matching_execution_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            value = checkpoint()
+            driver = self.governance_postcondition_driver(Path(raw), value, [])
+            governance = str(driver.deployments["governance"]["contract_id"])
+            operations = driver.store.value["operations"]
+            assert isinstance(operations, list)
+            ttls = {kind: 0 for kind in rehearsal.GOVERNANCE_OPERATION_KINDS}
+            original_view = driver.view
+
+            def view(contract, method, arguments=None, **kwargs):
+                if method == "get_operation_ttl":
+                    return ttls[arguments["kind"]]
+                return original_view(contract, method, arguments, **kwargs)
+
+            driver.view = view
+            kind = "SetProxy"
+            ttls[kind] = rehearsal.OPERATIONAL_TTL_NS
+            create_args = {
+                "caller": ACCOUNT, "id": 11, "requested_ttl": 0,
+                "operation": {"SetActionTtl": [kind, rehearsal.OPERATIONAL_TTL_NS]},
+            }
+            operations.append(self.successful_operation(
+                "configure", "proposal_create", governance, create_args,
+            ))
+            # A changed chain TTL is not evidence that an ambiguous execution
+            # succeeded, nor may another proposal's receipt be adopted.
+            for executed_id in (None, 12):
+                if executed_id is not None:
+                    operations.append(self.successful_operation(
+                        "configure", "proposal_execute", governance,
+                        {"caller": ACCOUNT, "id": executed_id}, number=2,
+                    ))
+                with self.assertRaises(rehearsal.RehearsalError):
+                    driver.verify_deployment_postconditions("governance")
+            operations.append(self.successful_operation(
+                "configure", "proposal_execute", governance,
+                {"caller": ACCOUNT, "id": 11}, number=3,
+            ))
+            driver.verify_deployment_postconditions("governance")
+            ttls["SetActionTtl"] = rehearsal.OPERATIONAL_TTL_NS
+            with self.assertRaises(rehearsal.RehearsalError):
+                driver.verify_deployment_postconditions("governance")
+
+    def test_confirmed_hardening_resume_does_not_create_replacement_proposals(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            driver = self.governance_postcondition_driver(Path(raw), checkpoint(), [])
+            governance = str(driver.deployments["governance"]["contract_id"])
+            operations = driver.store.value["operations"]
+            assert isinstance(operations, list)
+            for index, kind in enumerate(rehearsal.GOVERNANCE_OPERATION_KINDS):
+                operations.extend([
+                    self.successful_operation(
+                        "configure", "proposal_create", governance,
+                        {
+                            "caller": ACCOUNT, "id": index, "requested_ttl": 0,
+                            "operation": {"SetActionTtl": [kind, rehearsal.OPERATIONAL_TTL_NS]},
+                        }, number=index * 2 + 1,
+                    ),
+                    self.successful_operation(
+                        "configure", "proposal_execute", governance,
+                        {"caller": ACCOUNT, "id": index}, number=index * 2 + 2,
+                    ),
+                ])
+            original_view = driver.view
+            driver.view = lambda contract, method, arguments=None, **kwargs: (
+                rehearsal.OPERATIONAL_TTL_NS if method == "get_operation_ttl"
+                else original_view(contract, method, arguments, **kwargs)
+            )
+            transactions = self.Transactions()
+            driver.transactions = transactions
+            before = copy.deepcopy(driver.store.value)
+            driver.verify_deployment_postconditions("governance")
+            driver.harden_governance_timelocks()
+            self.assertEqual(driver.store.value, before)
+            self.assertEqual(transactions.calls, [])
+
     def test_pending_refresh_reuses_fresh_push_and_renews_stale_push(self) -> None:
         for phase in ("all", "refresh", "push"):
             for timestamp, failure in (
@@ -1908,6 +1999,7 @@ class RehearsalLogicTests(unittest.TestCase):
                         "batch_refresh": {"vec": [accepted]},
                         "ttl_assets": {"vec": [{"bool": True}]},
                         "ttl_contracts": {"vec": [{"bool": True}] * 3},
+                        **{f"ttl_role_{role}": "void" for role in rehearsal.GOVERNANCE_ROLES},
                     }
                     kinds = (
                         (["push"] if timestamp == 99 else [])
@@ -2424,64 +2516,28 @@ class RehearsalLogicTests(unittest.TestCase):
             )
             self.assertEqual(transactions.calls[0][3]["id"], 11)
 
-    def test_configure_skips_exact_existing_config(self) -> None:
+    def test_configure_rejects_changed_pin_without_submitting_or_repinning(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             driver = self.driver(Path(raw))
-            driver.runtime_sources = mock.Mock(  # type: ignore[method-assign]
-                return_value=()
-            )
-            expected = driver.proxy_config()
-            driver.view = mock.Mock(  # type: ignore[method-assign]
-                return_value=expected
-            )
-            driver.run_governance_operation = mock.Mock()  # type: ignore[method-assign]
-            driver.store.pass_phase = mock.Mock()  # type: ignore[method-assign]
+            pins = {name: 8 for name in rehearsal.RUNTIME_SOURCE_NAMES}
+            current = driver.proxy_config(pins)
+            before = copy.deepcopy(driver.store.value)
 
-            driver.phase_configure()
+            def view(_contract, function, _args=None, **_kwargs):
+                if function == "base":
+                    return {"Other": "USD"}
+                if function == "decimals":
+                    return 9
+                if function == "get_proxy":
+                    return current
+                raise AssertionError(f"unexpected view {function}")
 
-            driver.run_governance_operation.assert_not_called()
-            driver.store.pass_phase.assert_called_once()
-
-    def test_configure_only_creates_proposal_for_absent_config(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            driver = self.driver(Path(raw))
-            driver.runtime_sources = mock.Mock(  # type: ignore[method-assign]
-                return_value=()
-            )
-            expected = driver.proxy_config()
-            driver.view = mock.Mock(  # type: ignore[method-assign]
-                side_effect=[None, expected]
-            )
-            driver.run_governance_operation = mock.Mock()  # type: ignore[method-assign]
-            driver.store.pass_phase = mock.Mock()  # type: ignore[method-assign]
-
-            driver.phase_configure()
-
-            driver.run_governance_operation.assert_called_once()
-            driver.store.pass_phase.assert_called_once()
-
-    def test_configure_rejects_conflicting_existing_config(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            driver = self.driver(Path(raw))
-            driver.runtime_sources = mock.Mock(  # type: ignore[method-assign]
-                return_value=()
-            )
-            driver.view = mock.Mock(  # type: ignore[method-assign]
-                return_value={
-                    "sources": [],
-                    "min_sources": 4,
-                    "max_age_secs": 3600,
-                    "max_clock_drift_secs": 60,
-                }
-            )
-            driver.run_governance_operation = mock.Mock()  # type: ignore[method-assign]
-
-            with self.assertRaisesRegex(
-                rehearsal.RehearsalError, "conflicts"
-            ):
-                driver.phase_configure()
-
-            driver.run_governance_operation.assert_not_called()
+            driver.view = view
+            driver.sep40_price = lambda *_: {"price": 1_000_000_000, "timestamp": 3700}
+            with mock.patch.object(rehearsal.time, "time", return_value=3700):
+                with self.assertRaisesRegex(rehearsal.RehearsalError, "conflicts"):
+                    driver.phase_configure()
+            self.assertEqual(driver.store.value, before)
 
     def test_recorded_push_requires_matching_saved_payload(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

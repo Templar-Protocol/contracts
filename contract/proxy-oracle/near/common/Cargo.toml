@@ -17,6 +17,7 @@ near-primitives = { workspace = true, optional = true }
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }
 rstest.workspace = true
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 [lints]
 workspace = true

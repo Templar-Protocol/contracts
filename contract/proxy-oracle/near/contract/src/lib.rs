@@ -31,7 +31,6 @@ use templar_proxy_oracle_near_common::{
     event::{Event, MAX_MANUAL_TRIP_METADATA_LEN},
     governance::ProxyOracleAdminInterface,
     input::Source,
-    proxy::has_zero_weighted_source,
     request::OracleRequest,
     state,
 };
@@ -341,8 +340,10 @@ impl Contract {
 impl ProxyOracleAdminInterface for Contract {
     fn admin_set_proxy(&mut self, id: PriceIdentifier, proxy: Option<Proxy<Source>>) {
         self.assert_owner();
-        if proxy.as_ref().is_some_and(has_zero_weighted_source) {
-            env::panic_str("Proxy sources must have positive weights");
+        if let Some(proxy) = &proxy {
+            proxy.aggregator.validate().unwrap_or_else(|error| {
+                env::panic_str(&format!("Invalid proxy aggregator: {error:?}"));
+            });
         }
         self.state.set_proxy(id, proxy);
     }

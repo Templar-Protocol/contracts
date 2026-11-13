@@ -1,14 +1,17 @@
 //! Numeric codes for events and structured errors. Kept centralized so any
 //! tweak shows up in one place rather than scattered across publish paths.
 
-use crate::{AGGREGATION_FAILED_CODE, STORAGE_FAILED_CODE};
+use crate::{
+    AGGREGATION_LENGTH_MISMATCH_CODE, AGGREGATION_TOO_FEW_SOURCES_CODE, STORAGE_FAILED_CODE,
+};
 use templar_proxy_oracle_kernel::proxy::{
+    aggregator::method::Error as AggregationError,
     circuit_breaker::{CircuitBreaker, CircuitBreakerError, PriceBlockedReason},
     ResolveError,
 };
 use templar_proxy_oracle_soroban_common::ContractError;
 
-pub fn blocked_reason_code(reason: PriceBlockedReason) -> u32 {
+pub fn blocked_reason_code(reason: &PriceBlockedReason) -> u32 {
     match reason {
         PriceBlockedReason::ManuallyTripped => 1,
         PriceBlockedReason::BreakerTripped { .. } => 2,
@@ -24,9 +27,14 @@ pub fn breaker_kind_code(breaker: &CircuitBreaker) -> u32 {
     }
 }
 
-pub fn resolve_error_code(error: ResolveError) -> u32 {
+pub fn resolve_error_code(error: &ResolveError) -> u32 {
     match error {
-        ResolveError::Aggregation(_) => AGGREGATION_FAILED_CODE,
+        ResolveError::Aggregation(AggregationError::LengthMismatch { .. }) => {
+            AGGREGATION_LENGTH_MISMATCH_CODE
+        }
+        ResolveError::Aggregation(AggregationError::TooFewValidSources { .. }) => {
+            AGGREGATION_TOO_FEW_SOURCES_CODE
+        }
         ResolveError::CircuitBreaker(_) => STORAGE_FAILED_CODE,
     }
 }
@@ -45,16 +53,20 @@ pub fn breaker_error(error: CircuitBreakerError) -> ContractError {
 mod tests {
     use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerError, ResolveError};
 
-    use super::{resolve_error_code, AGGREGATION_FAILED_CODE, STORAGE_FAILED_CODE};
+    use super::{
+        resolve_error_code, AGGREGATION_LENGTH_MISMATCH_CODE, AGGREGATION_TOO_FEW_SOURCES_CODE,
+        STORAGE_FAILED_CODE,
+    };
 
     #[test]
     fn unexpected_breaker_failures_map_to_storage() {
         assert_eq!(
-            resolve_error_code(ResolveError::CircuitBreaker(
+            resolve_error_code(&ResolveError::CircuitBreaker(
                 CircuitBreakerError::InvalidPrice
             )),
             STORAGE_FAILED_CODE
         );
-        assert_ne!(STORAGE_FAILED_CODE, AGGREGATION_FAILED_CODE);
+        assert_ne!(STORAGE_FAILED_CODE, AGGREGATION_LENGTH_MISMATCH_CODE);
+        assert_ne!(STORAGE_FAILED_CODE, AGGREGATION_TOO_FEW_SOURCES_CODE);
     }
 }

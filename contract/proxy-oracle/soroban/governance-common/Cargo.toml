@@ -14,6 +14,7 @@ path = "src/lib.rs"
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 templar-primitives = { path = "../../../../primitives", version = "0.1.3", default-features = false }
 templar-proxy-oracle-governance-kernel.workspace = true
+templar-proxy-oracle-kernel = { path = "../../kernel", version = "0.1.4", default-features = false }
 templar-proxy-oracle-soroban-common.workspace = true
 
 [dev-dependencies]

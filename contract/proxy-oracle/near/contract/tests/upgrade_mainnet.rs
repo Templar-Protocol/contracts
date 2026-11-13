@@ -1,14 +1,8 @@
-//! The upgrade this release actually performs: mainnet's `0.3.0` proxy oracles, on v1 state, take
-//! the post-audit code **without a migration**.
-//!
-//! Every persisted Borsh layout survived the audit remediation, so `StateVersion::VERSION` is still
-//! `1` and no migration exists to run. What the remediation did add is validation the new runtime
-//! applies to state it did not write — so the claim worth testing is not "the bytes decode" in the
-//! abstract, but "the bytes *mainnet actually holds* decode, and still satisfy the rules the new
-//! code enforces when it loads them".
-//!
-//! The fixture is therefore a real storage trie, not a constructed one. Refresh it with
-//! `generate_mainnet_upgrade_state_patch`.
+//! Compatibility rehearsal for the recorded `0.3.0` artifact and the literal v1 trie captured
+//! from `proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near`: replace code without migration.
+//! This fixture is not an inventory of current deployments or evidence about the rest of the fleet.
+//! No live state is fetched by the compatibility tests; the ignored generator is an explicit
+//! fixture-maintenance tool, not part of upgrade verification.
 
 #![allow(clippy::unwrap_used)]
 
@@ -19,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use near_api::{types::AccountId, Contract, NetworkConfig};
 use templar_common::oracle::pyth::PriceIdentifier;
@@ -28,7 +22,7 @@ use templar_gateway_testing::{ArtifactId, SandboxHarness};
 
 use common::StatePatch;
 
-/// The release every mainnet proxy oracle runs, and so the only version this upgrade starts from.
+/// Immutable released artifact paired with this account's captured trie, not a fleet assertion.
 const DEPLOYED_VERSION: &str = "0.3.0";
 
 /// The account the fixture was taken from.
@@ -51,8 +45,7 @@ fn patch() -> StatePatch {
     .unwrap()
 }
 
-/// Reproduce the live deployment — released `0.3.0` code carrying mainnet's own v1 state — then
-/// replace only the code, exactly as an upgrade does.
+/// Reproduce the recorded artifact/trie pair, then replace only code without migration.
 async fn upgrade_from_mainnet_state(harness: &SandboxHarness) -> Result<AccountId> {
     let account_id = harness.proxy_oracle_signer_account_id.0.clone();
 
@@ -64,6 +57,23 @@ async fn upgrade_from_mainnet_state(harness: &SandboxHarness) -> Result<AccountI
         )
         .await?;
     harness.patch_state(&account_id, patch()).await?;
+    let client = harness.client()?;
+    let owner_before = client
+        .read(templar_gateway_methods_spec::owner::GetOwner {
+            contract_id: account_id.clone(),
+        })
+        .await?;
+    let mut breaker_sets = Vec::new();
+    for id in [USDC_PRICE_ID, USTRY_PRICE_ID] {
+        let before = client
+            .read(proxy_oracle::GetProxyCircuitBreakerSet {
+                oracle_id: account_id.clone(),
+                id,
+            })
+            .await?
+            .context("captured feed has a breaker set")?;
+        breaker_sets.push((id, before));
+    }
 
     // The upgrade under test: new code over untouched state, and no `migrate` call, because the
     // release defines no migration to run.
@@ -73,6 +83,28 @@ async fn upgrade_from_mainnet_state(harness: &SandboxHarness) -> Result<AccountI
             templar_gateway_testing::wasm::proxy_oracle().await.to_vec(),
         )
         .await?;
+    assert_eq!(
+        client
+            .read(templar_gateway_methods_spec::owner::GetOwner {
+                contract_id: account_id.clone(),
+            })
+            .await?,
+        owner_before,
+    );
+    for (id, before) in breaker_sets {
+        let after = client
+            .read(proxy_oracle::GetProxyCircuitBreakerSet {
+                oracle_id: account_id.clone(),
+                id,
+            })
+            .await?
+            .context("code-only upgrade retains captured breaker set")?;
+        assert_eq!(after.next_id(), before.next_id());
+        assert_eq!(
+            after, before,
+            "captured breaker state must remain byte-layout compatible"
+        );
+    }
 
     Ok(account_id)
 }
@@ -131,7 +163,7 @@ async fn mainnet_upgrade_starts_from_the_released_version() -> Result<()> {
     Ok(())
 }
 
-/// The release's central claim: new code loads mainnet's stored state untouched.
+/// New code loads this captured account's stored state untouched.
 #[tokio::test]
 async fn mainnet_upgrade_needs_no_migration() -> Result<()> {
     let harness = SandboxHarness::start().await?;
@@ -155,7 +187,7 @@ async fn mainnet_upgrade_needs_no_migration() -> Result<()> {
         "no migration should be outstanding after the upgrade"
     );
 
-    // Every feed mainnet had is still there, still readable through the new types.
+    // Both feeds in the captured trie remain readable through the new types.
     let mut proxies = client
         .read(proxy_oracle::ListProxies {
             oracle_id: oracle_id.clone(),
@@ -177,33 +209,6 @@ async fn mainnet_upgrade_needs_no_migration() -> Result<()> {
                 .is_some(),
             "{price_id} lost its proxy definition across the upgrade"
         );
-    }
-
-    Ok(())
-}
-
-/// The hazard a preflight exists to catch: the new runtime treats a breaker set it will not accept
-/// as *absent*, which silently disarms the feed. Mainnet's stored sets have to survive that gate.
-#[tokio::test]
-async fn mainnet_upgrade_preserves_loadable_breaker_sets() -> Result<()> {
-    let harness = SandboxHarness::start().await?;
-    let client = harness.client()?;
-    let oracle_id = upgrade_from_mainnet_state(&harness).await?;
-
-    for price_id in [USDC_PRICE_ID, USTRY_PRICE_ID] {
-        // Deserializing into the post-audit `CircuitBreakerSet` is itself half the assertion: a set
-        // the new types cannot parse is exactly the failure mode being ruled out.
-        let set = client
-            .read(proxy_oracle::GetProxyCircuitBreakerSet {
-                oracle_id: oracle_id.clone(),
-                id: price_id,
-            })
-            .await?
-            .unwrap_or_else(|| panic!("{price_id} has no stored breaker set"));
-
-        set.validate().unwrap_or_else(|error| {
-            panic!("{price_id}'s stored breaker set is inert under the new rules: {error}")
-        });
     }
 
     Ok(())

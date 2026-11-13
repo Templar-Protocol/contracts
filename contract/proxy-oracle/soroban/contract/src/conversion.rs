@@ -5,24 +5,9 @@
 //! `NormalizedPrice { i64, expo, timestamp }`. Adapters scale `NormalizedPrice`
 //! back to SEP-40 with their own per-adapter decimals.
 
-use soroban_sdk::Env;
 use templar_primitives::Nanoseconds;
-use templar_proxy_oracle_kernel::{
-    proxy::{
-        aggregator::{method::median::MedianLow, Aggregator},
-        circuit_breaker::{
-            CircuitBreaker, CumulativeChange, MonotonicRun, StepwiseChange, WindowedChangeDelta,
-        },
-        FreshnessFilter, Proxy, WeightedSource,
-    },
-    Price,
-};
-use templar_proxy_oracle_soroban_common::{
-    CircuitBreakerConfig, ContractError, CumulativeChangeConfig as SorobanCumulativeChangeConfig,
-    MonotonicRunConfig as SorobanMonotonicRunConfig, NormalizedPrice, PriceData, PriceFeedClient,
-    ProxyConfig, StepwiseChangeConfig as SorobanStepwiseChangeConfig,
-    WindowedChangeDeltaConfig as SorobanWindowedChangeDeltaConfig,
-};
+use templar_proxy_oracle_kernel::Price;
+use templar_proxy_oracle_soroban_common::{ContractError, NormalizedPrice, PriceData};
 
 /// Convert a source feed's `PriceData` (decimal-prefixed i128) into the
 /// kernel's `Price { i64, expo }` representation, downscaling if `value`
@@ -59,100 +44,6 @@ pub fn kernel_price_to_normalized(price: Price) -> NormalizedPrice {
         expo: price.expo,
         timestamp: price.publish_time_ns.as_secs(),
     }
-}
-
-pub fn circuit_breaker_from_config(
-    config: CircuitBreakerConfig,
-    baseline: Option<Price>,
-) -> Result<CircuitBreaker, ContractError> {
-    match config {
-        CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-            max_relative_change,
-        }) => {
-            let max_relative_change = max_relative_change.to_decimal();
-            if max_relative_change.is_zero() {
-                return Err(ContractError::InvalidInput);
-            }
-            Ok(CircuitBreaker::StepwiseChange(StepwiseChange {
-                max_relative_change,
-            }))
-        }
-        CircuitBreakerConfig::MonotonicRun(SorobanMonotonicRunConfig {
-            max_streak,
-            min_relative_step_change,
-        }) => {
-            if max_streak == 0 {
-                return Err(ContractError::InvalidInput);
-            }
-            let min_relative_step_change = min_relative_step_change.to_decimal();
-            if min_relative_step_change.is_zero() {
-                return Err(ContractError::InvalidInput);
-            }
-            Ok(CircuitBreaker::MonotonicRun(MonotonicRun {
-                max_streak,
-                min_relative_step_change,
-            }))
-        }
-        CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
-            window_len,
-            lookback_windows,
-            max_relative_mean_change,
-        }) => {
-            if window_len < 2 {
-                return Err(ContractError::InvalidInput);
-            }
-            if lookback_windows == 0 {
-                return Err(ContractError::InvalidInput);
-            }
-            let max_relative_mean_change = max_relative_mean_change.to_decimal();
-            if max_relative_mean_change.is_zero() {
-                return Err(ContractError::InvalidInput);
-            }
-            Ok(CircuitBreaker::WindowedChangeDelta(WindowedChangeDelta {
-                window_len,
-                lookback_windows,
-                max_relative_mean_change,
-            }))
-        }
-        CircuitBreakerConfig::CumulativeChange(SorobanCumulativeChangeConfig {
-            max_relative_change,
-        }) => {
-            let max_relative_change = max_relative_change.to_decimal();
-            if max_relative_change.is_zero() {
-                return Err(ContractError::InvalidInput);
-            }
-            Ok(CircuitBreaker::CumulativeChange(CumulativeChange {
-                baseline: baseline.ok_or(ContractError::InvalidInput)?,
-                max_relative_change,
-            }))
-        }
-    }
-}
-
-pub fn kernel_proxy_from_config(config: &ProxyConfig) -> Proxy<u32> {
-    let mut median =
-        MedianLow::new((0..config.sources.len()).map(|index| WeightedSource::new(index, 1)));
-    median.min_sources = config.min_sources;
-    Proxy::new(
-        Aggregator::MedianLow(median),
-        FreshnessFilter::new(
-            config.max_age_secs.map(Nanoseconds::from_secs),
-            config.max_clock_drift_secs.map(Nanoseconds::from_secs),
-        ),
-    )
-}
-
-pub fn validate_source_decimals(env: &Env, config: &ProxyConfig) -> Result<(), ContractError> {
-    for source in config.sources.iter() {
-        let decimals = PriceFeedClient::new(env, &source.oracle)
-            .try_decimals()
-            .map_err(|_| ContractError::InvalidInput)?
-            .map_err(|_| ContractError::InvalidInput)?;
-        if decimals > 18 {
-            return Err(ContractError::InvalidInput);
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

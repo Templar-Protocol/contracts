@@ -14,10 +14,10 @@
 
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Symbol};
-use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig};
+use templar_proxy_oracle_soroban_common::Asset;
 use templar_proxy_oracle_soroban_contract::RefreshStatus;
 use templar_proxy_oracle_soroban_governance_common::{GovernanceAction, OperationKind, Role};
-use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
+use templar_proxy_oracle_soroban_integration_tests::common::{default_proxy_config, Bootstrap};
 
 #[test]
 fn lengthening_manual_trip_ttl_blocks_single_tx_response() {
@@ -63,15 +63,7 @@ fn proposal_captures_ttl_at_create_time() {
     // Submit a SetProxy while SetProxy's TTL is still 0 — captures TTL=0.
     let asset = Asset::Other(Symbol::new(&b.env, "ETH"));
     let sources = b.source_configs(&asset);
-    let action = GovernanceAction::SetProxy(
-        asset,
-        ProxyConfig {
-            sources,
-            min_sources: 3,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
-        },
-    );
+    let action = GovernanceAction::SetProxy(asset, default_proxy_config(sources));
     let id_first = b.governance.next_proposal_id();
     b.governance
         .create_proposal(&b.admin, &id_first, &action, &0);

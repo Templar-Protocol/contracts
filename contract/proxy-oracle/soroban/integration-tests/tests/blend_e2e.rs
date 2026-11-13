@@ -131,6 +131,7 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
         sources.push_back(SourceConfig {
             oracle,
             asset: btc_asset.clone(),
+            expected_decimals: 7,
         });
     }
     let create_id = governance.next_proposal_id();
@@ -140,11 +141,15 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
         &GovernanceAction::SetProxy(
             btc_asset.clone(),
             ProxyConfig {
-                sources,
-                min_sources: 3,
-                max_age_secs: Some(300),
-                // Feeds a Blend pool reads use zero drift (RUNBOOK, Guardian L-05).
-                max_clock_drift_secs: Some(0),
+                aggregator: templar_proxy_oracle_soroban_common::AggregatorConfig::MedianLow(
+                    templar_proxy_oracle_soroban_common::MedianConfig {
+                        sources,
+                        min_sources: 3,
+                    },
+                ),
+                max_age_secs: 300,
+                // Feeds a Blend pool reads use zero drift.
+                max_clock_drift_secs: 0,
             },
         ),
         &0,

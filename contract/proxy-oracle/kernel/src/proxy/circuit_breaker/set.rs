@@ -432,6 +432,13 @@ impl<R: CircuitBreakerRule> CircuitBreakerSet<R> {
 }
 
 impl CircuitBreakerSet<CircuitBreaker> {
+    /// Clear the asset lifecycle without reusing any previously allocated breaker ID.
+    pub fn reset_preserving_next_id(&mut self) {
+        let next_id = self.0.next_id;
+        *self = Self::empty();
+        self.0.next_id = next_id;
+    }
+
     pub fn add(
         &mut self,
         breaker_id: u32,
