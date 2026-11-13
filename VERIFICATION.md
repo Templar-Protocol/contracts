@@ -5,20 +5,55 @@
 Controlled local NEAR execution only. The production converter ABI, real
 settlement semantics and safe intermediate-state admission are unavailable;
 production submissions remain disabled. No production deployment, conversion,
-release or PR merge was performed. Deterministic genuine Ed25519 signatures do
-not establish distributed-MPC availability.
+or release was performed during this refresh. PR713 was merged externally.
+Deterministic genuine Ed25519 signatures do not establish distributed-MPC availability.
 
-Controlled-local code is on `feat/hot-omni-4-orchestration`. The current PR713
-review corrections and simplification are recorded first. Earlier checkpoints
-remain explicitly historical; other PR review findings remain outside this repair.
-[Published-head CI](https://github.com/Templar-Protocol/contracts/actions?query=branch%3Afeat%2Fhot-omni-4-orchestration)
-and human review are separate from this local evidence; no merge approval is claimed.
+Controlled-local code is on `feat/hot-omni-4-orchestration-restacked`, above the
+refreshed second and third layers. Original branches and reviews are preserved.
+[Published-head CI](https://github.com/Templar-Protocol/contracts/actions?query=branch%3Afeat%2Fhot-omni-4-orchestration-restacked)
+and human review remain separate from local evidence; no merge approval is claimed.
 
 The approved full-matrix environment is the repository's CI-standard
 `NEAR_SANDBOX_BLOCK_MS=120`, with serialized node cases. Actual chain validity and
 expiry checks are unchanged. Default-40-ms raw-workflow liveness is not claimed.
 
-## PR713 review remediation and simplification
+## Post-merge configuration-patch refresh
+
+The replacement second layer is [PR723](https://github.com/Templar-Protocol/contracts/pull/723),
+head `a77da4a1381bf52c61612fe429beb20313309992`, based on `dev` at
+`4cb16898ccd39a55dd89c32f33a33449b650da6d` (merged PR713 plus PR721).
+The third and fourth layers contain only their unique changes above that parent;
+no published history was force-pushed.
+
+Royal's Decimal, code-identity, mutable-blob, fixture-provenance and failure-digest
+findings are repaired. The real Market 1.6.1 capture now uses `layout-market.testnet`
+and pins the configuration Borsh schema. Transient finalized-account RPC failures
+retry within the existing deadline. Unrelated MPC test sequencing belongs to layer 3.
+
+Authoring remains read-only and permits asset/oracle/recipient edits. It does not
+certify market isolation, raw-unit equivalence or solvency; zero in-flight counters
+are insufficient production admission. Validation uses current protocol rules,
+not a frozen 1.6.1 validator. Production migration approval remains with ENG-873.
+
+| Verification on the refreshed second layer | Observed result |
+|---|---|
+| `just test-fast -p templar-manager -p templar-sandbox -p templar-gateway-store --no-fail-fast` | 692 passed; 19 node/ignored cases excluded |
+| `NEAR_SANDBOX_BLOCK_MS=120 just test-sandbox --stale -p templar-manager -p templar-gateway-testing --test-threads 1 --no-fail-fast --success-output final` | 19 passed; one slow and two process-pipe leak warnings |
+| `cargo check --workspace` | Passed |
+| `cargo clippy -p templar-manager -p templar-sandbox -p templar-gateway-testing --all-targets -- -D warnings` | Passed; existing unknown `clippy::ignore_without_reason` warning |
+| `just docs-check` and `mdbook build docs --dest-dir /tmp/hot-omni-pr714-docs-render` | Passed, including link checks |
+
+The node run temporarily drove configuration generation, planning, replay and
+apply through the actual compiled `tmplrmgr`; the in-process test helper was
+restored before publication. It exercised local/global restoration, receipt-time
+rollback, invalid/no-clobber inputs and code drift without storage drift.
+
+A separate 40 ms/six-worker run failed four sandbox startups and one raw-MPC
+submission. It is not classified as spurious; no default-40-ms parallel claim,
+timeout increase, disabled test or new default-CI script suite is introduced.
+The full one-off migration acceptance matrix was not rerun for this refresh.
+
+## Historical PR713 review remediation and simplification
 
 Addressed [royalf00l's review](https://github.com/Templar-Protocol/contracts/pull/713#pullrequestreview-5861606420),
 which assessed `4158e70c`. The selected remote head was
