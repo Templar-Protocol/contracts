@@ -57,10 +57,14 @@ impl YieldWeights {
         self
     }
 
-    pub fn total_weight(&self) -> NonZeroU16 {
+    pub fn checked_total_weight(&self) -> Option<NonZeroU16> {
         self.r#static
             .values()
-            .try_fold(self.supply, |a, b| a.checked_add(*b))
+            .try_fold(self.supply, |total, weight| total.checked_add(*weight))
+    }
+
+    pub fn total_weight(&self) -> NonZeroU16 {
+        self.checked_total_weight()
             .unwrap_or_else(|| crate::panic_with_message("Total weight overflow"))
     }
 
