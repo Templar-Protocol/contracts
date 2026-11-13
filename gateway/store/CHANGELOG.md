@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-store-v0.2.6...templar-gateway-store-v0.3.0) - 2026-11-13
+
+### Fixed
+
+- *(gateway)* [**breaking**] count unloadable operations in startup recovery instead of aborting (ENG-476) ([#720](https://github.com/Templar-Protocol/contracts/pull/720))
+- *(gateway)* decode stored prepared signed transactions (ENG-478) ([#721](https://github.com/Templar-Protocol/contracts/pull/721))
+
 ### Fixed
 
 - Decode canonical NEAR V0 and V1 signed transactions when reloading Prepared operations from Postgres (ENG-478). Existing stored bytes need no migration.

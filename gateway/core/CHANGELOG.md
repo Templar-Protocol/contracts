@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-core-v0.5.3...templar-gateway-core-v0.6.0) - 2026-11-13
+
+### Added
+
+- *(gateway)* add DAO proposals and migration inspection reads ([#713](https://github.com/Templar-Protocol/contracts/pull/713))
+
+### Fixed
+
+- *(gateway)* [**breaking**] count unloadable operations in startup recovery instead of aborting (ENG-476) ([#720](https://github.com/Templar-Protocol/contracts/pull/720))
+
 ### Added
 
 - Read finalized protocol limits and their active version together without changing the `chain.getProtocolLimits` response.

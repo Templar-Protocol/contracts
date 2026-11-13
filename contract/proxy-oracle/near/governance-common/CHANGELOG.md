@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-near-governance-common-v0.2.6...templar-proxy-oracle-near-governance-common-v0.2.7) - 2026-11-13
+
+### Added
+
+- *(gateway)* add DAO proposals and migration inspection reads ([#713](https://github.com/Templar-Protocol/contracts/pull/713))
+
 ## [0.2.3](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-near-governance-common-v0.2.2...templar-proxy-oracle-near-governance-common-v0.2.3) - 2026-08-25
 
 ### Added

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/Templar-Protocol/contracts/compare/templar-common-v2.3.0...templar-common-v3.0.0) - 2026-11-13
+
+### Added
+
+- *(redstone)* add adapter administration interface ([#709](https://github.com/Templar-Protocol/contracts/pull/709))
+- *(registry)* [**breaking**] add role-gated uploads and DAO approvals ([#708](https://github.com/Templar-Protocol/contracts/pull/708))
+
 ### Changed
 
 - *(registry)* emit `Deployed` 1.1.0 with nullable deployment provenance

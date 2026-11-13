@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-soroban-pyth-lazer-source-contract-v0.1.1...templar-proxy-oracle-soroban-pyth-lazer-source-contract-v0.1.2) - 2026-11-13
+
+### Added
+
+- *(gateway)* add DAO proposals and migration inspection reads ([#713](https://github.com/Templar-Protocol/contracts/pull/713))
+
 ## [0.1.0](https://github.com/Templar-Protocol/contracts/releases/tag/templar-proxy-oracle-soroban-pyth-lazer-source-contract-v0.1.0) - 2026-10-25
 
 ### Added

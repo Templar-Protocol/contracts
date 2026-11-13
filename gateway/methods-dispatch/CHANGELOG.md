@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-methods-dispatch-v0.6.1...templar-gateway-methods-dispatch-v0.6.2) - 2026-11-13
+
+### Added
+
+- *(gateway)* add DAO proposals and migration inspection reads ([#713](https://github.com/Templar-Protocol/contracts/pull/713))
+
 ### Fixed
 
 - Include the serialized signer signature in governance proposal size planning from protocol 85, retaining the unsigned transaction bound for earlier protocols.
