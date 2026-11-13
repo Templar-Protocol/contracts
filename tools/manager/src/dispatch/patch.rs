@@ -339,10 +339,11 @@ pub(super) async fn build(
             return Err(error);
         }
     };
+    let target_code_hash = CryptoHash::from(near_api::types::CryptoHash::hash(&state.code));
+    spec.verify_code_hash(&target_code_hash)?;
     let resolved = expand_prefixes(source, &state)?;
     let (patch, unguarded, longest_key, longest_value, state_increase) =
         compile_patch(&spec.account_id, resolved.clone())?;
-    let target_code_hash = CryptoHash::from(near_api::types::CryptoHash::hash(&state.code));
     let longest_key = u64::try_from(longest_key).context("patch key length exceeds u64")?;
     let longest_value = u64::try_from(longest_value).context("patch value length exceeds u64")?;
     reporter.record(Check::new(

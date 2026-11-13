@@ -17,8 +17,8 @@ use crate::{
     context::{print_json, CliContext},
     spec::{
         patch::{
-            ByteExpr, Expectation, PatchCheck, PatchOperation, PatchSpec, PatchViewCheck,
-            PATCH_SCHEMA_VERSION,
+            ByteExpr, Expectation, PatchCheck, PatchCodeCheck, PatchOperation, PatchSpec,
+            PatchViewCheck, PinnedFile, Sha256Digest, PATCH_SCHEMA_VERSION,
         },
         patch_plan::RestoreCode,
     },
@@ -65,18 +65,69 @@ pub(crate) fn apply_changes(
 
 fn apply_document(document: &mut Value, changes: &[ConfigChange]) -> Result<()> {
     for change in changes {
+        let (ConfigChange::Test { path, value } | ConfigChange::Replace { path, value }) = change;
         if let ConfigChange::Replace { path, .. } = change {
             ensure!(
                 !path.is_empty(),
                 "root configuration replacement is not supported"
             );
         }
-        // json-patch uses its RFC 6901 parser, including escaped object keys,
-        // canonical array indices, existing-path checks and ordered tests.
-        let operation: json_patch::PatchOperation =
-            serde_json::from_value(serde_json::to_value(change)?)
-                .context("invalid configuration JSON Pointer")?;
+        // The typed pointer parser retains RFC 6901 escaping and index validation.
+        let parsed_path = path.parse().context("invalid configuration JSON Pointer")?;
+        let mut value = value.clone();
+        normalize_decimal_values(path, &mut value)?;
+        let operation = match change {
+            ConfigChange::Test { .. } => {
+                json_patch::PatchOperation::Test(json_patch::TestOperation {
+                    path: parsed_path,
+                    value,
+                })
+            }
+            ConfigChange::Replace { .. } => {
+                json_patch::PatchOperation::Replace(json_patch::ReplaceOperation {
+                    path: parsed_path,
+                    value,
+                })
+            }
+        };
         json_patch::patch(document, &[operation]).context("apply configuration JSON Patch")?;
+    }
+    Ok(())
+}
+
+/// Only these configuration leaves have Decimal's fixed-point string semantics.
+/// Keep other string-encoded scalars and unknown fields intact for the strict
+/// configuration round-trip check, including inside whole-object changes.
+fn normalize_decimal_values(path: &str, value: &mut Value) -> Result<()> {
+    const DECIMAL_PATHS: &[&str] = &[
+        "/borrow_mcr_maintenance",
+        "/borrow_mcr_liquidation",
+        "/borrow_asset_maximum_usage_ratio",
+        "/liquidation_maximum_spread",
+        "/borrow_origination_fee/Proportional",
+        "/supply_withdrawal_fee/fee/Proportional",
+        "/borrow_interest_rate_strategy/Linear/base",
+        "/borrow_interest_rate_strategy/Linear/top",
+        "/borrow_interest_rate_strategy/Piecewise/base",
+        "/borrow_interest_rate_strategy/Piecewise/optimal",
+        "/borrow_interest_rate_strategy/Piecewise/rate_1",
+        "/borrow_interest_rate_strategy/Piecewise/rate_2",
+        "/borrow_interest_rate_strategy/Exponential2/base",
+        "/borrow_interest_rate_strategy/Exponential2/top",
+        "/borrow_interest_rate_strategy/Exponential2/eccentricity",
+    ];
+    for decimal_path in DECIMAL_PATHS {
+        let Some(relative) = decimal_path.strip_prefix(path) else {
+            continue;
+        };
+        if !relative.is_empty() && !relative.starts_with('/') {
+            continue;
+        }
+        if let Some(leaf) = value.pointer_mut(relative) {
+            let decimal = templar_primitives::number::Decimal::deserialize(&*leaf)
+                .with_context(|| format!("invalid Decimal at {decimal_path}"))?;
+            *leaf = serde_json::to_value(decimal)?;
+        }
     }
     Ok(())
 }
@@ -90,8 +141,8 @@ struct ConfigurationOffsets {
 
 #[derive(Serialize)]
 struct SuffixHashes {
-    before: String,
-    after: String,
+    before: Sha256Digest,
+    after: Sha256Digest,
 }
 
 #[derive(Serialize)]
@@ -131,14 +182,14 @@ struct GenerationReport {
     snapshot_block_height: u64,
     layout: &'static str,
     release: &'static templar_contract_artifacts::ArtifactRelease,
-    effective_code_sha256: String,
+    effective_code_sha256: Sha256Digest,
     effective_code_hash: CryptoHash,
     restore: RestoreCode,
     changes: Vec<ConfigChange>,
     old_configuration: MarketConfiguration,
     new_configuration: MarketConfiguration,
-    old_state_sha256: String,
-    new_state_sha256: String,
+    old_state_sha256: Sha256Digest,
+    new_state_sha256: Sha256Digest,
     configuration_offsets: ConfigurationOffsets,
     opaque_suffix_sha256: SuffixHashes,
     economic_caveat: &'static str,
@@ -159,92 +210,92 @@ pub(super) async fn generate(ctx: CliContext, args: GenerateConfigPatch) -> Resu
         paths.blobs.display()
     );
     let mut reporter = ctx.reporter(&[]);
-    let limits = ctx.client.read(chain::GetProtocolLimits).await?;
-    let snapshot = match snapshot_final(
-        &ctx,
-        &args.market_id,
-        &limits,
-        "market.config_patch.state_complete",
-        &mut reporter,
-    )
-    .await
-    {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            reporter.digest();
-            return Err(error);
-        }
-    };
-    let release = market_state::supported_release(&snapshot.code)?;
-    let restore = restore_from_state(&snapshot)?;
-    let mut entries = snapshot
-        .entries
-        .iter()
-        .filter(|entry| entry.key == b"STATE");
-    let state = &entries
-        .next()
-        .context("market snapshot has no STATE entry")?
-        .value;
-    ensure!(
-        entries.next().is_none(),
-        "market snapshot has ambiguous STATE entries"
-    );
-    let envelope = market_state::decode(state)?;
-    let block_hash = CryptoHash::from(snapshot.block_hash);
-    let reader = templar_gateway_core::NearClient::new(ctx.network_config().clone());
-    let market_reader = reader.market(args.market_id.clone());
-    let chain_reader = reader.chain();
-    let (view, block) = tokio::try_join!(
-        market_reader.get_configuration_at(block_hash),
-        chain_reader.block(Some(block_hash)),
-    )?;
-    ensure!(
-        block.hash == block_hash,
-        "snapshot block header hash mismatch"
-    );
-    ensure!(
-        view == envelope.configuration,
-        "STATE configuration differs from get_configuration at the snapshot block"
-    );
-    let after = apply_changes(&envelope.configuration, &changes)?;
-    let replacement = envelope.replace(state, &after)?;
-    let new_end = replacement.len() - (state.len() - envelope.configuration_end);
-    let before_suffix = &state[envelope.configuration_end..];
-    let after_suffix = &replacement[new_end..];
-    ensure!(before_suffix == after_suffix, "opaque STATE suffix changed");
-    let report = GenerationReport {
-        account_id: args.market_id,
-        snapshot_block_hash: block_hash,
-        snapshot_block_height: block.height,
-        layout: market_state::LAYOUT,
-        release,
-        effective_code_sha256: sha256(&snapshot.code),
-        effective_code_hash: CryptoHash::from(near_api::types::CryptoHash::hash(&snapshot.code)),
-        restore,
-        changes,
-        old_configuration: envelope.configuration,
-        new_configuration: after,
-        old_state_sha256: sha256(state),
-        new_state_sha256: sha256(&replacement),
-        configuration_offsets: ConfigurationOffsets {
-            start: envelope.configuration_start,
-            old_end: envelope.configuration_end,
-            new_end,
-        },
-        opaque_suffix_sha256: SuffixHashes {
-            before: sha256(before_suffix),
-            after: sha256(after_suffix),
-        },
-        economic_caveat: ECONOMIC_CAVEAT,
-        paths,
-    };
-    publish(&report, state, &replacement)?;
+    let result: Result<GenerationReport> = async {
+        let limits = ctx.client.read(chain::GetProtocolLimits).await?;
+        let snapshot = snapshot_final(
+            &ctx,
+            &args.market_id,
+            &limits,
+            "market.config_patch.state_complete",
+            &mut reporter,
+        )
+        .await?;
+        let release = market_state::supported_release(&snapshot.code)?;
+        let restore = restore_from_state(&snapshot)?;
+        let mut entries = snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.key == b"STATE");
+        let state = &entries
+            .next()
+            .context("market snapshot has no STATE entry")?
+            .value;
+        ensure!(
+            entries.next().is_none(),
+            "market snapshot has ambiguous STATE entries"
+        );
+        let envelope = market_state::decode(state)?;
+        let block_hash = CryptoHash::from(snapshot.block_hash);
+        let reader = templar_gateway_core::NearClient::new(ctx.network_config().clone());
+        let market_reader = reader.market(args.market_id.clone());
+        let chain_reader = reader.chain();
+        let (view, block) = tokio::try_join!(
+            market_reader.get_configuration_at(block_hash),
+            chain_reader.block(Some(block_hash)),
+        )?;
+        ensure!(
+            block.hash == block_hash,
+            "snapshot block header hash mismatch"
+        );
+        ensure!(
+            view == envelope.configuration,
+            "STATE configuration differs from get_configuration at the snapshot block"
+        );
+        let after = apply_changes(&envelope.configuration, &changes)?;
+        let replacement = envelope.replace(state, &after)?;
+        let new_end = replacement.len() - (state.len() - envelope.configuration_end);
+        let before_suffix = &state[envelope.configuration_end..];
+        let after_suffix = &replacement[new_end..];
+        ensure!(before_suffix == after_suffix, "opaque STATE suffix changed");
+        let code_sha256 = sha256(&snapshot.code);
+        let code_hash = CryptoHash::from(near_api::types::CryptoHash(code_sha256.0));
+        let suffix_sha256 = sha256(before_suffix);
+        let report = GenerationReport {
+            account_id: args.market_id,
+            snapshot_block_hash: block_hash,
+            snapshot_block_height: block.height,
+            layout: market_state::LAYOUT,
+            release,
+            effective_code_sha256: code_sha256,
+            effective_code_hash: code_hash,
+            restore,
+            changes,
+            old_configuration: envelope.configuration,
+            new_configuration: after,
+            old_state_sha256: sha256(state),
+            new_state_sha256: sha256(&replacement),
+            configuration_offsets: ConfigurationOffsets {
+                start: envelope.configuration_start,
+                old_end: envelope.configuration_end,
+                new_end,
+            },
+            opaque_suffix_sha256: SuffixHashes {
+                before: suffix_sha256.clone(),
+                after: suffix_sha256,
+            },
+            economic_caveat: ECONOMIC_CAVEAT,
+            paths,
+        };
+        publish(&report, state, &replacement)?;
+        Ok(report)
+    }
+    .await;
     reporter.digest();
-    print_json(&report)
+    print_json(&result?)
 }
 
-fn sha256(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+fn sha256(bytes: &[u8]) -> Sha256Digest {
+    Sha256Digest(Sha256::digest(bytes).into())
 }
 
 fn fresh_file(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -281,19 +332,27 @@ fn publish(report: &GenerationReport, old_state: &[u8], new_state: &[u8]) -> Res
         account_id: report.account_id.clone(),
         ops: vec![PatchOperation::Set {
             key: ByteExpr::Utf8("STATE".into()),
-            value: ByteExpr::File(blob_relative.join("new-state.bin")),
-            expect: Some(Expectation::Bytes(ByteExpr::File(
-                blob_relative.join("old-state.bin"),
-            ))),
+            value: ByteExpr::PinnedFile(PinnedFile {
+                path: blob_relative.join("new-state.bin"),
+                sha256: report.new_state_sha256.clone(),
+            }),
+            expect: Some(Expectation::Hash {
+                hash: hex::encode(report.old_state_sha256.0),
+            }),
         }],
-        checks: vec![PatchCheck::View(Box::new(PatchViewCheck {
-            method_name: "get_configuration".to_owned().into(),
-            args: serde_json::json!({}),
-            expect: None,
-            expect_json: Some(crate::spec::patch::JsonText::from_value(
-                serde_json::to_value(&report.new_configuration)?,
-            )?),
-        }))],
+        checks: vec![
+            PatchCheck::Code(PatchCodeCheck {
+                code_hash: report.effective_code_hash,
+            }),
+            PatchCheck::View(Box::new(PatchViewCheck {
+                method_name: "get_configuration".to_owned().into(),
+                args: serde_json::json!({}),
+                expect: None,
+                expect_json: Some(crate::spec::patch::JsonText::from_value(
+                    serde_json::to_value(&report.new_configuration)?,
+                )?),
+            })),
+        ],
     };
     let rendered = toml::to_string_pretty(&spec).context("render generated patch spec")?;
     let temporary = paths.blobs.join(".patch-spec.tmp");

@@ -14,17 +14,21 @@ use near_api::Contract;
 use near_token::NearToken;
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
-use templar_common::market::MarketConfiguration;
+use templar_common::{
+    fee::Fee, interest_rate_strategy::InterestRateStrategy, market::MarketConfiguration,
+};
 use templar_gateway_methods_spec::{chain, tx};
 use templar_gateway_testing::{DeployedMarket, SandboxHarness};
 use templar_gateway_types::{
     common::{TxExecutionStatus, WriteOperationResult},
     ActionInput, Base64Bytes, GlobalContractIdentifierInput, ManagedAccountId,
 };
+use templar_primitives::dec;
 
 use crate::{
     cli::Cli,
     dispatch::{
+        market_config_patch::{apply_changes, ConfigChange},
         market_state,
         patch_state::{fetch_complete_state, StateSnapshot},
     },
@@ -40,6 +44,11 @@ fn fixture_path() -> PathBuf {
 
 fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn configuration_schema_sha256() -> Result<String> {
+    let schema = borsh::schema_container_of::<MarketConfiguration>();
+    Ok(sha256(&borsh::to_vec(&schema)?))
 }
 
 #[track_caller]
@@ -389,6 +398,7 @@ async fn requires_sandbox_config_patch_capture_market_1_6_1() -> Result<()> {
         "account_id":seeded.market.market_id,"block_hash":snapshot.block_hash.to_string(),"block_height":block.height,
         "state_base64":STANDARD.encode(raw_state),"state_sha256":sha256(raw_state),
         "configuration":configuration,
+        "configuration_borsh_schema_sha256":configuration_schema_sha256()?,
         "configuration_offsets":{"start":envelope.configuration_start,"end":envelope.configuration_end},
         "opaque_suffix_sha256":sha256(&raw_state[envelope.configuration_end..]),
         "observations":seeded.observations,
@@ -413,11 +423,46 @@ fn captured_fixture() -> Result<Value> {
 }
 
 #[test]
+fn config_patch_pins_code_and_replacement_file_bytes() -> Result<()> {
+    let dir = OutputDir::new()?;
+    let source_path = dir.0.join("patch.toml");
+    let data_path = dir.0.join("new-state.bin");
+    let replacement = b"replacement STATE bytes";
+    std::fs::write(&data_path, replacement)?;
+    let code_hash = templar_gateway_types::CryptoHash::from(near_api::types::CryptoHash([7; 32]));
+    let spec: crate::spec::patch::PatchSpec = serde_json::from_value(json!({
+        "schema":3,"account_id":"market.testnet",
+        "op":[{
+            "op":"set","key":{"utf8":"STATE"},
+            "value":{"pinned_file":{"path":"new-state.bin","sha256":sha256(replacement)}},
+            "expect":{"hash":sha256(b"old STATE bytes")}
+        }],
+        "check":[{"code_hash":code_hash}]
+    }))?;
+    spec.verify_code_hash(&code_hash)?;
+    let resolved = spec.resolve(&source_path)?;
+    let [crate::spec::patch::ResolvedOperation::Set { value, .. }] = resolved.operations.as_slice()
+    else {
+        anyhow::bail!("expected one resolved STATE replacement");
+    };
+    assert_eq!(value.0, replacement);
+    let wrong_code = templar_gateway_types::CryptoHash::from(near_api::types::CryptoHash([8; 32]));
+    assert!(spec.verify_code_hash(&wrong_code).is_err());
+    std::fs::write(&data_path, b"tampered STATE bytes")?;
+    assert!(spec.resolve(&source_path).is_err());
+    Ok(())
+}
+
+#[test]
 fn config_patch_released_layout_fixture_preserves_opaque_bytes() -> Result<()> {
     let fixture = captured_fixture()?;
     assert_eq!(fixture["wasm_sha256"], WASM_SHA256);
     assert_eq!(fixture["wasm_length"], WASM_LENGTH);
     assert_eq!(fixture["release"], RELEASE);
+    assert_eq!(
+        configuration_schema_sha256()?,
+        fixture["configuration_borsh_schema_sha256"]
+    );
     let raw = STANDARD.decode(fixture["state_base64"].as_str().context("fixture STATE")?)?;
     assert_eq!(sha256(&raw), fixture["state_sha256"]);
     let envelope = market_state::decode(&raw)?;
@@ -474,6 +519,189 @@ fn config_patch_released_layout_fixture_preserves_opaque_bytes() -> Result<()> {
     let mut bad_prefix = raw;
     bad_prefix[..4].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(market_state::decode(&bad_prefix).is_err());
+    Ok(())
+}
+
+fn decimal_configuration() -> MarketConfiguration {
+    let mut configuration = crate::spec::plan::testing::alpha_market()
+        .into_market_configuration(6, 7)
+        .unwrap();
+    configuration.borrow_mcr_maintenance = dec!("1.4");
+    configuration.borrow_mcr_liquidation = dec!("1.3");
+    configuration.liquidation_maximum_spread = dec!("0.1");
+    configuration.validate().unwrap();
+    configuration
+}
+
+#[rstest::rstest]
+#[case::short_replacement(json!([
+    {"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"}
+]))]
+#[case::semantic_tests(json!([
+    {"op":"test","path":"/borrow_mcr_maintenance","value":"1.4"},
+    {"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"},
+    {"op":"test","path":"/borrow_mcr_maintenance","value":"1.8"}
+]))]
+fn config_patch_decimal_tests_and_replacements_preserve_opaque_state(
+    #[case] changes: Value,
+) -> Result<()> {
+    let fixture = captured_fixture()?;
+    let state = STANDARD.decode(fixture["state_base64"].as_str().context("fixture STATE")?)?;
+    let before: MarketConfiguration = serde_json::from_value(fixture["configuration"].clone())?;
+    let changes: Vec<ConfigChange> = serde_json::from_value(changes)?;
+    let after = apply_changes(&before, &changes)?;
+    let mut expected = before.clone();
+    expected.borrow_mcr_maintenance = dec!("1.8");
+    assert_eq!(after, expected);
+    assert_eq!(before.borrow_mcr_maintenance, dec!("1.4"));
+
+    let envelope = market_state::decode(&state)?;
+    let replacement = envelope.replace(&state, &after)?;
+    let decoded = market_state::decode(&replacement)?;
+    assert_eq!(decoded.configuration, expected);
+    assert_eq!(
+        &replacement[..decoded.configuration_start],
+        &state[..envelope.configuration_start]
+    );
+    assert_eq!(
+        &replacement[decoded.configuration_end..],
+        &state[envelope.configuration_end..]
+    );
+    Ok(())
+}
+
+#[test]
+fn config_patch_decimal_normalization_handles_fee_objects_and_nested_leaves() -> Result<()> {
+    let mut before = decimal_configuration();
+    before.borrow_origination_fee = Fee::Proportional(dec!("0.1"));
+    before.supply_withdrawal_fee.fee = Fee::Flat(0.into());
+    let mut fee = serde_json::to_value(&before.supply_withdrawal_fee)?;
+    fee["fee"] = json!({"Proportional":"0.1"});
+    let changes: Vec<ConfigChange> = serde_json::from_value(json!([
+        {"op":"test","path":"/borrow_origination_fee","value":{"Proportional":"0.1"}},
+        {"op":"replace","path":"/borrow_origination_fee/Proportional","value":"0.2"},
+        {"op":"test","path":"/borrow_origination_fee/Proportional","value":"0.2"},
+        {"op":"replace","path":"/supply_withdrawal_fee","value":fee},
+        {"op":"test","path":"/supply_withdrawal_fee","value":fee},
+        {"op":"replace","path":"/supply_withdrawal_fee/fee/Proportional","value":"0.3"},
+        {"op":"test","path":"/supply_withdrawal_fee/fee/Proportional","value":"0.3"}
+    ]))?;
+    let after = apply_changes(&before, &changes)?;
+    let mut expected = before;
+    expected.borrow_origination_fee = Fee::Proportional(dec!("0.2"));
+    expected.supply_withdrawal_fee.fee = Fee::Proportional(dec!("0.3"));
+    assert_eq!(after, expected);
+    Ok(())
+}
+
+#[test]
+fn config_patch_decimal_normalization_handles_root_tests_and_strategy_objects() -> Result<()> {
+    for strategy in [
+        json!({"Linear":{"base":"0.1","top":"0.2"}}),
+        json!({"Piecewise":{"base":"0.1","optimal":"0.8","rate_1":"0.2","rate_2":"0.4"}}),
+        json!({"Exponential2":{"base":"0.1","top":"0.2","eccentricity":"1.8"}}),
+    ] {
+        let mut before = decimal_configuration();
+        before.borrow_interest_rate_strategy =
+            serde_json::from_value::<InterestRateStrategy>(strategy.clone())?;
+        let mut whole = serde_json::to_value(&before)?;
+        whole["borrow_mcr_maintenance"] = json!("1.4");
+        whole["borrow_mcr_liquidation"] = json!("1.3");
+        whole["liquidation_maximum_spread"] = json!("0.1");
+        whole["borrow_interest_rate_strategy"] = strategy.clone();
+        let variant = strategy
+            .as_object()
+            .and_then(|object| object.keys().next())
+            .context("strategy variant")?;
+        let base_path = format!("/borrow_interest_rate_strategy/{variant}/base");
+        let changes: Vec<ConfigChange> = serde_json::from_value(json!([
+            {"op":"test","path":"","value":whole},
+            {"op":"test","path":"/borrow_interest_rate_strategy","value":strategy},
+            {"op":"replace","path":"/borrow_interest_rate_strategy","value":strategy},
+            {"op":"test","path":base_path,"value":"0.1"},
+            {"op":"replace","path":base_path,"value":"0.10"},
+            {"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"}
+        ]))?;
+        let after = apply_changes(&before, &changes)?;
+        let mut expected = before;
+        expected.borrow_mcr_maintenance = dec!("1.8");
+        assert_eq!(after, expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn config_patch_decimal_normalization_keeps_tests_strict_and_blocks_noops() -> Result<()> {
+    let mut before = decimal_configuration();
+    before.borrow_interest_rate_strategy = InterestRateStrategy::zero();
+    for changes in [
+        json!([
+            {"op":"test","path":"/borrow_mcr_maintenance","value":"1.5"},
+            {"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"}
+        ]),
+        json!([
+            {"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"},
+            {"op":"test","path":"/borrow_mcr_maintenance","value":"1.4"}
+        ]),
+        json!([{"op":"replace","path":"/borrow_mcr_maintenance","value":"1.40"}]),
+        json!([{"op":"test","path":"/borrow_mcr_maintenance","value":"1.4"}]),
+        json!([{"op":"replace","path":"/borrow_mcr_maintenance","value":1.8}]),
+        json!([{"op":"replace","path":"/borrow_mcr_maintenance","value":"01.8"}]),
+        json!([
+            {"op":"replace","path":"/borrow_interest_rate_strategy","value":{"Linear":{"base":"0.1","top":"0.2"}}},
+            {"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"}
+        ]),
+    ] {
+        let changes: Vec<ConfigChange> = serde_json::from_value(changes)?;
+        assert!(apply_changes(&before, &changes).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn config_patch_decimal_normalization_rejects_unrelated_noncanonical_values() -> Result<()> {
+    let before = decimal_configuration();
+    let mut unknown_fee = serde_json::to_value(&before.supply_withdrawal_fee)?;
+    unknown_fee["fee"] = json!({"Proportional":"0.1"});
+    unknown_fee["unknown"] = json!(true);
+    for change in [
+        json!({"op":"replace","path":"/borrow_maximum_duration_ms","value":"001"}),
+        json!({"op":"replace","path":"/borrow_range/minimum","value":"001"}),
+        json!({"op":"replace","path":"/borrow_origination_fee","value":{"Flat":"001"}}),
+        json!({"op":"replace","path":"/supply_withdrawal_fee/duration","value":"001"}),
+        json!({"op":"replace","path":"/supply_withdrawal_fee","value":unknown_fee}),
+        json!({"op":"replace","path":"/protocol_account_id","value":"UPPER.near"}),
+        json!({"op":"replace","path":"/borrow_mcr_maintenance_extra","value":"1.8"}),
+        json!({"op":"replace","path":"","value":serde_json::to_value(&before)?}),
+        json!({"op":"replace","path":"/borrow_mcr_maintenance~2","value":"1.8"}),
+    ] {
+        let changes: Vec<ConfigChange> = serde_json::from_value(json!([
+            {"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"},
+            change
+        ]))?;
+        assert!(apply_changes(&before, &changes).is_err());
+    }
+
+    let mut before = before;
+    before.collateral_asset = serde_json::from_value(json!({
+        "Nep245":{"contract_id":"multi.near","token_id":"1.8"}
+    }))?;
+    let changes: Vec<ConfigChange> = serde_json::from_value(json!([
+        {"op":"test","path":"/collateral_asset/Nep245/token_id","value":"1.800"},
+        {"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"}
+    ]))?;
+    assert!(apply_changes(&before, &changes).is_err());
+    let changes: Vec<ConfigChange> = serde_json::from_value(json!([
+        {"op":"replace","path":"/collateral_asset/Nep245/token_id","value":"001.8"},
+        {"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"}
+    ]))?;
+    let after = apply_changes(&before, &changes)?;
+    let mut expected = before;
+    expected.collateral_asset = serde_json::from_value(json!({
+        "Nep245":{"contract_id":"multi.near","token_id":"001.8"}
+    }))?;
+    expected.borrow_mcr_maintenance = dec!("1.8");
+    assert_eq!(after, expected);
     Ok(())
 }
 
@@ -674,7 +902,10 @@ async fn exercise_patch(restore: RestoreFixture, scenario: PatchScenario) -> Res
             {"op":"replace","path":"/collateral_asset","value":{"Nep245":{"contract_id":"new-collateral.test.near","token_id":"chain:asset:with:colons"}}}
         ])
     } else {
-        json!([{"op":"replace","path":"/protocol_account_id","value":"new-protocol.test.near"}])
+        json!([
+            {"op":"test","path":"/borrow_mcr_maintenance","value":"1.4"},
+            {"op":"replace","path":"/borrow_mcr_maintenance","value":"1.8"}
+        ])
     };
     generate(&seeded, &changes, &spec).await?;
     let authored = snapshot(harness, &seeded.market.market_id).await?;
@@ -691,9 +922,9 @@ async fn exercise_patch(restore: RestoreFixture, scenario: PatchScenario) -> Res
         vec![crate::spec::patch::ResolvedOperation::Set {
             key: Base64Bytes(b"STATE".to_vec()),
             value: Base64Bytes(expected_state.clone()),
-            expected: Some(crate::spec::patch::ResolvedExpectation::Bytes(Base64Bytes(
-                state(&before)?.to_vec()
-            ))),
+            expected: Some(crate::spec::patch::ResolvedExpectation::Hash(
+                crate::spec::patch::Sha256Digest(Sha256::digest(state(&before)?).into())
+            )),
         }]
     );
     let checks = generated.view_checks().collect::<Vec<_>>();
@@ -915,6 +1146,70 @@ async fn requires_sandbox_config_patch_invalid_documents_publish_nothing() -> Re
     assert_account_unchanged(
         &unsupported,
         &snapshot(&seeded.harness, &seeded.market.market_id).await?,
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn requires_sandbox_config_patch_rejects_code_drift_without_storage_drift() -> Result<()> {
+    let seeded = SeededMarket::new().await?;
+    let harness = &seeded.harness;
+    let before = snapshot(harness, &seeded.market.market_id).await?;
+    let dir = OutputDir::new()?;
+    let spec = dir.0.join("patch.toml");
+    generate(
+        &seeded,
+        &json!([{
+            "op":"replace","path":"/protocol_account_id","value":"new-protocol.test.near"
+        }]),
+        &spec,
+    )
+    .await?;
+    // A valid custom section changes code identity without changing behavior or STATE.
+    let mut changed_code = before.code.clone();
+    changed_code.extend_from_slice(b"\0\x02\x01x");
+    let deployed = harness
+        .execute(
+            &ManagedAccountId(seeded.market.market_id.clone()),
+            tx::Batch {
+                receiver_id: seeded.market.market_id.clone(),
+                actions: vec![ActionInput::DeployContract {
+                    code: Base64Bytes(changed_code),
+                }],
+            },
+        )
+        .await?;
+    finalize(harness, &seeded.market.market_id, deployed).await?;
+    let changed = snapshot(harness, &seeded.market.market_id).await?;
+    assert_eq!(entries(&changed), entries(&before));
+    assert_ne!(changed.code, before.code);
+    let plan = dir.0.join("plan.json");
+    let key = templar_gateway_testing::test_secret_key()?;
+    let error = dispatch(
+        harness,
+        &[
+            "patch".into(),
+            "plan".into(),
+            spec.display().to_string(),
+            "--out".into(),
+            plan.display().to_string(),
+            "--signer-id".into(),
+            seeded.market.market_id.to_string(),
+            "--public-key".into(),
+            key.public_key().to_string(),
+        ],
+    )
+    .await
+    .expect_err("code drift must refuse planning despite identical storage");
+    let diagnostic = format!("{error:#}");
+    for code in [&before.code, &changed.code] {
+        let hash = templar_gateway_types::CryptoHash::from(near_api::types::CryptoHash::hash(code));
+        assert!(diagnostic.contains(&hash.to_string()), "{diagnostic}");
+    }
+    assert!(!plan.exists());
+    assert_eq!(
+        entries(&snapshot(harness, &seeded.market.market_id).await?),
+        entries(&changed)
     );
     Ok(())
 }

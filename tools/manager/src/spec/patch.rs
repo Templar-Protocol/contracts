@@ -10,7 +10,7 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
 };
 use sha2::{Digest as _, Sha256};
-use templar_gateway_types::Base64Bytes;
+use templar_gateway_types::{Base64Bytes, CryptoHash};
 
 pub const PATCH_SCHEMA_VERSION: u32 = 3;
 
@@ -44,13 +44,26 @@ impl PatchSpec {
     pub fn view_checks(&self) -> impl Iterator<Item = &PatchViewCheck> {
         self.checks.iter().filter_map(|check| match check {
             PatchCheck::View(check) => Some(check.as_ref()),
-            PatchCheck::Storage(_) => None,
+            PatchCheck::Storage(_) | PatchCheck::Code(_) => None,
         })
     }
 
     pub fn validate_view_checks(&self) -> anyhow::Result<()> {
         for check in self.view_checks() {
             check.expected()?;
+        }
+        Ok(())
+    }
+
+    pub fn verify_code_hash(&self, actual: &CryptoHash) -> anyhow::Result<()> {
+        for check in &self.checks {
+            if let PatchCheck::Code(check) = check {
+                anyhow::ensure!(
+                    check.code_hash == *actual,
+                    "target code does not match the patch spec: expected {}, got {actual}",
+                    check.code_hash
+                );
+            }
         }
         Ok(())
     }
@@ -79,6 +92,7 @@ impl PatchSpec {
 pub enum PatchCheck {
     Storage(PatchStorageCheck),
     View(Box<PatchViewCheck>),
+    Code(PatchCodeCheck),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -86,6 +100,12 @@ pub enum PatchCheck {
 pub struct PatchStorageCheck {
     pub key: ByteExpr,
     pub expect: Expectation,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatchCodeCheck {
+    pub code_hash: CryptoHash,
 }
 fn default_json_object() -> serde_json::Value {
     serde_json::Value::Object(serde_json::Map::new())
@@ -199,10 +219,19 @@ pub enum ByteExpr {
     Hex(String),
     Base64(String),
     File(PathBuf),
+    PinnedFile(PinnedFile),
     Concat(Vec<ByteExpr>),
     Sha256(Box<ByteExpr>),
     Json(serde_json::Value),
     Borsh(BorshExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedFile {
+    pub path: PathBuf,
+    #[schemars(with = "String")]
+    pub sha256: Sha256Digest,
 }
 
 impl ByteExpr {
@@ -216,6 +245,18 @@ impl ByteExpr {
             Self::File(path) => std::fs::read(base.join(path)).with_context(|| {
                 format!("read byte expression file {}", base.join(path).display())
             }),
+            Self::PinnedFile(file) => {
+                let path = base.join(&file.path);
+                let bytes = std::fs::read(&path).with_context(|| {
+                    format!("read pinned byte expression file {}", path.display())
+                })?;
+                anyhow::ensure!(
+                    <[u8; 32]>::from(Sha256::digest(&bytes)) == file.sha256.0,
+                    "SHA-256 mismatch for pinned patch file {}",
+                    path.display()
+                );
+                Ok(bytes)
+            }
             Self::Concat(values) => values.iter().try_fold(Vec::new(), |mut bytes, value| {
                 bytes.extend(value.resolve(base)?);
                 Ok(bytes)
