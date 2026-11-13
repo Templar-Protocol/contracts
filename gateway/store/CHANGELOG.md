@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Decode canonical NEAR V0 and V1 signed transactions when reloading Prepared operations from Postgres (ENG-478). Existing stored bytes need no migration.
+
 ## [0.2.3](https://github.com/Templar-Protocol/contracts/compare/templar-gateway-store-v0.2.2...templar-gateway-store-v0.2.3) - 2026-09-01
 
 ### Fixed
