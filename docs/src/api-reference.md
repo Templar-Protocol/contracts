@@ -4,7 +4,9 @@ Templar exposes three programmatic surfaces. The **backend HTTP API** is the mai
 
 ## Backend HTTP API
 
-The backend HTTP API is the primary way to read protocol data and prepare user flows without handling contract calls yourself: a conventional web API over HTTPS with JSON request and response bodies. Its interactive documentation is the authoritative catalogue of endpoints, parameters, schemas, examples, and error responses:
+The backend HTTP API is the primary way to read protocol data and prepare user flows without handling contract calls yourself: a conventional web API over HTTPS with JSON request and response bodies.
+
+Companion OpenAPI documentation for this API, including endpoints, parameters, schemas, examples, and error responses, is maintained at [https://api.templarfi.org/docs](https://api.templarfi.org/docs).
 
 **[api.templarfi.org/docs](https://api.templarfi.org/docs)**
 
@@ -14,14 +16,14 @@ The live reference is split into eight OpenAPI documents:
 |---|---|---|
 | Markets | Market configuration and metrics, positions, wallet balances, prices, and asset metadata | [Markets](https://api.templarfi.org/docs?spec=markets#tag/markets), [accounts](https://api.templarfi.org/docs?spec=markets#tag/accounts), [prices](https://api.templarfi.org/docs?spec=markets#tag/prices), [assets](https://api.templarfi.org/docs?spec=markets#tag/assets) |
 | Lending | Preparing borrow, repay, collateral, and supply transactions | [Borrow](https://api.templarfi.org/docs?spec=lending#tag/borrow), [supply](https://api.templarfi.org/docs?spec=lending#tag/supply) |
-| Swaps | Supported tokens, quotes, deposit confirmation, and swap status | [Get a quote](https://api.templarfi.org/docs?spec=swaps#tag/swaps/POST/swaps/quote), [check status](https://api.templarfi.org/docs?spec=swaps#tag/swaps/GET/swaps/status) |
-| Bridge | Preparing and tracking NEAR Intents deposits and withdrawals | [Deposits and withdrawals](https://api.templarfi.org/docs?spec=bridge#tag/bridge) |
+| Swaps | 1-Click (NEAR Intents) and Stellar DEX tokens, quotes, confirmation, and status. Pre-1.6.0 aliases `/swaps/{tokens,quote,confirm,status}` were removed in Swaps 2.0.0. | [1-Click quote](https://api.templarfi.org/docs?spec=swaps#tag/swaps/POST/swaps/oneclick/quote), [1-Click status](https://api.templarfi.org/docs?spec=swaps#tag/swaps/GET/swaps/oneclick/status), [Stellar quote](https://api.templarfi.org/docs?spec=swaps#tag/stellar-dex/POST/swaps/stellar/quote) |
+| Bridge | Preparing and tracking NEAR Intents deposits and withdrawals. Partners migrating from the Intents JSON-RPC bridge should start at [Migrating from the NEAR Intents bridge](./migrating-from-near-intents-bridge.md). | [Deposits and withdrawals](https://api.templarfi.org/docs?spec=bridge#tag/bridge) |
 | Analytics | Warehouse-backed views, protocol state, metrics, and indexed events | [Views](https://api.templarfi.org/docs?spec=analytics#tag/views), [state](https://api.templarfi.org/docs?spec=analytics#tag/state), [metrics](https://api.templarfi.org/docs?spec=analytics#tag/metrics), [events](https://api.templarfi.org/docs?spec=analytics#tag/events) |
 | Campaigns | Campaign periods, Merkl data and rewards, and NEAR-to-Stellar payout links | [Campaigns](https://api.templarfi.org/docs?spec=campaigns#tag/campaigns) |
 | Compliance | Advisory off-chain wallet screening | [Screen a wallet](https://api.templarfi.org/docs?spec=compliance#tag/compliance/POST/compliance/screen) |
 | Relayer | Sponsored submissions, account history, and universal accounts | [Submissions](https://api.templarfi.org/docs?spec=relayer#tag/submissions), [accounts](https://api.templarfi.org/docs?spec=relayer#tag/accounts), [universal accounts](https://api.templarfi.org/docs?spec=relayer#tag/universal-accounts) |
 
-The server base URL shown by the live specifications is `https://api.templarfi.org/v1`. Where an operation requires authentication, its specification marks that requirement and uses the `X-API-Key` header. Use the version displayed by the selected live specification and its downloadable OpenAPI document rather than copying schemas from this guide.
+The server base URL shown by the live specifications is `https://api.templarfi.org/v1`. Where an operation requires authentication, its specification marks that requirement and uses the `X-API-Key` header.
 
 Use this guide for protocol semantics behind the responses: [Risk Parameters](./risk-parameters.md) explains market configuration fields, [Oracles](./oracles.md) explains price provenance, and [Stellar Curated Vaults](./vaults.md) explains vault behavior.
 

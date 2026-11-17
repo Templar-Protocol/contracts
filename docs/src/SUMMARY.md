@@ -10,6 +10,7 @@
   - [Registry](./contract/registry.md)
   - [LST Oracle](./contract/lst-oracle.md)
   - [API Reference](./api-reference.md)
+  - [Migrating from the NEAR Intents bridge](./migrating-from-near-intents-bridge.md)
 - [Smart Contract Addresses](./addresses.md)
 - [Risk Parameters](./risk-parameters.md)
 - [Deploying a market](./deployments.md)
