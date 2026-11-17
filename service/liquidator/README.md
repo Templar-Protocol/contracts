@@ -20,7 +20,7 @@ This bot uses an **inventory-based model**: it maintains balances of borrow asse
 ```bash
 cp .env.example .env
 nano .env  # Configure credentials
-make build && make run
+just build && just start
 ```
 
 ### Native
@@ -89,11 +89,11 @@ REGISTRY_REFRESH_INTERVAL=3600  # Seconds between registry updates
 ## Docker Commands
 
 ```bash
-make build    # Build image
-make run      # Run (dry-run mode)
-make logs     # View logs
-make stop     # Stop container
-make help     # Show all commands
+just build    # Build image
+just start    # Run (dry-run mode)
+just logs     # View logs
+just stop     # Stop container
+just help     # Show all commands
 ```
 
 ## Production Deployment
