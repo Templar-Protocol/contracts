@@ -9,6 +9,7 @@ use super::commands::signer::{Authorization, Mode, PrintFormat, SignerArgs};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+mod config_patch;
 mod deploy_script;
 mod export;
 mod ft;

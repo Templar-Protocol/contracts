@@ -188,6 +188,26 @@ impl SandboxHarness {
         })
     }
 
+    /// Seed a literal account identity for fixtures that exercise network-name
+    /// guards. Only an owned sandbox is allowed, avoiding collisions in the pool.
+    pub async fn create_named_account(
+        &self,
+        account_id: AccountId,
+        balance: NearToken,
+    ) -> Result<(AccountId, Arc<Signer>)> {
+        anyhow::ensure!(
+            self.sandbox.is_some(),
+            "literal fixture accounts require an owned sandbox"
+        );
+        crate::sandbox_ext::create_accounts(
+            &self.network,
+            &[(account_id.clone(), balance)],
+            &test_secret_key()?,
+        )
+        .await?;
+        Ok(self.register_account(account_id).await)
+    }
+
     /// Create a uniquely-named funded `*.sandbox` sub-account, register its
     /// signer, and return its id plus a signer for it.
     ///

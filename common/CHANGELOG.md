@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject market configurations whose aggregate supply/static yield weight exceeds
+  `u16::MAX`, before yield calculations can overflow.
+
 ### Changed
 
 - *(registry)* emit `Deployed` 1.1.0 with nullable deployment provenance

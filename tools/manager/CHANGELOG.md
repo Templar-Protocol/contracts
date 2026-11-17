@@ -14,6 +14,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Allow exact outer execution gas via `execute-proposal --call-gas` and
   `create-proposal --execute-when-ready --execute-call-gas`, without changing
   the stored operation's child gas or argument bytes.
+- Accept ordinary Decimal strings in configuration tests and replacements without
+  relaxing unknown-field or non-Decimal scalar checks.
+- Bind generated configuration patches to the admitted code hash and replacement
+  blob bytes; always print the check digest after generation failures.
+- Finalize every market-affecting configuration-patch fixture transaction and
+  unsupported-code redeployment, including native refunds, before capturing
+  exact no-mutation checkpoints; optimistic height advancement is not finality.
+- Restrict patch targets and restoration to local code and immutable global code
+  hashes. Reject mutable publisher-account targets even for unpinned generic
+  patches, and reject old `global_account` restoration plans.
+
+### Added
+
+- Read-only `market generate-patch config` authors guarded schema-3 configuration
+  patches from a complete finalized snapshot, with exact released-layout admission,
+  opaque-state preservation, typed validation, and review artifacts.
+- Optional `expect_json` view postconditions preserve exact nullable JSON values
+  through TOML specs and stamped patch plans without changing existing encodings.
+- Code-hash preconditions and SHA-256-pinned file expressions for schema-3 patches.
+
 
 ## [0.10.0](https://github.com/Templar-Protocol/contracts/compare/templar-manager-v0.9.0...templar-manager-v0.10.0) - 2026-11-02
 

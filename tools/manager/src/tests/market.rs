@@ -4,7 +4,48 @@ use templar_gateway_methods_spec::market;
 
 use super::{authorized, CREDS};
 use crate::cli::{Cli, Command};
-use crate::commands::market::{MarketNs, StaticYieldNs};
+use crate::commands::market::{GeneratePatchNs, MarketNs, StaticYieldNs};
+
+#[test]
+fn configuration_patch_authoring_has_no_signing_or_submission_surface() {
+    let invocation = [
+        "tmplrmgr",
+        "market",
+        "generate-patch",
+        "config",
+        "market.near",
+        "--changes",
+        "-",
+        "--out",
+        "patch.toml",
+    ];
+    let Command::Market {
+        command: MarketNs::GeneratePatch(GeneratePatchNs::Config(config)),
+    } = Cli::try_parse_from(invocation)
+        .expect("read-only authoring accepts stdin without credentials")
+        .command
+    else {
+        panic!("expected configuration patch authoring");
+    };
+    assert_eq!(config.market_id.as_str(), "market.near");
+    assert_eq!(config.changes, std::path::Path::new("-"));
+    assert_eq!(config.out, std::path::Path::new("patch.toml"));
+    let forbidden_flags: &[&[&str]] = &[
+        &["--submit"],
+        &["--apply"],
+        &["--signer-id", "market.near"],
+        &["--secret-key", "not-a-key"],
+        &["--public-key", "not-a-key"],
+    ];
+    for forbidden in forbidden_flags {
+        assert_eq!(
+            Cli::try_parse_from(invocation.into_iter().chain(forbidden.iter().copied()))
+                .expect_err("authoring cannot accept execution credentials or submission flags")
+                .kind(),
+            clap::error::ErrorKind::UnknownArgument,
+        );
+    }
+}
 
 #[test]
 fn parses_market_create_typed_args() {

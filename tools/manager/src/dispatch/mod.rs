@@ -8,11 +8,13 @@ mod aggregate;
 pub(crate) mod export;
 mod funding;
 pub(crate) mod generic;
+pub(crate) mod market_config_patch;
+pub(crate) mod market_state;
 mod mpc;
 mod patch;
 mod patch_dry_run;
 mod patch_export;
-mod patch_state;
+pub(crate) mod patch_state;
 pub(crate) mod plan;
 pub(crate) mod preflight;
 mod proposals;
@@ -165,6 +167,9 @@ async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
                 .await
         }
         MarketNs::Export(a) => export::market(ctx, a).await,
+        MarketNs::GeneratePatch(crate::commands::market::GeneratePatchNs::Config(a)) => {
+            market_config_patch::generate(ctx, a).await
+        }
         MarketNs::Plan(a) => plan::plan(ctx, a).await,
         MarketNs::Apply(a) => plan::apply(ctx, a).await,
         MarketNs::Verify(a) => verify::market(ctx, a).await,
