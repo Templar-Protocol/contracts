@@ -3,6 +3,7 @@
 use std::fmt;
 
 use near_api::NetworkConfig;
+use templar_gateway_core::NearRpc;
 use url::Url;
 
 /// Pyth's public Hermes endpoints. A VAA is only accepted by the Pyth receiver whose
@@ -30,7 +31,7 @@ impl Network {
     /// The default public RPC URL for this network.
     ///
     /// Consumers can override this (e.g. with a `--rpc-url` flag) before
-    /// building a [`near_api::NetworkConfig`].
+    /// building a [`NearRpc`].
     #[must_use]
     pub fn rpc_url(self) -> &'static str {
         match self {
@@ -63,8 +64,8 @@ impl fmt::Display for Network {
     }
 }
 
-/// Builds a [`near_api::NetworkConfig`] for off-chain consumers, resolving the
-/// RPC URL and attaching any API key as a header.
+/// Builds a [`NearRpc`] for off-chain consumers, resolving the RPC URL and
+/// attaching any API keys as headers.
 ///
 /// The API key must be sent as a header rather than embedded in the URL:
 /// near_api's OpenAPI client builds each request path with `format!("{url}/")`,
@@ -77,6 +78,7 @@ pub struct NetworkConfigBuilder {
     network_name: String,
     rpc_url: url::Url,
     api_key: Option<String>,
+    backup_api_key: Option<String>,
 }
 
 impl NetworkConfigBuilder {
@@ -93,6 +95,7 @@ impl NetworkConfigBuilder {
                 .parse()
                 .expect("Network::rpc_url must be a valid URL"),
             api_key: None,
+            backup_api_key: None,
         }
     }
 
@@ -104,6 +107,7 @@ impl NetworkConfigBuilder {
             network_name: name.into(),
             rpc_url,
             api_key: None,
+            backup_api_key: None,
         }
     }
 
@@ -129,15 +133,34 @@ impl NetworkConfigBuilder {
     /// `Some("")`) is treated as unset, so it doesn't suppress an embedded key.
     #[must_use]
     pub fn api_key(mut self, api_key: Option<String>) -> Self {
-        self.api_key = api_key
-            .map(|key| key.trim().to_owned())
-            .filter(|key| !key.is_empty());
+        self.api_key = non_blank(api_key);
+        self
+    }
+
+    /// Set a backup RPC API key for the same endpoint, sent only when the
+    /// primary key is refused (HTTP 401, 402 or 403). Blank counts as unset,
+    /// and without a primary key it is ignored.
+    #[must_use]
+    pub fn backup_api_key(mut self, backup_api_key: Option<String>) -> Self {
+        self.backup_api_key = non_blank(backup_api_key);
         self
     }
 
     /// Resolve the configuration, moving any API key onto the endpoint header.
     #[must_use]
-    pub fn build(mut self) -> NetworkConfig {
+    pub fn build(mut self) -> NearRpc {
+        let backup_api_key = self.backup_api_key.take();
+        let network = self.build_network_config();
+        match backup_api_key {
+            Some(backup_api_key) => NearRpc::with_backup_api_key(network, &backup_api_key),
+            None => network.into(),
+        }
+    }
+
+    /// The primary key's network alone, for tools that call near-api
+    /// directly. Requests made with it never fail over to a backup key.
+    #[must_use]
+    pub fn build_network_config(mut self) -> NetworkConfig {
         let embedded_key = self.take_embedded_api_key();
 
         let mut network = NetworkConfig::from_rpc_url(&self.network_name, self.rpc_url);
@@ -184,6 +207,11 @@ impl NetworkConfigBuilder {
     }
 }
 
+fn non_blank(key: Option<String>) -> Option<String> {
+    key.map(|key| key.trim().to_owned())
+        .filter(|key| !key.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Network, NetworkConfigBuilder};
@@ -209,7 +237,7 @@ mod tests {
                 .parse()
                 .unwrap(),
         )
-        .build();
+        .build_network_config();
 
         let endpoint = &network.rpc_endpoints[0];
         assert_eq!(endpoint.url.as_str(), "https://rpc.mainnet.fastnear.com/");
@@ -224,7 +252,7 @@ mod tests {
                 .parse()
                 .unwrap(),
         )
-        .build();
+        .build_network_config();
 
         let endpoint = &network.rpc_endpoints[0];
         assert_eq!(
@@ -243,7 +271,7 @@ mod tests {
                 .unwrap(),
         )
         .api_key(Some(String::new()))
-        .build();
+        .build_network_config();
 
         assert_eq!(
             network.rpc_endpoints[0].bearer_header.as_deref(),
@@ -255,7 +283,7 @@ mod tests {
     fn blank_api_key_without_embedded_leaves_bare() {
         let network = NetworkConfigBuilder::new(super::Network::Testnet)
             .api_key(Some("   ".to_owned()))
-            .build();
+            .build_network_config();
 
         assert!(network.rpc_endpoints[0].bearer_header.is_none());
     }
@@ -269,7 +297,7 @@ mod tests {
                 .unwrap(),
         )
         .api_key(Some("EXPLICIT".to_owned()))
-        .build();
+        .build_network_config();
 
         let endpoint = &network.rpc_endpoints[0];
         assert!(endpoint.url.query().is_none());
@@ -278,7 +306,7 @@ mod tests {
 
     #[test]
     fn no_api_key_leaves_endpoint_bare() {
-        let network = NetworkConfigBuilder::new(super::Network::Testnet).build();
+        let network = NetworkConfigBuilder::new(super::Network::Testnet).build_network_config();
 
         assert!(network.rpc_endpoints[0].bearer_header.is_none());
     }
@@ -288,7 +316,7 @@ mod tests {
         let network = NetworkConfigBuilder::new(super::Network::Testnet)
             .rpc_url(Some("https://example.invalid/"))
             .unwrap()
-            .build();
+            .build_network_config();
 
         assert_eq!(
             network.rpc_endpoints[0].url.as_str(),
@@ -301,5 +329,28 @@ mod tests {
         let result = NetworkConfigBuilder::new(super::Network::Testnet).rpc_url(Some("not a url"));
 
         assert!(result.is_err());
+    }
+
+    #[rstest::rstest]
+    #[case::set(Some("PRIMARY"), Some("BACKUP"), true)]
+    #[case::blank(Some("PRIMARY"), Some("  "), false)]
+    #[case::unset(Some("PRIMARY"), None, false)]
+    #[case::no_primary_key(None, Some("BACKUP"), false)]
+    fn backup_api_key_adds_a_backup_only_beside_a_primary_key(
+        #[case] api_key: Option<&str>,
+        #[case] backup_api_key: Option<&str>,
+        #[case] has_backup: bool,
+    ) {
+        let rpc = NetworkConfigBuilder::new(super::Network::Mainnet)
+            .api_key(api_key.map(str::to_owned))
+            .backup_api_key(backup_api_key.map(str::to_owned))
+            .build();
+
+        let rendered = format!("{rpc:?}");
+        assert!(
+            rendered.contains(&format!("backup_key: {has_backup}")),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("PRIMARY") && !rendered.contains("BACKUP"));
     }
 }

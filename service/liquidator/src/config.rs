@@ -7,6 +7,7 @@ use std::sync::Arc;
 use clap::Parser;
 use near_sdk::AccountId;
 use templar_gateway_client::Network;
+use templar_gateway_core::RedactedString;
 use url::Url;
 
 use crate::{
@@ -71,7 +72,12 @@ pub struct Args {
     /// API key for the RPC endpoint, sent as an `Authorization` header. May also
     /// be supplied as an `apiKey` query parameter on `--near-rpc-url`.
     #[arg(long, env = "NEAR_RPC_API_KEY")]
-    pub near_rpc_api_key: Option<String>,
+    pub near_rpc_api_key: Option<RedactedString>,
+
+    /// Backup API key for the same RPC endpoint, sent only when the primary key
+    /// is refused (HTTP 401, 402 or 403).
+    #[arg(long, env = "NEAR_RPC_API_KEY_BACKUP")]
+    pub near_rpc_api_key_backup: Option<RedactedString>,
 
     /// Transaction timeout in seconds
     #[arg(long, env = "TRANSACTION_TIMEOUT", default_value_t = 60)]
@@ -379,6 +385,7 @@ impl Args {
             network: self.network,
             near_rpc_url: self.near_rpc_url.clone(),
             near_rpc_api_key: self.near_rpc_api_key.clone(),
+            near_rpc_api_key_backup: self.near_rpc_api_key_backup.clone(),
             transaction_timeout: self.transaction_timeout,
             liquidation_scan_interval: self.liquidation_scan_interval,
             registry_refresh_interval: self.registry_refresh_interval,
@@ -441,6 +448,7 @@ mod tests {
             network: Network::Testnet,
             near_rpc_url: None,
             near_rpc_api_key: None,
+            near_rpc_api_key_backup: None,
             transaction_timeout: 60,
             liquidation_scan_interval: 600,
             registry_refresh_interval: 3600,
@@ -481,6 +489,24 @@ mod tests {
 
             assert_eq!(args.build_config().hermes_url, network.hermes_url());
         }
+    }
+
+    #[test]
+    fn the_rpc_api_keys_reach_the_service_config_redacted() {
+        let mut args = create_test_args();
+        args.near_rpc_api_key = Some(RedactedString::from("PRIMARY-SECRET"));
+        args.near_rpc_api_key_backup = Some(RedactedString::from("BACKUP-SECRET"));
+
+        let config = args.build_config();
+        assert_eq!(
+            config
+                .near_rpc_api_key_backup
+                .as_ref()
+                .map(|key| key.as_ref().to_owned()),
+            Some("BACKUP-SECRET".to_owned())
+        );
+        let rendered = format!("{config:?} {args:?}");
+        assert!(!rendered.contains("PRIMARY-SECRET") && !rendered.contains("BACKUP-SECRET"));
     }
 
     #[test]

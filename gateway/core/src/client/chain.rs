@@ -1,5 +1,3 @@
-use std::future::Future;
-
 use near_api::types::{transaction::result::ExecutionFinalResult, Reference};
 use near_api::Chain;
 use near_openapi_client::types::{
@@ -12,9 +10,7 @@ use near_openapi_client::types::{
 };
 use templar_gateway_types::{BlockSummary, ChainIdentity, CryptoHash, NearToken, ProtocolLimits};
 
-use crate::{client::NearClient, GatewayError, GatewayResult, ReadNear};
-
-const RPC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+use crate::{client::NearClient, near_rpc::RawRpcRequest, GatewayError, GatewayResult, ReadNear};
 
 #[derive(Clone, Copy)]
 pub struct ChainClient<'a> {
@@ -30,9 +26,10 @@ impl ChainClient<'_> {
             None => self.inner.finality_policy().query_reference(),
         };
 
-        let response = Chain::block()
-            .at(reference)
-            .fetch_from(self.inner.network())
+        let response = self
+            .inner
+            .rpc()
+            .fetch(|| Chain::block().at(reference.clone()))
             .await
             .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
 
@@ -85,59 +82,14 @@ impl ChainClient<'_> {
             .await
     }
 
-    // near-api 0.8.6 keeps its custom-RPC retry plumbing private.
-    async fn rpc<R: ChainRpcRequest + Sync>(&self, request: &R) -> GatewayResult<R::Output> {
-        let mut last_error = None;
-
-        'endpoint: for endpoint in &self.inner.network().rpc_endpoints {
-            let mut headers = reqwest::header::HeaderMap::new();
-            if let Some(value) = &endpoint.bearer_header {
-                let header = match reqwest::header::HeaderValue::from_str(value) {
-                    Ok(header) => header,
-                    Err(error) => {
-                        last_error = Some(error.to_string());
-                        continue 'endpoint;
-                    }
-                };
-                headers.insert(reqwest::header::AUTHORIZATION, header.clone());
-                headers.insert(
-                    reqwest::header::HeaderName::from_static("x-api-key"),
-                    header,
-                );
-            }
-            let http = reqwest::ClientBuilder::new()
-                .connect_timeout(RPC_REQUEST_TIMEOUT)
-                .timeout(RPC_REQUEST_TIMEOUT)
-                .default_headers(headers)
-                .build()
-                .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
-            let client = near_openapi_client::Client::new_with_client(
-                endpoint.url.as_str().trim_end_matches('/'),
-                http,
-            );
-
-            let attempts = usize::from(endpoint.retries).max(1);
-            for attempt in 0..attempts {
-                match request.query(&client).await {
-                    Ok(Ok(result)) => return Ok(result),
-                    Ok(Err(error)) => {
-                        last_error = Some(error);
-                        continue 'endpoint;
-                    }
-                    Err(error) => {
-                        last_error = Some(error.to_string());
-                        if attempt + 1 < attempts {
-                            tokio::time::sleep(endpoint.get_sleep_duration(attempt)).await;
-                        }
-                    }
-                }
-            }
-        }
-
-        Err(GatewayError::NearQuery(last_error.unwrap_or_else(|| {
-            "no RPC endpoints are configured".to_owned()
-        })))
+    async fn rpc<R: RawRpcRequest + Sync>(&self, request: &R) -> GatewayResult<R::Output> {
+        self.inner
+            .rpc()
+            .raw(request)
+            .await
+            .map_err(|error| GatewayError::NearQuery(error.into_message()))
     }
+
     pub async fn get_transaction(
         &self,
         tx_hash: near_api::CryptoHash,
@@ -152,16 +104,6 @@ impl ChainClient<'_> {
         )
         .await
     }
-}
-
-/// Keep RPC/validation failures distinct from transport failures: only the latter retry.
-trait ChainRpcRequest {
-    type Output;
-
-    fn query(
-        &self,
-        client: &near_openapi_client::Client,
-    ) -> impl Future<Output = Result<Result<Self::Output, String>, near_openapi_client::Error<()>>> + Send;
 }
 
 fn protocol_config_request() -> JsonRpcRequestForExperimentalProtocolConfig {
@@ -201,7 +143,7 @@ struct TransactionValidityPeriodRequest(JsonRpcRequestForExperimentalProtocolCon
 
 struct ProtocolLimitsWithVersionRequest(JsonRpcRequestForExperimentalProtocolConfig);
 
-impl ChainRpcRequest for ProtocolLimitsWithVersionRequest {
+impl RawRpcRequest for ProtocolLimitsWithVersionRequest {
     type Output = (ProtocolLimits, u32);
 
     async fn query(
@@ -221,7 +163,7 @@ impl ChainRpcRequest for ProtocolLimitsWithVersionRequest {
     }
 }
 
-impl ChainRpcRequest for TransactionValidityPeriodRequest {
+impl RawRpcRequest for TransactionValidityPeriodRequest {
     type Output = u64;
 
     async fn query(
@@ -238,7 +180,7 @@ impl ChainRpcRequest for TransactionValidityPeriodRequest {
     }
 }
 
-impl ChainRpcRequest for StorageByteCostRequest {
+impl RawRpcRequest for StorageByteCostRequest {
     type Output = NearToken;
 
     async fn query(
@@ -256,7 +198,7 @@ impl ChainRpcRequest for StorageByteCostRequest {
     }
 }
 
-impl ChainRpcRequest for JsonRpcRequestForStatus {
+impl RawRpcRequest for JsonRpcRequestForStatus {
     type Output = ChainIdentity;
 
     async fn query(
@@ -277,7 +219,7 @@ impl ChainRpcRequest for JsonRpcRequestForStatus {
     }
 }
 
-impl ChainRpcRequest for JsonRpcRequestForExperimentalProtocolConfig {
+impl RawRpcRequest for JsonRpcRequestForExperimentalProtocolConfig {
     type Output = ProtocolLimits;
 
     async fn query(
@@ -474,6 +416,56 @@ mod tests {
         client.chain().protocol_limits().await.unwrap();
         assert_eq!(rejected.received_requests().await.unwrap().len(), 0);
         assert_eq!(successful.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_refused_primary_key_reads_protocol_limits_through_the_backup() {
+        use crate::near_rpc::keyed_endpoint::{self, sent_with, with_backup, BACKUP, PRIMARY};
+
+        let server = keyed_endpoint::serving(
+            ResponseTemplate::new(402),
+            ResponseTemplate::new(200).set_body_string(LIMITS_RESPONSE),
+        )
+        .await;
+        let client = crate::NearClient::new(with_backup(&server));
+
+        assert_eq!(
+            client
+                .chain()
+                .protocol_limits()
+                .await
+                .unwrap()
+                .max_transaction_size,
+            123
+        );
+        assert_eq!(sent_with(&server, PRIMARY).await, 1);
+        assert_eq!(sent_with(&server, BACKUP).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_outlives_a_later_endpoints_failure() {
+        use crate::{
+            near_rpc::keyed_endpoint::{self, BACKUP},
+            NearRpc,
+        };
+
+        let keyed = keyed_endpoint::serving(
+            ResponseTemplate::new(402),
+            ResponseTemplate::new(200).set_body_string(LIMITS_RESPONSE),
+        )
+        .await;
+        let failing = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&failing)
+            .await;
+        let mut network = keyed_endpoint::network(&keyed, 1);
+        network
+            .rpc_endpoints
+            .push(RPCEndpoint::new(failing.uri().parse().unwrap()).with_retries(1));
+        let client = crate::NearClient::new(NearRpc::with_backup_api_key(network, BACKUP));
+
+        client.chain().protocol_limits().await.unwrap();
     }
 
     #[tokio::test]

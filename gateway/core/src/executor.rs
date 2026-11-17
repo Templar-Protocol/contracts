@@ -7,7 +7,7 @@ use near_api::{
         tx_rpc::{TransactionStatusRef, TransactionStatusRpc},
         ExecuteSignedTransaction, RequestBuilder, ResponseHandler, TransactionableOrSigned,
     },
-    errors::{QueryError, RetryError, SendRequestError},
+    errors::{QueryError, SendRequestError},
     types::{
         crypto::secret_key::ED25519SecretKey,
         transaction::{
@@ -16,14 +16,14 @@ use near_api::{
         },
         TxExecutionStatus,
     },
-    NetworkConfig, SecretKey, Signer,
+    SecretKey, Signer,
 };
 use near_openapi_client::types::{RpcTransactionError, RpcTransactionResponse};
 use templar_gateway_types::{operation::ExecutionOutcome, CryptoHash, ManagedAccountId};
 
 use crate::{
-    FinalityPolicy, GatewayError, GatewayResult, PlannedTransaction, PooledSigner,
-    PreparedTransactionResult, SigningKeyLease,
+    near_rpc::failed_request, FinalityPolicy, GatewayError, GatewayResult, NearRpc,
+    PlannedTransaction, PooledSigner, PreparedTransactionResult, SigningKeyLease,
 };
 
 /// Any waiting level makes a node poll a transaction it has never seen until a
@@ -128,15 +128,15 @@ enum NodeAnswer {
 
 #[derive(Clone)]
 pub struct NearTransactionSigner {
-    network: NetworkConfig,
+    rpc: NearRpc,
     /// Shared so clones lease against the same key slots.
     signers: Arc<HashMap<ManagedAccountId, PooledSigner>>,
 }
 
 impl NearTransactionSigner {
-    pub fn new(network: NetworkConfig, signers: HashMap<ManagedAccountId, PooledSigner>) -> Self {
+    pub fn new(rpc: impl Into<NearRpc>, signers: HashMap<ManagedAccountId, PooledSigner>) -> Self {
         Self {
-            network,
+            rpc: rpc.into(),
             signers: Arc::new(signers),
         }
     }
@@ -150,37 +150,38 @@ impl NearTransactionSigner {
 
 #[derive(Clone)]
 pub struct NearOperationExecutor {
-    network: NetworkConfig,
+    rpc: NearRpc,
     /// Retention-complete views of the chain, split the same way. Empty when none
     /// is configured, and then a missing transaction can never be confirmed
     /// missing — see [`TransactionRecord::Unconfirmed`].
-    archival_status_networks: Vec<NetworkConfig>,
+    archival_status_rpcs: Vec<NearRpc>,
     /// One single-endpoint view per endpoint, so a status query can be addressed
-    /// to each in turn and every node's answer survives.
-    status_query_networks: Vec<NetworkConfig>,
+    /// to each in turn and every node's answer survives: near_api walking them
+    /// itself reports only the last error.
+    status_query_rpcs: Vec<NearRpc>,
     finality_policy: FinalityPolicy,
 }
 
 impl NearOperationExecutor {
-    pub fn new(network: NetworkConfig, archival_network: Option<NetworkConfig>) -> Self {
-        Self::with_finality_policy(network, archival_network, FinalityPolicy::default())
+    pub fn new(rpc: impl Into<NearRpc>, archival_rpc: Option<NearRpc>) -> Self {
+        Self::with_finality_policy(rpc, archival_rpc, FinalityPolicy::default())
     }
 
-    /// `archival_network` is required rather than opt-in: it is what lets
+    /// `archival_rpc` is required rather than opt-in: it is what lets
     /// reconciliation terminally reject a transaction the chain has no record of,
     /// so a consumer that never considers it silently loses that — and its
     /// operations stay in flight forever. `None` is a deliberate choice to do
     /// without, not an oversight the type permits.
     pub fn with_finality_policy(
-        network: NetworkConfig,
-        archival_network: Option<NetworkConfig>,
+        rpc: impl Into<NearRpc>,
+        archival_rpc: Option<NearRpc>,
         finality_policy: FinalityPolicy,
     ) -> Self {
+        let rpc = rpc.into();
         Self {
-            status_query_networks: status_query_networks(&network),
-            archival_status_networks: archival_network
-                .map_or_else(Vec::new, |network| status_query_networks(&network)),
-            network,
+            status_query_rpcs: rpc.per_endpoint(),
+            archival_status_rpcs: archival_rpc.map_or_else(Vec::new, |rpc| rpc.per_endpoint()),
+            rpc,
             finality_policy,
         }
     }
@@ -190,17 +191,14 @@ impl NearOperationExecutor {
     /// agrees, and a node that failed to answer leaves it open.
     async fn poll(
         &self,
-        networks: &[NetworkConfig],
+        rpcs: &[NearRpc],
         signer_account_id: &ManagedAccountId,
         tx_hash: CryptoHash,
     ) -> Consensus {
         let mut unanswered = None;
         let mut answered = false;
-        for network in networks {
-            match self
-                .node_answer_from(network, signer_account_id, tx_hash)
-                .await
-            {
+        for rpc in rpcs {
+            match self.node_answer_from(rpc, signer_account_id, tx_hash).await {
                 Ok(NodeAnswer::Executed(outcome)) => return Consensus::Executed(outcome),
                 Ok(NodeAnswer::Pending) => return Consensus::Pending,
                 Ok(NodeAnswer::NoRecord) => answered = true,
@@ -217,21 +215,23 @@ impl NearOperationExecutor {
     /// Ask one node what it has, without waiting for the transaction to finish.
     async fn node_answer_from(
         &self,
-        network: &NetworkConfig,
+        rpc: &NearRpc,
         signer_account_id: &ManagedAccountId,
         tx_hash: CryptoHash,
     ) -> GatewayResult<NodeAnswer> {
-        match RequestBuilder::new(
-            TransactionStatusRpc,
-            TransactionStatusRef {
-                sender_account_id: signer_account_id.0.clone(),
-                tx_hash: tx_hash.0,
-                wait_until: RECONCILIATION_WAIT_UNTIL,
-            },
-            TransactionProgressHandler(self.finality_policy),
-        )
-        .fetch_from(network)
-        .await
+        match rpc
+            .fetch(|| {
+                RequestBuilder::new(
+                    TransactionStatusRpc,
+                    TransactionStatusRef {
+                        sender_account_id: signer_account_id.0.clone(),
+                        tx_hash: tx_hash.0,
+                        wait_until: RECONCILIATION_WAIT_UNTIL,
+                    },
+                    TransactionProgressHandler(self.finality_policy),
+                )
+            })
+            .await
         {
             Ok(TransactionResult::Pending { .. }) => Ok(NodeAnswer::Pending),
             Ok(TransactionResult::Full(result)) => {
@@ -289,7 +289,7 @@ impl SignTransaction for NearTransactionSigner {
 
         let signed_transaction = lease
             .presign(
-                &self.network,
+                &self.rpc,
                 transaction.receiver_id.clone(),
                 transaction.actions.clone(),
             )
@@ -316,17 +316,19 @@ impl ExecuteOperation for NearOperationExecutor {
             actions: signed_transaction.transaction.actions().to_vec(),
         };
 
-        let result: TransactionResult = ExecuteSignedTransaction {
-            transaction: TransactionableOrSigned::Signed((
-                signed_transaction,
-                Box::new(PrepopulatedTransactionCarrier(prepopulated)),
-            )),
-            signer: null_signer(),
-            wait_until: self.finality_policy.transaction_status(),
-        }
-        .send_to(&self.network)
-        .await
-        .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
+        let signer = null_signer();
+        let result: TransactionResult = self
+            .rpc
+            .send(|| ExecuteSignedTransaction {
+                transaction: TransactionableOrSigned::Signed((
+                    signed_transaction.clone(),
+                    Box::new(PrepopulatedTransactionCarrier(prepopulated.clone())),
+                )),
+                signer: Arc::clone(&signer),
+                wait_until: self.finality_policy.transaction_status(),
+            })
+            .await
+            .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
 
         Ok(result.into_full().map(StepOutcome::from_execution))
     }
@@ -336,14 +338,14 @@ impl ExecuteOperation for NearOperationExecutor {
         signer_account_id: &ManagedAccountId,
         tx_hash: CryptoHash,
     ) -> GatewayResult<TransactionRecord> {
-        if self.status_query_networks.is_empty() {
+        if self.status_query_rpcs.is_empty() {
             return Err(GatewayError::NearQuery(
                 "no RPC endpoint available for transaction status".to_owned(),
             ));
         }
 
         let unanswered_primary = match self
-            .poll(&self.status_query_networks, signer_account_id, tx_hash)
+            .poll(&self.status_query_rpcs, signer_account_id, tx_hash)
             .await
         {
             Consensus::Executed(outcome) => return Ok(TransactionRecord::Executed(outcome)),
@@ -353,7 +355,7 @@ impl ExecuteOperation for NearOperationExecutor {
         };
 
         match self
-            .poll(&self.archival_status_networks, signer_account_id, tx_hash)
+            .poll(&self.archival_status_rpcs, signer_account_id, tx_hash)
             .await
         {
             Consensus::Executed(outcome) => Ok(TransactionRecord::Executed(outcome)),
@@ -407,19 +409,6 @@ impl ResponseHandler for TransactionProgressHandler {
     }
 }
 
-/// The request a failed query actually made it to, if it reached one.
-fn failed_request(
-    error: &QueryError<RpcTransactionError>,
-) -> Option<&SendRequestError<RpcTransactionError>> {
-    let QueryError::QueryError(retry) = error else {
-        return None;
-    };
-    match retry.as_ref() {
-        RetryError::RetriesExhausted(request) | RetryError::Critical(request) => Some(request),
-        _ => None,
-    }
-}
-
 /// Whether the chain reported having no record of the transaction.
 ///
 /// Matched on the typed error alone. A rendered match would also see the whole
@@ -466,24 +455,6 @@ struct MinimalTransactionResult {
     final_execution_status: TxExecutionStatus,
 }
 
-/// One single-endpoint view of `network` per endpoint, each tried once.
-///
-/// Splitting is what keeps every node's answer: near_api walks a multi-endpoint
-/// config itself and reports only the last error, which would let one node's "no
-/// record" bury another's "still executing". Retries go too — near_api treats
-/// `UNKNOWN_TRANSACTION` as retryable and would otherwise sleep through its whole
-/// backoff schedule before the answer could be classified.
-fn status_query_networks(network: &NetworkConfig) -> Vec<NetworkConfig> {
-    network
-        .rpc_endpoints
-        .iter()
-        .map(|endpoint| NetworkConfig {
-            rpc_endpoints: vec![endpoint.clone().with_retries(1)],
-            ..network.clone()
-        })
-        .collect()
-}
-
 #[allow(
     clippy::unwrap_used,
     reason = "zeroed ED25519 secret key is locally constructed and should always parse"
@@ -503,7 +474,10 @@ mod tests {
     use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
     use super::{ExecuteOperation, NearOperationExecutor, TransactionRecord};
-    use crate::GatewayError;
+    use crate::{
+        near_rpc::keyed_endpoint::{self, sent_with, with_backup, BACKUP, PRIMARY},
+        GatewayError,
+    };
 
     /// As a node actually answers for a hash it has no record of — the typed
     /// error carries the requested hash.
@@ -541,7 +515,7 @@ mod tests {
         };
         NearOperationExecutor::new(
             network_over(servers),
-            (!archival.is_empty()).then(|| network_over(archival)),
+            (!archival.is_empty()).then(|| network_over(archival).into()),
         )
     }
 
@@ -559,7 +533,7 @@ mod tests {
         };
         NearOperationExecutor::new(
             network_over(servers.to_vec()),
-            archival.map(|server| network_over(vec![server])),
+            archival.map(|server| network_over(vec![server]).into()),
         )
     }
 
@@ -780,5 +754,74 @@ mod tests {
             matches!(result, Err(GatewayError::NearQuery(_))),
             "an unasked question must not resolve to NoRecord"
         );
+    }
+
+    async fn signed_transaction() -> near_api::types::transaction::SignedTransaction {
+        let secret_key = near_api::SecretKey::ED25519(
+            near_api::types::crypto::secret_key::ED25519SecretKey::from_secret_key([1; 32]),
+        );
+        let public_key = secret_key.public_key();
+        near_api::Signer::from_secret_key(secret_key)
+            .unwrap()
+            .sign(
+                near_api::types::transaction::PrepopulateTransaction {
+                    signer_id: "signer.near".parse().unwrap(),
+                    receiver_id: "coin.abound.near".parse().unwrap(),
+                    actions: Vec::new(),
+                },
+                public_key,
+                1,
+                near_api::CryptoHash::default(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_refused_primary_key_submits_through_the_backup() {
+        let server = keyed_endpoint::serving(
+            ResponseTemplate::new(402),
+            ResponseTemplate::new(200).set_body_string(full_response("FINAL")),
+        )
+        .await;
+        let executor = NearOperationExecutor::new(with_backup(&server), None);
+
+        let outcome = executor
+            .submit_transaction(signed_transaction().await)
+            .await
+            .unwrap();
+        assert!(outcome.is_some_and(|outcome| outcome.is_success));
+        assert_eq!(sent_with(&server, PRIMARY).await, 1);
+        assert_eq!(sent_with(&server, BACKUP).await, 1);
+    }
+
+    /// The backup key reaches the same node, so its answer is that node's: a
+    /// refused primary key must not leave "no record" unconfirmed.
+    #[tokio::test]
+    async fn a_refused_primary_key_still_confirms_a_missing_transaction() {
+        let no_record = || ResponseTemplate::new(200).set_body_string(UNKNOWN_TRANSACTION);
+        let primary = keyed_endpoint::serving(ResponseTemplate::new(402), no_record()).await;
+        let archival = keyed_endpoint::serving(ResponseTemplate::new(402), no_record()).await;
+        let executor =
+            NearOperationExecutor::new(with_backup(&primary), Some(with_backup(&archival)));
+
+        assert!(matches!(
+            query(&executor).await,
+            Ok(TransactionRecord::NoRecord)
+        ));
+    }
+
+    #[tokio::test]
+    async fn both_keys_refused_never_confirms_a_missing_transaction() {
+        let refused = || ResponseTemplate::new(402);
+        let primary = keyed_endpoint::serving(refused(), refused()).await;
+        let archival = keyed_endpoint::serving(refused(), refused()).await;
+        let executor =
+            NearOperationExecutor::new(with_backup(&primary), Some(with_backup(&archival)));
+
+        assert!(matches!(
+            query(&executor).await,
+            Err(GatewayError::NearTransaction(_))
+        ));
     }
 }

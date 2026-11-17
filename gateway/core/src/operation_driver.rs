@@ -9,12 +9,13 @@ use sha2::{Digest, Sha256};
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
     operation::{OperationRecord, OperationStatus},
-    IdempotencyKey, MethodSpec, OperationId,
+    IdempotencyKey, ManagedAccountId, MethodSpec, OperationId,
 };
 
 use crate::{
     CreateOperationResult, CurrentStep, CurrentStepRef, GatewayError, GatewayResult,
-    HasIdempotencyKey, HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation,
+    HasIdempotencyKey, HasSignerAccountId, NearClient, NearOperationExecutor, NearRpc,
+    NearTransactionSigner, OperationPlan, PlanWrite, PooledSigner, SharedExecuteOperation,
     SharedOperationStore, SharedSignTransaction, SigningKeyLease, StoredOperation,
     TransactionRecord,
 };
@@ -64,6 +65,27 @@ impl OperationDriver {
             operation_executor,
             operation_locks: Arc::new(OperationLocks::default()),
         }
+    }
+
+    /// A driver that signs and submits through `near`'s network and finality
+    /// policy, so reads, signing and submission share one failover state.
+    ///
+    /// `archival_rpc` is what lets reconciliation terminally reject a
+    /// transaction the chain has no record of; see
+    /// [`NearOperationExecutor::with_finality_policy`].
+    pub fn for_near(
+        near: &NearClient,
+        archival_rpc: Option<NearRpc>,
+        signers: HashMap<ManagedAccountId, PooledSigner>,
+        store: SharedOperationStore,
+    ) -> Self {
+        let signer = NearTransactionSigner::new(near.rpc().clone(), signers);
+        let executor = NearOperationExecutor::with_finality_policy(
+            near.rpc().clone(),
+            archival_rpc,
+            near.finality_policy(),
+        );
+        Self::new(store, Arc::new(signer), Arc::new(executor))
     }
 
     pub async fn get_operation(

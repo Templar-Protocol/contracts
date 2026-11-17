@@ -1,4 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixtures set up the sandbox directly"
+)]
 
 pub mod bench;
 pub mod controller;

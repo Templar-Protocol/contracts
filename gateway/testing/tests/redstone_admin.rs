@@ -1,4 +1,8 @@
 //! Actual-WASM Admin RBAC, versioned migration, and keyless self-upgrade receipts.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "test fixtures set up the sandbox directly"
+)]
 use std::fmt::Write;
 
 use anyhow::Result;

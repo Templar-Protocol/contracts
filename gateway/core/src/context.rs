@@ -1,6 +1,4 @@
-use near_api::NetworkConfig;
-
-use crate::{FinalityPolicy, GatewayResult, HasNearClient, NearClient};
+use crate::{FinalityPolicy, GatewayResult, HasNearClient, NearClient, NearRpc};
 
 #[derive(Debug, Clone)]
 pub struct GatewayContextBuilder<C> {
@@ -13,22 +11,18 @@ pub struct GatewayContext {
 }
 
 impl GatewayContext {
-    pub fn new(network: NetworkConfig) -> GatewayResult<Self> {
+    pub fn new(rpc: impl Into<NearRpc>) -> GatewayResult<Self> {
         Ok(Self {
-            near: NearClient::new(network),
+            near: NearClient::new(rpc),
         })
     }
 
-    pub fn builder(network: NetworkConfig) -> GatewayContextBuilder<Self> {
-        GatewayContextBuilder::new(Self::from_near_client(NearClient::new(network)))
+    pub fn builder(rpc: impl Into<NearRpc>) -> GatewayContextBuilder<Self> {
+        GatewayContextBuilder::new(Self::from_near_client(NearClient::new(rpc)))
     }
 
     pub fn from_near_client(near: NearClient) -> Self {
         Self { near }
-    }
-
-    pub fn network(&self) -> &NetworkConfig {
-        self.near.network()
     }
 }
 
@@ -37,7 +31,7 @@ impl GatewayContextBuilder<GatewayContext> {
     #[must_use]
     pub fn finality_policy(mut self, finality_policy: FinalityPolicy) -> Self {
         self.context.near =
-            NearClient::with_finality_policy(self.context.near.network().clone(), finality_policy);
+            NearClient::with_finality_policy(self.context.near.rpc().clone(), finality_policy);
         self
     }
 }
