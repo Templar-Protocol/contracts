@@ -3,6 +3,7 @@
 # The scan runs with no network access. This build fetches everything the tests need, then
 # builds the workspace the way CI does (.github/workflows/test.yml):
 #   - every crate in Cargo.lock, including git dependencies;
+#   - the npm packages that service/redstone-bridge's build script bundles with Node.js;
 #   - the released contract Wasms that the migration and upgrade tests deploy;
 #   - the neard sandbox binary for the node-backed tests;
 #   - every test binary and every workspace binary (dev profile, line tables);
@@ -20,9 +21,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 # libssl-dev and libdbus-1-dev: openssl-sys and libdbus-sys (through keyring).
 # clang: the cc builds in secp256k1-sys, zstd-sys and others.
 # postgresql: the #[sqlx::test] fixtures in the relayer and the gateway store.
+# nodejs and npm: service/redstone-bridge/build.rs runs npm to build and bundle its TypeScript
+# sidecar, and the bridge runs that bundle with node. CI gets both from the GitHub runner image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq clang pkg-config libssl-dev libdbus-1-dev postgresql python3 \
-    && rm -rf /var/lib/apt/lists/*
+      nodejs npm \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version && npm --version
 
 # Test tools at pinned versions, checked by SHA-256. The cargo-near x86-64 hash is the one that
 # .github/actions/cargo-near pins.
@@ -71,13 +76,21 @@ ENV CARGO_TERM_COLOR=never \
     RUST_BACKTRACE=1 \
     DATABASE_URL=postgres://relayeruser:password@localhost:5432/relayer \
     TEMPLAR_ARTIFACT_CACHE=/opt/templar/artifacts \
-    NEAR_SANDBOX_BIN_PATH=/opt/templar/near-sandbox/near-sandbox
+    NEAR_SANDBOX_BIN_PATH=/opt/templar/near-sandbox/near-sandbox \
+    npm_config_cache=/opt/templar/npm-cache \
+    npm_config_audit=false \
+    npm_config_fund=false \
+    npm_config_update_notifier=false
 
 # The toolchain, components and wasm32 target that rust-toolchain.toml pins.
 RUN rustup toolchain install && rustc --version && cargo --version
 
 # Every crate in Cargo.lock, for every target.
 RUN cargo fetch --locked
+
+# The redstone-bridge npm packages, from its package-lock.json. This also fills the npm cache, so
+# the `npm install` that build.rs runs works offline if the scan rebuilds the bridge.
+RUN cd service/redstone-bridge/js && npm ci --no-progress
 
 # The neard sandbox binary at the version the locked near-sandbox crate defaults to. near-sandbox
 # uses NEAR_SANDBOX_BIN_PATH and does not download when that file exists.
@@ -126,12 +139,14 @@ RUN set -eux; \
     templar-postgres-down
 
 # Run the fast gate as CI does, so the build log shows the image works. A failing or slow test
-# does not fail the build. The node-backed gate (just test-sandbox) is left for the scan.
+# does not fail the build. The cap keeps the whole build inside the scanner's 45-minute limit.
+# The node-backed gate (just test-sandbox) is left for the scan.
 RUN templar-postgres-up \
-    && (timeout 1200 env NEXTEST_PROFILE=ci just test-fast \
+    && (timeout 600 env NEXTEST_PROFILE=ci just test-fast \
         || echo "WARNING: just test-fast reported failures or ran out of time") \
     ; templar-postgres-down
 
-# Everything is fetched. From here on, cargo and the artifact cache must not use the network.
+# Everything is fetched. From here on, cargo, npm and the artifact cache must not use the network.
 ENV CARGO_NET_OFFLINE=true \
-    TEMPLAR_ARTIFACT_OFFLINE=1
+    TEMPLAR_ARTIFACT_OFFLINE=1 \
+    npm_config_offline=true
