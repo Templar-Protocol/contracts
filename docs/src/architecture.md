@@ -42,7 +42,7 @@ Templar is an overcollateralized lending protocol whose markets run on NEAR. Col
  :............................................................................:
 
  Off-chain services: liquidator, accumulator, market-monitor, redstone-bridge,
- relayer, gateway, funding-bridge, plus Hypernative and custom alerting.
+ relayer, gateway, plus Hypernative and custom alerting.
 ```
 
 ## Components
@@ -74,7 +74,6 @@ None of these hold a privileged key over a market. They provide liveness and con
 | [Accumulator](https://github.com/Templar-Protocol/contracts/tree/dev/service/accumulator) | Applies interest to borrow positions by triggering market snapshots. |
 | [Market monitor](https://github.com/Templar-Protocol/contracts/tree/dev/service/market-monitor) | Position-health scanning with alerts to the public channel; part of [monitoring](./monitoring.md). |
 | [RedStone bridge](https://github.com/Templar-Protocol/contracts/tree/dev/service/redstone-bridge) | Delivers signed RedStone price payloads to the RedStone adapter. |
-| [Funding bridge](https://github.com/Templar-Protocol/contracts/tree/dev/service/funding-bridge) | Treasury operations across chains through the NEAR Intents bridge API. |
 
 ## Flows
 

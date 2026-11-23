@@ -118,8 +118,6 @@ jobs:
               - 'script/fetch-sputnik-fixture.py'
               - 'script/sandbox-down.sh'
               - 'script/sandbox-up.sh'
-              - 'service/funding-bridge/src/**'
-              - 'service/funding-bridge/tests/**'
               - 'service/gateway/src/**'
               - 'service/liquidator/src/**'
               - 'service/liquidator/tests/**'

@@ -22,7 +22,7 @@ Components:
 - **Registry** (`contract/registry`): market version reservation, deployment and two-step finalization.
 - **Universal account** (`contract/universal-account`, `universal-account`): signature verification, nonces, transaction execution and migration.
 - **Patch-state** (`contract/patch-state`): a vendored state-manipulation contract used in the reviewed storage-patch process.
-- **Off-chain services** (`service/*`, `gateway/*`): the relayer (delegated actions), the liquidator, the funding bridge, the accumulator, the market monitor and the gateway (NEAR read/write planning, signing, idempotency).
+- **Off-chain services** (`service/*`, `gateway/*`): the relayer (delegated actions), the liquidator, the accumulator, the market monitor and the gateway (NEAR read/write planning, signing, idempotency).
 
 Treat all of these as attacker-controlled:
 
@@ -55,7 +55,7 @@ Most important, in this order:
 4. Authorization and upgrades: proxy-oracle and vault governance contracts, the registry, the universal account (replay, signature payloads, migration).
 5. The relayer and gateway, where an outside request can make the service sign or pay for something it should not.
 
-Lower priority, but in scope: the liquidator, the funding bridge, the accumulator, the market monitor, `tools/manager`, `tools/soroban-vault-cli`, `client/`.
+Lower priority, but in scope: the liquidator, the accumulator, the market monitor, `tools/manager`, `tools/soroban-vault-cli`, `client/`.
 
 Out of scope as targets (use them as tools): `mock/`, `test-utils/`, `gateway/testing`, `fuzz/`, Kani harnesses, `script/`, `docs/`, and test-only fixtures such as `contract/universal-account/tests/migration/0_4_0.wasm`.
 
