@@ -26,5 +26,6 @@
   - [1. Record architecture decisions as ADRs](./adr/0001-record-architecture-decisions-as-adrs.md)
   - [2. Expose RBAC-controlled RedStone adapter administration](./adr/0002-expose-rbac-controlled-redstone-adapter-administration.md)
   - [3. Separate registry capabilities and uploader-funded code storage](./adr/0003-separate-registry-capabilities-and-uploader-funded-code-storage.md)
+  - [4. Loss-sharing queued withdrawals and queue-only exits for the Soroban vault](./adr/0004-loss-sharing-queued-withdrawals-and-queue-only-exits-for-the-soroban-vault.md)
 - [Glossary](./glossary.md)
 - [Notes](./notes.md)
