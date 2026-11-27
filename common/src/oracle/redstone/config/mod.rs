@@ -63,17 +63,24 @@ impl redstone::Crypto for NearCrypto {
         signature_bytes: impl AsRef<[u8]>,
         message_hash: Self::KeccakOutput,
     ) -> Result<redstone::Bytes, redstone::CryptoError> {
-        use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+        let signature = signature_bytes.as_ref();
+        // The host aborts the receipt on a signature that is not 64 bytes or a
+        // recovery byte above 3. Report both as errors instead.
+        let signature: &[u8; 64] = signature
+            .try_into()
+            .map_err(|_| redstone::CryptoError::InvalidSignatureLen(signature.len()))?;
+        if recovery_byte > 3 {
+            return Err(redstone::CryptoError::RecoveryByte(recovery_byte));
+        }
 
-        let signature_bytes = signature_bytes.as_ref();
-        let signature = Signature::try_from(signature_bytes)
-            .map_err(|_| redstone::CryptoError::Signature(signature_bytes.to_vec()))?;
-        let r_id = RecoveryId::try_from(recovery_byte)
-            .map_err(|_| redstone::CryptoError::RecoveryByte(recovery_byte))?;
-        let result = VerifyingKey::recover_from_prehash(&message_hash, &signature, r_id)
-            .map_err(|_| redstone::CryptoError::RecoverPreHash)?;
+        // Recovered by the host: the same curve arithmetic compiled into the
+        // contract costs about 18 Tgas a signature, the host call 0.28 Tgas.
+        // `true` rejects a high `s`, which `recover_address` refuses before it calls this.
+        let key = near_sdk::env::ecrecover(&message_hash, signature, recovery_byte, true)
+            .ok_or(redstone::CryptoError::RecoverPreHash)?;
 
-        Ok(result.to_encoded_point(false).to_bytes().to_vec().into())
+        // The host returns the point without the SEC1 tag the SDK expects first.
+        Ok([&[0x04][..], &key[..]].concat().into())
     }
 }
 

@@ -12,7 +12,6 @@ borsh = { workspace = true, features = ["rc"] }
 derive_more.workspace = true
 hex-literal.workspace = true
 hex.workspace = true
-k256.workspace = true
 near-contract-standards.workspace = true
 near-sdk-contract-tools.workspace = true
 near-sdk = { workspace = true, default-features = false }

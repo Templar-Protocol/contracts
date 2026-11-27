@@ -12995,7 +12995,6 @@ dependencies = [
  "hex",
  "hex-literal",
  "jsonschema",
- "k256",
  "near-contract-standards",
  "near-jsonrpc-client",
  "near-primitives",

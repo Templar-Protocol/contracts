@@ -1,6 +1,7 @@
 use near_sdk::{borsh, serde_json};
+use redstone::{Crypto, CryptoError};
 
-use super::{Config, ConfigValidationError, SignerAddressBs};
+use super::{Config, ConfigValidationError, NearCrypto, SignerAddressBs};
 
 fn signers(count: u16) -> Vec<SignerAddressBs> {
     (1..=count)
@@ -123,4 +124,16 @@ fn valid_config_preserves_json_and_borsh_wire_forms() {
     }
     assert_eq!(borsh::to_vec(&config).unwrap(), bytes);
     assert_eq!(borsh::from_slice::<Config>(&bytes).unwrap(), config);
+}
+
+#[test]
+fn recovery_reports_what_the_host_would_abort_on() {
+    assert!(matches!(
+        NearCrypto.recover_public_key(0, [1_u8; 63], [0; 32]),
+        Err(CryptoError::InvalidSignatureLen(63))
+    ));
+    assert!(matches!(
+        NearCrypto.recover_public_key(4, [1_u8; 64], [0; 32]),
+        Err(CryptoError::RecoveryByte(4))
+    ));
 }
