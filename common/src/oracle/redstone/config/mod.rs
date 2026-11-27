@@ -65,17 +65,18 @@ impl redstone::Crypto for NearCrypto {
     ) -> Result<redstone::Bytes, redstone::CryptoError> {
         let signature = signature_bytes.as_ref();
         // The host aborts the receipt on a signature that is not 64 bytes or a
-        // recovery byte above 3. Report both as errors instead.
+        // recovery byte above 3, so both are errors here. It takes 2 and 3 and
+        // reports that nothing was recovered.
         let signature: &[u8; 64] = signature
             .try_into()
-            .map_err(|_| redstone::CryptoError::InvalidSignatureLen(signature.len()))?;
+            .map_err(|_| redstone::CryptoError::Signature(signature.to_vec()))?;
         if recovery_byte > 3 {
             return Err(redstone::CryptoError::RecoveryByte(recovery_byte));
         }
 
         // Recovered by the host: the same curve arithmetic compiled into the
         // contract costs about 18 Tgas a signature, the host call 0.28 Tgas.
-        // `true` rejects a high `s`, which `recover_address` refuses before it calls this.
+        // `true` refuses a high `s`. `Crypto::recover_address` refuses one before it calls this.
         let key = near_sdk::env::ecrecover(&message_hash, signature, recovery_byte, true)
             .ok_or(redstone::CryptoError::RecoverPreHash)?;
 

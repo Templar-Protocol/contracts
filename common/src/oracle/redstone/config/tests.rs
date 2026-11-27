@@ -1,7 +1,28 @@
-use near_sdk::{borsh, serde_json};
-use redstone::{Crypto, CryptoError};
+use hex_literal::hex;
+use near_sdk::{borsh, env, serde_json};
+use redstone::{Crypto, CryptoError, SignerAddress};
 
-use super::{Config, ConfigValidationError, NearCrypto, SignerAddressBs};
+use super::{config_prod, Config, ConfigValidationError, NearCrypto, SignerAddressBs};
+
+/// One data package of the `adapter::tests::payload` fixture: the bytes a
+/// production RedStone signer signed for feed `ETH`, and its signature.
+const MESSAGE: [u8; 77] = hex!(
+    "4554480000000000000000000000000000000000000000000000000000000000"
+    "0000000000000000000000000000000000000000000000000000002d9030a710"
+    "019c56f0bec000000020000001"
+);
+const SIGNATURE: [u8; 65] = hex!(
+    "5d1cb1a708c63264741b00ce097176e45f708914b8cfdca26b079877a70604e2"
+    "5aa0bcfa3a41df8212eddd51db3496b95c7c3dc4caa9ac9705602af0515db1b3"
+    "1c"
+);
+/// `SIGNATURE` with `s` replaced by `n - s` and the recovery byte flipped: as
+/// valid for the same signer and message, in the form ECDSA malleability allows.
+const HIGH_S_SIGNATURE: [u8; 65] = hex!(
+    "5d1cb1a708c63264741b00ce097176e45f708914b8cfdca26b079877a70604e2"
+    "a55f4305c5be207ded1222ae24cb69455e329f21e49ef3a4ba72339c7ed88f8e"
+    "1b"
+);
 
 fn signers(count: u16) -> Vec<SignerAddressBs> {
     (1..=count)
@@ -127,13 +148,57 @@ fn valid_config_preserves_json_and_borsh_wire_forms() {
 }
 
 #[test]
-fn recovery_reports_what_the_host_would_abort_on() {
+fn recovers_the_key_and_signer_of_a_redstone_package() {
+    let key = NearCrypto
+        .recover_public_key(1, &SIGNATURE[..64], env::keccak256_array(MESSAGE))
+        .unwrap();
+    assert_eq!(
+        key.as_ref(),
+        hex!(
+            "04"
+            "683f7100d67fbaccae68db4d146f7bc3090c5cbcb1351e333efd58d42f609cee"
+            "ada12b0af28a6e789d6edfe25fe784dd1e86798240d4cee9f60e56848cb55965"
+        )
+        .as_slice()
+    );
+    assert_eq!(
+        NearCrypto.recover_address(MESSAGE, SIGNATURE),
+        Ok(SignerAddress::from(
+            config_prod::ALLOWED_SIGNERS[1].to_vec()
+        ))
+    );
+}
+
+#[test]
+fn refuses_a_high_s_signature_in_the_sdk_and_in_the_host() {
+    // The SDK's own check answers `Signature`; the host's refusal is `RecoverPreHash`.
     assert!(matches!(
-        NearCrypto.recover_public_key(0, [1_u8; 63], [0; 32]),
-        Err(CryptoError::InvalidSignatureLen(63))
+        NearCrypto.recover_address(MESSAGE, HIGH_S_SIGNATURE),
+        Err(CryptoError::Signature(_))
     ));
-    assert!(matches!(
-        NearCrypto.recover_public_key(4, [1_u8; 64], [0; 32]),
-        Err(CryptoError::RecoveryByte(4))
-    ));
+    assert_eq!(
+        NearCrypto
+            .recover_public_key(0, &HIGH_S_SIGNATURE[..64], env::keccak256_array(MESSAGE))
+            .err(),
+        Some(CryptoError::RecoverPreHash)
+    );
+}
+
+#[rstest::rstest]
+#[case::short_signature(1, &SIGNATURE[..63], CryptoError::Signature(SIGNATURE[..63].to_vec()))]
+#[case::long_signature(1, &SIGNATURE, CryptoError::Signature(SIGNATURE.to_vec()))]
+#[case::recovery_byte_4(4, &SIGNATURE[..64], CryptoError::RecoveryByte(4))]
+#[case::recovery_byte_2(2, &SIGNATURE[..64], CryptoError::RecoverPreHash)]
+#[case::recovery_byte_3(3, &SIGNATURE[..64], CryptoError::RecoverPreHash)]
+fn reports_an_error_where_the_host_aborts_or_recovers_nothing(
+    #[case] recovery_byte: u8,
+    #[case] signature: &[u8],
+    #[case] error: CryptoError,
+) {
+    assert_eq!(
+        NearCrypto
+            .recover_public_key(recovery_byte, signature, env::keccak256_array(MESSAGE))
+            .err(),
+        Some(error)
+    );
 }
